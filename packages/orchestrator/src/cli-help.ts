@@ -31,7 +31,8 @@ const COMMAND_HELP: Record<string, string> = {
 Bootstrap a real external project root and initialize .nullius state.
 
 Behavior:
-  Always writes the project-local fallback launcher at \`.nullius/bin/nullius\`.
+  Always writes the portable project-local fallback launcher at \`.nullius/bin/nullius\`.
+  On Windows it also writes and reports the native companion at \`.nullius/bin/nullius.cmd\`.
   That wrapper keeps \`nullius status --json\` as the canonical recovery command even when
   \`nullius\` is unavailable on PATH for a fresh external project.
   --refresh re-applies the current managed scaffold doc (AGENTS.md),
@@ -142,6 +143,7 @@ Behavior:
   Status JSON also includes the legacy-stable \`resume_context\`, the richer \`recovery_context\`,
   and \`current_run_workflow_outputs\` so a reconnecting agent can recover the current run,
   reuse bounded workflow outputs, and fall back to \`.nullius/bin/nullius status --json\`
+  (or \`.nullius/bin/nullius.cmd status --json\` on native Windows)
   when the canonical \`nullius\` command is not available on PATH.
   Status JSON also includes \`project_surface_drift\`, a diagnostic-only warning block for stale legacy scaffold surfaces or optional host-local guidance noise in the current project root.
   When durable workflow outputs are missing for an older run, status rebuilds a best-effort legacy workflow projection from ledger/artifact conventions and reports the projection source.

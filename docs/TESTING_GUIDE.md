@@ -23,6 +23,7 @@
 - `nullius init` 使用 canonical generic scaffold；`.mcp.template.json`、根级 `specs/plan.schema.json`、`prompts/`、`team/`、`research_team_config.json` 等 optional support surfaces 只应由明确项目需要或 host-specific tooling 后续创建
 - `nullius init --refresh` 把更新后的 managed scaffold 文档（`AGENTS.md`）重新落到已生成项目：覆盖前会把变更文件备份到 `.nullius/backups/`，且绝不改写 `research_plan.md`、`research_notebook.md`、`research_contract.md`、`project_charter.md`、`project_index.md` 等用户 seed 文件；`--dry-run` 可先预览。测试它时用开发仓外的临时 root，断言“变更 managed 文件被备份并刷新、seed 文件原样保留、`--dry-run` 零写入”
 - reconnect 时应优先读取 `.nullius/HARNESS`、`.nullius/` state 与 project-local durable memory，例如 `research_plan.md`、`research_contract.md`、以及已有实质内容的 `research_notebook.md`
+- Windows 验收还应确认 `nullius init` 生成 `.nullius/bin/nullius.cmd`，并可通过该 native companion 执行 `status --json`；POSIX 继续验证 `.nullius/bin/nullius`
 - `research_plan.md#Current Status` 是给人的当前状态入口；测试 scaffold/read-model 时要保证它被作为恢复指引暴露，同时不新增单独状态文档
 - `research_notebook.md` 是问题逻辑主线，不是日期 run log，也不承载状态追踪；重要文献 note 必须记录全文/source-first 阅读、section/page/equation/figure 覆盖，并用 LaTeX math 写科学记号；测试 scaffold/read-model 时要保证空模板不会被误判为 substantive，同时真实逻辑内容会进入 reconnect recommended files
 - `team/runs/` 只作为 `research-team` 执行与 reviewer packet/log surface；验收外部项目恢复/交接时，稳定结论必须能从 `research_contract.md`、`research_plan.md#Current Status` 或 `artifacts/runs/<run_id>/` 找回

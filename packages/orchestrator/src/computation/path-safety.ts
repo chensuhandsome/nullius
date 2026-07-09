@@ -32,7 +32,10 @@ export function sanitizeRelativePath(relativePath: string, label: string): strin
 }
 
 export function buildToolCommand(tool: ManifestTool, scriptPath: string, args: string[]): string[] {
-  if (tool === 'python') return ['python3', scriptPath, ...args];
+  if (tool === 'python') {
+    const python = process.env.NULLIUS_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+    return [python, scriptPath, ...args];
+  }
   if (tool === 'bash') return ['bash', scriptPath, ...args];
   if (tool === 'julia') return ['julia', scriptPath, ...args];
   return ['wolframscript', '-file', scriptPath, ...args];

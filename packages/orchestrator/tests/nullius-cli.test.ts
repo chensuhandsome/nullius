@@ -234,6 +234,12 @@ describe('nullius CLI', () => {
     expect(topLevelCommands).not.toContain('branch');
   });
 
+  it('documents the native Windows project-local launcher companion', async () => {
+    const { io, stdout } = makeIo(process.cwd());
+    expect(await runCli(['init', '--help'], io)).toBe(0);
+    expect(stdout.join('')).toContain('.nullius/bin/nullius.cmd');
+  });
+
   it('front-door authority map keeps the canonical nullius inventory exact', () => {
     const surface = getFrontDoorAuthoritySurface('nullius_cli');
 

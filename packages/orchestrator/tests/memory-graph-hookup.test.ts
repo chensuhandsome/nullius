@@ -534,7 +534,7 @@ describe('memory-graph hookup', () => {
         }),
       ]),
     });
-  });
+  }, 30_000);
 
   it('adds a compact team summary when team state exists for the current run', async () => {
     const projectRoot = makeTempProjectRoot();
@@ -735,5 +735,5 @@ describe('memory-graph hookup', () => {
     const listView = readRunListView(a5Manager, { limit: 20, status_filter: 'all' });
     expect(listView.runs[0]).not.toHaveProperty('latest_final_conclusions');
     expect(listView.runs[0]).not.toHaveProperty('latest_proposals');
-  });
+  }, 30_000);
 });

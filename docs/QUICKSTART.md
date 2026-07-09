@@ -14,6 +14,8 @@
 
 给 Codex、Claude Code、OpenCode、Cursor、Kimi-code 等 agent 的通常启动指令应当是幂等的：同一段话同时覆盖第一次使用、关闭后重启、断网后恢复。
 
+原生 Windows 环境中，下列 project-local 命令应使用 `.\.nullius\bin\nullius.cmd status --json`；POSIX shell 继续使用 `./.nullius/bin/nullius status --json`。
+
 ```text
 You are in a folder that should be managed by nullius.
 First determine whether it is already initialized.
@@ -42,7 +44,7 @@ authority, research-team as the milestone executor, and fold stable results back
 research_contract.md, research_plan.md#Current Status, and artifacts/runs/<run_id>/.
 ```
 
-初始化完成后，接续是 local-first 的：`.nullius/HARNESS`、`.nullius/bin/nullius`、`AGENTS.md`、`research_plan.md`、`research_contract.md` 和 `artifacts/runs/<run_id>/` 足以让 agent 在关闭会话或断网后恢复项目状态；只有真实需要外部文献/数据时才需要网络。
+初始化完成后，接续是 local-first 的：`.nullius/HARNESS`、project-local launcher（`.nullius/bin/nullius`，Windows 下另有 `.nullius/bin/nullius.cmd`）、`AGENTS.md`、`research_plan.md`、`research_contract.md` 和 `artifacts/runs/<run_id>/` 足以让 agent 在关闭会话或断网后恢复项目状态；只有真实需要外部文献/数据时才需要网络。
 
 如果你还没初始化外部 project root，先走这一条：
 

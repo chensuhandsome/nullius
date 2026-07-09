@@ -32,7 +32,7 @@ export function ensureProjectScaffold(
   repoRoot: string,
   options: { force?: boolean; refresh?: boolean; dryRun?: boolean; profile?: string; projectName?: string } = {},
 ): ProjectScaffoldResult {
-  const python = process.env.NULLIUS_PYTHON || 'python3';
+  const python = process.env.NULLIUS_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
   const projectName = (options.projectName ?? path.basename(repoRoot) ?? 'Research Project').trim() || 'Research Project';
   const profile = (options.profile ?? 'mixed').trim() || 'mixed';
   const argv = [
@@ -50,7 +50,8 @@ export function ensureProjectScaffold(
   if (options.force) argv.push('--force');
   if (options.refresh) argv.push('--refresh');
   if (options.dryRun) argv.push('--dry-run');
-  const result = spawnSync(python, argv, {
+  const useCmdShim = process.platform === 'win32' && /\.(?:bat|cmd)$/iu.test(python);
+  const result = spawnSync(useCmdShim ? (process.env.ComSpec ?? 'cmd.exe') : python, useCmdShim ? ['/d', '/c', 'call', python, ...argv] : argv, {
     encoding: 'utf-8',
     env: extendPythonPath(process.env),
   });

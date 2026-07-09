@@ -25,6 +25,10 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
+function cmdQuote(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
 function packageRoot(): string {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   return path.resolve(moduleDir, '..');
@@ -32,6 +36,16 @@ function packageRoot(): string {
 
 export function projectLocalNulliusRelativePath(): string {
   return path.join('.nullius', 'bin', 'nullius');
+}
+
+export function projectLocalNulliusCmdRelativePath(): string {
+  return path.join('.nullius', 'bin', 'nullius.cmd');
+}
+
+export function projectLocalNulliusPreferredRelativePath(): string {
+  return process.platform === 'win32'
+    ? projectLocalNulliusCmdRelativePath()
+    : projectLocalNulliusRelativePath();
 }
 
 function repairCommand(): string {
@@ -97,6 +111,15 @@ function extractExecQuotedPaths(script: string): string[] {
   return paths;
 }
 
+function extractCmdQuotedPaths(script: string): string[] {
+  const paths: string[] = [];
+  for (const match of script.matchAll(/"([^"]+)"/gu)) {
+    const value = match[1] ?? '';
+    if (path.isAbsolute(value)) paths.push(value);
+  }
+  return paths;
+}
+
 function hasProjectLocalLauncherShape(script: string): boolean {
   const lines = script.split(/\r?\n/u);
   const hasSelfDerivedRoot = lines.includes(SELF_DERIVE_PROJECT_ROOT_LINE);
@@ -110,8 +133,19 @@ function hasProjectLocalLauncherShape(script: string): boolean {
   return hasSelfDerivedRoot && hasSelfGuard && hasPathPreferExec && hasFallbackExec;
 }
 
+function hasProjectLocalCmdLauncherShape(script: string): boolean {
+  const lines = script.split(/\r?\n/u).map(line => line.trim());
+  return lines.includes('@echo off')
+    && lines.includes('for %%I in ("%~dp0..\\..") do set "PROJECT_ROOT=%%~fI"')
+    && lines.some(line => line.endsWith('%* --project-root "%PROJECT_ROOT%"'));
+}
+
 export function readProjectLocalNulliusLauncherHealth(projectRoot: string): ProjectLocalNulliusLauncherHealth {
-  const relativePath = projectLocalNulliusRelativePath().split(path.sep).join('/');
+  const cmdLauncherPath = path.join(projectRoot, projectLocalNulliusCmdRelativePath());
+  const preferCmdLauncher = process.platform === 'win32' && fs.existsSync(cmdLauncherPath);
+  const relativePath = (preferCmdLauncher
+    ? projectLocalNulliusCmdRelativePath()
+    : projectLocalNulliusRelativePath()).split(path.sep).join('/');
   const launcherPath = path.join(projectRoot, relativePath);
   const base = {
     path: relativePath,
@@ -129,7 +163,7 @@ export function readProjectLocalNulliusLauncherHealth(projectRoot: string): Proj
       message: `Project-local fallback launcher is missing; run ${repairCommand()} from the project root to refresh it.`,
     };
   }
-  const executable = (fs.statSync(launcherPath).mode & 0o111) !== 0;
+  const executable = preferCmdLauncher || (fs.statSync(launcherPath).mode & 0o111) !== 0;
   if (!executable) {
     return {
       ...base,
@@ -141,8 +175,8 @@ export function readProjectLocalNulliusLauncherHealth(projectRoot: string): Proj
     };
   }
   const script = fs.readFileSync(launcherPath, 'utf-8');
-  const checkedPaths = [...new Set(extractExecQuotedPaths(script))];
-  if (!hasProjectLocalLauncherShape(script)) {
+  const checkedPaths = [...new Set(preferCmdLauncher ? extractCmdQuotedPaths(script) : extractExecQuotedPaths(script))];
+  if (!(preferCmdLauncher ? hasProjectLocalCmdLauncherShape(script) : hasProjectLocalLauncherShape(script))) {
     return {
       ...base,
       exists: true,
@@ -157,7 +191,7 @@ export function readProjectLocalNulliusLauncherHealth(projectRoot: string): Proj
   // the baked checkout paths. A missing baked target is therefore fatal only when
   // PATH cannot satisfy the launcher either.
   const missingPaths = checkedPaths.filter(candidate => !fs.existsSync(candidate));
-  if (missingPaths.length > 0 && !nulliusResolvableOnPath(launcherPath)) {
+  if (missingPaths.length > 0 && (preferCmdLauncher || !nulliusResolvableOnPath(launcherPath))) {
     return {
       ...base,
       exists: true,
@@ -229,6 +263,7 @@ export function ensureProjectLocalNulliusLauncher(projectRoot: string): {
 } {
   const launcher = resolveProjectLocalNulliusLauncher();
   const launcherPath = path.join(projectRoot, projectLocalNulliusRelativePath());
+  let preferredLauncherPath = launcherPath;
   fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
   const fallbackChecks = launcher.argv
     .filter(arg => path.isAbsolute(arg))
@@ -264,8 +299,32 @@ export function ensureProjectLocalNulliusLauncher(projectRoot: string): {
   // enforced via fchmod before fsync, eliminating the chmod-after-write
   // window where a peer could exec a partial file with default mode.
   writeBytesAtomicDurable(launcherPath, script, 0o755);
+  if (process.platform === 'win32') {
+    const cmdLauncherPath = path.join(projectRoot, projectLocalNulliusCmdRelativePath());
+    preferredLauncherPath = cmdLauncherPath;
+    const cmdFallbackChecks = launcher.argv
+      .filter(arg => path.isAbsolute(arg))
+      .flatMap(arg => [
+        `if not exist ${cmdQuote(arg)} (`,
+        '  echo [error] nullius is not on PATH and the project-local fallback target is missing. 1>&2',
+        `  echo [error] missing: ${arg} 1>&2`,
+        `  echo [error] run on this machine: ${repairCommand()} 1>&2`,
+        '  exit /b 127',
+        ')',
+      ]);
+    const cmdScript = [
+      '@echo off',
+      'setlocal',
+      'for %%I in ("%~dp0..\\..") do set "PROJECT_ROOT=%%~fI"',
+      ...cmdFallbackChecks,
+      `${launcher.argv.map(cmdQuote).join(' ')} %* --project-root "%PROJECT_ROOT%"`,
+      'exit /b %ERRORLEVEL%',
+      '',
+    ].join('\r\n');
+    writeBytesAtomicDurable(cmdLauncherPath, cmdScript, 0o755);
+  }
   return {
-    launcher_path: launcherPath,
+    launcher_path: preferredLauncherPath,
     launcher_mode: launcher.mode,
   };
 }

@@ -150,7 +150,7 @@ chmod +x "$HOME/.local/bin/nullius"
 nullius --help
 ```
 
-  当前仓库是本地 workspace，不是已发布的全局 npm CLI。上面的 wrapper 是从源码 checkout 给可执行 shell 命令的 agent client 准备 CLI 的通常路径。`nullius init` 也会写入 project-local launcher，所以已初始化的研究目录即使没有全局 wrapper，也可以继续运行 `./.nullius/bin/nullius status --json`。
+  当前仓库是本地 workspace，不是已发布的全局 npm CLI。上面的 wrapper 是从源码 checkout 给可执行 shell 命令的 agent client 准备 CLI 的通常路径。`nullius init` 也会写入 portable project-local launcher，所以已初始化的研究目录即使没有全局 wrapper，也可以继续运行 `./.nullius/bin/nullius status --json`；原生 Windows 环境请使用同时生成的 `.\.nullius\bin\nullius.cmd status --json`。
 - GUI 客户端有时需要把 `node` 换成绝对路径。
 - 有些客户端会把工具名 namespacing 成 `mcp__<serverAlias>__<toolName>`；务必以客户端实际显示的名字为准调用。
 - 常见的 MCP-compatible client 包括 Cursor、Claude Desktop、Claude Code CLI、Chatbox、Cherry Studio、Continue、Cline、Zed。
@@ -194,7 +194,7 @@ authority, research-team as the milestone executor, and fold stable results back
 research_contract.md, research_plan.md#Current Status, and artifacts/runs/<run_id>/.
 ```
 
-初始化完成后，接续是 local-first 的：`.nullius/HARNESS`、`.nullius/bin/nullius`、`AGENTS.md`、`research_plan.md`、`research_contract.md` 和 `artifacts/runs/<run_id>/` 足以让 agent 在关闭会话或断网后恢复项目状态；只有真实需要外部文献/数据时才需要网络。
+初始化完成后，接续是 local-first 的：`.nullius/HARNESS`、project-local launcher（`.nullius/bin/nullius`，Windows 下另有 `.nullius/bin/nullius.cmd`）、`AGENTS.md`、`research_plan.md`、`research_contract.md` 和 `artifacts/runs/<run_id>/` 足以让 agent 在关闭会话或断网后恢复项目状态；只有真实需要外部文献/数据时才需要网络。
 
 - 对 stateful 文献工作流，先用 `nullius init` 初始化目标外部 project root，再在该 root 内或通过 `--project-root` 调用 `nullius workflow-plan`。它会直接通过 `@nullius/literature-workflows` 解析 recipe，并写入 `.nullius/state.json#/plan` / `.nullius/plan.md`。有意义的外部研究运行应显式传 `--run-id`；如果省略，派生的 `<recipe>-<phase>` 只作为 planning placeholder。`research_brainstorm` 是 planning-only 的轻量 durable harness：`nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-topic-r1 --topic "<topic>"` 会记录 brainstorm context、candidate angles、screening、单一 recommendation 与 `next_contract` handoff。`.nullius/plan.md` 是给人读的派生 read model，不是机器编排 SSOT。这个 contract 可以建议后续进入 `literature_landscape`、`literature_gap_analysis`、`derivation_cycle` 或 `review_cycle` 等更重 recipe，但不会自动启动它们，也不依赖 host-native thinking process。持久化的 `research_brainstorm.*` step tools 是 handoff authority，不是内置 runtime tools，除非未来有外部 tool caller 明确实现它们。
 

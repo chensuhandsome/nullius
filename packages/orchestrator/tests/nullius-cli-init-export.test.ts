@@ -7,6 +7,10 @@ import { StateManager } from '../src/state-manager.js';
 import type { RunState } from '../src/types.js';
 import { runCli } from '../src/cli.js';
 import { ensureProjectScaffold } from '../src/project-scaffold.js';
+import {
+  projectLocalNulliusCmdRelativePath,
+  projectLocalNulliusRelativePath,
+} from '../src/project-local-nullius.js';
 
 const CANONICAL_SCAFFOLD_FILES = [
   'AGENTS.md',
@@ -71,6 +75,44 @@ function makeIo(cwd: string) {
   };
 }
 
+function projectLocalShellLauncherPath(projectRoot: string): string {
+  return path.join(projectRoot, projectLocalNulliusRelativePath());
+}
+
+function projectLocalExecutablePath(projectRoot: string): string {
+  const relPath = process.platform === 'win32'
+    ? projectLocalNulliusCmdRelativePath()
+    : projectLocalNulliusRelativePath();
+  return path.join(projectRoot, relPath);
+}
+
+function cmdArg(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function execProjectLocalNullius(
+  projectRoot: string,
+  args: string[],
+  options: { cwd: string; encoding: BufferEncoding; env?: NodeJS.ProcessEnv; timeout?: number },
+): string {
+  const launcherPath = projectLocalExecutablePath(projectRoot);
+  if (process.platform === 'win32') {
+    return execFileSync(
+      process.env.ComSpec ?? 'cmd.exe',
+      ['/d', '/c', 'call', launcherPath, ...args],
+      options,
+    );
+  }
+  return execFileSync(launcherPath, args, options);
+}
+
+function expectedProjectLocalStatusCommand(): string {
+  const relPath = process.platform === 'win32'
+    ? '.nullius/bin/nullius.cmd'
+    : '.nullius/bin/nullius';
+  return `${relPath} status --json`;
+}
+
 describe('nullius CLI init/export', () => {
   it('rejects repo-internal init before writing runtime state', async () => {
     const projectRoot = path.join(process.cwd(), '.tmp', `repo-internal-init-denied-${Date.now()}`);
@@ -120,9 +162,14 @@ describe('nullius CLI init/export', () => {
       lifecycle_authority: 'nullius',
       milestone_executor: 'research-team',
     });
-    const launcherPath = path.join(projectRoot, '.nullius', 'bin', 'nullius');
+    const launcherPath = projectLocalShellLauncherPath(projectRoot);
     expect(fs.existsSync(launcherPath)).toBe(true);
-    expect((fs.statSync(launcherPath).mode & 0o111) !== 0).toBe(true);
+    if (process.platform !== 'win32') {
+      expect((fs.statSync(launcherPath).mode & 0o111) !== 0).toBe(true);
+    }
+    if (process.platform === 'win32') {
+      expect(fs.existsSync(projectLocalExecutablePath(projectRoot))).toBe(true);
+    }
     for (const rel of CANONICAL_SCAFFOLD_FILES) {
       expect(fs.existsSync(path.join(projectRoot, rel))).toBe(true);
     }
@@ -137,7 +184,7 @@ describe('nullius CLI init/export', () => {
       expect(generatedText).not.toContain(token);
     }
 
-    const statusJson = execFileSync(launcherPath, ['status', '--json'], {
+    const statusJson = execProjectLocalNullius(projectRoot, ['status', '--json'], {
       cwd: projectRoot,
       encoding: 'utf-8',
       env: {
@@ -150,7 +197,7 @@ describe('nullius CLI init/export', () => {
       recovery_context: {
         status_commands: {
           canonical: 'nullius status --json',
-          project_local_fallback: '.nullius/bin/nullius status --json',
+          project_local_fallback: expectedProjectLocalStatusCommand(),
           harness_entrypoint: '.nullius/bin/nullius status --json',
         },
         control_files: {
@@ -175,17 +222,25 @@ describe('nullius CLI init/export', () => {
     const parentDir = makeTempDir('nullius-scaffold-spawn-');
     const projectRoot = path.join(parentDir, 'project-root');
     const argvLog = path.join(parentDir, 'argv.log');
-    const fakePython = path.join(parentDir, 'fake-python.sh');
+    const fakePython = path.join(parentDir, process.platform === 'win32' ? 'fake-python.cmd' : 'fake-python.sh');
     fs.writeFileSync(
       fakePython,
-      [
-        '#!/bin/sh',
-        `printf '%s\\n' "$@" > ${JSON.stringify(argvLog)}`,
-        'printf \'{"created":[],"skipped":[]}\\n\'',
-      ].join('\n') + '\n',
+      process.platform === 'win32'
+        ? [
+            '@echo off',
+            `> ${cmdArg(argvLog)} (`,
+            '  for %%A in (%*) do echo %%~A',
+            ')',
+            'echo {"created":[],"skipped":[]}',
+          ].join('\r\n') + '\r\n'
+        : [
+            '#!/bin/sh',
+            `printf '%s\\n' "$@" > ${JSON.stringify(argvLog)}`,
+            'printf \'{"created":[],"skipped":[]}\\n\'',
+          ].join('\n') + '\n',
       'utf-8',
     );
-    fs.chmodSync(fakePython, 0o755);
+    if (process.platform !== 'win32') fs.chmodSync(fakePython, 0o755);
     const previous = process.env.NULLIUS_PYTHON;
     process.env.NULLIUS_PYTHON = fakePython;
     try {
@@ -198,7 +253,7 @@ describe('nullius CLI init/export', () => {
       }
     }
 
-    const argv = fs.readFileSync(argvLog, 'utf-8').trim().split('\n');
+    const argv = fs.readFileSync(argvLog, 'utf-8').trim().split(/\r?\n/u).map(arg => arg.trim());
     expect(argv).not.toContain('--' + 'variant');
     expect(argv).not.toContain('minimal');
   });
@@ -206,13 +261,17 @@ describe('nullius CLI init/export', () => {
   it('writes the project-local fallback launcher even for runtime-only init', async () => {
     const parentDir = makeTempDir('nullius-cli-runtime-only-');
     const projectRoot = path.join(parentDir, 'project-root');
-    const { io } = makeIo(parentDir);
+    const { io, stdout } = makeIo(parentDir);
 
     const code = await runCli([`--project-root=${projectRoot}`, 'init', '--runtime-only'], io);
 
     expect(code).toBe(0);
-    const launcherPath = path.join(projectRoot, '.nullius', 'bin', 'nullius');
+    const launcherPath = projectLocalShellLauncherPath(projectRoot);
     expect(fs.existsSync(launcherPath)).toBe(true);
+    if (process.platform === 'win32') {
+      expect(fs.existsSync(projectLocalExecutablePath(projectRoot))).toBe(true);
+      expect(stdout.join('')).toContain(`project-local fallback launcher ready: ${projectLocalNulliusCmdRelativePath()}`);
+    }
     const harnessPath = path.join(projectRoot, '.nullius', 'HARNESS');
     expect(fs.existsSync(harnessPath)).toBe(true);
     const launcherScript = fs.readFileSync(launcherPath, 'utf-8');
@@ -226,7 +285,7 @@ describe('nullius CLI init/export', () => {
     expect(launcherScript).toContain('nullius init --runtime-only');
     expect(fs.existsSync(path.join(projectRoot, 'project_charter.md'))).toBe(false);
 
-    const statusJson = execFileSync(launcherPath, ['status', '--json'], {
+    const statusJson = execProjectLocalNullius(projectRoot, ['status', '--json'], {
       cwd: projectRoot,
       encoding: 'utf-8',
       env: {
@@ -240,7 +299,7 @@ describe('nullius CLI init/export', () => {
       recovery_context: {
         status_commands: {
           canonical: 'nullius status --json',
-          project_local_fallback: '.nullius/bin/nullius status --json',
+          project_local_fallback: expectedProjectLocalStatusCommand(),
           harness_entrypoint: '.nullius/bin/nullius status --json',
         },
         control_files: {
@@ -259,6 +318,7 @@ describe('nullius CLI init/export', () => {
   });
 
   it('detects its own bin dir on PATH and falls back to the baked CLI without recursing', async () => {
+    if (process.platform === 'win32') return;
     const parentDir = makeTempDir('nullius-cli-self-path-');
     const projectRoot = path.join(parentDir, 'project-root');
     expect(await runCli([`--project-root=${projectRoot}`, 'init'], makeIo(parentDir).io)).toBe(0);
@@ -277,6 +337,7 @@ describe('nullius CLI init/export', () => {
   });
 
   it('treats a PATH symlink back to the launcher as itself and does not self-hop', async () => {
+    if (process.platform === 'win32') return;
     const parentDir = makeTempDir('nullius-cli-symlink-path-');
     const projectRoot = path.join(parentDir, 'project-root');
     expect(await runCli([`--project-root=${projectRoot}`, 'init'], makeIo(parentDir).io)).toBe(0);
@@ -335,7 +396,10 @@ describe('nullius CLI init/export', () => {
     expect(output).toContain(`[ok] wrote: ${outPath}`);
     expect(output).not.toContain('Export summary generated');
     expect(output).not.toContain('no files copied');
-    const archiveListing = execFileSync('unzip', ['-Z', '-1', outPath], { encoding: 'utf-8' }).trim().split('\n');
+    const archiveListing = execFileSync('unzip', ['-Z', '-1', outPath], { encoding: 'utf-8' })
+      .trim()
+      .split('\n')
+      .map(entry => entry.trim().replace(/\\/g, '/'));
     expect(archiveListing).toContain('artifacts/runs/M1/result.txt');
     expect(archiveListing).toContain('team/runs/M1/summary.md');
     expect(archiveListing).toContain('knowledge_base/literature/paper.md');
@@ -450,17 +514,25 @@ describe('nullius CLI init --refresh', () => {
     const parentDir = makeTempDir('nullius-scaffold-refresh-spawn-');
     const projectRoot = path.join(parentDir, 'project-root');
     const argvLog = path.join(parentDir, 'argv.log');
-    const fakePython = path.join(parentDir, 'fake-python.sh');
+    const fakePython = path.join(parentDir, process.platform === 'win32' ? 'fake-python.cmd' : 'fake-python.sh');
     fs.writeFileSync(
       fakePython,
-      [
-        '#!/bin/sh',
-        `printf '%s\\n' "$@" > ${JSON.stringify(argvLog)}`,
-        'printf \'{"created":[],"skipped":[],"refreshed":["AGENTS.md"],"backed_up":["AGENTS.md"],"unchanged":[],"preserved":["research_plan.md"],"missing":[],"backup_dir":".nullius/backups/X","dry_run":true}\\n\'',
-      ].join('\n') + '\n',
+      process.platform === 'win32'
+        ? [
+            '@echo off',
+            `> ${cmdArg(argvLog)} (`,
+            '  for %%A in (%*) do echo %%~A',
+            ')',
+            'echo {"created":[],"skipped":[],"refreshed":["AGENTS.md"],"backed_up":["AGENTS.md"],"unchanged":[],"preserved":["research_plan.md"],"missing":[],"backup_dir":".nullius/backups/X","dry_run":true}',
+          ].join('\r\n') + '\r\n'
+        : [
+            '#!/bin/sh',
+            `printf '%s\\n' "$@" > ${JSON.stringify(argvLog)}`,
+            'printf \'{"created":[],"skipped":[],"refreshed":["AGENTS.md"],"backed_up":["AGENTS.md"],"unchanged":[],"preserved":["research_plan.md"],"missing":[],"backup_dir":".nullius/backups/X","dry_run":true}\\n\'',
+          ].join('\n') + '\n',
       'utf-8',
     );
-    fs.chmodSync(fakePython, 0o755);
+    if (process.platform !== 'win32') fs.chmodSync(fakePython, 0o755);
     const previous = process.env.NULLIUS_PYTHON;
     process.env.NULLIUS_PYTHON = fakePython;
     let result: ReturnType<typeof ensureProjectScaffold>;
@@ -471,7 +543,7 @@ describe('nullius CLI init --refresh', () => {
       else process.env.NULLIUS_PYTHON = previous;
     }
 
-    const argv = fs.readFileSync(argvLog, 'utf-8').trim().split('\n');
+    const argv = fs.readFileSync(argvLog, 'utf-8').trim().split(/\r?\n/u).map(arg => arg.trim());
     expect(argv).toContain('--refresh');
     expect(argv).toContain('--dry-run');
     expect(result.refreshed).toEqual(['AGENTS.md']);

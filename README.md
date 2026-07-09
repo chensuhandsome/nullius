@@ -128,13 +128,69 @@ Universal MCP config pattern:
         "/absolute/path/to/nullius/packages/hep-mcp/dist/index.js"
       ],
       "env": {
-        "HEP_DATA_DIR": "~/.nullius/hep-mcp",
+        "HEP_DATA_DIR": "/absolute/path/to/.nullius/hep-mcp",
         "HEP_TOOL_MODE": "standard",
-        "ZOTERO_BASE_URL": "http://127.0.0.1:23119"
+        "HEP_ENABLE_ZOTERO": "1",
+        "HEP_DOWNLOAD_DIR": "/absolute/path/to/.nullius/hep-mcp/downloads",
+        "ZOTERO_BASE_URL": "http://127.0.0.1:23119",
+        "ZOTERO_DATA_DIR": "/absolute/path/to/Zotero",
+        "PDG_DATA_DIR": "/absolute/path/to/.nullius/hep-mcp/pdg",
+        "PDG_DB_PATH": "/absolute/path/to/.nullius/hep-mcp/pdg/pdgall-2026.0.sqlite"
       }
     }
   }
 }
+```
+
+### Windows source-checkout setup
+
+Use the development checkout only for tooling; initialize real research projects in separate external directories.
+
+```powershell
+corepack prepare pnpm@9.0.0 --activate
+pnpm install --frozen-lockfile
+pnpm -r build
+node .\packages\orchestrator\dist\cli.js --help
+node --check .\packages\hep-mcp\dist\index.js
+```
+
+Install the commonly used research skills from the checked-in, allowlisted catalog:
+
+```powershell
+py .\packages\skills-market\scripts\install_skill.py `
+  --platform codex `
+  --source-root . `
+  --package research-harness `
+  --package research-team `
+  --package markdown-hygiene `
+  --package research-integrity `
+  --package hep-calc `
+  --package pdg-lookup `
+  --package zotero-import `
+  --package research-writer `
+  --package paper-reviser `
+  --package referee-review `
+  --force
+```
+
+Prepare the scratch data root and install a PDG SQLite release obtained from the [PDG API](https://pdg.lbl.gov/api):
+
+```powershell
+$hepData = Join-Path $env:USERPROFILE ".nullius\hep-mcp"
+$pdgDir = Join-Path $hepData "pdg"
+New-Item -ItemType Directory -Force -Path $pdgDir,(Join-Path $hepData "downloads") | Out-Null
+Copy-Item -Force "C:\path\to\pdgall-2026.0.sqlite" (Join-Path $pdgDir "pdgall-2026.0.sqlite")
+sqlite3 (Join-Path $pdgDir "pdgall-2026.0.sqlite") "select * from pdginfo limit 5;"
+```
+
+Point the MCP configuration above at this checkout's built `packages/hep-mcp/dist/index.js` and the installed database. Restart the agent client after changing MCP or skill configuration. Zotero-backed tools additionally require Zotero Desktop to be running with its local API available at `http://127.0.0.1:23119`.
+
+Verify native Windows lifecycle recovery against an external disposable project:
+
+```powershell
+$project = Join-Path $env:TEMP "nullius-smoke"
+node .\packages\orchestrator\dist\cli.js --project-root $project init
+& "$project\.nullius\bin\nullius.cmd" status --json
 ```
 
 Notes:

@@ -128,13 +128,69 @@ Approval packet 会落在该 run 的 `artifacts/runs/<run_id>/approvals/<approva
         "/absolute/path/to/nullius/packages/hep-mcp/dist/index.js"
       ],
       "env": {
-        "HEP_DATA_DIR": "~/.nullius/hep-mcp",
+        "HEP_DATA_DIR": "/absolute/path/to/.nullius/hep-mcp",
         "HEP_TOOL_MODE": "standard",
-        "ZOTERO_BASE_URL": "http://127.0.0.1:23119"
+        "HEP_ENABLE_ZOTERO": "1",
+        "HEP_DOWNLOAD_DIR": "/absolute/path/to/.nullius/hep-mcp/downloads",
+        "ZOTERO_BASE_URL": "http://127.0.0.1:23119",
+        "ZOTERO_DATA_DIR": "/absolute/path/to/Zotero",
+        "PDG_DATA_DIR": "/absolute/path/to/.nullius/hep-mcp/pdg",
+        "PDG_DB_PATH": "/absolute/path/to/.nullius/hep-mcp/pdg/pdgall-2026.0.sqlite"
       }
     }
   }
 }
+```
+
+### Windows 源码 checkout 安装
+
+开发 checkout 只用于 tooling；真实研究项目必须初始化在仓库外部的独立目录中。
+
+```powershell
+corepack prepare pnpm@9.0.0 --activate
+pnpm install --frozen-lockfile
+pnpm -r build
+node .\packages\orchestrator\dist\cli.js --help
+node --check .\packages\hep-mcp\dist\index.js
+```
+
+从仓库内经过 allowlist 约束的 catalog 安装常用研究 skills：
+
+```powershell
+py .\packages\skills-market\scripts\install_skill.py `
+  --platform codex `
+  --source-root . `
+  --package research-harness `
+  --package research-team `
+  --package markdown-hygiene `
+  --package research-integrity `
+  --package hep-calc `
+  --package pdg-lookup `
+  --package zotero-import `
+  --package research-writer `
+  --package paper-reviser `
+  --package referee-review `
+  --force
+```
+
+准备 scratch 数据根目录，并安装从 [PDG API](https://pdg.lbl.gov/api) 获取的 PDG SQLite release：
+
+```powershell
+$hepData = Join-Path $env:USERPROFILE ".nullius\hep-mcp"
+$pdgDir = Join-Path $hepData "pdg"
+New-Item -ItemType Directory -Force -Path $pdgDir,(Join-Path $hepData "downloads") | Out-Null
+Copy-Item -Force "C:\path\to\pdgall-2026.0.sqlite" (Join-Path $pdgDir "pdgall-2026.0.sqlite")
+sqlite3 (Join-Path $pdgDir "pdgall-2026.0.sqlite") "select * from pdginfo limit 5;"
+```
+
+把上面的 MCP 配置指向当前 checkout 构建出的 `packages/hep-mcp/dist/index.js` 与已安装数据库。修改 MCP 或 skill 配置后需重启 agent client。Zotero 工具还要求 Zotero Desktop 正在运行，并能通过 `http://127.0.0.1:23119` 访问本地 API。
+
+用仓库外的临时项目验证 Windows native lifecycle 恢复路径：
+
+```powershell
+$project = Join-Path $env:TEMP "nullius-smoke"
+node .\packages\orchestrator\dist\cli.js --project-root $project init
+& "$project\.nullius\bin\nullius.cmd" status --json
 ```
 
 说明：

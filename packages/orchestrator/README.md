@@ -15,12 +15,15 @@ Build first, then point your `$PATH` at the workspace CLI:
 
 ```bash
 pnpm -r build
-ln -sf "$(pwd)/packages/orchestrator/dist/cli.js" "$HOME/.local/bin/nullius"
-chmod +x "$HOME/.local/bin/nullius"
+pnpm install:cli
 nullius --help
 ```
 
+<<<<<<< HEAD
+`pnpm install:cli` installs a managed source-checkout wrapper in the platform's user-local bin directory and reports if that directory is not on `PATH`. A portable project-local launcher (`./.nullius/bin/nullius`) is also written during `nullius init` so already-initialized research roots can reconnect without the global wrapper. Native Windows initialization additionally writes `.\.nullius\bin\nullius.cmd`, which prefers a different `nullius` on `PATH` before the baked source-checkout fallback. `nullius init --refresh` re-applies the managed scaffold doc (`AGENTS.md`) with per-file backups under `.nullius/backups/`, without touching user-owned seed files.
+=======
 A project-local launcher (`./.nullius/bin/nullius`) is also written during `nullius init` so already-initialized research roots can reconnect without the global wrapper. `nullius init --refresh` re-applies the managed scaffold doc (`AGENTS.md`) with per-file backups under `.nullius/backups/`, without touching user-owned seed files. For an existing project that predates the main-report registry, checkpoint it and render a current scaffold in a separate temporary external root; copy only a missing report template and manually merge the `project_index.md#Main research report` section. Refresh never performs that user-owned migration. `report-validate` returns `invalid_registry_markers` before the registry merge and `no_current_report` until a populated current report is registered.
+>>>>>>> 45bbb3d407bafef8f63876444938cce4448f2c05
 
 ## State and artifacts
 

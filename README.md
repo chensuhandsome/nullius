@@ -129,29 +129,84 @@ Universal MCP config pattern:
         "/absolute/path/to/nullius/packages/hep-mcp/dist/index.js"
       ],
       "env": {
-        "HEP_DATA_DIR": "~/.nullius/hep-mcp",
+        "HEP_DATA_DIR": "/absolute/path/to/.nullius/hep-mcp",
         "HEP_TOOL_MODE": "standard",
-        "ZOTERO_BASE_URL": "http://127.0.0.1:23119"
+        "HEP_ENABLE_ZOTERO": "1",
+        "HEP_DOWNLOAD_DIR": "/absolute/path/to/.nullius/hep-mcp/downloads",
+        "ZOTERO_BASE_URL": "http://127.0.0.1:23119",
+        "ZOTERO_DATA_DIR": "/absolute/path/to/Zotero",
+        "PDG_DATA_DIR": "/absolute/path/to/.nullius/hep-mcp/pdg",
+        "PDG_DB_PATH": "/absolute/path/to/.nullius/hep-mcp/pdg/pdgall-2026.0.sqlite"
       }
     }
   }
 }
 ```
 
+### Windows source-checkout setup
+
+Use the development checkout only for tooling; initialize real research projects in separate external directories.
+
+```powershell
+corepack prepare pnpm@9.0.0 --activate
+pnpm install --frozen-lockfile
+pnpm -r build
+pnpm install:cli
+nullius --help
+node --check .\packages\hep-mcp\dist\index.js
+```
+
+Install the commonly used research skills from the checked-in, allowlisted catalog:
+
+```powershell
+py .\packages\skills-market\scripts\install_skill.py `
+  --platform codex `
+  --source-root . `
+  --package research-harness `
+  --package research-team `
+  --package markdown-hygiene `
+  --package research-integrity `
+  --package hep-calc `
+  --package pdg-lookup `
+  --package zotero-import `
+  --package research-writer `
+  --package paper-reviser `
+  --package referee-review `
+  --force
+```
+
+Prepare the scratch data root and install a PDG SQLite release obtained from the [PDG API](https://pdg.lbl.gov/api):
+
+```powershell
+$hepData = Join-Path $env:USERPROFILE ".nullius\hep-mcp"
+$pdgDir = Join-Path $hepData "pdg"
+New-Item -ItemType Directory -Force -Path $pdgDir,(Join-Path $hepData "downloads") | Out-Null
+Copy-Item -Force "C:\path\to\pdgall-2026.0.sqlite" (Join-Path $pdgDir "pdgall-2026.0.sqlite")
+sqlite3 (Join-Path $pdgDir "pdgall-2026.0.sqlite") "select * from pdginfo limit 5;"
+```
+
+Point the MCP configuration above at this checkout's built `packages/hep-mcp/dist/index.js` and the installed database. Restart the agent client after changing MCP or skill configuration. Zotero-backed tools additionally require Zotero Desktop to be running with its local API available at `http://127.0.0.1:23119`.
+
+Verify native Windows lifecycle recovery against an external disposable project:
+
+```powershell
+$project = Join-Path $env:TEMP "nullius-smoke"
+nullius --project-root $project init
+& "$project\.nullius\bin\nullius.cmd" status --json
+```
+
 Notes:
 
 - Build first: `pnpm -r build`.
 - MCP environment paths are filesystem roots, not URI/protocol settings. For durable nullius project work, pass the initialized `project_root` in HEP tool calls so artifacts go under `<project_root>/artifacts/hep-mcp`. Keep `HEP_DATA_DIR` as a scratch fallback or explicit override for one-off checks, CI, and migrations.
-- If `nullius` is not on `PATH`, create a local wrapper after building:
+- If `nullius` is not on `PATH`, install the source-checkout wrapper after building:
 
 ```bash
-mkdir -p "$HOME/.local/bin"
-ln -sf /absolute/path/to/nullius/packages/orchestrator/dist/cli.js "$HOME/.local/bin/nullius"
-chmod +x "$HOME/.local/bin/nullius"
+pnpm install:cli
 nullius --help
 ```
 
-  This repository is currently a local workspace, not a published global npm CLI. The wrapper above is the normal source-checkout install path for agent clients that can execute shell commands. A project-local launcher is also written during `nullius init`, so already-initialized research folders can continue with `./.nullius/bin/nullius status --json` even when the global wrapper is absent.
+  This repository is currently a local workspace, not a published global npm CLI. `pnpm install:cli` writes a managed source-checkout wrapper to `%APPDATA%\npm\nullius.cmd` on Windows or `~/.local/bin/nullius` on POSIX by default, and reports when that directory is not on the current `PATH`; pass `-- --bin-dir <path>` only when an explicit user-local bin directory is required. A portable project-local launcher is also written during `nullius init`, so already-initialized research folders can continue with `./.nullius/bin/nullius status --json` even when the global wrapper is absent. On native Windows, use the generated companion `.\.nullius\bin\nullius.cmd status --json`; it prefers a different `nullius` on `PATH` before its baked source-checkout fallback.
 - GUI apps sometimes need an absolute Node path instead of bare `node`.
 - Some clients namespace tool names as `mcp__<serverAlias>__<toolName>`. Always call the exact tool name shown by the client.
 - Typical MCP-compatible clients include Cursor, Claude Desktop, Claude Code CLI, Chatbox, Cherry Studio, Continue, Cline, and Zed.
@@ -215,7 +270,11 @@ Open questions stay counted in every status receipt (oldest ten itemized; the re
 via: nullius decision list) until resolved.
 ```
 
+<<<<<<< HEAD
+  Once initialized, reconnect is local-first: `.nullius/HARNESS`, the project-local launcher (`.nullius/bin/nullius`, plus `.nullius/bin/nullius.cmd` on Windows), `AGENTS.md`, `research_plan.md`, `research_contract.md`, and `artifacts/runs/<run_id>/` are enough for an agent to recover the project state after a closed session or a network outage. Network access is only needed for tasks that actually fetch external sources.
+=======
   New decision entries use six-character branch-local handles drawn from 30 unbiased random bits ($32^6 = 2^{30}$). Candidates that also spell durable `D<n>` ids, plus locally known ids and retained mappings, are redrawn; the exact pair-collision probability is therefore context-dependent. With no local reservations it is $1/(2^{30}-90{,}000)\approx 9.314\times 10^{-10}$, slightly above $2^{-30}$. This is probabilistic, not structural; collisions fail closed. `--resolves` is the closing relation and accepts only an open `pending` target; `--relates` records non-closing context and may point to an earlier readable `decided` or `pending` entry. A malformed persisted relation is reported under `unrecognized_relations` and ignored without voiding its record. A legacy or unknown non-empty string `kind` remains readable under current `decided` semantics, with its original spelling exposed through `source_kind` and `normalized_kinds`; only the exact persisted `pending` kind creates an open item, while an otherwise valid `resolves` on a normalized entry still closes its pending target. `decision land` atomically assigns the next durable `D<n>` values, rewrites handle-valued relations, and retains each mapping as `provisional_id`. Existing `D<n>` ledgers remain valid and resolvable without migration. If one retained provisional id maps to multiple entries or is reused as a current id, list/status name the conflicting lines and landing fails without changing the ledger. Once initialized, reconnect is local-first: `.nullius/HARNESS`, `.nullius/bin/nullius`, `AGENTS.md`, `project_index.md`, `research_plan.md`, `research_contract.md`, registered reports, and `artifacts/runs/<run_id>/` are enough for an agent to recover the project state after a closed session or a network outage. Network access is only needed for tasks that actually fetch external sources.
+>>>>>>> 45bbb3d407bafef8f63876444938cce4448f2c05
 
 - For stateful literature workflows, first initialize the target external project root with `nullius init`, then use `nullius workflow-plan` from that root or with `--project-root`. It resolves recipes directly via `@nullius/literature-workflows`, persists `.nullius/state.json#/plan`, and derives `.nullius/plan.md`. Pass an explicit `--run-id` for meaningful external research runs; if omitted, the derived `<recipe>-<phase>` id is only a planning placeholder. `research_brainstorm` is the lightweight planning-only durable harness form: `nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-topic-r1 --topic "<topic>"` records brainstorm context, candidate angles, screening, one recommendation, and a `next_contract` handoff. `.nullius/plan.md` is a human read model rather than machine orchestration SSOT. The contract may suggest a heavier follow-up recipe such as `literature_landscape`, `literature_gap_analysis`, `derivation_cycle`, or `review_cycle`, but it does not start that recipe automatically and it does not depend on any host-native thinking process. The persisted `research_brainstorm.*` step tools are handoff authority, not built-in runtime tools, unless a future external tool caller explicitly implements them. Any checked-in Python workflow consumers remain maintainer/eval proof only and are not a second front-door shell.
 
@@ -236,6 +295,7 @@ Maintainer-only redesign plans, remediation trackers, execution prompts, and loc
 ```bash
 pnpm install
 pnpm -r build
+pnpm install:cli
 pnpm --filter @nullius/hep-mcp docs:tool-counts:check
 ```
 

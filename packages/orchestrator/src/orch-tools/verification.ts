@@ -74,7 +74,24 @@ function loadRequiredJson<T>(filePath: string, label: string): T {
   return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as T;
 }
 
+<<<<<<< HEAD
+function resolveComputationRunDir(projectRoot: string, runId: string): string {
+  const legacyRunDir = path.join(projectRoot, runId);
+  const canonicalArtifactRunDir = path.join(projectRoot, 'artifacts', 'runs', runId);
+  for (const candidate of [legacyRunDir, canonicalArtifactRunDir]) {
+    if (fs.existsSync(path.join(candidate, 'artifacts', 'computation_result_v1.json'))) {
+      return candidate;
+    }
+  }
+  return legacyRunDir;
+}
+
+function updateCoverageSummary(
+  status: VerificationStatus,
+): VerificationCoverageV1['summary'] {
+=======
 function updateCoverageSummary(status: VerificationStatus): VerificationCoverageV1['summary'] {
+>>>>>>> 45bbb3d407bafef8f63876444938cce4448f2c05
   return {
     subjects_total: 1,
     subjects_verified: status === 'passed' ? 1 : 0,
@@ -241,7 +258,7 @@ export async function handleOrchRunRecordVerification(
     });
   }
 
-  const runDir = path.join(projectRoot, params.run_id);
+  const runDir = resolveComputationRunDir(projectRoot, params.run_id);
   const computationResultPath = path.join(runDir, 'artifacts', 'computation_result_v1.json');
   const subjectPath = path.join(runDir, 'artifacts', 'verification_subject_computation_result_v1.json');
   const subjectVerdictPath = path.join(runDir, 'artifacts', 'verification_subject_verdict_computation_result_v1.json');

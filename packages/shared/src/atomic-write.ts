@@ -114,13 +114,16 @@ function makeTmpPath(filePath: string): string {
  * Linux/macOS; `'w'` would fail with EISDIR on most systems.
  *
  * **Windows note**: opening a directory + `FlushFileBuffers` is
- * undefined on NTFS and returns ERROR_ACCESS_DENIED. This codebase
- * targets macOS + Linux (the nullius project's CI matrix), and
- * Node.js itself documents `fsync` on a directory fd as
- * platform-dependent. If a Windows port is ever added, gate this on
- * `process.platform`.
+ * undefined on NTFS and returns ERROR_ACCESS_DENIED. Node.js documents
+ * `fsync` on a directory fd as platform-dependent, so Windows keeps the
+ * file-level fsync and skips the parent-directory fsync.
  */
+<<<<<<< HEAD
+function fsyncParentDir(filePath: string): void {
+  if (process.platform === 'win32') return;
+=======
 export function fsyncParentDirectoryDurable(filePath: string): void {
+>>>>>>> 45bbb3d407bafef8f63876444938cce4448f2c05
   const dir = path.dirname(filePath);
   const dirFd = fs.openSync(dir, 'r');
   audit({ kind: 'open', path: dir, flags: 'r', fd: dirFd });

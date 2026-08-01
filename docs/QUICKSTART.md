@@ -10,11 +10,15 @@
 
 ## Generic First-Touch（先走 generic front door）
 
+从源码 checkout 首次准备 CLI 时，先运行 `pnpm install --frozen-lockfile`、`pnpm -r build`、`pnpm install:cli`，并以 `nullius --help` 确认 user-local wrapper 已进入 `PATH`。
+
 在 Codex / Claude Code / OpenCode 里继续一个外部研究项目时，优先安装或启用 `research-harness` skill。它不是新的 CLI；它会指导 agent 先读取 `.nullius/HARNESS`、`.nullius/`、`research_plan.md#Current Status`、`research_contract.md` 与相关 `artifacts/runs/`，再把生命周期操作交给 `nullius`、把里程碑推进交给 `research-team`、把 Markdown 笔记清理交给 `markdown-hygiene`、把 HEP 文献/证据工作交给 `hep-mcp`。
 
 若项目已提升主研究报告，还要从 `project_index.md#Main research report` 读取唯一当前报告及其 supersession registry。
 
 给 Codex、Claude Code、OpenCode、Cursor、Kimi-code 等 agent 的通常启动指令应当是幂等的：同一段话同时覆盖第一次使用、关闭后重启、断网后恢复。
+
+原生 Windows 环境中，下列 project-local 命令应使用 `.\.nullius\bin\nullius.cmd status --json`；POSIX shell 继续使用 `./.nullius/bin/nullius status --json`。
 
 ```text
 You are in a folder that should be managed by nullius.
@@ -64,7 +68,11 @@ Open questions stay counted in every status receipt (oldest ten itemized; the re
 via: nullius decision list) until resolved.
 ```
 
+<<<<<<< HEAD
+初始化完成后，接续是 local-first 的：`.nullius/HARNESS`、project-local launcher（`.nullius/bin/nullius`，Windows 下另有 `.nullius/bin/nullius.cmd`）、`AGENTS.md`、`research_plan.md`、`research_contract.md` 和 `artifacts/runs/<run_id>/` 足以让 agent 在关闭会话或断网后恢复项目状态；只有真实需要外部文献/数据时才需要网络。
+=======
 新 decision 条目先使用 6 字符的 branch-local handle，其原始抽样为 30 个无偏随机 bit（$32^6 = 2^{30}$）。与 durable `D<n>` 同形的候选、本地已有 id 与既有映射都会重抽，因此精确的逐对碰撞概率依上下文而变；无本地占位时为 $1/(2^{30}-90{,}000)\approx 9.314\times 10^{-10}$，略高于 $2^{-30}$。这是概率保证而非结构保证，碰撞时 fail closed。`--resolves` 是关闭关系，只接受仍然 open 的 `pending` 目标；`--relates` 是非关闭关系，可以指向更早且可读的 `decided` 或 `pending` 条目。回放时若持久化关系格式错误或语义不成立，工具会在 `unrecognized_relations` 中报告并忽略该链接，但不会让整条记录失效。旧版或未知的非空字符串 `kind` 会继续按当前 `decided` 语义读取，并通过 `source_kind` 与 `normalized_kinds` 保留原始拼写；只有精确的持久化 `pending` 才会创建 open item，而归一化条目上其余合法的 `resolves` 仍会关闭对应 pending。分支内容进入权威主干后，`decision land` 原子分配后续 durable `D<n>`、改写指向 handle 的关系，并以 `provisional_id` 保留映射。既有 `D<n>` ledger 无需迁移，仍可读取和 resolve。若同一 provisional id 映射到多条记录或又被用作当前 id，list/status 会具名冲突行，land 在零改写下拒绝。初始化完成后，接续是 local-first 的：`.nullius/HARNESS`、`.nullius/bin/nullius`、`AGENTS.md`、`project_index.md`、`research_plan.md`、`research_contract.md`、当前主研究报告和 `artifacts/runs/<run_id>/` 足以让 agent 在关闭会话或断网后恢复项目状态；只有真实需要外部文献/数据时才需要网络。
+>>>>>>> 45bbb3d407bafef8f63876444938cce4448f2c05
 
 如果你还没初始化外部 project root，先走这一条：
 

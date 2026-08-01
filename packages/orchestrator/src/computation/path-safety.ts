@@ -74,6 +74,16 @@ export function sanitizeRelativePath(relativePath: string, label: string): strin
   return normalized;
 }
 
+<<<<<<< HEAD
+export function buildToolCommand(tool: ManifestTool, scriptPath: string, args: string[]): string[] {
+  if (tool === 'python') {
+    const python = process.env.NULLIUS_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+    return [python, scriptPath, ...args];
+  }
+  if (tool === 'bash') return ['bash', scriptPath, ...args];
+  if (tool === 'julia') return ['julia', scriptPath, ...args];
+  return ['wolframscript', '-file', scriptPath, ...args];
+=======
 export function runtimeTokenForTool(tool: ManifestTool): string {
   if (tool === 'python') return 'python3';
   if (tool === 'bash') return 'bash';
@@ -89,6 +99,7 @@ export function buildToolCommand(
 ): string[] {
   if (tool === 'mathematica') return [runtimePath, '-file', scriptPath, ...args];
   return [runtimePath, scriptPath, ...args];
+>>>>>>> 45bbb3d407bafef8f63876444938cce4448f2c05
 }
 
 export function assertCommandAllowed(argv: string[]): void {

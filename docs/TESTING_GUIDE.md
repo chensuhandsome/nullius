@@ -34,6 +34,8 @@
   - 构造两条不同 `D<n>` 但保留同一 `provisional_id` 的记录，并另测一个当前 handle 与既有 `provisional_id` 重名；两者都必须由 `decision_ledger.ambiguous_provisional_id_count` 与具名行号显式报告，`decision list` 非零退出，相关 relation 被隔离，`decision land` 零改写拒绝。正常铸号必须避让本地已有 `provisional_id`。
   - `status` 文本必须渲染 `execution_mode`、open 项、`decisions_unlanded`、`decisions_unrecognized_relations` 与 `decisions_normalized_kinds`；file 模式下不得出现 `RECOVERY_PLAN_FOCUS_UNAVAILABLE`。未声明 mode、引擎状态冻结且已有日期 run 目录时，`project_surface_drift` 应出现 `EXECUTION_MODE_UNDECLARED_LOOKS_FILE_MODE`（诊断提示，不阻塞任何命令）。
 - reconnect 时应优先读取 `.nullius/HARNESS`、`.nullius/` state 与 project-local durable memory，例如 `research_plan.md`、`research_contract.md`、以及已有实质内容的 `research_notebook.md`
+- source-checkout CLI 验收应在 build 后运行 `pnpm install:cli` 与 `nullius --help`；Windows 默认 wrapper 为 `%APPDATA%\npm\nullius.cmd`，POSIX 默认 wrapper 为 `~/.local/bin/nullius`
+- Windows 验收还应确认 `nullius init` 生成 `.nullius/bin/nullius.cmd`，该 companion 会跳过 PATH 中的自身/extensionless sibling、优先使用另一个 `nullius`，并可执行 `status --json`；POSIX 继续验证 `.nullius/bin/nullius`
 - `research_plan.md#Current Status` 是给人的当前状态入口；测试 scaffold/read-model 时要保证它被作为恢复指引暴露，同时不新增单独状态文档
 - `research_notebook.md` 是问题逻辑主线，不是日期 run log，也不承载状态追踪；重要文献 note 必须记录全文/source-first 阅读、section/page/equation/figure 覆盖，并用 LaTeX math 写科学记号；测试 scaffold/read-model 时要保证空模板不会被误判为 substantive，同时真实逻辑内容会进入 reconnect recommended files
 - `project_index.md#Main research report` 是主研究报告的唯一当前入口与 supersession registry。验收 `nullius report-validate` 时至少覆盖：短 status/closeout 冒充主报告、已有 superseding report 但 current pointer 未切换、机器 provenance 取代解释性叙事或人类证据、同实现/同输入/同环境 replay 被标作 independent validation；另验 hash 不可变和双向 supersession metadata。结构通过不等于 reviewer 对科学充分性的通过，禁止使用最小字数门槛
@@ -44,6 +46,8 @@
 ```bash
 pnpm install
 pnpm -r build
+pnpm install:cli
+nullius --help
 pnpm --filter @nullius/hep-mcp docs:tool-counts:check
 ```
 

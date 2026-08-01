@@ -581,7 +581,7 @@ describe('memory-graph hookup', () => {
         }),
       ]),
     });
-  });
+  }, 30_000);
 
   it('adds a compact team summary when team state exists for the current run', async () => {
     const projectRoot = makeTempProjectRoot();
@@ -764,8 +764,12 @@ describe('memory-graph hookup', () => {
     const listView = readRunListView(a5Manager, { limit: 20, status_filter: 'all' });
     expect(listView.runs[0]).not.toHaveProperty('latest_final_conclusions');
     expect(listView.runs[0]).not.toHaveProperty('latest_proposals');
+<<<<<<< HEAD
+  }, 30_000);
+=======
     // This test executes seven full runs (verification, final conclusions,
     // approval, computation manifests) before asserting the digest; its wall
     // time sits at 4-5s on an unloaded machine, i.e. at the 5s default budget.
   }, 20000);
+>>>>>>> 45bbb3d407bafef8f63876444938cce4448f2c05
 });

@@ -129,29 +129,84 @@ Approval packet 会落在该 run 的 `artifacts/runs/<run_id>/approvals/<approva
         "/absolute/path/to/nullius/packages/hep-mcp/dist/index.js"
       ],
       "env": {
-        "HEP_DATA_DIR": "~/.nullius/hep-mcp",
+        "HEP_DATA_DIR": "/absolute/path/to/.nullius/hep-mcp",
         "HEP_TOOL_MODE": "standard",
-        "ZOTERO_BASE_URL": "http://127.0.0.1:23119"
+        "HEP_ENABLE_ZOTERO": "1",
+        "HEP_DOWNLOAD_DIR": "/absolute/path/to/.nullius/hep-mcp/downloads",
+        "ZOTERO_BASE_URL": "http://127.0.0.1:23119",
+        "ZOTERO_DATA_DIR": "/absolute/path/to/Zotero",
+        "PDG_DATA_DIR": "/absolute/path/to/.nullius/hep-mcp/pdg",
+        "PDG_DB_PATH": "/absolute/path/to/.nullius/hep-mcp/pdg/pdgall-2026.0.sqlite"
       }
     }
   }
 }
 ```
 
+### Windows 源码 checkout 安装
+
+开发 checkout 只用于 tooling；真实研究项目必须初始化在仓库外部的独立目录中。
+
+```powershell
+corepack prepare pnpm@9.0.0 --activate
+pnpm install --frozen-lockfile
+pnpm -r build
+pnpm install:cli
+nullius --help
+node --check .\packages\hep-mcp\dist\index.js
+```
+
+从仓库内经过 allowlist 约束的 catalog 安装常用研究 skills：
+
+```powershell
+py .\packages\skills-market\scripts\install_skill.py `
+  --platform codex `
+  --source-root . `
+  --package research-harness `
+  --package research-team `
+  --package markdown-hygiene `
+  --package research-integrity `
+  --package hep-calc `
+  --package pdg-lookup `
+  --package zotero-import `
+  --package research-writer `
+  --package paper-reviser `
+  --package referee-review `
+  --force
+```
+
+准备 scratch 数据根目录，并安装从 [PDG API](https://pdg.lbl.gov/api) 获取的 PDG SQLite release：
+
+```powershell
+$hepData = Join-Path $env:USERPROFILE ".nullius\hep-mcp"
+$pdgDir = Join-Path $hepData "pdg"
+New-Item -ItemType Directory -Force -Path $pdgDir,(Join-Path $hepData "downloads") | Out-Null
+Copy-Item -Force "C:\path\to\pdgall-2026.0.sqlite" (Join-Path $pdgDir "pdgall-2026.0.sqlite")
+sqlite3 (Join-Path $pdgDir "pdgall-2026.0.sqlite") "select * from pdginfo limit 5;"
+```
+
+把上面的 MCP 配置指向当前 checkout 构建出的 `packages/hep-mcp/dist/index.js` 与已安装数据库。修改 MCP 或 skill 配置后需重启 agent client。Zotero 工具还要求 Zotero Desktop 正在运行，并能通过 `http://127.0.0.1:23119` 访问本地 API。
+
+用仓库外的临时项目验证 Windows native lifecycle 恢复路径：
+
+```powershell
+$project = Join-Path $env:TEMP "nullius-smoke"
+nullius --project-root $project init
+& "$project\.nullius\bin\nullius.cmd" status --json
+```
+
 说明：
 
 - 先构建：`pnpm -r build`。
 - MCP env 里的路径是 filesystem roots，不是 URI/protocol 设置。持久 nullius 项目工作应在 HEP tool call 中传入已初始化的 `project_root`，让 artifacts 写到 `<project_root>/artifacts/hep-mcp`。`HEP_DATA_DIR` 只作为 scratch fallback，或用于一次性检查、CI、迁移等显式 override。
-- 如果 `nullius` 不在 `PATH` 中，构建后创建本地 wrapper：
+- 如果 `nullius` 不在 `PATH` 中，构建后安装 source-checkout wrapper：
 
 ```bash
-mkdir -p "$HOME/.local/bin"
-ln -sf /absolute/path/to/nullius/packages/orchestrator/dist/cli.js "$HOME/.local/bin/nullius"
-chmod +x "$HOME/.local/bin/nullius"
+pnpm install:cli
 nullius --help
 ```
 
-  当前仓库是本地 workspace，不是已发布的全局 npm CLI。上面的 wrapper 是从源码 checkout 给可执行 shell 命令的 agent client 准备 CLI 的通常路径。`nullius init` 也会写入 project-local launcher，所以已初始化的研究目录即使没有全局 wrapper，也可以继续运行 `./.nullius/bin/nullius status --json`。
+  当前仓库是本地 workspace，不是已发布的全局 npm CLI。`pnpm install:cli` 默认在 Windows 写入 `%APPDATA%\npm\nullius.cmd`，在 POSIX 写入 `~/.local/bin/nullius`，并在目标目录不属于当前 `PATH` 时明确告警；仅在需要指定其他 user-local bin 目录时传入 `-- --bin-dir <path>`。`nullius init` 也会写入 portable project-local launcher，所以已初始化的研究目录即使没有全局 wrapper，也可以继续运行 `./.nullius/bin/nullius status --json`；原生 Windows 环境请使用同时生成的 `.\.nullius\bin\nullius.cmd status --json`，它会先选择 `PATH` 中另一个非自身的 `nullius`，再回退到生成时记录的 source-checkout 路径。
 - GUI 客户端有时需要把 `node` 换成绝对路径。
 - 有些客户端会把工具名 namespacing 成 `mcp__<serverAlias>__<toolName>`；务必以客户端实际显示的名字为准调用。
 - 常见的 MCP-compatible client 包括 Cursor、Claude Desktop、Claude Code CLI、Chatbox、Cherry Studio、Continue、Cline、Zed。
@@ -215,7 +270,11 @@ Open questions stay counted in every status receipt (oldest ten itemized; the re
 via: nullius decision list) until resolved.
 ```
 
+<<<<<<< HEAD
+初始化完成后，接续是 local-first 的：`.nullius/HARNESS`、project-local launcher（`.nullius/bin/nullius`，Windows 下另有 `.nullius/bin/nullius.cmd`）、`AGENTS.md`、`research_plan.md`、`research_contract.md` 和 `artifacts/runs/<run_id>/` 足以让 agent 在关闭会话或断网后恢复项目状态；只有真实需要外部文献/数据时才需要网络。
+=======
 新 decision 条目先使用 6 字符的 branch-local handle，其原始抽样为 30 个无偏随机 bit（$32^6 = 2^{30}$）。与 durable `D<n>` 同形的候选、本地已有 id 与既有映射都会重抽，因此精确的逐对碰撞概率依上下文而变；无本地占位时为 $1/(2^{30}-90{,}000)\approx 9.314\times 10^{-10}$，略高于 $2^{-30}$。这是概率保证而非结构保证，碰撞时 fail closed。`--resolves` 是关闭关系，只接受仍然 open 的 `pending` 目标；`--relates` 是非关闭关系，可以指向更早且可读的 `decided` 或 `pending` 条目。回放时若持久化关系格式错误或语义不成立，工具会在 `unrecognized_relations` 中报告并忽略该链接，但不会让整条记录失效。旧版或未知的非空字符串 `kind` 会继续按当前 `decided` 语义读取，并通过 `source_kind` 与 `normalized_kinds` 保留原始拼写；只有精确的持久化 `pending` 才会创建 open item，而归一化条目上其余合法的 `resolves` 仍会关闭对应 pending。分支内容进入权威主干后，`decision land` 原子分配后续 durable `D<n>`、改写指向 handle 的关系，并以 `provisional_id` 保留映射。既有 `D<n>` ledger 无需迁移，仍可读取和 resolve。若同一 provisional id 映射到多条记录或又被用作当前 id，list/status 会具名冲突行，land 在零改写下拒绝。初始化完成后，接续是 local-first 的：`.nullius/HARNESS`、`.nullius/bin/nullius`、`AGENTS.md`、`project_index.md`、`research_plan.md`、`research_contract.md`、已登记报告和 `artifacts/runs/<run_id>/` 足以让 agent 在关闭会话或断网后恢复项目状态；只有真实需要外部文献/数据时才需要网络。
+>>>>>>> 45bbb3d407bafef8f63876444938cce4448f2c05
 
 - 对 stateful 文献工作流，先用 `nullius init` 初始化目标外部 project root，再在该 root 内或通过 `--project-root` 调用 `nullius workflow-plan`。它会直接通过 `@nullius/literature-workflows` 解析 recipe，并写入 `.nullius/state.json#/plan` / `.nullius/plan.md`。有意义的外部研究运行应显式传 `--run-id`；如果省略，派生的 `<recipe>-<phase>` 只作为 planning placeholder。`research_brainstorm` 是 planning-only 的轻量 durable harness：`nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-topic-r1 --topic "<topic>"` 会记录 brainstorm context、candidate angles、screening、单一 recommendation 与 `next_contract` handoff。`.nullius/plan.md` 是给人读的派生 read model，不是机器编排 SSOT。这个 contract 可以建议后续进入 `literature_landscape`、`literature_gap_analysis`、`derivation_cycle` 或 `review_cycle` 等更重 recipe，但不会自动启动它们，也不依赖 host-native thinking process。持久化的 `research_brainstorm.*` step tools 是 handoff authority，不是内置 runtime tools，除非未来有外部 tool caller 明确实现它们。
 
@@ -236,6 +295,7 @@ via: nullius decision list) until resolved.
 ```bash
 pnpm install
 pnpm -r build
+pnpm install:cli
 pnpm --filter @nullius/hep-mcp docs:tool-counts:check
 ```
 

@@ -29,7 +29,34 @@ Notes:
 `;
 
 const COMMAND_HELP: Record<string, string> = {
+<<<<<<< HEAD
+  init: `nullius init
+
+Bootstrap a real external project root and initialize .nullius state.
+
+Behavior:
+  Always writes the portable project-local fallback launcher at \`.nullius/bin/nullius\`.
+  On Windows it also writes and reports the native companion at \`.nullius/bin/nullius.cmd\`.
+  That wrapper keeps \`nullius status --json\` as the canonical recovery command even when
+  \`nullius\` is unavailable on PATH for a fresh external project.
+  --refresh re-applies the current managed scaffold doc (AGENTS.md),
+  backing up any changed file under \`.nullius/backups/<timestamp>/\` before overwriting it.
+  Refresh never writes user-owned files (research_plan.md, research_notebook.md,
+  research_contract.md, project_charter.md, project_index.md). Pair with --dry-run to preview.
+
+Pass-through options:
+  --force
+  --refresh
+  --dry-run        With --refresh: preview what would change without writing.
+  --allow-nested
+  --runtime-only
+  --checkpoint-interval-seconds <seconds>
+
+Use --project-root <path> to target a root explicitly.
+`,
+=======
   init: INIT_HELP,
+>>>>>>> 45bbb3d407bafef8f63876444938cce4448f2c05
   run: `nullius run --workflow-id <id> [options]
 
 Execute a bounded run slice through the canonical TS run front door.
@@ -121,6 +148,44 @@ Actions:
                          canonicalize retained handle references, and print mappings.
 
 Behavior:
+<<<<<<< HEAD
+  Includes current-run lifecycle truth plus a thin project-level recent digest for recent runs,
+  latest final conclusions, latest proposals, and the latest active team summary when readable.
+  When \`state.json#/plan\` exists but derived \`.nullius/plan.md\` is missing or stale, status rebuilds the plan view from state and reports a structured warning instead of showing an empty plan.
+  Status JSON also includes the legacy-stable \`resume_context\`, the richer \`recovery_context\`,
+  and \`current_run_workflow_outputs\` so a reconnecting agent can recover the current run,
+  reuse bounded workflow outputs, and fall back to \`.nullius/bin/nullius status --json\`
+  (or \`.nullius/bin/nullius.cmd status --json\` on native Windows)
+  when the canonical \`nullius\` command is not available on PATH.
+  Status JSON also includes \`project_surface_drift\`, a diagnostic-only warning block for stale legacy scaffold surfaces or optional host-local guidance noise in the current project root.
+  When durable workflow outputs are missing for an older run, status rebuilds a best-effort legacy workflow projection from ledger/artifact conventions and reports the projection source.
+`,
+approve: `nullius approve <approval_id>
+
+Approve the pending gate for the current project root.
+
+Options:
+  --note "..."   Record a ledger note with the approval.
+
+Behavior:
+  Non-A5 approvals resume the run as before.
+  An A5 approval consumes the first post-A5 higher-conclusion consumer, writes \`artifacts/runs/<run_id>/final_conclusions_v1.json\`, and leaves the run \`completed\`.
+`,
+  pause: `nullius pause
+
+Pause the current run for the current project root.
+
+Options:
+  --note "..."   Record a ledger note with the pause.
+`,
+  resume: `nullius resume
+
+Resume the current paused run for the current project root.
+
+Options:
+  --note "..."   Record a ledger note with the resume.
+  --force        Allow resume from terminal states (idle/completed/failed).
+=======
   record, pending, and land require an initialized external project root (\`nullius init\`);
   list reads permissively and reports "no decisions recorded" on an uninitialized root.
   record and pending append one JSON line to \`.nullius/decisions.jsonl\` under a short
@@ -172,6 +237,7 @@ Behavior:
   the remainder via \`decision list\`).
   --by defaults to "user". Text beginning with a hyphen goes after the conventional
   end-of-options terminator: \`nullius decision record -- "-keep the negative branch"\`.
+>>>>>>> 45bbb3d407bafef8f63876444938cce4448f2c05
 `,
   status: STATUS_HELP,
   approve: APPROVE_HELP,

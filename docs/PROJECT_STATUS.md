@@ -71,6 +71,8 @@ This is a local build and validation result, not an installed marketplace releas
 - **Current strongest end-to-end workflow family**: `hep_*` Project/Run + evidence + writing + export
 - **Direct provider families**: `inspire_*`, `openalex_*`, `arxiv_*`, `hepdata_*`, `pdg_*`, `zotero_*`
 
+Persisted workflow-plan dispatch uses the existing run manifest for immutable tool/input identity and response-before-projection commits. Unknown outcomes stop; committed responses replay. Pause and canonical approval gate subsequent dispatch. Agent overflow recovery retains original user instructions and whole tool exchanges without claiming that excerpts are complete evidence.
+
 ## Current truthful workflows
 
 - **Generic lifecycle workflow**: `nullius init/status/approve/pause/resume/export` (`export` now fails closed when no substantive payload is available); `init --refresh` re-applies the managed scaffold doc (`AGENTS.md`) into an existing project with per-file backups under `.nullius/backups/` and never rewrites user-owned seed files (`--dry-run` previews); `init --mode=<engine|file>` declares the execution mode on fresh and already-initialized roots

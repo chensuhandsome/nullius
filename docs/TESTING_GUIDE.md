@@ -48,6 +48,18 @@ pnpm --filter @nullius/hep-mcp docs:tool-counts:check
 pnpm --filter @nullius/orchestrator exec vitest run tests/run-manifest.test.ts tests/agent-runner.test.ts tests/agent-runner-manifest.test.ts tests/agent-runner-ops-b8-regression.test.ts tests/tool-execution-policy.test.ts tests/tool-dispatch-boundary.test.ts tests/mcp-client-process.test.ts tests/workflow-runtime.test.ts
 ```
 
+#### 执行恢复与第三方 runner 契约
+
+```bash
+pnpm --filter @nullius/orchestrator exec vitest run tests/cli-run-workflow-recovery.test.ts tests/agent-runner-history-compaction.test.ts tests/cli-run-workflow.test.ts tests/agent-runner.test.ts tests/workflow-runtime.test.ts tests/nullius-cli.test.ts
+pnpm --filter @nullius/hep-mcp exec vitest run tests/contracts/inspireLiteratureProjectRoot.test.ts tests/toolContracts.test.ts tests/docs/docToolDrift.test.ts
+python3 -m pytest -q skills/kimi-cli-runner/tests skills/opencode-cli-runner/tests skills/review-swarm/tests/test_seat_budget.py
+```
+
+使用虚构工具与临时项目验证真正进程死亡、未知副作用停止、已提交响应回放、暂停和审批续接。压缩测试保留约束与完整工具配对，过长指令不通过删约束恢复。INSPIRE 七种模式的 catalog、parser 与 dispatch 接纳共同参数并拒绝错误模式参数。runner 测试使用虚构 CLI，验证空输出、异常退出、最终长度截断、总调用/时间预算及本地进程树清理；这不证明真实 provider 可用或科研结果正确。
+
+Kimi/OpenCode 需要 Python 3.10 或更新版本；不满足时在调用模型之前拒绝运行。`--max-attempts` 是包括 fallback/续写的总 CLI 调用数，`--timeout-secs` 是包括 backoff 的总期限。review launcher 的同名预算统计每个 seat 的 runner 进程调用；Gemini 没有内层尝试数控制，不能把该统计声称为准确的底层 HTTP 请求数。每次调用保留 trace；`OUT.partial` 不算完成的 `OUT`。复制安装须重新从当前源码构建/安装并验证；本地定向检查不更新其他安装或已有外部项目。
+
 #### 本地个人插件与项目 MCP
 
 [`project-mcp`](../packages/project-mcp/README.md) 复用 canonical `handleToolCall` / `runCli`，目前暴露 16 个 `orch_*` 操作和 5 个 transport 工具，共 21 个。默认个人插件组合 project 21、HEP standard 75、idea 6，共 102 个不同工具名；非默认 HEP 模式或 provider 开关会改变 HEP 数量。[构建器](../packages/skills-market/docs/PERSONAL_PLUGIN.md) 生成不含本机路径的 Codex/Claude Code 清单，通过目标机器的 `nullius runtime mcp` 启动，不创建远端连接。普通 skills copy 安装同样不记录源机器目录。

@@ -31,6 +31,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
+import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -45,6 +47,7 @@ _STOP_REQUESTED = threading.Event()
 _RE_MODEL_SLUG = re.compile(r"[^A-Za-z0-9._-]+")
 _EXIT_NEEDS_USER_DECISION = 4
 _DEFAULT_TIMEOUT_SECS = 900
+_DEFAULT_MAX_ATTEMPTS = 3
 _DEFAULT_BACKEND_TOOL_MODES = {
     "claude": "none",
     "gemini": "none",
@@ -106,6 +109,39 @@ def _write_meta_json(path: Path, payload: dict[str, Any]) -> None:
 def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+class SeatBudget:
+    """One review seat's runner-call cap and monotonic execution deadline."""
+
+    def __init__(self, max_attempts: int, timeout_secs: int):
+        self.max_attempts = max_attempts
+        self.timeout_secs = timeout_secs
+        self.runner_invocations = 0
+        self.started_at: Optional[float] = None
+        self._lock = threading.Lock()
+
+    def reserve(self) -> tuple[Optional[str], float]:
+        with self._lock:
+            now = time.monotonic()
+            if self.started_at is None:
+                self.started_at = now
+            remaining = max(0.0, self.timeout_secs - (now - self.started_at)) if self.timeout_secs else 0.0
+            if self.timeout_secs and remaining <= 0:
+                return "deadline_exhausted", remaining
+            if self.runner_invocations >= self.max_attempts:
+                return "attempt_budget_exhausted", remaining
+            self.runner_invocations += 1
+            return None, remaining
+
+    def snapshot(self) -> dict[str, Any]:
+        elapsed = time.monotonic() - self.started_at if self.started_at is not None else 0.0
+        return {
+            "max_attempts": self.max_attempts,
+            "runner_invocations": self.runner_invocations,
+            "timeout_secs": self.timeout_secs,
+            "elapsed_secs": round(elapsed, 6),
+        }
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -752,6 +788,7 @@ def _build_cmd(
     backend_tool_modes: dict[str, str],
     review_workspace_dir: Path,
     gemini_cli_home: Optional[str],
+    timeout_secs: Optional[float] = None,
 ) -> list[str]:
     cmd = ["bash", str(plan.runner_path)]
     if system is not None:
@@ -766,6 +803,16 @@ def _build_cmd(
     )
     if plan.runner_model:
         cmd.extend(["--model", plan.runner_model])
+    # The launcher owns retries and backend replacement. Use only flags the
+    # corresponding runner actually supports; Gemini has no attempt control.
+    if plan.backend in {"claude", "codex"}:
+        cmd.extend(["--max-retries", "1"])
+    elif plan.backend in {"kimi", "opencode"}:
+        cmd.extend(["--max-attempts", "1"])
+        if timeout_secs is not None:
+            cmd.extend(["--timeout-secs", str(max(1, math.ceil(timeout_secs)) if timeout_secs > 0 else 0)])
+    if plan.backend in {"kimi", "opencode", "gemini"}:
+        cmd.append("--no-fallback")
     tool_mode = _resolve_backend_tool_mode(plan.backend, backend_tool_modes)
     if tool_mode:
         cmd.extend(["--tool-mode", tool_mode])
@@ -827,7 +874,23 @@ def _resolve_gemini_review_profile(
     return str(home_root), profile
 
 
-def _run_with_timeout(cmd: list[str], *, timeout_secs: int) -> dict[str, Any]:
+def _signal_group(proc: subprocess.Popen, signum: int) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signum)
+
+
+def _stop_and_collect(proc: subprocess.Popen) -> tuple[str, str]:
+    # Runner supervisors own separate CLI groups. Give their TERM handlers a
+    # bounded cleanup allowance before escalating, so descendants are stopped.
+    _signal_group(proc, signal.SIGTERM)
+    try:
+        return proc.communicate(timeout=2)
+    except subprocess.TimeoutExpired:
+        _signal_group(proc, signal.SIGKILL)
+        return proc.communicate()
+
+
+def _run_with_timeout(cmd: list[str], *, timeout_secs: float) -> dict[str, Any]:
     with _PROCESS_LOCK:
         if _STOP_REQUESTED.is_set():
             raise RuntimeError("Review execution interrupted")
@@ -845,9 +908,7 @@ def _run_with_timeout(cmd: list[str], *, timeout_secs: int) -> dict[str, Any]:
             "stderr": stderr,
         }
     except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        stdout, stderr = proc.communicate()
+        stdout, stderr = _stop_and_collect(proc)
         return {
             "timed_out": True,
             "exit_code": None,
@@ -855,9 +916,7 @@ def _run_with_timeout(cmd: list[str], *, timeout_secs: int) -> dict[str, Any]:
             "stderr": stderr,
         }
     except BaseException:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        proc.communicate()
+        _stop_and_collect(proc)
         raise
     finally:
         with _PROCESS_LOCK:
@@ -881,9 +940,24 @@ def _run_one(
     timeout_secs: int,
     output_path: Optional[Path] = None,
     trace_phase: Optional[str] = None,
+    seat_budget: Optional[SeatBudget] = None,
 ) -> dict[str, Any]:
     out_path = output_path or (out_dir / f"{output_prefix}_{plan.index + 1}_{_model_slug(plan.requested_model)}.txt")
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    budget = seat_budget or SeatBudget(_DEFAULT_MAX_ATTEMPTS, timeout_secs)
+    budget_failure, remaining = budget.reserve()
+    if budget_failure is not None:
+        _append_jsonl(trace_path, {
+            "ts": _utc_now(), "event": "seat_budget_exhausted", "index": plan.index,
+            "backend": plan.backend, "phase": trace_phase,
+            "reason": budget_failure, "seat_budget": budget.snapshot(),
+        })
+        return {
+            "index": plan.index, "backend": plan.backend, "model": plan.requested_model,
+            "runner_model": plan.runner_model, "exit_code": None,
+            "timed_out": budget_failure == "deadline_exhausted", "success": False,
+            "budget_failure": budget_failure, "seat_budget": budget.snapshot(), "out": str(out_path),
+        }
     cmd = _build_cmd(
         plan=plan,
         system=system,
@@ -894,6 +968,7 @@ def _run_one(
         backend_tool_modes=backend_tool_modes,
         review_workspace_dir=review_workspace_dir,
         gemini_cli_home=gemini_cli_home,
+        timeout_secs=remaining,
     )
 
     start_event: dict[str, Any] = {
@@ -921,7 +996,7 @@ def _run_one(
         )
 
     try:
-        proc = _run_with_timeout(cmd, timeout_secs=timeout_secs)
+        proc = _run_with_timeout(cmd, timeout_secs=remaining)
         if gemini_cli_home:
             for stream in ("stdout", "stderr"):
                 proc[stream] = proc[stream].replace(gemini_cli_home, "[Gemini home]")
@@ -938,6 +1013,7 @@ def _run_one(
             "timed_out": bool(proc["timed_out"]),
             "success": bool((not proc["timed_out"]) and proc["exit_code"] == 0),
             "out": str(out_path),
+            "seat_budget": budget.snapshot(),
         }
         if gemini_review_profile is not None:
             result["gemini_review_profile"] = gemini_review_profile
@@ -979,6 +1055,7 @@ def _run_one(
             "success": False,
             "error": str(exc),
             "out": str(out_path),
+            "seat_budget": budget.snapshot(),
         }
 
 
@@ -1106,6 +1183,7 @@ def _run_two_phase_one(
     timeout_secs: int,
     output_path: Optional[Path] = None,
     scope_prompt: Path,
+    seat_budget: Optional[SeatBudget] = None,
 ) -> dict[str, Any]:
     """Run one reviewer through the two-phase commit-then-review protocol.
 
@@ -1149,10 +1227,11 @@ def _run_two_phase_one(
         gemini_cli_home=gemini_cli_home,
         gemini_review_profile=gemini_review_profile,
         timeout_secs=timeout_secs,
+        seat_budget=seat_budget or SeatBudget(_DEFAULT_MAX_ATTEMPTS, timeout_secs),
     )
 
     def _phase_failure(base: dict[str, Any], failure: str) -> dict[str, Any]:
-        info["failure"] = failure
+        info["failure"] = base.get("budget_failure") or failure
         result = dict(base)
         result["out"] = str(final_out)
         result["success"] = False
@@ -1263,6 +1342,8 @@ _INFRASTRUCTURE_FAILURE_REASONS = {
     "empty_output",
     "phase1_command_failed",
     "phase1_empty_output",
+    "attempt_budget_exhausted",
+    "deadline_exhausted",
 }
 
 
@@ -1355,7 +1436,9 @@ def _postprocess_result(
 
     command_success = bool(result.get("command_success", result.get("success", False)))
     failure_reason: Optional[str] = None
-    if bool(result.get("timed_out")):
+    if result.get("budget_failure"):
+        failure_reason = str(result["budget_failure"])
+    elif bool(result.get("timed_out")):
         failure_reason = "timeout"
     elif not command_success:
         failure_reason = f"exit_code_{result.get('exit_code', 'unknown')}"
@@ -1938,6 +2021,7 @@ _CONFIG_SIMPLE_KEYS: dict[str, str] = {
     "max_prompt_overflow": "max_prompt_overflow",
     "gemini_cli_home": "gemini_cli_home",
     "timeout_secs": "timeout_secs",
+    "max_attempts": "max_attempts",
     # NOTE: two_phase / scope_prompt are deliberately NOT config-mergeable.
     # The two-phase protocol is a per-invocation, explicit CLI opt-in; a
     # project config must never silently flip a default run into two-phase
@@ -2180,7 +2264,11 @@ def _parse_args() -> argparse.Namespace:
         "--timeout-secs",
         type=int,
         default=_DEFAULT_TIMEOUT_SECS,
-        help=f"Per-backend timeout seconds (0 disables, default: {_DEFAULT_TIMEOUT_SECS}).",
+        help=f"Total deadline per review seat across phases/retries/fallback (0 disables, default: {_DEFAULT_TIMEOUT_SECS}).",
+    )
+    ap.add_argument(
+        "--max-attempts", type=int, default=_DEFAULT_MAX_ATTEMPTS,
+        help="Total runner subprocess invocations per review seat, including phases, retries, and fallback (default: 3).",
     )
     ap.add_argument(
         "--retry-empty-output",
@@ -2305,9 +2393,14 @@ def main() -> int:
     def stop(signum: int, _frame: Any) -> None:
         _STOP_REQUESTED.set()
         with _PROCESS_LOCK:
-            for proc in tuple(_ACTIVE_PROCESSES):
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(proc.pid, signal.SIGKILL)
+            processes = tuple(_ACTIVE_PROCESSES)
+        for proc in processes:
+            _signal_group(proc, signal.SIGTERM)
+        grace_deadline = time.monotonic() + 2
+        while any(proc.poll() is None for proc in processes) and time.monotonic() < grace_deadline:
+            time.sleep(0.02)
+        for proc in processes:
+            _signal_group(proc, signal.SIGKILL)
         raise SystemExit(128 + signum)
 
     try:
@@ -2363,6 +2456,8 @@ def _main(home_stack: contextlib.ExitStack) -> int:
             raise ValueError("--max-prompt-chars must be a positive integer")
         if args.timeout_secs < 0:
             raise ValueError("--timeout-secs must be >= 0")
+        if args.max_attempts < 1:
+            raise ValueError("--max-attempts must be >= 1")
         if args.retry_empty_output < 0:
             raise ValueError("--retry-empty-output must be >= 0")
         if not (0.0 <= args.convergence_threshold <= 1.0):
@@ -2650,6 +2745,7 @@ def _main(home_stack: contextlib.ExitStack) -> int:
         "variant": args.variant or None,
         "parallel": bool(args.parallel),
         "timeout_secs": int(args.timeout_secs),
+        "max_attempts": int(args.max_attempts),
         "check_review_contract": bool(args.check_review_contract),
         "fallback_mode": args.fallback_mode,
         "fallback_order": fallback_order,
@@ -2682,6 +2778,7 @@ def _main(home_stack: contextlib.ExitStack) -> int:
     # byte-for-byte identical to the historical behavior (empty extra kwargs).
     agent_fn = _run_two_phase_one if args.two_phase else _run_one
     two_phase_extra: dict[str, Any] = {"scope_prompt": scope_prompt} if args.two_phase else {}
+    seat_budgets = {plan.index: SeatBudget(int(args.max_attempts), int(args.timeout_secs)) for plan in plans}
 
     if args.parallel:
         max_workers = min(len(plans), 32)
@@ -2702,6 +2799,7 @@ def _main(home_stack: contextlib.ExitStack) -> int:
                     gemini_cli_home=plan_gemini_cli_home,
                     gemini_review_profile=plan_gemini_review_profile,
                     timeout_secs=int(args.timeout_secs),
+                    seat_budget=seat_budgets[plan.index],
                     output_path=plan_out,
                     **two_phase_extra,
                 ): (plan, plan_out)
@@ -2752,6 +2850,7 @@ def _main(home_stack: contextlib.ExitStack) -> int:
                     gemini_cli_home=plan_gemini_cli_home,
                     gemini_review_profile=plan_gemini_review_profile,
                     timeout_secs=int(args.timeout_secs),
+                    seat_budget=seat_budgets[plan.index],
                     output_path=plan_out,
                     **two_phase_extra,
                 )
@@ -2816,12 +2915,19 @@ def _main(home_stack: contextlib.ExitStack) -> int:
                     gemini_cli_home=plan_gemini_cli_home,
                     gemini_review_profile=plan_gemini_review_profile,
                     timeout_secs=int(args.timeout_secs),
+                    seat_budget=seat_budgets[plan.index],
                     output_path=plan_out,
                     **two_phase_extra,
                 )
+                if rerun.get("budget_failure"):
+                    attempts -= 1  # a denied launch is not a consumed retry
                 r["command_success"] = bool(rerun.get("success", False))
                 r["exit_code"] = rerun.get("exit_code")
                 r["timed_out"] = bool(rerun.get("timed_out"))
+                if rerun.get("budget_failure"):
+                    r["budget_failure"] = rerun["budget_failure"]
+                else:
+                    r.pop("budget_failure", None)
                 r["out"] = rerun.get("out", r.get("out"))
                 if "two_phase" in rerun:
                     r["two_phase"] = rerun["two_phase"]
@@ -2951,11 +3057,13 @@ def _main(home_stack: contextlib.ExitStack) -> int:
                         gemini_cli_home=fallback_gemini_cli_home,
                         gemini_review_profile=fallback_gemini_review_profile,
                         timeout_secs=int(args.timeout_secs),
+                        seat_budget=seat_budgets[plan.index],
                         output_path=out_path,
                     )
-                    r["resolved"] = {"backend": backend, "model": model}
-                    r["variant"] = "fallback"
-                    r["fallback_reason"] = original_reason
+                    if not fb.get("budget_failure"):
+                        r["resolved"] = {"backend": backend, "model": model}
+                        r["variant"] = "fallback"
+                        r["fallback_reason"] = original_reason
                     r["command_success"] = bool(fb.get("success", False))
                     r["exit_code"] = fb.get("exit_code")
                     # The fallback attempt's own timeout state must replace the
@@ -2963,6 +3071,10 @@ def _main(home_stack: contextlib.ExitStack) -> int:
                     # _postprocess_result re-classify a successful recovery as
                     # a timeout (same field copy the empty-output retry does).
                     r["timed_out"] = bool(fb.get("timed_out", False))
+                    if fb.get("budget_failure"):
+                        r["budget_failure"] = fb["budget_failure"]
+                    else:
+                        r.pop("budget_failure", None)
                     r["out"] = fb.get("out", r.get("out"))
                     _postprocess_result(r, check_review_contract=bool(args.check_review_contract))
                     if r.get("success"):
@@ -2985,6 +3097,7 @@ def _main(home_stack: contextlib.ExitStack) -> int:
     # metadata-only modeled mode (codex: "review"). None = unmodeled,
     # attests nothing. Credit decisions below use the same resolution.
     for r in results:
+        r["seat_budget"] = seat_budgets[int(r["index"])].snapshot()
         r["execution_tool_mode"] = _recorded_tool_mode(
             _execution_backend(r), backend_tool_modes
         )

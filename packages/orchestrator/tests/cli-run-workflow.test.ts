@@ -472,9 +472,10 @@ describe('workflow run consumer', () => {
     const steps = ((state.plan as Record<string, unknown>).steps ?? []) as Array<Record<string, unknown>>;
     steps[0]!.status = 'completed';
     manager.saveState(state);
-    const callTool = vi.fn(async () => {
-      throw new Error('tool call denied: hep_export_project is not available');
-    });
+    const callTool = vi.fn(async () => ({
+      ok: false, isError: true, rawText: 'tool call denied: hep_export_project is not available',
+      json: null, errorCode: 'unsupported_tool',
+    }));
     const { io, stdout } = makeIo(projectRoot);
 
     const code = await runCommand(
@@ -779,7 +780,10 @@ describe('workflow run consumer', () => {
     const { io, stdout } = makeIo(projectRoot);
     const callTool = vi.fn(async (tool: string) => {
       if (tool === 'inspire_critical_analysis') {
-        throw new Error('critical analysis unavailable');
+        return {
+          ok: false, isError: true, rawText: 'critical analysis unavailable',
+          json: null, errorCode: 'unsupported_tool',
+        };
       }
       return {
         ok: true,

@@ -205,10 +205,11 @@ def _out_text(out_path: Path) -> str:
     return out_path.read_text(encoding="utf-8")
 
 
-def test_succeeds_when_text_exists_even_if_opencode_exit_nonzero(tmp_path: Path) -> None:
+def test_nonzero_exit_retains_text_without_completed_output(tmp_path: Path) -> None:
     proc, out_path = _run_runner(tmp_path, args=[], fake_mode="nonzero_with_text")
-    assert proc.returncode == 0, proc.stderr
-    assert _out_text(out_path) == "OK_NONZERO\n"
+    assert proc.returncode != 0
+    assert not out_path.exists()
+    assert Path(str(out_path)+".partial").read_text() == "OK_NONZERO\n"
 
 
 def test_falls_back_to_default_model_on_model_not_found(tmp_path: Path) -> None:

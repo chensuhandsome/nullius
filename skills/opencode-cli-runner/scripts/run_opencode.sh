@@ -25,6 +25,10 @@ MAX_ATTEMPTS=3
 MAX_ATTEMPTS_HARD_MAX=20
 SLEEP_SECS=5
 MAX_BACKOFF_SECS=300
+TIMEOUT_SECS=900
+TRACE_DIR=""
+ACTIVE_PID=""
+PROCESS_BUDGET="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/process_budget.py"
 
 usage() {
   cat <<'EOF'
@@ -43,11 +47,7 @@ Options:
   --server-port PORT      Port for --start-server (default: auto-selected free port)
   --tool-mode MODE        Default: none. Choices: none, workspace.
   --workspace-dir DIR     Optional workspace path used when --tool-mode workspace (default: current cwd).
-  --skip-permissions      Pass --dangerously-skip-permissions to opencode run, auto-approving tool
-                          calls. REQUIRED for headless agentic tasks that must WRITE/EDIT/run in the
-                          workspace: --tool-mode workspace alone only sets --dir (the agent sees the
-                          dir but its file-write tool calls are not auto-approved, so nothing is
-                          written). Combine with --tool-mode workspace for autonomous write tasks.
+  --skip-permissions      Pass current OpenCode --auto. Only use with explicitly authorized actions.
   --continue-on-length N  Auto-continue a response cut by the PER-RESPONSE output/reasoning token cap
                           (last step_finish reason "length"): resume the SAME opencode session with
                           -s <sessionID> up to N times (default: 2; 0 disables). Reasoning-heavy
@@ -58,9 +58,11 @@ Options:
   --system-prompt-file F  Optional. Prepended to stdin before prompt file.
   --prompt-file FILE      Required
   --out PATH              Required
-  --max-attempts N        Total attempts per run mode (default: 3)
+  --max-attempts N        Total CLI calls, including continuation/retry/fallback (default: 3)
   --max-retries N         Deprecated alias of --max-attempts
   --sleep-secs SECONDS    Exponential backoff base seconds (default: 5)
+  --timeout-secs SECONDS  Total invocation deadline (default: 900; 0 disables)
+  --trace-dir DIR         Retain every call's raw events and budget receipt here
   --no-fallback           Do not retry without -m when a model run fails
   --dry-run               Print invocation details and exit 0
 EOF
@@ -148,13 +150,7 @@ for line in lines:
         continue
 
     typ = obj.get("type")
-    if typ == "text":
-        part = obj.get("part")
-        if isinstance(part, dict):
-            text = part.get("text")
-            if isinstance(text, str):
-                text_chunks.append(text)
-    elif typ == "error":
+    if typ == "error" or obj.get("error"):
         err = obj.get("error")
         msg = ""
         if isinstance(err, dict):
@@ -170,6 +166,12 @@ for line in lines:
         if not msg:
             msg = "OpenCode returned an error event."
         error_msgs.append(msg)
+    elif typ == "text":
+        part = obj.get("part")
+        if isinstance(part, dict):
+            text = part.get("text")
+            if isinstance(text, str):
+                text_chunks.append(text)
 
 if error_msgs:
     joined = " | ".join(error_msgs)
@@ -179,7 +181,7 @@ if error_msgs:
         raise SystemExit(10)
     raise SystemExit(11)
 
-if not text_chunks:
+if not text_chunks or not any(chunk.strip() for chunk in text_chunks):
     msg = "No text events found in OpenCode JSON output."
     if non_json_lines:
         msg += " First raw line: " + non_json_lines[0][:240]
@@ -334,6 +336,16 @@ while [[ $# -gt 0 ]]; do
       SLEEP_SECS="$2"
       shift 2
       ;;
+    --timeout-secs)
+      require_value "$1" "${2-}"
+      TIMEOUT_SECS="$2"
+      shift 2
+      ;;
+    --trace-dir)
+      require_value "$1" "${2-}"
+      TRACE_DIR="$2"
+      shift 2
+      ;;
     --no-fallback) NO_FALLBACK=1; shift 1;;
     --dry-run) DRY_RUN=1; shift 1;;
     -h|--help) usage; exit 0;;
@@ -364,6 +376,10 @@ if ! [[ "${MAX_ATTEMPTS}" =~ ^[0-9]+$ ]] || [[ "${MAX_ATTEMPTS}" -lt 1 ]]; then
 fi
 if [[ "${MAX_ATTEMPTS}" -gt "${MAX_ATTEMPTS_HARD_MAX}" ]]; then
   echo "--max-attempts must be <= ${MAX_ATTEMPTS_HARD_MAX}" >&2
+  exit 2
+fi
+if ! [[ "${TIMEOUT_SECS}" =~ ^[0-9]+$ ]]; then
+  echo "--timeout-secs must be an integer >= 0" >&2
   exit 2
 fi
 if ! [[ "${SLEEP_SECS}" =~ ^[0-9]+$ ]] || [[ "${SLEEP_SECS}" -lt 1 ]]; then
@@ -438,6 +454,7 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
   echo "stdin: ${stdin_desc}"
   echo "out: ${OUT}"
   echo "max_attempts: ${MAX_ATTEMPTS}"
+  echo "timeout_secs: ${TIMEOUT_SECS} (total invocation deadline)"
   echo "sleep_secs: ${SLEEP_SECS}"
   if [[ -n "${MODEL}" ]]; then
     echo "model: ${MODEL}"
@@ -500,7 +517,7 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
     cmd+=(--dir "<isolated-temp-dir>")
   fi
   if [[ "${SKIP_PERMS}" -eq 1 ]]; then
-    cmd+=(--dangerously-skip-permissions)
+    cmd+=(--auto)
   fi
   if [[ "${THINKING}" -eq 1 ]]; then
     cmd+=(--thinking)
@@ -529,7 +546,7 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
       fallback_cmd+=(--dir "<isolated-temp-dir>")
     fi
     if [[ "${SKIP_PERMS}" -eq 1 ]]; then
-      fallback_cmd+=(--dangerously-skip-permissions)
+      fallback_cmd+=(--auto)
     fi
     if [[ "${THINKING}" -eq 1 ]]; then
       fallback_cmd+=(--thinking)
@@ -558,15 +575,31 @@ run_dir=""
 server_stdout=""
 server_stderr=""
 server_pid=""
+mkdir -p "${TRACE_DIR:-${OUT}.attempts}"
+TRACE_RUN_DIR="$(mktemp -d "${TRACE_DIR:-${OUT}.attempts}/run.XXXXXX")"
+BUDGET_STATE="${TRACE_RUN_DIR}/budget.json"
+budget_inputs=(--prompt-file "${PROMPT_FILE}" --out "${OUT}")
+if [[ -n "${SYSTEM_PROMPT_FILE}" ]]; then budget_inputs+=(--system-file "${SYSTEM_PROMPT_FILE}"); fi
+python3 "${PROCESS_BUDGET}" init --state "${BUDGET_STATE}" --max-attempts "${MAX_ATTEMPTS}" \
+  --timeout-secs "${TIMEOUT_SECS}" "${budget_inputs[@]}"
 
 cleanup() {
+  local result="${1:-$?}"
+  if [[ -n "${ACTIVE_PID}" ]]; then
+    kill -TERM "${ACTIVE_PID}" 2>/dev/null || true
+    wait "${ACTIVE_PID}" 2>/dev/null || true
+    ACTIVE_PID=""
+  fi
   if [[ -n "${server_pid}" ]] && kill -0 "${server_pid}" >/dev/null 2>&1; then
     kill "${server_pid}" >/dev/null 2>&1 || true
     wait "${server_pid}" >/dev/null 2>&1 || true
   fi
+  python3 "${PROCESS_BUDGET}" finish --state "${BUDGET_STATE}" --exit-code "${result}" || true
   rm -rf "${tmp_dir}" || true
 }
 trap cleanup EXIT
+trap 'cleanup 130; trap - EXIT; exit 130' INT
+trap 'cleanup 143; trap - EXIT; exit 143' TERM
 
 if [[ -n "${SYSTEM_PROMPT_FILE}" ]]; then
   combined_stdin="${tmp_dir}/combined_stdin.txt"
@@ -598,7 +631,9 @@ if [[ "${START_SERVER}" -eq 1 ]]; then
   fi
   server_stdout="${tmp_dir}/opencode_server.stdout.log"
   server_stderr="${tmp_dir}/opencode_server.stderr.log"
-  opencode serve --hostname "${SERVER_HOSTNAME}" --port "${SERVER_PORT}" >"${server_stdout}" 2>"${server_stderr}" &
+  python3 "${PROCESS_BUDGET}" run --state "${BUDGET_STATE}" --unmetered \
+    --stdout "${server_stdout}" --stderr "${server_stderr}" -- \
+    opencode serve --hostname "${SERVER_HOSTNAME}" --port "${SERVER_PORT}" &
   server_pid=$!
   set +e
   wait_for_tcp_port "${SERVER_HOSTNAME}" "${SERVER_PORT}" "30" "${server_pid}"
@@ -643,9 +678,24 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
         reason = part.get("reason")
         if isinstance(reason, str):
             last_reason = reason
-if sid and last_reason == "length":
-    print(sid)
+if last_reason == "length":
+    print(sid or "__LENGTH_WITHOUT_SESSION__")
 PY
+}
+
+run_process() {
+  local raw_file="$1" stderr_file="$2" input_file="$3" append="$4"
+  shift 4
+  local -a options=()
+  if [[ "${append}" -eq 1 ]]; then options+=(--append); fi
+  python3 "${PROCESS_BUDGET}" run --state "${BUDGET_STATE}" --cwd "${run_dir}" \
+    --stdin "${input_file}" --stdout "${raw_file}" --stderr "${stderr_file}" \
+    "${options[@]+"${options[@]}"}" -- "$@" &
+  ACTIVE_PID=$!
+  local result=0
+  wait "${ACTIVE_PID}" || result=$?
+  ACTIVE_PID=""
+  return "${result}"
 }
 
 run_once() {
@@ -673,27 +723,27 @@ run_once() {
   fi
   cmd+=(--dir "${run_dir}")
   if [[ "${SKIP_PERMS}" -eq 1 ]]; then
-    cmd+=(--dangerously-skip-permissions)
+    cmd+=(--auto)
   fi
   if [[ "${THINKING}" -eq 1 ]]; then
     cmd+=(--thinking)
   fi
 
-  set +e
-  "${cmd[@]}" <"${stdin_file}" >"${raw_file}" 2>"${stderr_file}"
-  cmd_code=$?
-  set -e
+  run_process "${raw_file}" "${stderr_file}" "${stdin_file}" 0 "${cmd[@]}" || cmd_code=$?
+  local initial_parse=0
+  parse_opencode_json "${raw_file}" "${text_file}" "${err_file}" || initial_parse=$?
 
   # Auto-continue on a length-cut response: a reasoning-heavy model can exhaust the per-response
   # output/reasoning token budget (the last step_finish carries reason "length") BEFORE emitting its
   # text or writing its file deliverable. opencode sessions keep the full state, so resuming the same
   # session with `-s <sessionID>` continues exactly where the cut happened — the headless analog of an
   # interactive "continue". Bounded by --continue-on-length (0 disables).
-  if [[ "${CONTINUE_ON_LENGTH}" -gt 0 && "${cmd_code}" -eq 0 ]]; then
+  if [[ "${CONTINUE_ON_LENGTH}" -gt 0 && "${cmd_code}" -eq 0 && "${initial_parse}" -ne 10 && "${initial_parse}" -ne 11 ]]; then
     local cont=0 sid=""
     while (( cont < CONTINUE_ON_LENGTH )); do
       sid="$(detect_length_cut "${raw_file}")"
       [[ -n "${sid}" ]] || break
+      [[ "${sid}" != "__LENGTH_WITHOUT_SESSION__" ]] || break
       local -a cont_cmd=(opencode run --format json -s "${sid}")
       if [[ "${use_model}" -eq 1 && -n "${MODEL}" ]]; then
         cont_cmd+=(-m "${MODEL}")
@@ -701,37 +751,40 @@ run_once() {
       if [[ -n "${VARIANT}" ]]; then
         cont_cmd+=(--variant "${VARIANT}")
       fi
+      if [[ -n "${AGENT}" ]]; then cont_cmd+=(--agent "${AGENT}"); fi
+      if [[ "${THINKING}" -eq 1 ]]; then cont_cmd+=(--thinking); fi
       if [[ -n "${ATTACH_URL}" ]]; then
         cont_cmd+=(--attach "${ATTACH_URL}")
       fi
       cont_cmd+=(--dir "${run_dir}")
       if [[ "${SKIP_PERMS}" -eq 1 ]]; then
-        cont_cmd+=(--dangerously-skip-permissions)
+        cont_cmd+=(--auto)
       fi
-      set +e
-      printf 'Continue exactly where you left off. If a file deliverable was requested, write/finish it now, then stop.' \
-        | "${cont_cmd[@]}" >>"${raw_file}" 2>>"${stderr_file}"
-      cmd_code=$?
-      set -e
+      printf 'Continue exactly where you left off. If a file deliverable was requested, write/finish it now, then stop.' >"${tmp_dir}/continue.txt"
+      run_process "${raw_file}" "${stderr_file}" "${tmp_dir}/continue.txt" 1 "${cont_cmd[@]}" || cmd_code=$?
       cont=$((cont + 1))
       [[ "${cmd_code}" -eq 0 ]] || break
+      local continuation_parse=0
+      parse_opencode_json "${raw_file}" "${text_file}" "${err_file}" || continuation_parse=$?
+      [[ "${continuation_parse}" -ne 10 && "${continuation_parse}" -ne 11 ]] || break
     done
   fi
 
   parse_opencode_json "${raw_file}" "${text_file}" "${err_file}" || parse_code=$?
 
-  if [[ "${parse_code}" -eq 0 && "${cmd_code}" -eq 0 ]]; then
-    return 0
+  if [[ "${parse_code}" -eq 0 && ( "${cmd_code}" -ne 0 || -n "$(detect_length_cut "${raw_file}")" ) ]]; then
+    cp "${text_file}" "${OUT}.partial"
+    printf 'Incomplete OpenCode execution (exit=%s, final length=%s); text retained as partial.\n' \
+      "${cmd_code}" "$(detect_length_cut "${raw_file}")" >>"${err_file}"
+    return 14
   fi
-  if [[ "${parse_code}" -eq 0 && "${cmd_code}" -ne 0 ]]; then
-    {
-      printf 'OpenCode exited with code %s but produced valid text output.\n' "${cmd_code}"
-      if [[ -s "${stderr_file}" ]]; then
-        echo "stderr tail:"
-        tail -n 20 "${stderr_file}" || true
-      fi
-    } >"${err_file}"
-    cat "${err_file}" >&2
+  if [[ "${cmd_code}" -eq 124 || "${cmd_code}" -eq 125 || "${cmd_code}" -ge 128 ]]; then return "${cmd_code}"; fi
+  if [[ -n "$(detect_length_cut "${raw_file}")" ]]; then
+    echo "Response remains length-truncated; continuation budget exhausted or session unavailable." >>"${err_file}"
+    return 14
+  fi
+
+  if [[ "${parse_code}" -eq 0 && "${cmd_code}" -eq 0 ]]; then
     return 0
   fi
 
@@ -781,6 +834,13 @@ classify_deterministic_failure() {
         'location is not supported' \
         'unauthorized' \
         'forbidden' \
+        'quota exhausted' \
+        'quota exceeded' \
+        'insufficient quota' \
+        'usage limit reached' \
+        'out of usage' \
+        'auto-rejecting' \
+        'permission denied' \
         'invalid api key'; do
         if grep -qiF -- "${pat}" "${f}" 2>/dev/null; then
           reason="diagnostic output matched '${pat}'"
@@ -829,6 +889,7 @@ run_with_retries() {
     if [[ "${rc}" -eq 10 ]]; then
       return 10
     fi
+    if [[ "${rc}" -eq 14 || "${rc}" -eq 124 || "${rc}" -eq 125 || "${rc}" -ge 128 ]]; then return "${rc}"; fi
 
     # Deterministic failures reproduce identically on every retry: fail
     # immediately with the diagnostic instead of burning the backoff budget.
@@ -839,6 +900,7 @@ run_with_retries() {
       echo "OpenCode attempt (${label}) failed with a deterministic error (${det_reason}); not retrying." >&2
       return "${rc}"
     fi
+    if [[ "${rc}" -eq 12 ]]; then return "${rc}"; fi
 
     if [[ "${attempt}" -ge "${MAX_ATTEMPTS}" ]]; then
       return "${rc}"
@@ -852,7 +914,7 @@ run_with_retries() {
     if [[ -s "${err_file}" ]]; then
       tail -n 5 "${err_file}" >&2 || true
     fi
-    sleep "${sleep_for}"
+    python3 "${PROCESS_BUDGET}" sleep --state "${BUDGET_STATE}" --seconds "${sleep_for}" || return $?
     attempt=$(( attempt + 1 ))
   done
 }

@@ -1,0 +1,163 @@
+"""Local process supervision; copied with each independently installed runner skill."""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import hashlib
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+
+def save(path: Path, state: dict) -> None:
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(state, indent=2)+'\n')
+    os.replace(temporary, path)
+
+
+def remaining(state: dict) -> float | None:
+    deadline = state['deadline_monotonic']
+    return None if deadline is None else max(0, deadline-time.monotonic())
+
+
+def stop_group(proc: subprocess.Popen) -> None:
+    # The CLI may exit before its descendants; always address its whole group.
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGTERM)
+    try:
+        proc.wait(timeout=0.3)
+    except subprocess.TimeoutExpired:
+        pass
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    proc.wait()
+
+
+def main() -> int:
+    # macOS monotonic clocks share a process-independent reference from 3.10.
+    # Never turn a per-process timestamp into a reusable absolute deadline.
+    if sys.version_info < (3, 10):
+        print('Runner supervision requires Python >= 3.10 for a cross-process monotonic deadline.', file=sys.stderr)
+        return 2
+    ap = argparse.ArgumentParser()
+    ap.add_argument('action', choices=['init', 'run', 'sleep', 'finish'])
+    ap.add_argument('--state', type=Path, required=True)
+    ap.add_argument('--max-attempts', type=int, default=3)
+    ap.add_argument('--timeout-secs', type=float, default=900)
+    ap.add_argument('--seconds', type=float, default=0)
+    ap.add_argument('--cwd')
+    ap.add_argument('--stdin', type=Path)
+    ap.add_argument('--stdout', type=Path)
+    ap.add_argument('--stderr', type=Path)
+    ap.add_argument('--append', action='store_true')
+    ap.add_argument('--unmetered', action='store_true')
+    ap.add_argument('--exit-code', type=int, default=1)
+    ap.add_argument('--out', type=Path)
+    ap.add_argument('--prompt-file', type=Path)
+    ap.add_argument('--system-file', type=Path)
+    arguments = sys.argv[1:]
+    separator = arguments.index('--') if '--' in arguments else len(arguments)
+    args = ap.parse_args(arguments[:separator])
+    command = arguments[separator+1:]
+    if args.action == 'init':
+        inputs = [p for p in (args.prompt_file,args.system_file) if p]
+        artifacts = [args.out, Path(str(args.out)+'.partial')] if args.out else []
+        for artifact in artifacts:
+            for source in inputs:
+                if artifact.resolve() == source.resolve() or (artifact.exists() and source.exists() and artifact.samefile(source)):
+                    ap.error('output/partial path must differ from prompt inputs')
+        for label,artifact in zip(('previous-output.txt','previous-partial.txt'),artifacts):
+            if artifact.exists():
+                (args.state.parent/label).write_bytes(artifact.read_bytes())
+                artifact.unlink()
+        now = time.monotonic()
+        save(args.state, {'max_attempts':args.max_attempts, 'attempts_used':0,
+                         'started_monotonic':now,
+                         'deadline_monotonic':now+args.timeout_secs if args.timeout_secs else None,
+                         'input_sha256':[hashlib.sha256(p.read_bytes()).hexdigest() for p in inputs],
+                         'python_version':sys.version.split()[0],
+                         'clock':time.get_clock_info('monotonic').implementation,
+                         'attempts':[]})
+        return 0
+    state = json.loads(args.state.read_text())
+    if args.action == 'finish':
+        state.update(status='completed' if args.exit_code == 0 else 'cancelled' if args.exit_code in (130,143) else 'failed',
+                     runner_exit_code=args.exit_code, elapsed_secs=time.monotonic()-state['started_monotonic'])
+        save(args.state, state)
+        return 0
+    left = remaining(state)
+    if args.action == 'sleep':
+        if left is not None and left <= args.seconds:
+            time.sleep(left)
+            return 124
+        time.sleep(args.seconds)
+        return 0
+    if left is not None and left <= 0:
+        print('Runner total deadline exhausted.', file=sys.stderr)
+        return 124
+    if not args.unmetered and state['attempts_used'] >= state['max_attempts']:
+        print('Runner total call budget exhausted.', file=sys.stderr)
+        return 125
+    if not command: ap.error('command is required')
+    entry = None
+    if not args.unmetered:
+        state['attempts_used'] += 1
+        index = state['attempts_used']
+        entry = {'index':index, 'status':'running', 'actual_model':None,
+                 'requested_model':command[command.index('-m')+1] if '-m' in command else None}
+        state['attempts'].append(entry)
+        save(args.state, state)  # consume before spawning; no reset at fallback/continuation
+    started = time.monotonic()
+    cancelled = 0
+    proc = None
+
+    def cancel(signum, frame):
+        nonlocal cancelled
+        cancelled = signum
+        if proc is not None: stop_group(proc)
+
+    signal.signal(signal.SIGTERM, cancel)
+    signal.signal(signal.SIGINT, cancel)
+    code = 1
+    offsets = {p: p.stat().st_size if args.append and p.exists() else 0
+               for p in (args.stdout, args.stderr)}
+    with contextlib.ExitStack() as stack:
+        stdin = stack.enter_context(args.stdin.open('rb')) if args.stdin else subprocess.DEVNULL
+        stdout = stack.enter_context(args.stdout.open('ab' if args.append else 'wb'))
+        stderr = stack.enter_context(args.stderr.open('ab' if args.append else 'wb'))
+        try:
+            if cancelled: return 128+cancelled
+            proc = subprocess.Popen(command, cwd=args.cwd, stdin=stdin, stdout=stdout,
+                                    stderr=stderr, start_new_session=True)
+            if cancelled: stop_group(proc)
+            try:
+                code = proc.wait(timeout=remaining(state))
+            except subprocess.TimeoutExpired:
+                stop_group(proc)
+                stderr.write(b'Runner subprocess timed out: total deadline exhausted.\n')
+                code = 124
+            finally:
+                stop_group(proc)
+            if cancelled: code = 128+cancelled
+        except OSError as exc:
+            stderr.write((str(exc)+'\n').encode())
+            code = 127
+    if entry is not None:
+        # Raw events remain per call even when retries share an aggregate file.
+        trace = args.state.parent
+        for suffix, source in [('stdout',args.stdout), ('stderr',args.stderr)]:
+            target = trace/f'attempt_{index}.{suffix}'
+            target.write_bytes(source.read_bytes()[offsets[source]:])
+            entry[suffix] = target.name
+        entry.update(status='cancelled' if cancelled else 'timed_out' if code == 124 else 'exited',
+                     exit_code=code, elapsed_secs=time.monotonic()-started)
+        save(args.state, state)
+    return code if code >= 0 else 128-code
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

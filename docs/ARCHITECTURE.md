@@ -127,6 +127,10 @@ Key files:
 - `packages/orchestrator/src/orch-tools/run-read-model.ts`
 - `packages/orchestrator/src/computation/approval.ts`
 
+Persisted workflow-plan steps share `RunManifestManager` under `artifacts/runs/<run_id>/manifest.json`: dispatch intent precedes the tool call, raw response commit precedes state projection, and unknown outcomes require operator reconciliation. Pause and canonical approval are checked at dispatch boundaries; an approval envelope is not a completed research step. These boundaries do not provide a compare-and-swap guarantee against arbitrary concurrent external state writers.
+
+Overflow recovery keeps a separate immutable snapshot of original user text and evicts complete tool-call/result groups. Evidence excerpts are explicitly incomplete; required source content must be reacquired. If the instruction capsule itself cannot fit, recovery stops instead of truncating user constraints.
+
 ### 5.3 Research material placement
 
 Paper originals, extracted text, arXiv source tarballs, and source trees are filesystem materials, not product-level protocol surfaces.

@@ -14,10 +14,11 @@ Use this skill when you need to call Kimi Code CLI from the command line without
 ## Preconditions
 
 - `kimi` is installed: `command -v kimi`
+- `python3` is version 3.10 or newer. Older runtimes are rejected before model invocation because the shared monotonic deadline must use the same clock reference across processes.
 - You are authenticated/configured for Kimi Code CLI. First-time setup is usually `kimi login` or `/login` inside the TUI.
 - The official package is `@moonshot-ai/kimi-code` and the executable is `kimi`.
 
-This runner was checked against the official Kimi Code docs and `@moonshot-ai/kimi-code@0.20.1` (`latest` on npm on 2026-06-27). Current Kimi Code prompt mode uses:
+The exposed command interface was checked against local Kimi Code **2.0.2** and the [official CLI reference](https://www.kimi.com/code/docs/en/kimi-code-cli/reference/kimi-command.html) on 2026-10-01. This metadata check does not establish account readiness or successful inference. Prompt mode uses:
 
 ```bash
 kimi -p "prompt text" --output-format stream-json
@@ -61,7 +62,7 @@ bash "${SKILL_DIR}/scripts/run_kimi.sh" \
 ## Safety notes
 
 - Kimi Code prompt mode rejects `--plan`, `--auto`, and `--yolo` combined with `--prompt`.
-- In Kimi Code 0.20.1 source, prompt mode creates the session with `permission: "auto"` and installs a headless approval handler that approves actions.
+- Do not add `-y` to prompt mode. The runner rejects the conflicting `--yolo` option before invocation.
 - Kimi prompt mode is not a sandbox: it can run tools with automatic approval. Use this runner only with trusted prompts or in an external disposable environment.
 - To reduce accidental repo exposure, this runner defaults to `--tool-mode isolated`, which runs `kimi -p` from a temporary isolated working directory and passes no `--add-dir`.
 - By default, the runner also passes an empty temporary `--skills-dir`, which prevents Kimi from auto-discovering user/project skills during isolated runs.
@@ -73,9 +74,10 @@ bash "${SKILL_DIR}/scripts/run_kimi.sh" \
 
 - The runner defaults to `--output-format stream-json` and writes only assistant text content to `--out`; tool calls, tool results, metadata, and non-text assistant blocks are not represented in that output file.
 - Tool result and metadata events are ignored in parsed output.
-- Kimi Code may spend a long time in thinking or tool-use before emitting final assistant text. For reviewer / verification use, prefer a generous per-attempt timeout (the runner default is 900 seconds) and pass `--raw-out` plus `--stderr-out` when you need an auditable trace of tool calls, provider warnings, or partial output.
+- Kimi Code may spend a long time in thinking or tool-use before emitting final assistant text. `--timeout-secs` bounds the entire invocation, including retries, fallback and backoff (default 900 seconds). Expiry and cancellation terminate locally created CLI process groups and their descendants. This does not attest cancellation of a remote provider job.
 - If a specific `--model` fails with a model-not-found style error, the runner retries with Kimi's configured default model unless `--no-fallback` is set.
-- Retry behavior uses `--max-attempts` and `--sleep-secs`.
+- `--max-attempts` caps all CLI calls in this invocation; fallback consumes the same remaining budget. `--sleep-secs` backoff consumes the same deadline. Quota exhaustion and deterministic permission refusals stop instead of repeating the blocked call.
+- Exit 0 requires nonblank assistant text and successful execution without an error event. Interrupted text is retained as `OUT.partial`, without a completed `OUT`. Every call's raw events, diagnostics and budget receipt remain under `OUT.attempts/run.*` (or `--trace-dir DIR`). Requested model aliases are recorded; actual provider model identity remains unknown unless separately attested. A completed invocation is not scientific acceptance.
 - Deterministic failures (usage/auth/region-ineligibility errors, exit codes 2/126/127, and similar, detected from the exit code and diagnostics) fail immediately with the diagnostic instead of burning the retry backoff; model-not-found keeps its default-model fallback.
 - The merged prompt limit defaults to a conservative OS-argument-safe value. Override with `KIMI_MAX_PROMPT_BYTES` when you know your platform can accept larger prompt arguments.
 - Repeat `--skills-dir DIR` to pass Kimi Code skill directories through to the run. Per official Kimi docs, specifying this flag replaces auto-discovered user and project skill directories.
@@ -83,15 +85,11 @@ bash "${SKILL_DIR}/scripts/run_kimi.sh" \
 - Use `kimi provider list --json` to inspect the model aliases configured on the current machine before setting `--model`.
 - Use `--dry-run` for offline validation. It prints paths, sizes, hashes, and planned flags, but never prints the full prompt.
 
-## Headless approval and session continuation
+## Session continuation
 
-- `--yolo` — pass Kimi `-y` (auto-approve all actions). Needed for headless agentic tasks whose
-  tool actions would otherwise wait for an interactive approval and stall the run.
 - `--resume-session ID` — resume a specific recorded Kimi session (`kimi -S ID`); the prompt
-  becomes that session's next turn. **The id REQUIRES the `session_` prefix** (live-caught: a bare
-  UUID fails with `Session ... not found`; `session_<uuid>` resumed correctly). Discover ids in
-  `~/.kimi-code/session_index.jsonl` (field `sessionId`) or under
-  `~/.kimi-code/sessions/wd_<dir-hash>/session_<uuid>/`.
+  becomes that session's next turn. Treat IDs as opaque and pass the exact ID reported by the
+  installed CLI; do not add or strip a historical prefix.
 - `--continue-work-dir` — continue the previous session OF THE WORKING DIRECTORY (`kimi -c`). Kimi
   scopes `-c` per working directory — confirmed both by the CLI help and by the on-disk
   `sessions/wd_<dir-hash>/` layout — so this is non-racy across parallel runs in different
@@ -99,8 +97,9 @@ bash "${SKILL_DIR}/scripts/run_kimi.sh" \
   default isolated fresh temp dir has no previous session): run 1 with `--work-dir D`, run 2 with
   `--work-dir D --continue-work-dir`.
 
-Both continuation forms are live-validated END-TO-END: a fact planted in run 1 was recalled by the
-`--continue-work-dir` run and again by the `--resume-session session_<uuid>` run.
+Continuation requires the original working directory and recorded session identity. It continues
+the same execution and does not count as independent review. Current metadata-only checks do not
+establish live session recovery for a configured provider.
 
 ## Options
 
@@ -116,14 +115,14 @@ Both continuation forms are live-validated END-TO-END: a fact planted in run 1 w
 | `--skills-dir DIR` | empty temp dir | Repeatable Kimi Code skills directory |
 | `--auto-skills` | off | Do not pass `--skills-dir`; allow Kimi auto-discovery; mutually exclusive with `--skills-dir` |
 | `--kimi-bin PATH` | `kimi` | Kimi executable path |
-| `--max-attempts N` | 3 | Attempts per run mode |
+| `--max-attempts N` | 3 | Total CLI calls, including fallback |
 | `--max-retries N` | 3 | Deprecated alias for `--max-attempts` |
 | `--sleep-secs S` | 5 | Base exponential backoff |
-| `--timeout-secs S` | 900 | Per-attempt hard timeout for the Kimi subprocess; 0 disables timeout |
+| `--timeout-secs S` | 900 | Total invocation deadline, including backoff/fallback; 0 explicitly disables it |
 | `--raw-out FILE` | none | Copy raw Kimi stdout from the last attempt to this file for audit/debugging |
 | `--stderr-out FILE` | none | Copy raw Kimi stderr from the last attempt to this file for audit/debugging |
+| `--trace-dir DIR` | `OUT.attempts` | Retain every attempt's events, diagnostics and budget receipt in a unique run directory |
 | `--no-fallback` | off | Do not retry without `--model` after model-not-found errors |
-| `--yolo` | off | Pass Kimi `-y` (auto-approve all actions) for headless agentic tasks |
 | `--resume-session ID` | (none) | Resume a specific recorded Kimi session (`kimi -S ID`) |
 | `--continue-work-dir` | off | Continue the working directory's previous session (`kimi -c`; requires `--work-dir`) |
 | `--dry-run` | off | Print planned invocation without calling Kimi |

@@ -57,6 +57,8 @@ Wire into an MCP client (Cursor / Claude Desktop / Claude Code / Codex / OpenCod
 }
 ```
 
+`inspire_literature` accepts the common optional `project_root` in all seven modes while retaining each mode's own required and allowed provider arguments. Its advertised catalog, parser and dispatcher agree; `size` is optional and is not required by modes that reject it.
+
 ## Front-door drift lock
 
 The tool inventory, doc tables, and category counts are tied together by:

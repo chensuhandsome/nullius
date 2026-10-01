@@ -1213,7 +1213,10 @@ describe('AgentRunner', () => {
 
     const messages: MessageParam[] = [
       { role: 'user', content: 'Open the project and inspect every artifact carefully.' },
-      { role: 'assistant', content: [{ type: 'text', text: 'Initial assessment.' }] },
+      { role: 'assistant', content: [
+        { type: 'text', text: 'Initial assessment.' },
+        { type: 'tool_use', id: 'tu_big', name: 'do_thing', input: {} },
+      ] },
       { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_big', content: 'x'.repeat(1200) }] },
       { role: 'assistant', content: [{ type: 'text', text: 'Tool result received.' }] },
       { role: 'user', content: 'Continue with the full synthesis.' },
@@ -1231,6 +1234,31 @@ describe('AgentRunner', () => {
     expect(createFn.mock.calls[1]?.[0]?.messages.some((message: MessageParam) =>
       typeof message.content === 'string' && message.content.includes('[runtime marker] Context compaction applied'),
     )).toBe(true);
+  });
+
+  it('keeps the instruction snapshot independent of backend mutation and dialogue excerpts', async () => {
+    const instruction = `Read only. ${'Inspect supplied source material. '.repeat(40)}Stop after 60 seconds.`;
+    const createFn = vi.fn()
+      .mockImplementationOnce(async (params: { messages: MessageParam[] }) => {
+        // A backend receives the live dialogue, never the immutable snapshot.
+        params.messages[0]!.content = 'A lossy replacement of the original request.';
+        throw new Error('prompt is too long for the model context window');
+      })
+      .mockResolvedValueOnce(textResponse('overflow recovered'));
+    const runner = makeRunner({
+      model: 'claude-opus-4-6',
+      runId: 'run-overflow-instruction-snapshot',
+      mcpClient: makeMockMcpClient(),
+      _messagesCreate: createFn,
+    });
+    const events = await collectEvents(runner.run([
+      { role: 'user', content: instruction },
+      { role: 'assistant', content: 'Prior dialogue to compact. '.repeat(50) },
+    ], TOOLS));
+    const retried: MessageParam[] = createFn.mock.calls[1]![0].messages;
+    expect(retried.flatMap(message => typeof message.content === 'string' ? [message.content]
+      : message.content.filter(block => block.type === 'text').map(block => block.text))).toContain(instruction);
+    expect(events.at(-1)).toMatchObject({ type: 'done', stopReason: 'end_turn' });
   });
 
   it('fails closed when the backend returns an unknown stop_reason', async () => {

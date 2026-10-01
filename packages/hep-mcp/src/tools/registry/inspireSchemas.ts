@@ -76,7 +76,7 @@ export const InspireLiteratureToolSchema = z
     recid: z.string().min(1).optional().describe(
       "INSPIRE literature record id. Required for get_paper, get_references, and get_citations."
     ),
-    size: optionalBudgetInt({ min: 1, max: 1000 }).describe(
+    size: optionalBudgetInt({ min: 1, max: 1000 }).optional().describe(
       "Page size / result limit. Only used by get_references, get_citations, and search_affiliation. Ignored by lookup_by_id, get_paper, and get_author for agent-call compatibility."
     ),
     identifier: z.string().min(1).optional().describe(
@@ -116,7 +116,9 @@ export const InspireLiteratureToolSchema = z
     })();
 
     const extraKeys = Object.keys(v)
-      .filter(k => k !== 'mode')
+      // The registry adds project_root to every tool as a common routing field.
+      // It is independent of this tool's mode-specific provider arguments.
+      .filter(k => k !== 'mode' && k !== 'project_root')
       .filter(k => !allowed.has(k))
       .sort((a, b) => a.localeCompare(b));
 

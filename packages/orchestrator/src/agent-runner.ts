@@ -28,6 +28,7 @@ import {
   recoverFromContextOverflow,
   resetLowGainTracking,
 } from './agent-runner-runtime-state.js';
+import { captureUserInstructions } from './agent-runner-history-compaction.js';
 
 export type { AgentEvent } from './agent-runner-ops.js';
 export type { MessageParam, Tool } from './backends/chat-backend.js';
@@ -104,6 +105,7 @@ export class AgentRunner {
   }
 
   private async *runImpl(messages: MessageParam[], tools: Tool[]): AsyncGenerator<AgentEvent> {
+    const instructions = captureUserInstructions(messages);
     let currentMessages: MessageParam[] = [...messages];
     const runtimeState = createAgentRuntimeState();
     const projectionBuilder = createDelegatedRuntimeProjectionBuilder();
@@ -206,6 +208,7 @@ export class AgentRunner {
         const recovery = recoverFromContextOverflow({
           error,
           messages: currentMessages,
+          instructions,
           turnCount: turn + 1,
           runtimeState,
         });

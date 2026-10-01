@@ -26,9 +26,11 @@ DRY_RUN=0
 RAW_OUT=""
 STDERR_OUT=""
 LAST_MODEL_NOT_FOUND=0
-YOLO=0
 RESUME_SESSION=""
 CONTINUE_WORK_DIR=0
+TRACE_DIR=""
+PROCESS_BUDGET="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/process_budget.py"
+ACTIVE_PID=""
 
 usage() {
   cat <<'EOF'
@@ -51,16 +53,15 @@ Options:
   --system-prompt-file F  Optional. Prepended to the prompt file.
   --prompt-file FILE      Required.
   --out PATH              Required.
-  --max-attempts N        Total attempts per run mode (default: 3)
+  --max-attempts N        Total CLI calls, including retries and fallback (default: 3)
   --max-retries N         Deprecated alias of --max-attempts
   --sleep-secs SECONDS    Exponential backoff base seconds (default: 5)
-  --timeout-secs SECONDS  Per-attempt hard timeout for the Kimi subprocess.
+  --timeout-secs SECONDS  Total invocation deadline, including backoff and fallback.
                           Default: 900. Use 0 to disable.
   --raw-out FILE          Optional. Copy raw Kimi stdout from the last attempt here.
   --stderr-out FILE       Optional. Copy raw Kimi stderr from the last attempt here.
+  --trace-dir DIR         Retain every attempt's raw events and budget receipt here.
   --no-fallback           Do not retry without -m when a model run fails as model-not-found.
-  --yolo                  Pass Kimi -y (auto-approve all actions). Needed for headless agentic
-                          tasks whose tool actions would otherwise wait for interactive approval.
   --resume-session ID     Resume a specific recorded Kimi session (kimi -S ID); the prompt is the
                           session's next turn.
   --continue-work-dir     Continue the previous session OF THE WORKING DIRECTORY (kimi -c).
@@ -263,14 +264,14 @@ for line in raw_path.read_text(encoding="utf-8", errors="replace").splitlines():
     role = obj.get("role")
     typ = obj.get("type")
     content = obj.get("content")
-    if role == "assistant":
+    if role == "error" or typ == "error" or obj.get("error"):
+        errors.append(error_from_obj(obj))
+    elif role == "assistant":
         text = text_from_content(content)
         if text is not None:
             chunks.append(text)
         elif content is not None:
             unknown_assistant_shapes.append(json.dumps(obj, ensure_ascii=False)[:500])
-    elif role == "error" or typ == "error" or obj.get("error"):
-        errors.append(error_from_obj(obj))
 
 if errors:
     err_path.write_text(" | ".join(errors) + "\n", encoding="utf-8")
@@ -285,7 +286,7 @@ if unknown_assistant_shapes:
     )
     raise SystemExit(13)
 
-if not chunks:
+if not chunks or not any(chunk.strip() for chunk in chunks):
     msg = "No assistant content found in Kimi stream-json output."
     if non_json:
         msg += " First raw line: " + non_json[0][:240]
@@ -354,6 +355,13 @@ classify_deterministic_failure() {
         'location is not supported' \
         'unauthorized' \
         'forbidden' \
+        'quota exhausted' \
+        'quota exceeded' \
+        'insufficient quota' \
+        'usage limit reached' \
+        'out of usage' \
+        'auto-rejecting' \
+        'permission denied' \
         'invalid api key'; do
         if grep -qiF -- "${pat}" "${f}" 2>/dev/null; then
           reason="diagnostic output matched '${pat}'"
@@ -447,8 +455,16 @@ while [[ $# -gt 0 ]]; do
       STDERR_OUT="$2"
       shift 2
       ;;
+    --trace-dir)
+      require_value "$1" "${2-}"
+      TRACE_DIR="$2"
+      shift 2
+      ;;
     --no-fallback) NO_FALLBACK=1; shift 1;;
-    --yolo) YOLO=1; shift 1;;
+    --yolo)
+      echo "--yolo cannot be combined with Kimi prompt mode; headless permissions are controlled by Kimi." >&2
+      exit 2
+      ;;
     --resume-session)
       require_value "$1" "${2-}"
       RESUME_SESSION="$2"
@@ -599,7 +615,7 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
   echo "Merged prompt: bytes=${merged_size}, sha256=${merged_sha}, limit=${PROMPT_LIMIT}"
   echo "Output: ${OUT}"
   if [[ "${TIMEOUT_SECS}" -gt 0 ]]; then
-    echo "Timeout: ${TIMEOUT_SECS}s per attempt"
+    echo "Timeout: ${TIMEOUT_SECS}s total invocation deadline"
   else
     echo "Timeout: disabled"
   fi
@@ -618,9 +634,6 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
     cmd+=(-m "${MODEL}")
   fi
   cmd+=(--output-format stream-json)
-  if [[ "${YOLO}" -eq 1 ]]; then
-    cmd+=(-y)
-  fi
   if [[ -n "${RESUME_SESSION}" ]]; then
     cmd+=(-S "${RESUME_SESSION}")
   elif [[ "${CONTINUE_WORK_DIR}" -eq 1 ]]; then
@@ -668,6 +681,13 @@ tmp_stderr="$(mktemp)"
 tmp_text="$(mktemp)"
 tmp_parse_err="$(mktemp)"
 tmp_stdout_tail="$(mktemp)"
+mkdir -p "${TRACE_DIR:-${OUT}.attempts}"
+TRACE_RUN_DIR="$(mktemp -d "${TRACE_DIR:-${OUT}.attempts}/run.XXXXXX")"
+BUDGET_STATE="${TRACE_RUN_DIR}/budget.json"
+budget_inputs=(--prompt-file "${PROMPT_FILE}" --out "${OUT}")
+if [[ -n "${SYSTEM_PROMPT_FILE}" ]]; then budget_inputs+=(--system-file "${SYSTEM_PROMPT_FILE}"); fi
+python3 "${PROCESS_BUDGET}" init --state "${BUDGET_STATE}" --max-attempts "${MAX_ATTEMPTS}" \
+  --timeout-secs "${TIMEOUT_SECS}" "${budget_inputs[@]}"
 copy_attempt_artifacts() {
   if [[ -n "${RAW_OUT}" ]]; then
     mkdir -p "$(dirname "${RAW_OUT}")"
@@ -679,6 +699,13 @@ copy_attempt_artifacts() {
   fi
 }
 cleanup() {
+  local result="${1:-$?}"
+  if [[ -n "${ACTIVE_PID}" ]]; then
+    kill -TERM "${ACTIVE_PID}" 2>/dev/null || true
+    wait "${ACTIVE_PID}" 2>/dev/null || true
+    ACTIVE_PID=""
+  fi
+  python3 "${PROCESS_BUDGET}" finish --state "${BUDGET_STATE}" --exit-code "${result}" || true
   rm -f "${MERGED_PROMPT}" "${tmp_stdout}" "${tmp_stderr}" "${tmp_text}" "${tmp_parse_err}" "${tmp_stdout_tail}"
   if [[ -n "${TEMP_WORK_DIR}" ]]; then
     rm -rf "${TEMP_WORK_DIR}"
@@ -689,7 +716,7 @@ cleanup() {
 }
 cleanup_and_exit() {
   local code="$1"
-  cleanup
+  cleanup "${code}"
   trap - EXIT INT TERM
   exit "${code}"
 }
@@ -709,9 +736,6 @@ run_once() {
     cmd+=(-m "${MODEL}")
   fi
   cmd+=(--output-format stream-json)
-  if [[ "${YOLO}" -eq 1 ]]; then
-    cmd+=(-y)
-  fi
   if [[ -n "${RESUME_SESSION}" ]]; then
     cmd+=(-S "${RESUME_SESSION}")
   elif [[ "${CONTINUE_WORK_DIR}" -eq 1 ]]; then
@@ -725,41 +749,13 @@ run_once() {
   done
   cmd+=(-p "${prompt_text}")
 
-  if [[ "${TIMEOUT_SECS}" -eq 0 ]]; then
-    (
-      cd "${RUN_WORK_DIR}"
-      "${cmd[@]}"
-    ) >"${tmp_stdout}" 2>"${tmp_stderr}"
-    return $?
-  fi
-
-  python3 - "${RUN_WORK_DIR}" "${TIMEOUT_SECS}" "${tmp_stdout}" "${tmp_stderr}" "${cmd[@]}" <<'PY'
-import subprocess
-import sys
-from pathlib import Path
-
-cwd = sys.argv[1]
-timeout = int(sys.argv[2])
-stdout_path = Path(sys.argv[3])
-stderr_path = Path(sys.argv[4])
-cmd = sys.argv[5:]
-
-with stdout_path.open("wb") as stdout, stderr_path.open("ab") as stderr:
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=cwd,
-            stdout=stdout,
-            stderr=stderr,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        stderr.write(f"Kimi subprocess timed out after {timeout}s.\n".encode("utf-8"))
-        raise SystemExit(124)
-
-raise SystemExit(proc.returncode)
-PY
+  python3 "${PROCESS_BUDGET}" run --state "${BUDGET_STATE}" --cwd "${RUN_WORK_DIR}" \
+    --stdout "${tmp_stdout}" --stderr "${tmp_stderr}" -- "${cmd[@]}" &
+  ACTIVE_PID=$!
+  local result=0
+  wait "${ACTIVE_PID}" || result=$?
+  ACTIVE_PID=""
+  return "${result}"
 }
 
 run_mode() {
@@ -783,6 +779,19 @@ run_mode() {
       code=$?
     fi
     copy_attempt_artifacts
+    if [[ "${code}" -eq 124 || "${code}" -eq 125 ]]; then
+      echo "Kimi total deadline or call budget exhausted (exit ${code})." >&2
+      cat "${tmp_stderr}" >&2 || true
+    fi
+    # Preserve any body on interrupted execution, without presenting it as completed.
+    if [[ "${code}" -ne 0 ]] && parse_kimi_stream_json "${tmp_stdout}" "${tmp_text}" "${tmp_parse_err}"; then
+      mkdir -p "$(dirname "${OUT}")"
+      cp "${tmp_text}" "${OUT}.partial"
+      return "${code}"
+    fi
+    if [[ "${code}" -eq 124 || "${code}" -eq 125 || "${code}" -ge 128 ]]; then
+      return "${code}"
+    fi
     if [[ "${code}" -ne 0 ]] && is_model_not_found_error "${tmp_stdout}" "${tmp_stderr}"; then
       LAST_MODEL_NOT_FOUND=1
     fi
@@ -805,6 +814,10 @@ run_mode() {
         echo "Kimi produced a deterministic parse failure in ${label} mode; not retrying identical output." >&2
         return "${parse_code}"
       fi
+    fi
+    if is_model_not_found_error "${tmp_stdout}" "${tmp_stderr}"; then
+      LAST_MODEL_NOT_FOUND=1
+      return "${code}"
     fi
 
     # Deterministic failures reproduce identically on every retry: fail
@@ -842,7 +855,7 @@ run_mode() {
       sleep_for="${MAX_BACKOFF_SECS}"
     fi
     echo "Attempt ${attempt} failed in ${label} mode (exit ${code}); retrying in ${sleep_for}s..." >&2
-    sleep "${sleep_for}"
+    python3 "${PROCESS_BUDGET}" sleep --state "${BUDGET_STATE}" --seconds "${sleep_for}" || return $?
     attempt=$(( attempt + 1 ))
   done
 }

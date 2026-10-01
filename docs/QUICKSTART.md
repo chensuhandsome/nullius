@@ -124,6 +124,8 @@ via: nullius decision list) until resolved.
 2) `nullius status --project-root /absolute/path/to/external-project`
 - 确认 lifecycle state、审批与后续 workflow-plan / computation 入口可见。
 
+恢复 `nullius run` 时，未知副作用会停止等待核对，已提交响应可回放而不重调。暂停阻止下一步；审批请求保留未完成步骤，必须由宿主实际批准后才能继续。不要把未知结果的中断当作普通失败反复重派。
+
 3) `nullius workflow-plan --recipe literature_to_evidence`
 - 如需高层 literature planning front door，可先完成这一步；随后再按下方 HEP 路径进入当前最强的 domain-pack workflow family。
 

@@ -309,6 +309,7 @@ before the verdict is folded into a conclusion.
 - `--backend-output backend=relative_or_absolute_path`
 - `--backend-tool-mode backend=mode`
 - `--timeout-secs N`
+- `--max-attempts N`
 
 Notes:
 - These flags are repeatable.
@@ -318,7 +319,9 @@ Notes:
 - Relative `--backend-output` paths are resolved under `--out-dir`.
 - `claude=none` for `--backend-system` is rejected (Claude runner requires a system prompt file).
 - For a single run, `--backend-output` does not allow one path for repeated same-backend agents (to avoid output clobbering).
-- `--timeout-secs` is a per-backend hard timeout. Default: `900` seconds. Use `0` to disable.
+- `--timeout-secs` is one total deadline per review seat, starting at its first runner invocation. Both phases, empty-output retries, and outer fallback share the deadline. Default: `900` seconds. Use `0` to disable.
+- `--max-attempts` caps total runner subprocess invocations per seat, including both phases, empty-output retries, and outer fallback. Default: `3`; a complete two-phase review needs at least `2`. Exhausted seats are unavailable, never successful reviews. `meta.json` records the cap and consumed calls in each seat's `seat_budget`.
+- The launcher requests one inner attempt from Claude, Codex, Kimi, and OpenCode, and disables supported inner model fallback so the explicit outer fallback policy owns replacement. Gemini has no inner attempt flag: its approved transport routing is preserved, and the seat cap counts runner invocations rather than underlying HTTP requests.
 - `--backend-tool-mode` is explicit and backend-specific:
   - `claude=none|review`
   - `gemini=none|review`
@@ -655,6 +658,7 @@ mistaken for reviewer disagreement:
   empty output (`phase1_empty_output`) is classified infrastructure but is NOT
   auto-retried by this flag, and `--two-phase` rejects fallback — recover it
   with a manual same-model rerun (see the two-phase section).
+- Empty-output retries and outer fallback stop when the seat's attempt cap or deadline is exhausted. Failure reasons `attempt_budget_exhausted` and `deadline_exhausted` record this limit separately from content disagreement.
 - `meta.json` always includes `unavailable_backends`: the requested model specs
   whose runs ALL failed at the infrastructure level this invocation (a
   fallback-recovered run counts by its original failure). Read entries there as

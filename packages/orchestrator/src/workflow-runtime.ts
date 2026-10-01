@@ -104,6 +104,7 @@ export type WorkflowRuntimeResult =
 
 export type WorkflowRuntimeDeps = {
   workflowToolCaller?: ToolCaller;
+  dispatchTool?: (caller: ToolCaller, request: WorkflowRuntimeRequest) => Promise<McpToolResult>;
 };
 
 type WorkflowToolServerConfig = {
@@ -494,7 +495,9 @@ export async function executeWorkflowRuntimeRequest(
     const toolResult = await withWorkflowToolCaller(
       deps,
       request.project_root,
-      toolCaller => toolCaller.callTool(request.tool, request.params),
+      toolCaller => deps.dispatchTool
+        ? deps.dispatchTool(toolCaller, request)
+        : toolCaller.callTool(request.tool, request.params),
     );
     return normalizeWorkflowRuntimeResult(request, toolResult);
   } catch (error) {

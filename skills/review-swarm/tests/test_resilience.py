@@ -116,7 +116,7 @@ out=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
-    --system-prompt-file|--prompt-file|--model) shift 2 ;;
+    --system-prompt-file|--prompt-file|--model|--max-retries) shift 2 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -689,12 +689,9 @@ class NonIndependentCreditTests(unittest.TestCase):
             self.assertTrue(meta["agents"][1]["success"])
             self.assertNotIn("diversity", meta)
 
-    def test_timeout_recovered_by_fallback_is_a_success_without_family_credit(self):
-        # The fallback attempt's own timeout state replaces the original
-        # attempt's (a stale timed_out=True used to re-classify a successful
-        # recovery as a timeout), and a backend-default recovery records
-        # resolved.model = None — recovered lane counts as a success but its
-        # family is unattested: model_unattributed, zero independence credit.
+    def test_total_deadline_blocks_fallback_after_original_timeout(self):
+        # Fallback shares the seat deadline: a full-budget timeout cannot
+        # start another runner with a fresh deadline.
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
             out_dir = td_path / "out"
@@ -705,24 +702,18 @@ class NonIndependentCreditTests(unittest.TestCase):
                 "--fallback-order", "gemini",
                 "--fallback-target-backends", "codex",
             )
-            # Original codex lane hangs past the timeout; gemini recovers it.
+            # Original codex lane consumes the full deadline.
             sleeper = td_path / "run_codex.sh"
             sleeper.write_text("#!/usr/bin/env bash\nsleep 5\n", encoding="utf-8")
             sleeper.chmod(0o755)
             argv[argv.index("--models") + 1] = "codex/default"
             code = _run_main_with_argv(self.mod, argv)
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 2)
             meta = json.loads((out_dir / "meta.json").read_text(encoding="utf-8"))
             lane = meta["agents"][0]
-            self.assertTrue(lane["success"])
-            self.assertEqual(lane["variant"], "fallback")
-            self.assertFalse(lane["timed_out"])
-            self.assertIsNone(lane["failure_reason"])
-            self.assertEqual(lane["resolved"], {"backend": "gemini", "model": None})
-            lanes = meta["independence"]["non_independent_lanes"]
-            self.assertEqual(len(lanes), 1)
-            self.assertEqual(lanes[0]["index"], 0)
-            self.assertEqual(lanes[0]["reason"], "model_unattributed")
+            self.assertFalse(lane["success"])
+            self.assertEqual(lane["failure_reason"], "deadline_exhausted")
+            self.assertEqual(lane["seat_budget"]["runner_invocations"], 1)
 
 
 if __name__ == "__main__":

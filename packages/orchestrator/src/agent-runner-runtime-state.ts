@@ -142,13 +142,14 @@ export function isContextOverflowError(error: unknown): boolean {
 export function recoverFromContextOverflow(params: {
   error: unknown;
   messages: MessageParam[];
+  instructions?: readonly string[];
   turnCount: number;
   runtimeState: AgentRuntimeState;
 }): { messages: MessageParam[]; marker: AgentRuntimeMarkerEvent } | null {
   if (!isContextOverflowError(params.error) || params.runtimeState.overflowRetryCount >= MAX_OVERFLOW_RETRIES) {
     return null;
   }
-  const compacted = compactMessagesForOverflow(params.messages);
+  const compacted = compactMessagesForOverflow(params.messages, params.instructions);
   if (!compacted) {
     return null;
   }

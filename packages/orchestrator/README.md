@@ -22,6 +22,8 @@ Stateful control plane. One shared authority for lifecycle state, approvals, bou
 
 The delegated runtime persists each tool attempt before dispatch and classifies it as `not_started`, `outcome_unknown`, or `committed`. Unknown side effects stop for operator reconciliation; committed MCP results replay exactly; permission checks cover the full assistant turn before any transport call; and run-gate approvals remain host/operator authority. Direct and team journals use separate `artifacts/delegated-runs/direct/` and `artifacts/delegated-runs/team/` roots, themselves structurally separate from caller-named root runs. Orchestrator-owned stdio servers use explicit cwd/config/credential inputs, an isolated `HOME`, required-credential preflight, and process-group cleanup on POSIX.
 
+Persisted workflow-plan tool attempts use the same journal under `artifacts/runs/<run_id>/manifest.json`. A transport interruption stops uncertain replay; committed responses can recover state without another dispatch. Pause gates the next step, and canonical run-gate approval must precede retry of an approval-blocked step. Overflow compaction retains original user instructions and complete tool exchanges; evidence excerpts remain incomplete.
+
 ## Binary
 
 Build first, then point your `$PATH` at the workspace CLI:

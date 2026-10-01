@@ -6,12 +6,16 @@ import type { CliIo } from './cli-lifecycle.js';
 import { resolveLifecycleProjectRoot } from './cli-project-root.js';
 import { resolveUserPath } from './project-policy.js';
 import { runDirFor } from './run-paths.js';
+import { createToolAttemptIdentity, RunManifestManager } from './run-manifest.js';
 import { StateManager } from './state-manager.js';
+import { parseRunGateApprovalRequest, type RunGateApprovalRequest } from './tool-approval-envelope.js';
+import { resolveToolExecutionPolicy } from './tool-execution-policy.js';
 import type { RunState, WorkflowOutputView } from './types.js';
 import { utcNowIso } from './util.js';
 import {
   compileWorkflowRuntimeRequest,
   executeWorkflowRuntimeRequest,
+  normalizeWorkflowRuntimeResult,
   parsePersistedWorkflowExecution,
   type PersistedWorkflowPlanStep,
   type WorkflowRuntimeDeps,
@@ -419,6 +423,52 @@ function ensureWorkflowRunStarted(manager: StateManager, runId: string, workflow
   });
 }
 
+function workflowControlStatus(manager: StateManager, state: RunState): string | null {
+  const sentinel = manager.checkStopPause();
+  if (sentinel === 'pause' && state.run_status !== 'paused') {
+    manager.pauseRun(state, 'paused by sentinel');
+  } else if (sentinel === 'stop' && state.run_status === 'running') {
+    state.run_status = 'blocked';
+    state.notes = 'workflow stopped by sentinel';
+    manager.saveStateWithLedger(state, 'workflow_stopped');
+  }
+  if (state.pending_approval || state.run_status === 'awaiting_approval') return 'requires_approval';
+  if (state.run_status === 'paused' || state.run_status === 'blocked' || state.run_status === 'needs_recovery') {
+    return state.run_status;
+  }
+  return null;
+}
+
+function emitWorkflowControlStatus(io: CliIo, state: RunState, status: string): number {
+  io.stdout(`${JSON.stringify({
+    status, run_status: state.run_status, run_id: state.run_id, workflow_id: state.workflow_id,
+    ...(state.pending_approval ? {
+      gate_id: state.pending_approval.category,
+      approval_id: state.pending_approval.approval_id,
+      packet_path: state.pending_approval.packet_path,
+    } : {}),
+  }, null, 2)}\n`);
+  return status === 'needs_recovery' ? 1 : 0;
+}
+
+function stopUnknownWorkflowOutcome(
+  manager: StateManager, io: CliIo, stepId: string, reason: string,
+): number {
+  const state = manager.readState();
+  // Preserve an operator pause or approval, while keeping the dispatch journal
+  // unknown. Neither resume nor a repeated run can make that attempt safe.
+  if (state.run_status === 'running') state.run_status = 'needs_recovery';
+  state.notes = `workflow step ${stepId} outcome unknown: ${reason}; reconcile before dispatching again`;
+  manager.saveStateWithLedger(state, 'workflow_step_outcome_unknown', {
+    step_id: stepId, details: { reason },
+  });
+  io.stdout(`${JSON.stringify({
+    status: 'outcome_unknown', ok: false, run_status: state.run_status,
+    run_id: state.run_id, workflow_id: state.workflow_id, step_id: stepId, error: state.notes,
+  }, null, 2)}\n`);
+  return 1;
+}
+
 async function runWorkflowCommand(
   resolved: WorkflowResolvedRunInput,
   deps: RunCommandDeps,
@@ -426,6 +476,14 @@ async function runWorkflowCommand(
 ): Promise<number> {
   const manager = new StateManager(resolved.projectRoot);
   const initialState = manager.readState();
+  if (initialState.run_id !== resolved.runId
+    && ['running', 'paused', 'awaiting_approval', 'blocked', 'needs_recovery'].includes(initialState.run_status)) {
+    throw new Error(`cannot start workflow run_id=${resolved.runId} while another run is active (${initialState.run_id}:${initialState.workflow_id})`);
+  }
+  if (!resolved.dryRun) {
+    const controlStatus = workflowControlStatus(manager, initialState);
+    if (controlStatus) return emitWorkflowControlStatus(io, initialState, controlStatus);
+  }
   const selection = selectNextWorkflowStep(initialState);
 
   if (
@@ -535,6 +593,7 @@ async function runWorkflowCommand(
   }
 
   ensureWorkflowRunStarted(manager, resolved.runId, resolved.workflowId);
+  const journal = new RunManifestManager(path.dirname(runDirFor(resolved.projectRoot, resolved.runId)));
   const executedStepIds: string[] = [];
   let lastStepId: string | null = null;
   let lastTool: string | null = null;
@@ -547,6 +606,8 @@ async function runWorkflowCommand(
 
   while (true) {
     const state = manager.readState();
+    const controlStatus = workflowControlStatus(manager, state);
+    if (controlStatus) return emitWorkflowControlStatus(io, state, controlStatus);
     const { step, blockedReason } = selectNextWorkflowStep(state);
     if (!step) {
       if (blockedReason) {
@@ -618,14 +679,92 @@ async function runWorkflowCommand(
         runId: resolved.runId,
         step,
       });
-      runtimeResult = await executeWorkflowRuntimeRequest(runtimeRequest, deps);
+      const attempt = createToolAttemptIdentity({
+        stepId: step.step_id, toolName: runtimeRequest.tool, input: runtimeRequest,
+      });
+      const classification = journal.classifyToolAttempt(resolved.runId, attempt);
+      if (classification.state === 'outcome_unknown'
+        || (classification.state === 'missing' && step.status === 'in_progress')) {
+        return stopUnknownWorkflowOutcome(manager, io, step.step_id,
+          classification.state === 'missing' ? 'missing_durable_intent' : 'dispatch_interrupted');
+      }
+      if (classification.state === 'committed') {
+        if (parseRunGateApprovalRequest(runtimeRequest.tool, classification.result, resolveToolExecutionPolicy(runtimeRequest.tool))) {
+          throw new Error('committed approval response requires reconciliation before the workflow step can execute');
+        }
+        runtimeResult = normalizeWorkflowRuntimeResult(runtimeRequest, classification.result);
+      } else {
+        const pendingIntent = journal.loadManifest(resolved.runId)?.pending_tool_intents.find(intent => intent.step_id === step.step_id);
+        const boundary = pendingIntent?.last_approval_boundary;
+        if (boundary) {
+          const gateState = manager.readState();
+          if (gateState.gate_satisfied[boundary.gate_id] !== boundary.approval_id
+            || !gateState.approval_history.some(entry => entry.approval_id === boundary.approval_id
+              && entry.category === boundary.gate_id && entry.decision === 'approved')) {
+            throw new Error('workflow approval boundary requires canonical approval before another dispatch');
+          }
+        }
+        journal.observeToolIntents(resolved.runId, [attempt]);
+        let haltedStatus: string | null = null;
+        let returnedApproval: RunGateApprovalRequest | null = null;
+        let rejectedApprovalError: Error | null = null;
+        runtimeResult = await executeWorkflowRuntimeRequest(runtimeRequest, {
+          ...deps,
+          dispatchTool: async (caller, request) => {
+            const boundaryState = manager.readState();
+            haltedStatus = workflowControlStatus(manager, boundaryState);
+            if (haltedStatus) throw new Error(`workflow dispatch halted: ${haltedStatus}`);
+            journal.markToolIntentsDispatched(resolved.runId, [attempt]);
+            const response = await caller.callTool(request.tool, request.params);
+            try {
+              const approval = parseRunGateApprovalRequest(request.tool, response, resolveToolExecutionPolicy(request.tool));
+              if (approval) {
+                const gateState = manager.readState();
+                const pending = gateState.pending_approval;
+                if (approval.runId !== resolved.runId || gateState.run_id !== resolved.runId
+                  || gateState.workflow_id !== resolved.workflowId || !pending
+                  || pending.approval_id !== approval.approvalId || pending.category !== approval.gateId
+                  || pending.packet_path !== approval.packetPath || !pending.plan_step_ids.includes(step.step_id)
+                  || (gateState.run_status !== 'awaiting_approval' && gateState.run_status !== 'paused')) {
+                  throw new Error('workflow approval response has no matching canonical pending approval');
+                }
+                journal.resetOutcomeUnknownAtApprovalBoundary(resolved.runId, attempt, {
+                  authority: approval.authority, gate_id: approval.gateId, run_id: approval.runId,
+                  approval_id: approval.approvalId, packet_path: approval.packetPath,
+                  approval_packet_sha256: approval.approvalPacketSha256,
+                });
+                returnedApproval = approval;
+                return response;
+              }
+            } catch (error) {
+              // Preserve the rejected envelope as committed evidence, then
+              // fail closed. It must never be projected as completed work.
+              rejectedApprovalError = error instanceof Error ? error : new Error(String(error));
+              journal.commitToolAttempt(resolved.runId, attempt, response);
+              throw error;
+            }
+            // Commit before normalization, artifacts, and plan projection. A
+            // response can replay after any crash in those later operations.
+            journal.commitToolAttempt(resolved.runId, attempt, response);
+            return response;
+          },
+        });
+        if (rejectedApprovalError) throw rejectedApprovalError;
+        if (haltedStatus) return emitWorkflowControlStatus(io, manager.readState(), haltedStatus);
+        if (returnedApproval) return emitWorkflowControlStatus(io, manager.readState(), 'requires_approval');
+        if (journal.classifyToolAttempt(resolved.runId, attempt).state === 'outcome_unknown') {
+          return stopUnknownWorkflowOutcome(manager, io, step.step_id, 'dispatch_interrupted');
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const diagnosticCode = classifyWorkflowCompileDiagnostic(message);
       const persisted = manager.readState();
+      const failureControl = workflowControlStatus(manager, persisted);
+      const failureControlNotes = persisted.notes;
       manager.syncPlanTerminal(persisted, step.step_id, step.description, 'failed');
       persisted.current_step = null;
-      persisted.run_status = 'failed';
+      if (!failureControl) persisted.run_status = 'failed';
       setPlanCurrentStepId(persisted, null);
       const artifactKey = artifactKeyForWorkflowStep(step);
       const recovery = projectWorkflowTerminalStep({
@@ -641,6 +780,7 @@ async function runWorkflowCommand(
         payload: null,
         diagnostics: [{ code: diagnosticCode, details: { reason: null } }],
       });
+      if (failureControl) persisted.notes = failureControlNotes;
       manager.saveStateWithLedger(persisted, 'workflow_step_failed', {
         step_id: step.step_id,
         details: {
@@ -668,13 +808,15 @@ async function runWorkflowCommand(
       return 1;
     }
     const persisted = manager.readState();
+    const persistedControl = workflowControlStatus(manager, persisted);
+    const controlNotes = persisted.notes;
 
     if (runtimeResult.status === 'completed' || runtimeResult.status === 'partial') {
       manager.syncPlanTerminal(persisted, step.step_id, step.description, 'completed');
       persisted.current_step = null;
       const nextSelection = selectNextWorkflowStep(persisted);
       setPlanCurrentStepId(persisted, nextSelection.blockedReason ? null : nextSelection.nextStepId);
-      if (!nextSelection.blockedReason && nextSelection.nextStepId === null) {
+      if (!persistedControl && !nextSelection.blockedReason && nextSelection.nextStepId === null) {
         persisted.run_status = 'completed';
       }
       const artifactKey = runtimeRequest.artifact_key;
@@ -692,6 +834,7 @@ async function runWorkflowCommand(
         payload: runtimeResult.payload,
         diagnostics: runtimeResult.diagnostics,
       });
+      if (persistedControl) persisted.notes = controlNotes;
       manager.saveStateWithLedger(persisted, 'workflow_step_completed', {
         step_id: step.step_id,
         details: {
@@ -714,6 +857,7 @@ async function runWorkflowCommand(
       if (runtimeResult.status === 'partial') {
         sawPartial = true;
       }
+      if (persistedControl) return emitWorkflowControlStatus(io, persisted, persistedControl);
       if (nextSelection.blockedReason) {
         const blockedState = manager.readState();
         blockedState.run_status = 'failed';
@@ -752,9 +896,9 @@ async function runWorkflowCommand(
       ? selectNextWorkflowStep(persisted)
       : { nextStepId: null, blockedReason: null };
     setPlanCurrentStepId(persisted, nextSelection.blockedReason ? null : nextSelection.nextStepId);
-    if (terminalStatus === 'failed') {
+    if (!persistedControl && terminalStatus === 'failed') {
       persisted.run_status = 'failed';
-    } else if (!nextSelection.blockedReason && nextSelection.nextStepId === null) {
+    } else if (!persistedControl && !nextSelection.blockedReason && nextSelection.nextStepId === null) {
       persisted.run_status = 'completed';
     }
     const recovery = projectWorkflowTerminalStep({
@@ -770,6 +914,7 @@ async function runWorkflowCommand(
       payload: runtimeResult.payload,
       diagnostics: runtimeResult.diagnostics,
     });
+    if (persistedControl) persisted.notes = controlNotes;
     manager.saveStateWithLedger(persisted, terminalStatus === 'skipped' ? 'workflow_step_skipped' : 'workflow_step_failed', {
       step_id: step.step_id,
       details: {
@@ -789,6 +934,7 @@ async function runWorkflowCommand(
         diagnostics: runtimeResult.diagnostics,
       },
     });
+    if (persistedControl) return emitWorkflowControlStatus(io, persisted, persistedControl);
     if (terminalStatus === 'skipped') {
       executedStepIds.push(step.step_id);
       lastStepId = step.step_id;

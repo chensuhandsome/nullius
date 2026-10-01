@@ -243,7 +243,7 @@ def test_default_dry_run_uses_isolated_mode_no_workspace_and_empty_skills(tmp_pa
     assert "Work dir: (temporary isolated directory)" in proc.stdout
     assert "Workspace dirs: (none)" in proc.stdout
     assert "Skills dirs: (empty temporary directory)" in proc.stdout
-    assert "Timeout: 900s per attempt" in proc.stdout
+    assert "Timeout: 900s total invocation deadline" in proc.stdout
     assert "--output-format stream-json" in proc.stdout
     assert "--add-dir" not in proc.stdout
     assert "--skills-dir" in proc.stdout
@@ -359,14 +359,14 @@ def test_parses_text_block_array_assistant_content(tmp_path: Path) -> None:
     assert _out_text(out_path) == "AB\n"
 
 
-def test_empty_assistant_content_is_valid_output(tmp_path: Path) -> None:
+def test_empty_assistant_content_is_not_completed_output(tmp_path: Path) -> None:
     proc, out_path, _ = _run_runner(
         tmp_path,
         args=[],
         fake_mode="empty_assistant",
     )
-    assert proc.returncode == 0, proc.stderr
-    assert _out_text(out_path) == "\n"
+    assert proc.returncode != 0
+    assert _out_text(out_path) == ""
 
 
 def test_stream_json_error_event_fails_even_with_zero_exit(tmp_path: Path) -> None:
@@ -443,7 +443,7 @@ def test_timeout_kills_hung_kimi_attempt(tmp_path: Path) -> None:
         extra_env={"FAKE_SLEEP_SECS": "5"},
     )
     assert proc.returncode == 124
-    assert "timed out after 1s" in proc.stderr
+    assert "total deadline" in proc.stderr
     assert _out_text(out_path) == ""
 
 
@@ -466,13 +466,13 @@ def test_timeout_can_preserve_raw_stdout_and_stderr(tmp_path: Path) -> None:
     assert proc.returncode == 124
     assert _out_text(out_path) == ""
     assert "PARTIAL_BEFORE_SLEEP" in raw_out.read_text(encoding="utf-8")
-    assert "timed out after 1s" in stderr_out.read_text(encoding="utf-8")
+    assert "total deadline" in stderr_out.read_text(encoding="utf-8")
 
 
 def test_falls_back_to_default_model_on_model_not_found(tmp_path: Path) -> None:
     proc, out_path, _ = _run_runner(
         tmp_path,
-        args=["--model", "missing-model"],
+        args=["--model", "missing-model", "--max-attempts", "2"],
         fake_mode="model_not_found",
     )
     assert proc.returncode == 0, proc.stderr

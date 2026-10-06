@@ -109,13 +109,12 @@ def test_flat_report_has_no_run_authority(tmp_path: Path) -> None:
     assert "WARNING" not in proc.stderr
 
 
-def test_retired_payload_refuses_round_lookup(tmp_path: Path) -> None:
-    report = _write(tmp_path / "team/runs" / f"{BASE}-r1" / "report.md", VERDICT_REPORT)
+def test_historical_payload_reserves_existing_round(tmp_path: Path) -> None:
+    report = _write(tmp_path / "team/runs" / f"{BASE}-r1" / f"{BASE}-r1_member_a.md", VERDICT_REPORT)
     before = report.read_bytes()
     proc = _run(tmp_path, BASE)
-    assert proc.returncode == 1
-    assert "retired team/runs root contains 1 run directories" in proc.stderr
-    assert not proc.stdout.strip()
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == f"{BASE}-r2"
     assert report.read_bytes() == before
 
 

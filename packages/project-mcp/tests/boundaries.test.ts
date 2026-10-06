@@ -44,6 +44,20 @@ describe('single-project transport boundaries', () => {
     expect(Buffer.from(chunk.data, 'base64').toString()).toBe('cha');
     expect(chunk.next_offset).toBe(3);
   });
+  it('reads historical evidence in chunks but refuses history writes and canonical duplicates', async () => {
+    const { root, adapter } = fixture();
+    const old = path.join(root, 'team/runs/past');
+    fs.mkdirSync(old, { recursive: true });
+    fs.writeFileSync(path.join(old, 'report.md'), 'prior evidence');
+    const chunk = body(await adapter.call('project_file_read', { path: 'team/runs/past/report.md', max_bytes: 5 }));
+    expect(Buffer.from(chunk.data, 'base64').toString()).toBe('prior');
+    expect(chunk.sha256).toBe(createHash('sha256').update('prior evidence').digest('hex'));
+    for (const file of ['team/runs/past/report.md', 'TEAM/RUNS/fresh/input.txt', 'artifacts/runs/past/computation/scripts/x.py']) {
+      expect((await adapter.call('project_file_write', { path: file, content: 'overwrite', expected_sha256: null })).isError).toBe(true);
+    }
+    expect(fs.readFileSync(path.join(old, 'report.md'), 'utf8')).toBe('prior evidence');
+    expect(fs.existsSync(path.join(root, 'artifacts/runs/past'))).toBe(false);
+  });
   it('denies traversal, symlinks, case aliases and forged runtime receipts', async () => {
     const { root, adapter } = fixture();
     const outside = fixture().root;

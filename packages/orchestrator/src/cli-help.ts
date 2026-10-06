@@ -335,10 +335,13 @@ exclusions without writing anything.
   resume: RESUME_HELP,
   export: `nullius export
 
-Bundle run artifacts into a zip archive for the current project root.
+Bundle run artifacts into a zip archive for the current project root. Historical
+team/runs evidence is read-only; archive entries preserve original relative paths.
+An ambiguous run ID requires --run-root.
 
 Pass-through options:
   --run-id <id>
+  --run-root <artifacts/runs|team/runs>  Explicit read location for duplicate IDs
   --out <zip-path>
   --include-kb-profile
 

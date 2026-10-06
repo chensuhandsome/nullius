@@ -1,3 +1,5 @@
+import { readRunDirFor, resolveEvidencePath } from './run-directories.js';
+import { assertWritableRunId } from './run-paths.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { writeJsonAtomicDurable } from '@nullius/shared';
@@ -8,15 +10,15 @@ import {
 import type { TeamExecutionState } from './team-execution-types.js';
 
 function stateDir(projectRoot: string, runId: string): string {
-  return path.join(projectRoot, 'artifacts', 'runs', runId);
+  return readRunDirFor(projectRoot, runId);
 }
 
 export function teamExecutionStatePath(projectRoot: string, runId: string): string {
-  return path.join(stateDir(projectRoot, runId), 'team-execution-state.json');
+  return resolveEvidencePath(projectRoot, path.join(stateDir(projectRoot, runId), 'team-execution-state.json'));
 }
 
 export function teamExecutionTaskRefRegistryPath(projectRoot: string, runId: string): string {
-  return path.join(stateDir(projectRoot, runId), 'team-execution-task-refs.json');
+  return resolveEvidencePath(projectRoot, path.join(stateDir(projectRoot, runId), 'team-execution-task-refs.json'));
 }
 
 export class TeamExecutionStateManager {
@@ -46,10 +48,12 @@ export class TeamExecutionStateManager {
   }
 
   save(state: TeamExecutionState): void {
+    assertWritableRunId(this.projectRoot, state.run_id);
     writeJsonAtomicDurable(this.pathFor(state.run_id), state);
   }
 
   saveTaskRefRegistry(registry: ResearchTaskExecutionRefRegistry): void {
+    assertWritableRunId(this.projectRoot, registry.run_id);
     writeJsonAtomicDurable(this.taskRefPathFor(registry.run_id), registry);
   }
 }

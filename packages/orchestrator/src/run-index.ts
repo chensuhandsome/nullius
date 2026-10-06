@@ -1,9 +1,8 @@
 import * as path from 'node:path';
-import { RUNS_ROOT_RELATIVE } from './run-paths.js';
 import { createHash } from 'node:crypto';
 import { canonicalJson, readValidityLedger, stripRunRootPrefix, type ValidityLedgerView } from './validity-ledger.js';
 import { checkChains, currentRowLedgerDefective, parseResultRegistry, type ResultRegistryRow } from './result-registry.js';
-import { listRunDirectories, slugFamilyOf } from './run-directories.js';
+import { readRunDirectoryInventory, slugFamilyOf, type RunDirectoryIssue } from './run-directories.js';
 import {
   advanceMarkdownFence,
   checkManagedBlock,
@@ -60,7 +59,7 @@ export function textOutsideRunIndex(text: string): string | null {
 
 export type RunIndexFamilyLatest = {
   run_id: string;
-  /** Canonical root, POSIX-style, for the rendered link. */
+  /** Original read root, POSIX-style, for the rendered link. */
   root: string;
   validity: 'active' | 'superseded' | 'void' | 'unclassified';
   stamped: boolean;
@@ -122,6 +121,7 @@ export type RunIndexProjection = {
      *  the star would otherwise silently vanish from every family row. */
     registry_only_current: string[];
   };
+  directory_issues?: RunDirectoryIssue[];
   registry_block_found: boolean;
 };
 
@@ -136,7 +136,8 @@ export function computeRunIndexProjection(
   // gates behind registryMentionsRun, and which must never ride on the
   // ungated per-stamp index hook (nor run twice per status read).
   const registry = parseResultRegistry(projectRoot);
-  const directories = listRunDirectories(projectRoot);
+  const inventory = readRunDirectoryInventory(projectRoot);
+  const directories = inventory.runs;
   const directoryIds = new Set(directories.map(entry => entry.run_id));
 
   const currentByRun = new Map<string, ResultRegistryRow[]>();
@@ -183,14 +184,14 @@ export function computeRunIndexProjection(
   const totals = { active: 0, superseded: 0, void: 0, unclassified: 0, stamped: 0 };
 
   for (const entry of directories) {
-    const known = ledger.runs.get(entry.run_id);
+    const known = entry.ambiguous ? undefined : ledger.runs.get(entry.run_id);
     const validity: RunIndexFamilyLatest['validity'] = known ? known.validity : 'unclassified';
     totals[validity] += 1;
     const stamped = known?.stamped === true;
     if (stamped) totals.stamped += 1;
     const latest: RunIndexFamilyLatest = {
       run_id: entry.run_id,
-      root: RUNS_ROOT_RELATIVE.split(path.sep).join('/'),
+      root: entry.root.split(path.sep).join('/'),
       validity,
       stamped,
       latest_ordinal: known?.attempts.latest_ordinal ?? 1,
@@ -215,7 +216,7 @@ export function computeRunIndexProjection(
         === 'head_plus_untracked';
       accumulator.current_results.push(...currents.map(row => ({
         result_id: row.result_id,
-        defective: currentRowLedgerDefective(row, known)
+        defective: entry.ambiguous || currentRowLedgerDefective(row, known)
           || registry.duplicate_ids.has(row.result_id)
           || chainDefective.has(row.result_id)
           || relationBroken(row),
@@ -364,6 +365,7 @@ export function computeRunIndexProjection(
       misaddressed_rulings: misaddressedRulings,
       registry_only_current: registryOnlyCurrent,
     },
+    directory_issues: inventory.issues,
     registry_block_found: registry.block_found,
   };
 }
@@ -425,6 +427,7 @@ export function renderRunIndexBlock(projection: RunIndexProjection): string {
         + `| ${family.void} | ${family.unclassified} | ${latestCell} | ${currentCell} |`);
     }
   }
+  for (const issue of projection.directory_issues ?? []) lines.push(`- ${escapeMarkdownCell(issue.code)}: ${escapeMarkdownCell(issue.path)} — ${escapeMarkdownCell(issue.message)}`);
   const { defects } = projection;
   const defectParts: string[] = [];
   if (defects.conflicting_stamps.length > 0) {

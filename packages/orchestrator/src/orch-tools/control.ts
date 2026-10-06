@@ -1,3 +1,4 @@
+import { readRunDirectoryInventory } from '../run-directories.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
@@ -77,18 +78,16 @@ export async function handleOrchRunExport(
   }
   if (params.include_artifacts) {
     const projectRecentDigest = readProjectRecentDigestView(projectRoot);
-    const runsDir = path.join(projectRoot, 'artifacts', 'runs');
-    if (fs.existsSync(runsDir)) {
-      result.artifact_runs = fs.readdirSync(runsDir)
-        .filter((runDir: string) => fs.statSync(path.join(runsDir, runDir)).isDirectory())
-        .map((runDir: string) => ({
-          run_id: runDir,
-          files: fs.readdirSync(path.join(runsDir, runDir)).map((file: string) => path.join('artifacts', 'runs', runDir, file)).slice(0, 50),
-          uri: `orch://runs/${runDir}`,
-        }));
-    } else {
-      result.artifact_runs = [];
-    }
+    const inventory = readRunDirectoryInventory(projectRoot);
+    result.artifact_runs = inventory.runs.map(run => ({
+      run_id: run.run_id,
+      relative_path: run.relative_path,
+      historical_read_only: run.historical,
+      ambiguous: run.ambiguous,
+      files: fs.readdirSync(path.join(projectRoot, run.relative_path)).map(file => path.join(run.relative_path, file)).slice(0, 50),
+      uri: `orch://runs/${run.run_id}`,
+    }));
+    result.artifact_run_errors = inventory.issues;
     result.project_recent_digest = projectRecentDigest.project_recent_digest;
     result.project_recent_digest_error = projectRecentDigest.project_recent_digest_error;
     if (state && state.run_id) {

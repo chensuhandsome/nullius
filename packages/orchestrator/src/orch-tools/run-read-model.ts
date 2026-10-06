@@ -1,5 +1,4 @@
-import { listRunDirectories } from '../run-directories.js';
-import { RUNS_ROOT_RELATIVE } from '../run-paths.js';
+import { listRunDirectories, readRunDirectoryInventory, readRunDirFor, resolveEvidencePath } from '../run-directories.js';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
@@ -45,6 +44,9 @@ export type RunListEntry = {
   last_status: string;
   timestamp_utc: string;
   uri: string;
+  relative_path?: string;
+  historical_read_only?: boolean;
+  ambiguous?: boolean;
 };
 
 type LedgerSnapshot = {
@@ -629,6 +631,11 @@ function readCurrentRunWorkflowOutputsView(projectRoot: string, state: RunState,
   current_run_workflow_outputs_source: WorkflowOutputSource | null;
   legacy_workflow_projection: Record<string, unknown> | null;
 } {
+  try { if (state.run_id) readRunDirFor(projectRoot, state.run_id); } catch (error) {
+    return { current_run_workflow_outputs: null, current_run_workflow_outputs_error: {
+      code: 'RUN_EVIDENCE_UNAVAILABLE', message: error instanceof Error ? error.message : String(error),
+    }, current_run_workflow_outputs_source: null, legacy_workflow_projection: null };
+  }
   const outputs = state.workflow_outputs ?? {};
   const entries = Object.entries(outputs);
   if (entries.length === 0) {
@@ -757,15 +764,15 @@ function workflowArtifactPathCandidates(projectRoot: string, runId: string, key:
   if (typeof stateArtifact === 'string' && stateArtifact.trim()) {
     const artifactPath = artifactPathFromUri(stateArtifact);
     if (artifactPath) {
-      candidates.add(path.join(projectRoot, 'artifacts', 'runs', runId, artifactPath));
+      candidates.add(path.join(readRunDirFor(projectRoot, runId), artifactPath));
     } else {
-      candidates.add(path.resolve(projectRoot, stateArtifact));
+      candidates.add(resolveEvidencePath(projectRoot, stateArtifact));
     }
   }
   if (key === 'connection_scan') {
-    candidates.add(path.join(projectRoot, 'artifacts', 'runs', runId, 'workflow_steps', `${key}.json`));
+    candidates.add(path.join(readRunDirFor(projectRoot, runId), 'workflow_steps', `${key}.json`));
   }
-  candidates.add(path.join(projectRoot, 'artifacts', 'runs', runId, `${key}.json`));
+  candidates.add(path.join(readRunDirFor(projectRoot, runId), `${key}.json`));
   return [...candidates];
 }
 
@@ -838,7 +845,7 @@ function readLegacyWorkflowOutputsView(projectRoot: string, state: RunState, led
     let recoverable = details.recoverable === true;
 
     const artifactCandidates = [
-      ...(artifactPath ? [path.join(projectRoot, 'artifacts', 'runs', runId, artifactPath)] : []),
+      ...(artifactPath ? [path.join(readRunDirFor(projectRoot, runId), artifactPath)] : []),
       ...workflowArtifactPathCandidates(projectRoot, runId, artifactKey, state),
     ];
     const existingArtifactPath = artifactCandidates.find(candidate => fs.existsSync(candidate)) ?? null;
@@ -904,7 +911,7 @@ function readLegacyWorkflowOutputsView(projectRoot: string, state: RunState, led
 }
 
 function relativeArtifactPathForRun(projectRoot: string, runId: string, filePath: string): string {
-  return path.relative(path.join(projectRoot, 'artifacts', 'runs', runId), filePath).split(path.sep).join('/');
+  return path.relative(readRunDirFor(projectRoot, runId), filePath).split(path.sep).join('/');
 }
 
 function readResumeContextView(projectRoot: string, state: RunState, workflowOutputKeys: string[]): Record<string, unknown> {
@@ -993,7 +1000,7 @@ function latestIsoDate(values: Array<string | null>): string | null {
 function datedRunDirectories(projectRoot: string): Array<{ run_id: string; date: string; rel_dir: string }> {
   const runs = listRunDirectories(projectRoot).flatMap(entry => {
     const date = artifactRunDateFromId(entry.run_id);
-    return date ? [{ run_id: entry.run_id, date, rel_dir: path.join(RUNS_ROOT_RELATIVE, entry.run_id) }] : [];
+    return date ? [{ run_id: entry.run_id, date, rel_dir: entry.relative_path }] : [];
   });
   return runs.sort((a, b) => a.date === b.date ? a.run_id.localeCompare(b.run_id) : a.date.localeCompare(b.date));
 }
@@ -1133,7 +1140,7 @@ function executionModeUndeclaredIssue(projectRoot: string, state: RunState | nul
   if (!engineFrozen) return null;
   const runs = datedRunDirectories(projectRoot);
   if (runs.length === 0) return null;
-  const teamRunCount = runs.filter(run => fs.existsSync(path.join(projectRoot, run.rel_dir, 'research_team'))).length;
+  const teamRunCount = runs.filter(run => run.rel_dir.startsWith('team/runs/') || fs.existsSync(path.join(projectRoot, run.rel_dir, 'research_team'))).length;
   const harnessSentinel = readNulliusHarnessSentinelHealth(projectRoot);
   // Control-dir aware: with NULLIUS_CONTROL_DIR set, .nullius/state.json
   // would name a file that does not exist.
@@ -1417,12 +1424,12 @@ function readLatestFinalConclusionsForRun(projectRoot: string, runId: string): {
   entry: Record<string, unknown> | null;
   error: Record<string, unknown> | null;
 } {
-  const relativePath = path.join('artifacts', 'runs', runId, 'final_conclusions_v1.json').split(path.sep).join('/');
+  try {
+  const relativePath = path.relative(projectRoot, path.join(readRunDirFor(projectRoot, runId), 'final_conclusions_v1.json')).split(path.sep).join('/');
   const filePath = path.join(projectRoot, relativePath);
   if (!fs.existsSync(filePath)) {
     return { entry: null, error: null };
   }
-  try {
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Partial<FinalConclusionsV1>;
     if (typeof parsed.summary !== 'string' || typeof parsed.created_at !== 'string') {
       throw new Error('final_conclusions_v1 is missing required summary/created_at fields');
@@ -1469,12 +1476,12 @@ function readLatestProposalForRun(params: {
   entry: Record<string, unknown> | null;
   error: Record<string, unknown> | null;
 } {
-  const relativePath = path.join('artifacts', 'runs', params.runId, proposalFileName(params.kind)).split(path.sep).join('/');
+  try {
+  const relativePath = path.relative(params.projectRoot, path.join(readRunDirFor(params.projectRoot, params.runId), proposalFileName(params.kind))).split(path.sep).join('/');
   const filePath = path.join(params.projectRoot, relativePath);
   if (!fs.existsSync(filePath)) {
     return { entry: null, error: null };
   }
-  try {
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as MutationProposalV1 | SkillProposalV2;
     const proposalId = parsed && typeof parsed === 'object' && 'proposal_id' in parsed ? parsed.proposal_id : null;
     if (typeof proposalId !== 'string' || proposalId.length === 0) {
@@ -1649,7 +1656,7 @@ function readNativeExecutionView(projectRoot: string, state: RunState) {
   const reference = state.artifacts?.native_execution_status;
   if (!reference) return null;
   try {
-    const execution = readJson(path.resolve(projectRoot, reference)) as Record<string, any>;
+    const execution = readJson(resolveEvidencePath(projectRoot, reference)) as Record<string, any>;
     if (execution.run_id !== state.run_id) return { error: 'native execution identity mismatch' };
     const paused = state.run_status === 'paused' || fs.existsSync(pauseFilePath(projectRoot));
     return { status: execution.status, deadline_at: execution.deadline_at ?? null, active_child: execution.active_child ?? null,
@@ -1772,15 +1779,6 @@ export function readRunListView(
   params: { limit: number; status_filter: VisibleRunStatusFilter },
   ledgerSnapshot = readLedgerSnapshotFromPath(manager.ledgerPath),
 ): { runs: RunListEntry[]; total: number; returned: number; errors: ReadModelError[] } {
-  if (!ledgerSnapshot.exists) {
-    return {
-      runs: [],
-      total: 0,
-      returned: 0,
-      errors: [{ code: 'LEDGER_MISSING', message: `No ledger found at ${manager.ledgerPath}.` }],
-    };
-  }
-
   const runMap = new Map<string, RunListEntry>();
   const unmappedEvents = new Map<string, number>();
   for (const event of ledgerSnapshot.events) {
@@ -1807,12 +1805,27 @@ export function readRunListView(
     });
   }
 
-  let runs = [...runMap.values()].sort((left, right) => right.timestamp_utc.localeCompare(left.timestamp_utc));
-  if (params.status_filter !== 'all') {
-    runs = runs.filter(run => run.last_status === params.status_filter);
-  }
+  const projectRoot = manager.projectRoot;
+  const inventory = readRunDirectoryInventory(projectRoot);
+  const errors: ReadModelError[] = [...inventory.issues];
+  if (!ledgerSnapshot.exists) errors.push({ code: 'LEDGER_MISSING', message: `No ledger found at ${manager.ledgerPath}; directory-only runs have unknown execution status.` });
+  const directoryIds = new Set(inventory.runs.map(run => run.run_id));
+  const directoryRuns = inventory.runs.map(run => ({
+    ...(run.ambiguous ? undefined : runMap.get(run.run_id)),
+    run_id: run.run_id,
+    last_event: run.ambiguous ? '' : (runMap.get(run.run_id)?.last_event ?? ''),
+    last_status: run.ambiguous ? 'unknown' : (runMap.get(run.run_id)?.last_status ?? 'unknown'),
+    timestamp_utc: run.ambiguous ? '' : (runMap.get(run.run_id)?.timestamp_utc ?? ''),
+    uri: `orch://runs/${run.run_id}`,
+    relative_path: run.relative_path,
+    historical_read_only: run.historical,
+    ambiguous: run.ambiguous,
+  }));
+  let runs: RunListEntry[] = [...directoryRuns, ...[...runMap.values()].filter(run => !directoryIds.has(run.run_id))]
+    .sort((left, right) => right.timestamp_utc.localeCompare(left.timestamp_utc) || right.run_id.localeCompare(left.run_id));
+  const total = runs.length;
+  if (params.status_filter !== 'all') runs = runs.filter(run => run.last_status === params.status_filter);
   const limited = runs.slice(0, params.limit);
-  const errors: ReadModelError[] = [];
   if (ledgerSnapshot.invalidLines > 0) {
     errors.push({ code: 'LEDGER_PARSE_ERROR', message: `Skipped ${ledgerSnapshot.invalidLines} invalid ledger line(s) in ${manager.ledgerPath}.` });
   }
@@ -1828,7 +1841,7 @@ export function readRunListView(
   }
   return {
     runs: limited,
-    total: runMap.size,
+    total,
     returned: limited.length,
     errors,
   };
@@ -1841,7 +1854,7 @@ export function readProjectRecentDigestView(projectRoot: string, ledgerSnapshot 
   const manager = new StateManager(projectRoot);
   const runList = readRunListView(manager, { limit: Number.MAX_SAFE_INTEGER, status_filter: 'all' }, ledgerSnapshot);
   const ledgerMissing = runList.errors.find(error => error.code === 'LEDGER_MISSING');
-  if (ledgerMissing) {
+  if (ledgerMissing && runList.runs.length === 0) {
     return {
       project_recent_digest: null,
       project_recent_digest_error: {
@@ -1867,12 +1880,14 @@ export function readProjectRecentDigestView(projectRoot: string, ledgerSnapshot 
   // trust e.g. "no recent failure" as authoritative when an unparseable
   // failure line was silently skipped.
   //
-  // `reliable === false` <=> at least one ledger line failed to parse.
+  // Reliability requires an available parseable ledger and readable scanned evidence.
   // `invalid_lines` exposes the count for diagnosability.
-  const isReliable = ledgerSnapshot.invalidLines === 0;
+  const isReliable = ledgerSnapshot.exists && ledgerSnapshot.invalidLines === 0
+    && !runList.errors.some(error => error.code !== 'LEDGER_EVENT_UNMAPPED');
   const digest: Record<string, unknown> = {
     reliable: isReliable,
-    ...(isReliable ? {} : { invalid_lines: ledgerSnapshot.invalidLines }),
+    ledger_available: ledgerSnapshot.exists,
+    ...(ledgerSnapshot.invalidLines > 0 ? { invalid_lines: ledgerSnapshot.invalidLines } : {}),
     recent_runs: runList.runs.slice(0, PROJECT_RECENT_RUN_LIMIT).map(run => ({
       run_id: run.run_id,
       last_status: run.last_status,
@@ -1911,7 +1926,12 @@ export function readProjectRecentDigestView(projectRoot: string, ledgerSnapshot 
       break;
     }
 
-    const runArtifactDirExists = fs.existsSync(path.join(projectRoot, 'artifacts', 'runs', run.run_id));
+    if (run.ambiguous) continue;
+    let runArtifactDirExists = false;
+    try { runArtifactDirExists = fs.existsSync(readRunDirFor(projectRoot, run.run_id)); } catch (error) {
+      pushDigestError(errors, seenErrors, { code: 'RUN_EVIDENCE_UNAVAILABLE', run_id: run.run_id, message: String(error) });
+      continue;
+    }
     if (inspectRecentErrors) {
       uncheckedRecentRuns -= 1;
     }
@@ -1957,7 +1977,7 @@ export function readProjectRecentDigestView(projectRoot: string, ledgerSnapshot 
   }
 
   return {
-    project_recent_digest: digest,
+    project_recent_digest: { ...digest, reliable: isReliable && errors.length === 0 },
     project_recent_digest_error: errors.length > 0
       ? {
           code: 'PROJECT_RECENT_DIGEST_PARTIAL',
@@ -2013,7 +2033,11 @@ export function readApprovalsView(
     }
   }
 
-  const approvalsDir = path.join(projectRoot, 'artifacts', 'runs', runId, 'approvals');
+  let approvalsDir: string;
+  try { approvalsDir = path.join(readRunDirFor(projectRoot, runId), 'approvals'); } catch (error) {
+    errors.push({ code: 'RUN_EVIDENCE_UNAVAILABLE', message: String(error) });
+    return { run_id: runId, approvals, total: approvals.length, errors };
+  }
   if (!fs.existsSync(approvalsDir)) {
     return { run_id: runId, approvals, total: approvals.length, errors };
   }

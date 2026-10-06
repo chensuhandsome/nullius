@@ -1,3 +1,4 @@
+import { readRunDirectoryInventory } from './run-directories.js';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -370,12 +371,14 @@ export function validateResultRegistry(
   const markIfGrew = (row: ResultRegistryRow, before: number): void => {
     if (state.issues.length > before) defective.add(row.result_id);
   };
+  const ambiguousIds = new Set(readRunDirectoryInventory(projectRoot).runs.filter(run => run.ambiguous).map(run => run.run_id));
   const byId = new Map(state.rows.map(row => [row.result_id, row]));
   const ledger = ledgerView ?? readValidityLedger(projectRoot);
   for (const id of state.duplicate_ids) defective.add(id);
   checkChains(state.rows, state.issues, defective);
   for (const row of state.rows) {
     const before = issuesBefore();
+    if (ambiguousIds.has(row.run_id)) state.issues.push(issue('result_run_ambiguous', `${row.result_id} names run ${row.run_id}, which exists in multiple read roots`));
     if (!SHA256_HEX.test(row.artifact_sha256)) {
       state.issues.push(issue('invalid_result_sha256', `${row.result_id} SHA-256 cell is not a 64-hex digest`));
     } else {

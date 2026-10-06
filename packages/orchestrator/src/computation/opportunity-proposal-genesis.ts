@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ComputationManifestV1, ComputationResultV1, MutationProposalV1 } from '@nullius/shared';
 import { writeJsonAtomic } from './io.js';
-import { RUNS_ROOT_RELATIVE } from '../run-paths.js';
+import { listRunDirectories } from '../run-directories.js';
 import { mutationProposalFingerprint, shouldSuppressProposal } from '../proposal-decisions.js';
 
 function packageSignature(manifest: ComputationManifestV1): { workflowSignature: string; packageNames: string[]; toolNames: string[]; ecosystems: string[] } | null {
@@ -44,13 +44,9 @@ function successfulRunStats(params: {
   const exactMatches: string[] = [];
   const allSuccessfulRuns: string[] = [];
   const ecosystems = new Set<string>();
-  const runsRoot = path.join(params.projectRoot, RUNS_ROOT_RELATIVE);
-  if (!fs.existsSync(runsRoot)) {
-    return { exactMatches, allSuccessfulRuns, ecosystems };
-  }
-  for (const entry of fs.readdirSync(runsRoot).sort()) {
-    const runDir = path.join(runsRoot, entry);
-    if (!fs.existsSync(runDir) || !fs.statSync(runDir).isDirectory()) continue;
+  for (const run of listRunDirectories(params.projectRoot).filter(run => !run.ambiguous)) {
+    const entry = run.run_id;
+    const runDir = path.join(params.projectRoot, run.relative_path);
     if (entry.startsWith('.')) continue;
     const result = readJsonIfExists<ComputationResultV1>(path.join(runDir, 'artifacts', 'computation_result_v1.json'));
     if (!result || result.execution_status !== 'completed') continue;

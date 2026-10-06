@@ -707,7 +707,7 @@ describe('validity verbs: run-id normalization, existence gate, landing receipts
   it('stripRunRootPrefix strips exactly the recognizable run-root shapes', () => {
     expect(stripRunRootPrefix('20260810-m2-r376-count')).toBe('20260810-m2-r376-count');
     expect(stripRunRootPrefix('artifacts/runs/20260810-m2-r376-count')).toBe('20260810-m2-r376-count');
-    expect(stripRunRootPrefix('team/runs/20260810-m2-r376-count/')).toBeNull();
+    expect(stripRunRootPrefix('team/runs/20260810-m2-r376-count/')).toBe('20260810-m2-r376-count');
     expect(stripRunRootPrefix('./artifacts/runs/20260810-m2-r376-count')).toBe('20260810-m2-r376-count');
     expect(stripRunRootPrefix('artifacts\\runs\\20260810-m2-r376-count')).toBe('20260810-m2-r376-count');
     expect(stripRunRootPrefix('some/other/path')).toBeNull();

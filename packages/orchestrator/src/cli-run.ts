@@ -6,7 +6,7 @@ import type { CliIo } from './cli-lifecycle.js';
 import { resolveLifecycleProjectRoot } from './cli-project-root.js';
 import { resolveUserPath } from './project-policy.js';
 import { resolveProjectContainedPath } from './computation/path-safety.js';
-import { runDirFor } from './run-paths.js';
+import { assertWritableRunId, assertExecutionRunDirectory, runDirFor } from './run-paths.js';
 import { createToolAttemptIdentity, RunManifestManager } from './run-manifest.js';
 import { StateManager } from './state-manager.js';
 import { parseRunGateApprovalRequest, type RunGateApprovalRequest } from './tool-approval-envelope.js';
@@ -981,9 +981,11 @@ async function runWorkflowCommand(
 
 export async function runCommand(input: RunCommandInput, io: CliIo, deps: RunCommandDeps = {}): Promise<number> {
   const resolved = resolveRunInput(input, io);
+  assertWritableRunId(resolved.projectRoot, resolved.runId);
   if (resolved.kind === 'workflow') {
     return runWorkflowCommand(resolved, deps, io);
   }
+  assertExecutionRunDirectory(resolved.runDir, resolved.projectRoot, resolved.runId);
   const manager = new StateManager(resolved.projectRoot);
   if (!resolved.dryRun) {
     ensureComputationRunStarted(manager, resolved.runId);

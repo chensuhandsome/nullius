@@ -1,3 +1,4 @@
+import { resolveEvidencePath } from '../run-directories.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { RunState } from '../types.js';
@@ -20,7 +21,7 @@ function resolveSkillProposalPath(projectRoot: string, pointer: string): string 
       pointer,
     });
   }
-  return resolved;
+  return resolveEvidencePath(projectRoot, resolved);
 }
 
 export function readSkillProposalView(projectRoot: string, state: RunState): {

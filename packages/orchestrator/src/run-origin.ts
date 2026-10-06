@@ -45,7 +45,7 @@ export function isTraceabilityArtifactPath(relativePath: string): boolean {
     return true;
   }
   return path.posix.basename(normalized) === 'run_origin.json'
-    && normalized.startsWith('artifacts/runs/');
+    && (normalized.startsWith('artifacts/runs/') || normalized.startsWith('team/runs/'));
 }
 
 /** Control-plane bookkeeping under .nullius/ — run state, the decision
@@ -78,7 +78,7 @@ export function isControlPlanePath(relativePath: string): boolean {
  *  everything in the run's OWN directory are not foreign. */
 export function isForeignRunPath(relativePath: string, runId: string): boolean {
   const normalized = relativePath.split(path.sep).join('/');
-  for (const root of ['artifacts/runs/']) {
+  for (const root of ['artifacts/runs/', 'team/runs/']) {
     if (!normalized.startsWith(root)) continue;
     const remainder = normalized.slice(root.length);
     const firstSegment = remainder.split('/', 1)[0] ?? '';

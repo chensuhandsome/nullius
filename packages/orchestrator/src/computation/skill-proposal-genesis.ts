@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ComputationManifestV1, ComputationResultV1, SkillProposalV2 } from '@nullius/shared';
 import { writeJsonAtomic } from './io.js';
-import { RUNS_ROOT_RELATIVE, runDirFor } from '../run-paths.js';
+import { listRunDirectories, readRunDirFor } from '../run-directories.js';
 import { shouldSuppressProposal, skillProposalFingerprint } from '../proposal-decisions.js';
 
 function proposalArtifactPath(projectRoot: string, runId: string): string {
@@ -50,14 +50,10 @@ function matchingSuccessfulRuns(params: {
   computationResult: ComputationResultV1;
   manifestPath: string;
 }> {
-  const runsRoot = path.join(params.projectRoot, RUNS_ROOT_RELATIVE);
-  if (!fs.existsSync(runsRoot)) {
-    return [];
-  }
   const matches: Array<{ runId: string; computationResult: ComputationResultV1; manifestPath: string }> = [];
-  for (const runId of fs.readdirSync(runsRoot).sort()) {
-    const runDir = path.join(runsRoot, runId);
-    if (!fs.existsSync(runDir) || !fs.statSync(runDir).isDirectory()) continue;
+  for (const entry of listRunDirectories(params.projectRoot).filter(entry => !entry.ambiguous)) {
+    const runId = entry.run_id;
+    const runDir = path.join(params.projectRoot, entry.relative_path);
     if (runId.startsWith('.')) continue;
     const resultPath = path.join(runDir, 'artifacts', 'computation_result_v1.json');
     const result = readJsonIfExists<ComputationResultV1>(resultPath);
@@ -108,7 +104,7 @@ export function maybeGenerateSkillProposal(params: {
     const computationTrace = {
       trace_id: artifactUriToPseudoTraceId(`${computationUri}#result`),
       run_id: match.runId,
-      file_path: path.relative(params.projectRoot, path.join(runDirFor(params.projectRoot, match.runId), 'artifacts', 'computation_result_v1.json')).split(path.sep).join('/'),
+      file_path: path.relative(params.projectRoot, path.join(readRunDirFor(params.projectRoot, match.runId), 'artifacts', 'computation_result_v1.json')).split(path.sep).join('/'),
       timestamp: match.computationResult.finished_at,
       artifact_uri: computationUri,
     };

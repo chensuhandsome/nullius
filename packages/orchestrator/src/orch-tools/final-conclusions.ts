@@ -1,7 +1,8 @@
+import { resolveEvidencePath } from '../run-directories.js';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { runDirFor } from '../run-paths.js';
+import { assertWritableRunId, runDirFor } from '../run-paths.js';
 import type {
   ApprovalPacketV1,
   ArtifactRefV1,
@@ -505,6 +506,7 @@ export async function consumeApprovedFinalConclusions(params: {
   final_conclusions_uri: string;
   cleanup: () => void;
 }> {
+  if (params.state.run_id) assertWritableRunId(params.projectRoot, params.state.run_id);
   const pending = params.state.pending_approval;
   if (!pending || pending.category !== 'A5' || pending.approval_id !== params.approvalId) {
     throw invalidParams('final conclusions consumer requires a matching pending A5 approval.', {
@@ -641,7 +643,7 @@ function resolveFinalConclusionsPath(projectRoot: string, pointer: string): stri
       pointer,
     });
   }
-  return resolved;
+  return resolveEvidencePath(projectRoot, resolved);
 }
 
 export function readFinalConclusionsView(projectRoot: string, state: RunState): {
@@ -770,6 +772,7 @@ export async function handleOrchRunRequestFinalConclusions(
 ): Promise<unknown> {
   const { manager, projectRoot } = createStateManager(params.project_root);
   const state = requireState(projectRoot, manager);
+  assertWritableRunId(projectRoot, params.run_id);
   if (state.run_id !== params.run_id) {
     throw invalidParams('Current orchestrator state does not match the requested run_id.', {
       state_run_id: state.run_id,

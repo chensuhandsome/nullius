@@ -1,24 +1,25 @@
+import { assertOutsideHistoricalRuns } from './run-paths.js';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { type CliIo } from './cli-lifecycle.js';
 import { StateManager } from './state-manager.js';
 import { resolveUserPath } from './project-policy.js';
-import { listRunDirectories } from './run-directories.js';
-import { runDirFor } from './run-paths.js';
+import { readRunDirFor } from './run-directories.js';
 
-type ExportOptions = { includeKbProfile: boolean; out: string | null; runId: string | null };
+type ExportOptions = { includeKbProfile: boolean; out: string | null; runId: string | null; runRoot: string | null };
 
 function parseExportArgs(args: string[]): ExportOptions {
-  const options: ExportOptions = { includeKbProfile: false, out: null, runId: null };
+  const options: ExportOptions = { includeKbProfile: false, out: null, runId: null, runRoot: null };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
     const [flag, inlineValue] = arg.split('=', 2);
     if (arg === '--include-kb-profile') options.includeKbProfile = true;
-    else if (flag === '--run-id' || flag === '--out') {
+    else if (flag === '--run-id' || flag === '--out' || flag === '--run-root') {
       const value = inlineValue ?? args[++index] ?? '';
       if (!value || value.startsWith('-')) throw new Error(`missing value for ${flag}`);
       if (flag === '--run-id') options.runId = value;
+      else if (flag === '--run-root') options.runRoot = value;
       else options.out = value;
     } else {
       throw new Error(`unknown export argument: ${arg}`);
@@ -46,7 +47,6 @@ function safeKbFile(projectRoot: string, candidatePath: string): string {
 
 export async function runExportCommand(projectRoot: string, cwd: string, args: string[], io: CliIo): Promise<void> {
   const options = parseExportArgs(args);
-  const runs = listRunDirectories(projectRoot);
   const state = new StateManager(projectRoot).readState();
   const runId = options.runId ?? state.run_id;
   if (!runId) throw new Error('missing run_id (pass --run-id or start a run first)');
@@ -54,15 +54,21 @@ export async function runExportCommand(projectRoot: string, cwd: string, args: s
 
   const outPath = options.out ? resolveUserPath(options.out, cwd) : path.join(projectRoot, 'exports', `${runId}.zip`);
 
+  const baseDir = readRunDirFor(projectRoot, runId, options.runRoot ?? undefined);
+  assertOutsideHistoricalRuns(outPath);
+  const relativeOutput = path.relative(baseDir, outPath);
+  if (relativeOutput === '' || (!relativeOutput.startsWith(`..${path.sep}`) && relativeOutput !== '..' && !path.isAbsolute(relativeOutput))) {
+    throw new Error('EXPORT_DESTINATION_OVERLAP: archive must be outside the selected evidence directory');
+  }
   const files = new Set<string>();
-  for (const baseDir of runs.some(run => run.run_id === runId) ? [runDirFor(projectRoot, runId)] : []) {
-    for (const entry of fs.readdirSync(baseDir, { recursive: true, withFileTypes: true })) {
+  for (const directory of fs.existsSync(baseDir) ? [baseDir] : []) {
+    for (const entry of fs.readdirSync(directory, { recursive: true, withFileTypes: true })) {
       if (entry.isFile()) files.add(path.join(entry.parentPath, entry.name));
     }
   }
 
   if (options.includeKbProfile) {
-    const profilePath = path.join(projectRoot, 'artifacts', 'runs', runId, 'kb_profile', 'kb_profile.json');
+    const profilePath = path.join(baseDir, 'kb_profile', 'kb_profile.json');
     if (!fs.existsSync(profilePath)) throw new Error(`--include-kb-profile requires kb_profile.json: ${relativePath(projectRoot, profilePath)}`);
     const payload = JSON.parse(fs.readFileSync(profilePath, 'utf-8')) as Record<string, unknown>;
     const selected = Array.isArray(payload.selected) ? payload.selected : [];

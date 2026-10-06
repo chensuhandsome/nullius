@@ -88,7 +88,7 @@ export function backfillRunOrigins(projectRoot: string): {
   let aligned = 0;
   let unbound = 0;
   let skipped = 0;
-  for (const entry of listRunDirectories(projectRoot)) {
+  for (const entry of listRunDirectories(projectRoot).filter(entry => !entry.historical && !entry.ambiguous)) {
     const known = ledger.runs.get(entry.run_id);
     if (known?.stamped) {
       skipped += 1;
@@ -253,7 +253,7 @@ export const CHAIN_PROPOSAL_RELATIVE_PATH = path.join('artifacts', 'runs', 'roun
 export function proposeRoundChains(projectRoot: string): { proposals: ChainProposal[]; path: string } {
   const ledger = readValidityLedger(projectRoot);
   const bySlug = new Map<string, Array<{ run_id: string; round: number }>>();
-  for (const entry of listRunDirectories(projectRoot)) {
+  for (const entry of listRunDirectories(projectRoot).filter(entry => !entry.historical && !entry.ambiguous)) {
     const match = CHAIN_ID.exec(entry.run_id);
     if (!match) continue;
     const bucket = bySlug.get(match[1]!) ?? [];

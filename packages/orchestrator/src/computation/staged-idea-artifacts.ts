@@ -1,3 +1,4 @@
+import { assertExecutionRunDirectory } from '../run-paths.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { invalidParams, isShortId } from '@nullius/shared';
@@ -200,6 +201,7 @@ export function stageIdeaArtifactsIntoRun(params: {
   outlineSeedPath: string;
   hintsSnapshotPath: string;
 } {
+  assertExecutionRunDirectory(params.runDir);
   const { outlineSeed, hintsSnapshot } = parseIdeaHandoffRecord({
     handoffRecord: params.handoffRecord,
     handoffUri: params.handoffUri,

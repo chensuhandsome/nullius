@@ -1,3 +1,4 @@
+import { assertWritableRunId } from './run-paths.js';
 // CONTRACT-EXEMPT: CODE-01.1 sunset:2026-10-31 Pre-existing lifecycle authority; this change only carries literature saturation contract flags.
 // @nullius/orchestrator — lifecycle state manager
 // Read/write/enforcement helpers for the .nullius control plane.
@@ -628,6 +629,8 @@ export class StateManager {
     this.dir = nulliusDir(repoRoot);
   }
 
+  get projectRoot(): string { return this.repoRoot; }
+
   get statePath(): string {
     return path.join(this.dir, STATE_FILENAME);
   }
@@ -896,6 +899,7 @@ export class StateManager {
     if (state.run_status !== 'idle') {
       throw new Error(`cannot create run: current status is '${state.run_status}', expected 'idle'`);
     }
+    assertWritableRunId(this.repoRoot, runId);
     state.run_id = runId;
     state.workflow_id = workflowId;
     this.transitionStatus(state, 'running', {
@@ -1006,6 +1010,7 @@ export class StateManager {
    *  Writes .pause sentinel and saves paused_from_status (matching Python cmd_pause L728-749).
    *  Python allows pausing from ANY status — no transition validation. */
   pauseRun(state: RunState, note?: string): void {
+    if (state.run_id) assertWritableRunId(this.repoRoot, state.run_id);
     // Save original status for resume (matching Python cmd_pause L735-736)
     if (state.run_status !== 'paused') {
       state.paused_from_status = state.run_status;
@@ -1025,6 +1030,7 @@ export class StateManager {
    *  Bypasses transitionStatus to faithfully restore any saved status (Python sets run_status verbatim).
    *  Refuses resume while pending_approval exists (matching Python cmd_resume guard). */
   resumeRun(state: RunState, opts?: { note?: string; force?: boolean }): void {
+    if (state.run_id) assertWritableRunId(this.repoRoot, state.run_id);
     if (state.pending_approval) {
       throw new Error(
         `cannot resume: pending_approval exists (${state.pending_approval.approval_id}); approve or reject first`,

@@ -8,7 +8,6 @@ import { ensureProjectLocalNulliusLauncher, projectLocalNulliusRelativePath } fr
 import { ensureProjectScaffold, type ProjectScaffoldResult } from './project-scaffold.js';
 import { type CliIo } from './cli-lifecycle.js';
 import { StateManager } from './state-manager.js';
-import { assertNoRetiredRunRoot } from './run-directories.js';
 import type { ExecutionMode } from './types.js';
 import { assertProjectRootAllowed, resolveUserPath } from './project-policy.js';
 
@@ -220,7 +219,6 @@ export async function runInitCommand(projectRoot: string | null, cwd: string, ar
   if (parentRoot && parentRoot !== repoRoot && !options.allowNested) {
     throw new Error(`refusing init: a parent directory is already a project root (${parentRoot}); run init at the intended root, or pass --allow-nested`);
   }
-  assertNoRetiredRunRoot(repoRoot);
   const manager = new StateManager(repoRoot);
   const runtimeDir = path.dirname(manager.statePath);
   if (options.refresh && options.dryRun) {

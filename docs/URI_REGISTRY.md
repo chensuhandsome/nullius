@@ -60,3 +60,5 @@ The current emitted/resolved URI schemes covered by this registry are `hep://`, 
 - `packages/idea-engine/src/service/*.ts`
 
 When another document needs to describe URI truth at a cross-package level, it should point back to this registry instead of creating a second authority list.
+
+Run artifact URIs resolve through Nullius to the original readable run location, including historical `team/runs`. A bare run ID shared by both roots is ambiguous and cannot silently select a payload. File exports preserve project-relative paths; `--run-root` explicitly selects the export location. Historical URI reads do not grant write or execution authority.

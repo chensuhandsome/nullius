@@ -1,3 +1,4 @@
+import { assertExecutionRunDirectory } from '../run-paths.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -27,6 +28,7 @@ export function stageContentInRunDir(params: {
   staging_uri: string;
   content_bytes: number;
 } {
+  assertExecutionRunDirectory(params.runDir, undefined, params.runId);
   const suffix = params.artifactSuffix?.trim()
     ? params.artifactSuffix.trim()
     : `${Date.now()}_${randomUUID()}`;

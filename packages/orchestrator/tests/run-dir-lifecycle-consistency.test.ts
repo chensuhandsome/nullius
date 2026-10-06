@@ -16,7 +16,7 @@ import {
 } from './executeManifestTestUtils.js';
 
 /** The no-flag front door and every lifecycle reader must resolve a run's
- *  directory through ONE definition (runDirFor). The measured failure this
+ *  directory through shared canonical write admission or original-location read resolution. The measured failure this
  *  locks out: the front door's default moved to artifacts/runs/ while
  *  verification, final-conclusions, team-summary, and proposal-genesis kept
  *  their own hardcoded <project_root>/<run_id> — so the default-path
@@ -36,11 +36,11 @@ const READERS = [
 ];
 
 describe('run-dir lifecycle consistency', () => {
-  it('every lifecycle surface resolves the run dir through runDirFor (no private defaults)', () => {
+  it('every lifecycle surface imports shared write or read location authority (no private defaults)', () => {
     const pkgRoot = path.resolve(__dirname, '..');
     for (const rel of READERS) {
       const source = fs.readFileSync(path.join(pkgRoot, rel), 'utf-8');
-      expect(source, `${rel} must import the shared run-paths definition`).toMatch(/from '\.\.?\/(?:\.\.\/)?run-paths\.js'/);
+      expect(source, `${rel} must import the shared run location authority`).toMatch(/from '\.\.?\/(?:\.\.\/)?run-(?:paths|directories)\.js'/);
       // The old private default: path.join(projectRoot, <runId-ish>) with no
       // runs-root in between. Any re-appearance is a reader striking out on
       // its own again.

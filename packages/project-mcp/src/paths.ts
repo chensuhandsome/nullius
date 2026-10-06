@@ -1,3 +1,4 @@
+import { assertWritableRunId } from '@nullius/orchestrator';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -60,7 +61,7 @@ export function filePath(root: string, value: string, write: boolean): string {
   if (!relative || (hidden && !(allowedStateRead && !write)) || /\.(pem|key|p12|pfx)$/i.test(relative)) {
     throw new McpError('UNSAFE_FS', 'Hidden configuration and credentials are outside the file transport.');
   }
-  if (folded.startsWith('artifacts/delegated-runs/') || folded.startsWith('team/runs/')) {
+  if (folded.startsWith('artifacts/delegated-runs/') || (write && (folded === 'team/runs' || folded.startsWith('team/runs/')))) {
     throw new McpError('UNSAFE_FS', 'Use canonical runtime/delivery tools to access delegated state.');
   }
   if (write) {
@@ -68,6 +69,7 @@ export function filePath(root: string, value: string, write: boolean): string {
       throw new McpError('UNSAFE_FS', 'Use canonical project commands for managed instructions and projections.');
     }
     if (folded.startsWith('artifacts/runs/')) {
+      assertWritableRunId(root, relative.split('/')[2]!);
       const upload = /^artifacts\/runs\/[^/]+\/(verification\/(?:[^/]+\/)*[^/]+\.(py|js|mjs)|inputs\/.+|computation\/(scripts\/.+|inputs\/.+|manifest\.json))$/;
       if (!upload.test(folded)) throw new McpError('UNSAFE_FS', 'Generated run outputs and verification receipts cannot be uploaded.');
     } else if (folded.startsWith('artifacts/') && !folded.startsWith('artifacts/inputs/')) {
@@ -103,7 +105,7 @@ export function guardRuntimePaths(root: string, manifestPath?: string): void {
     for (const file of ['manifest.json', 'execution_status.json', 'execution_plan.json', 'execution_plan_v1.json']) boundPath(root, path.join(directory, file));
     visit(path.join(directory, 'logs'));
   };
-  for (const relative of ['artifacts/runs', 'team/runs']) {
+  for (const relative of ['artifacts/runs']) {
     const runs = boundPath(root, relative);
     for (const run of entriesIfDirectory(runs)) {
       const directory = boundPath(root, path.join(runs, run.name));
@@ -138,17 +140,35 @@ function guardWorkflowReferences(root: string): void {
   };
   const state = parse(read('.nullius/state.json'));
   if (typeof state?.run_id !== 'string') return;
-  const run = boundPath(root, `artifacts/runs/${safeId(state.run_id)}`);
+  const runId = safeId(state.run_id);
+  // Check selected references in both possible locations, never scan all
+  // historical payloads as a prerequisite for unrelated transport calls.
+  const runs = [path.join(root, `artifacts/runs/${runId}`)];
+  try {
+    const components = ['team', 'team/runs', `team/runs/${runId}`].map(relative => fs.lstatSync(path.join(root, relative)));
+    if (components.every(stat => stat.isDirectory() && !stat.isSymbolicLink() && (stat.mode & 0o444) && (stat.mode & 0o111))) {
+      runs.push(path.join(root, `team/runs/${runId}`));
+    }
+  } catch (error) {
+    if (!['ENOENT', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+  }
+  const guardReference = (target: string): void => {
+    try { boundPath(root, target); } catch (error) {
+      if (path.relative(root, target).startsWith(`team${path.sep}runs${path.sep}`)
+          && ['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) return;
+      throw error;
+    }
+  };
   const reference = (value: unknown): void => {
     if (typeof value !== 'string' || !value.trim()) return;
     const marker = value.indexOf('/artifact/');
-    let target: string;
-    try { target = marker < 0 ? path.resolve(root, value) : path.join(run, decodeURIComponent(value.slice(marker + '/artifact/'.length))); }
+    let targets: string[];
+    try { targets = marker < 0 ? [path.resolve(root, value)] : runs.map(run => path.join(run, decodeURIComponent(value.slice(marker + '/artifact/'.length)))); }
     catch { throw invalidParams('Malformed workflow artifact URI in project state/ledger; reconcile its source record locally.'); }
-    boundPath(root, target);
+    for (const target of targets) guardReference(target);
   };
   const key = (value: unknown): void => {
-    if (typeof value === 'string' && value) boundPath(root, path.join(run, `${value}.json`));
+    if (typeof value === 'string' && value) for (const run of runs) guardReference(path.join(run, `${value}.json`));
   };
   if (state.artifacts && typeof state.artifacts === 'object') {
     for (const [name, value] of Object.entries(state.artifacts)) { key(name); reference(value); }

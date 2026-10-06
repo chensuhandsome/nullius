@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
-from run_paths import canonical_output_runs
+from run_paths import canonical_output_runs, read_team_payloads
 
 
 
@@ -44,18 +44,12 @@ def canonical_base(tag: str) -> str:
 
 
 def _scan_dirs(out_dir: Path) -> list[Path]:
-    runs = canonical_output_runs(out_dir)
-    if not runs.is_dir():
-        return []
-    return [d / "research_team" for d in sorted(runs.iterdir())
-            if d.is_dir() and not d.is_symlink() and (d / "research_team").is_dir()
-            and not (d / "research_team").is_symlink()]
+    canonical_output_runs(out_dir)
+    return read_team_payloads(out_dir.absolute().parent)
 
 
 def find_max_round(base: str, out_dir: Path) -> int:
     canonical_output_runs(out_dir)
-    if not out_dir.is_dir():
-        return 0
     max_n = 0
     pat = re.compile(rf"^{re.escape(base)}-r(\d+)_(member_a|member_b)\.md$")
     for d in _scan_dirs(out_dir):
@@ -82,8 +76,6 @@ def round_verdict_status(base: str, round_n: int, out_dir: Path) -> str:
                       a verdict-less round);
     'absent'        — no report file of that round found."""
     canonical_output_runs(out_dir)
-    if not out_dir.is_dir():
-        return "absent"
     found = False
     unreadable = False
     for d in _scan_dirs(out_dir):

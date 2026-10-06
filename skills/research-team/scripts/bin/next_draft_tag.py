@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
-from run_paths import canonical_output_runs
+from run_paths import canonical_output_runs, read_team_payloads
 
 
 
@@ -30,14 +30,10 @@ def canonical_base(tag: str) -> str:
 
 
 def find_max_round(base: str, out_dir: Path) -> int:
-    runs = canonical_output_runs(out_dir)
-    if not out_dir.is_dir():
-        return 0
+    canonical_output_runs(out_dir)
     max_n = 0
     pat = re.compile(rf"^{re.escape(base)}-r(\d+)_draft_member_(a|b|c_leader)\.md$")
-    scan_dirs = [d / "research_team" for d in sorted(runs.iterdir())
-                 if d.is_dir() and not d.is_symlink() and (d / "research_team").is_dir()
-                 and not (d / "research_team").is_symlink()] if runs.is_dir() else []
+    scan_dirs = read_team_payloads(out_dir.absolute().parent)
 
     for d in scan_dirs:
         for p in d.iterdir():

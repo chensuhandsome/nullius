@@ -1,3 +1,4 @@
+import { assertExecutionRunDirectory } from '../run-paths.js';
 import * as path from 'node:path';
 import { invalidParams } from '@nullius/shared';
 import { prepareManifest } from './manifest.js';
@@ -62,6 +63,7 @@ export async function executeComputationManifest(
       },
     );
   }
+  assertExecutionRunDirectory(input.runDir, input.projectRoot, input.runId);
   if (input.dryRun) {
     return dryRunResult(input);
   }
@@ -88,6 +90,7 @@ export async function planComputationFromRunDir(input: {
   runDir: string;
   dryRun?: boolean;
 }) {
+  assertExecutionRunDirectory(input.runDir, input.projectRoot, input.runId);
   const stagedIdea = loadStagedIdeaSurfaceFromRunDir(input.runDir);
   return bridgeStagedIdeaToComputation({
     dryRun: input.dryRun,

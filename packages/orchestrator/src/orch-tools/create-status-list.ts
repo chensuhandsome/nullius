@@ -1,3 +1,4 @@
+import { assertWritableRunId } from '../run-paths.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
@@ -8,8 +9,7 @@ import {
 } from '@nullius/shared';
 import { z } from 'zod';
 import type { ExecutionMode } from '../types.js';
-import { createStateManager, requireState, resolveProjectRoot } from './common.js';
-import { assertNoRetiredRunRoot } from '../run-directories.js';
+import { createStateManager, requireState } from './common.js';
 import { buildRunStatusView, readRunListView } from './run-read-model.js';
 import { OrchRunCreateSchema, OrchRunListSchema, OrchRunStatusSchema } from './schemas.js';
 
@@ -44,6 +44,7 @@ export async function handleOrchRunCreate(
   params: z.output<typeof OrchRunCreateSchema>,
 ): Promise<unknown> {
   const { manager, projectRoot } = createStateManager(params.project_root);
+  assertWritableRunId(projectRoot, params.run_id);
   const state = manager.readState();
   manager.ensureDirs();
   // A declared execution mode is a project-level fact, not a per-run one;
@@ -99,7 +100,6 @@ export async function handleOrchRunStatus(
   params: z.output<typeof OrchRunStatusSchema>,
 ): Promise<unknown> {
   // A refused status call must not renew the runtime admission receipt.
-  assertNoRetiredRunRoot(resolveProjectRoot(params.project_root));
   const { manager, projectRoot } = createStateManager(params.project_root);
   const state = requireState(projectRoot, manager);
   const view = buildRunStatusView(projectRoot, state);
@@ -115,7 +115,6 @@ export async function handleOrchRunStatus(
 export async function handleOrchRunList(
   params: z.output<typeof OrchRunListSchema>,
 ): Promise<unknown> {
-  assertNoRetiredRunRoot(resolveProjectRoot(params.project_root));
   const { manager } = createStateManager(params.project_root);
   const { runs, total, returned, errors } = readRunListView(manager, params);
   return { runs, total, returned, errors };

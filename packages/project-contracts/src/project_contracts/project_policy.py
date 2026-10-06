@@ -175,26 +175,15 @@ def assert_path_within_project(path: Path | str, *, project_root: Path, label: s
     return resolved
 
 
-def assert_no_retired_run_root(project_root: Path) -> None:
-    if (project_root / "team").is_symlink():
-        raise ValueError("retired team/runs parent must not be a symlink")
-    root = project_root / "team" / "runs"
+def assert_run_id_writable(project_root: Path, run_id: str) -> None:
+    """New execution cannot reuse an identity already present in history."""
+    if not run_id or Path(run_id).name != run_id or run_id in {".", ".."}:
+        raise ValueError("run id must be one path segment")
+    historical = project_root / "team" / "runs" / run_id
     try:
-        metadata = root.lstat()
+        historical.lstat()
     except FileNotFoundError:
         return
     except OSError as exc:
-        raise ValueError(f"retired team/runs root cannot be inspected: {root}: {exc}") from exc
-    if not stat.S_ISDIR(metadata.st_mode) or not metadata.st_mode & 0o444 or not metadata.st_mode & 0o111:
-        raise ValueError(f"retired team/runs root must be a readable real directory: {root}")
-    try:
-        entries = list(root.iterdir())
-        count = sum(stat.S_ISDIR(item.lstat().st_mode) for item in entries)
-        symlinks = sum(item.is_symlink() for item in entries)
-    except OSError as exc:
-        raise ValueError(f"retired team/runs root cannot be inspected: {root}: {exc}") from exc
-    if count or symlinks:
-        raise ValueError(
-            f"retired team/runs root contains {count} run directories and {symlinks} symlink entries; "
-            "retain the prior runtime with matching skills or perform a separately reviewed migration before switching."
-        )
+        raise ValueError(f"cannot inspect historical run identity: {historical}: {exc}") from exc
+    raise ValueError(f"historical run is read-only and already owns run id {run_id}: {historical}")

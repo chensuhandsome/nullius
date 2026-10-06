@@ -1,4 +1,4 @@
-import { assertNoRetiredRunRoot } from './run-directories.js';
+import { assertWritableRunId } from './run-paths.js';
 import { RUNS_ROOT_RELATIVE } from './run-paths.js';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -249,9 +249,9 @@ function resolveContainedRunDirectory(
 ): ContainedRunDir {
   const targetRelative = path.relative(projectRoot, resolveStampTarget(projectRoot, target)).split(path.sep).join('/');
   if (targetRelative === 'team/runs' || targetRelative.startsWith('team/runs/')) {
-    return { kind: 'rejected', message: `${verb}: team/runs is a retired run root; retain the matching prior runtime/skills or perform a separately reviewed migration.` };
+    return { kind: 'rejected', message: `${verb}: team/runs is historical read-only evidence; use a distinct run id under artifacts/runs for new execution.` };
   }
-  try { assertNoRetiredRunRoot(projectRoot); } catch (error) {
+  try { assertWritableRunId(projectRoot, path.basename(resolveStampTarget(projectRoot, target))); } catch (error) {
     return { kind: 'rejected', message: `${verb}: ${error instanceof Error ? error.message : String(error)}` };
   }
   const runDir = resolveStampTarget(projectRoot, target);

@@ -604,6 +604,8 @@ nullius workflow-plan \
 - [`docs/TOOL_CATEGORIES.md`](./TOOL_CATEGORIES.md)
 - [`docs/URI_REGISTRY.md`](./URI_REGISTRY.md)
 
-新项目运行统一位于 `artifacts/runs/<run_id>/`，team/draft 执行记录放在其 `research_team/` 子目录，来源记录盖章在父 run 上。旧 `team/runs` 含 run 目录时，相关视图报告数量，`init --runtime-only` 在重新绑定前拒绝；旧根不可读也明确报错。应保留旧运行时及配套 skills，或先完成另行审查的迁移。`inventory_run_relocation.py --fixture-root <匿名fixture> --source-manifest <哈希清单>` 只盘点已固定输入的引用、冲突与未解决绑定，没有 apply 模式。独立 reviewer 快照排除所有轮次的执行 payload 和工作区树，保留生产输入；读取仅允许自己的声明输出前缀。历史报告与裁决保留给协调者。`team/LATEST*.md` 与 `artifacts/LATEST.md` 只提供导航。
+新项目运行统一位于 `artifacts/runs/<run_id>/`，team/draft 执行记录放在其 `research_team/` 子目录，来源记录盖章在父 run 上。旧 `team/runs` 保留为只读证据，状态、列表、索引和导出使用其原位置，不改写来源、有效性或结果引用；`init --runtime-only` 可重新连接而不移动证据。同名编号明确报告歧义，不可读历史位置报告为不可用，不阻断无关的可读记录。`inventory_run_relocation.py --fixture-root <匿名fixture> --source-manifest <哈希清单>` 只盘点已固定输入的引用、冲突与未解决绑定，没有 apply 模式。独立 reviewer 快照排除所有轮次的执行 payload 和工作区树，保留生产输入；读取仅允许自己的声明输出前缀。历史报告与裁决保留给协调者。`team/LATEST*.md` 与 `artifacts/LATEST.md` 只提供导航。
 
 Carrier ownership checks must cover direct and reverse pointer aliases before any navigation write. Existing `PROJECT_INDEX_AUTO` blocks are unmaintained historical observations; test that helper execution preserves their exact bytes. Live `init --help` must match preserve-existing refresh behavior.
+
+Historical run admission is covered by `packages/orchestrator/tests/run-history-reading.test.ts`: original paths and bytes, origin/validity/result selection, both run export/list surfaces, runtime-only reconnect, scoped unavailable paths, duplicate IDs, and refusal of historical execution writes. Python research-team tests cover historical round discovery and canonical write admission.

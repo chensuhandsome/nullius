@@ -11,7 +11,7 @@ from .project_policy import (
     assert_path_allowed,
     assert_path_within_project,
     assert_project_root_allowed,
-    assert_no_retired_run_root,
+    assert_run_id_writable,
     resolve_user_path,
 )
 
@@ -69,7 +69,6 @@ def main() -> int:
     )
     assert_path_allowed(notes, project_policy=args.project_policy, label="research notebook")
     assert_path_within_project(notes, project_root=project_root, label="research notebook")
-    assert_no_retired_run_root(project_root)
     assert_path_within_project(out_dir, project_root=project_root, label="team output path")
     if out_dir != (project_root / "artifacts").resolve():
         raise ValueError("team output path must be the canonical project artifacts directory; team/runs and custom output roots are unsupported.")
@@ -77,6 +76,7 @@ def main() -> int:
     if args.run_id:
         if not re.fullmatch(r"[A-Za-z0-9._-]+", args.run_id) or args.run_id == "." or ".." in args.run_id:
             raise ValueError("run id must be one safe path segment")
+        assert_run_id_writable(project_root, args.run_id)
         run_root = paths[-1] / args.run_id
         paths += [run_root, run_root / "research_team"]
     for path in paths:

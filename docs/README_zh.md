@@ -305,8 +305,10 @@ HEP 项目与 run 保存领域输入和产物目录，通用生命周期与审�
 
 MIT
 
-新生成的受控项目运行统一位于 `artifacts/runs/<run_id>/`，team/draft 执行记录放在其 `research_team/` 子目录，来源记录盖章在父 run 上。旧 `team/runs` 含 run 目录时，相关视图报告数量，`init --runtime-only` 在重新绑定前拒绝；旧根不可读也明确报错。应保留旧运行时及配套 skills，或先完成另行审查的迁移。`inventory_run_relocation.py --fixture-root <匿名fixture> --source-manifest <哈希清单>` 只盘点已固定输入的引用、冲突与未解决绑定，没有 apply 模式。独立 reviewer 快照排除所有轮次的执行 payload 和工作区树，保留生产输入；读取仅允许自己的声明输出前缀。历史报告与裁决保留给协调者。`team/LATEST*.md` 与 `artifacts/LATEST.md` 只提供导航。
+新生成的受控项目运行统一位于 `artifacts/runs/<run_id>/`，team/draft 执行记录放在其 `research_team/` 子目录，来源记录盖章在父 run 上。旧 `team/runs` 保留为只读证据，状态、列表、索引和导出使用其原位置，不改写来源、有效性或结果引用；`init --runtime-only` 可重新连接而不移动证据。同名编号明确报告歧义，不可读历史位置报告为不可用，不阻断无关的可读记录。`inventory_run_relocation.py --fixture-root <匿名fixture> --source-manifest <哈希清单>` 只盘点已固定输入的引用、冲突与未解决绑定，没有 apply 模式。独立 reviewer 快照排除所有轮次的执行 payload 和工作区树，保留生产输入；读取仅允许自己的声明输出前缀。历史报告与裁决保留给协调者。`team/LATEST*.md` 与 `artifacts/LATEST.md` 只提供导航。
 
 通用 scaffold 创建 `project_index.md`；team helper 只维护执行器本地导航指针，根索引缺失时要求 `nullius init`。结果登记和派生区块写入共用短路径锁，重新读取输入，对检测到的编辑最多尝试三次，保留区块外人工内容、模式和换行。忽略该锁的任意写入者不在锁的保证范围内。通用运行计数不解释执行轮次上限；这些设置由 Python 执行器解析和后缀门负责。
 
 既有的 `PROJECT_INDEX_AUTO` 块是历史记录，不再维护；team helper 不解析也不更新它。当前 `RUN_INDEX` 导航和人工选择的结果／报告登记区由各自的写入者维护。不要静默改写或删除旧块。
+
+历史 `team/runs/<run_id>/` 仍可读取、索引、引用和导出，保留原路径与有效性记录；新运行只写 `artifacts/runs/<run_id>/`。历史编号不能用于新执行。同名目录报告歧义，导出可用 `--run-root team/runs` 指定原位置。不可读历史目录报告为不可用，不阻断无关的可读记录。

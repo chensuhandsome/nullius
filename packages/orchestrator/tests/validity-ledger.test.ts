@@ -278,7 +278,7 @@ describe('isTraceabilityArtifactPath (narrow by construction)', () => {
     expect(isTraceabilityArtifactPath('artifacts/runs/validity_ledger.jsonl.lock')).toBe(true);
     expect(isTraceabilityArtifactPath('artifacts/runs/.gitattributes')).toBe(true);
     expect(isTraceabilityArtifactPath('artifacts/runs/some-run/run_origin.json')).toBe(true);
-    expect(isTraceabilityArtifactPath('team/runs/some-run/run_origin.json')).toBe(false);
+    expect(isTraceabilityArtifactPath('team/runs/some-run/run_origin.json')).toBe(true);
     // Lookalikes OUTSIDE the machinery locations still count as untracked.
     expect(isTraceabilityArtifactPath('src/run_origin.json')).toBe(false);
     expect(isTraceabilityArtifactPath('validity_ledger.jsonl')).toBe(false);
@@ -307,11 +307,12 @@ describe('traceability view and CLI (review-locked)', () => {
     };
   };
 
-  it('refuses retired run roots rather than merging run identities', () => {
+  it('keeps historical locations separate and reports shared identities', () => {
     fs.mkdirSync(path.join(projectRoot, 'artifacts', 'runs', 'shared-run'), { recursive: true });
     fs.mkdirSync(path.join(projectRoot, 'team', 'runs', 'shared-run'), { recursive: true });
     fs.mkdirSync(path.join(projectRoot, 'team', 'runs', 'team-only-run'), { recursive: true });
-    expect(() => listRunDirectories(projectRoot)).toThrow('retired team/runs root contains 2 run directories');
+    expect(listRunDirectories(projectRoot)).toHaveLength(3);
+    expect(listRunDirectories(projectRoot).filter(run => run.run_id === 'shared-run').every(run => run.ambiguous)).toBe(true);
   });
 
   it('reads the manuscript pointer in all three states without over-claiming', () => {
@@ -409,7 +410,7 @@ describe('traceability view and CLI (review-locked)', () => {
     expect(runTraceCommand(projectRoot, {
       action: 'stamp', target: 'team/runs/the-run', eventId: null, ...parsedBase,
     }, stdio3)).toBe(1);
-    expect(stdio3.err.join('')).toContain('retired run root');
+    expect(stdio3.err.join('')).toContain('historical read-only evidence');
   });
 
   it('propagates a stash-create failure instead of grading it exact_clean', () => {

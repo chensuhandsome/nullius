@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
-from run_paths import canonical_run_root
+from run_paths import canonical_run_root, read_run_directory
 
 
 AUTO_START = "<!-- PROJECT_INDEX_AUTO_START -->"
@@ -45,7 +45,7 @@ def _copy_file(src: Path, dst: Path) -> None:
 def _copy_tree(src_dir: Path, dst_dir: Path) -> None:
     if dst_dir.exists():
         shutil.rmtree(dst_dir)
-    shutil.copytree(src_dir, dst_dir)
+    shutil.copytree(src_dir, dst_dir, symlinks=True)
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -63,13 +63,18 @@ def _extract_pointer_field(text: str, prefix: str) -> str:
 
 
 def _detect_team_run_dir(project_root: Path, team_dir: Path, safe_tag: str) -> Path | None:
-    cand = project_root / "artifacts" / "runs" / safe_tag / "research_team"
-    return cand if cand.is_dir() and not cand.is_symlink() else None
+    run = read_run_directory(project_root, safe_tag)
+    if run is None:
+        return None
+    cand = run / "research_team"
+    if cand.is_dir() and not cand.is_symlink():
+        return cand
+    return run if run.parent == project_root / "team" / "runs" else None
 
 
 def _detect_artifacts_run_dir(project_root: Path, safe_tag: str) -> Path | None:
-    cand = project_root / "artifacts" / "runs" / safe_tag
-    if cand.is_dir():
+    cand = read_run_directory(project_root, safe_tag)
+    if cand is not None:
         return cand
     return None
 
@@ -103,11 +108,12 @@ def _copy_latest_pointer_if_live(
     pointer = _extract_pointer_field(text, field)
     match = re.fullmatch(r"\[[^\]]+\]\(([^)]+)\)", pointer)
     project_root = src.parent.parent
-    expected = project_root / "artifacts" / "runs" / requested_safe_tag
-    if label != "artifacts/LATEST.md":
-        expected = expected / "research_team"
+    expected = (_detect_artifacts_run_dir(project_root, requested_safe_tag) if label == "artifacts/LATEST.md"
+                else _detect_team_run_dir(project_root, project_root / "team", requested_safe_tag))
+    if expected is None:
+        return False
     if match is None or (src.parent / match.group(1)).resolve() != expected.resolve():
-        notes.append(f"[warn] skipped {label}: pointer path is not the canonical target")
+        notes.append(f"[warn] skipped {label}: pointer path does not match the original run location")
         return False
     _copy_file(src, dst)
     return True
@@ -269,6 +275,15 @@ def main() -> int:
     out_base = (project_root / args.out).resolve()
     bundle_dir = out_base / f"paper_bundle_{safe}"
 
+    historical_root = (project_root / 'team' / 'runs').resolve()
+    folded_parts = [part.lower() for part in bundle_dir.parts]
+    if any(part == 'team' and folded_parts[index + 1:index + 2] == ['runs'] for index, part in enumerate(folded_parts)) or historical_root == bundle_dir or historical_root in bundle_dir.parents:
+        raise ValueError('historical run evidence is read-only; export destination must be outside team/runs')
+    if bundle_dir == project_root or bundle_dir in project_root.parents:
+        raise ValueError('export destination must not equal or contain the source project')
+    source_run = read_run_directory(project_root, safe)
+    if source_run is not None and (source_run.resolve() == bundle_dir or source_run.resolve() in bundle_dir.parents or bundle_dir in source_run.resolve().parents):
+        raise ValueError('export destination overlaps the selected run evidence')
     if bundle_dir.exists():
         if not args.force:
             print(f"ERROR: bundle already exists: {bundle_dir} (use --force to overwrite)", file=sys.stderr)
@@ -357,9 +372,10 @@ def main() -> int:
         copied.append("artifacts/LATEST.md")
         copied_artifacts_latest = True
     if art_run is not None and art_run.is_dir():
-        dst_art = bundle_dir / "artifacts" / "runs" / safe
+        relative_run = art_run.relative_to(project_root)
+        dst_art = bundle_dir / relative_run
         _copy_tree(art_run, dst_art)
-        copied.append(f"artifacts/runs/{safe}/ (dir)")
+        copied.append(f"{relative_run.as_posix()}/ (dir)")
     else:
         notes.append("[warn] artifacts dir for tag not found (skipped)")
 

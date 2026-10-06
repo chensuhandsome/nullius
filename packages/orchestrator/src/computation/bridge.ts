@@ -1,3 +1,4 @@
+import { assertExecutionRunDirectory } from '../run-paths.js';
 import { ensureA3Approval } from './approval.js';
 import { prepareManifest } from './manifest.js';
 import { compileExecutionPlan, type StagedIdeaSurface } from './execution-plan.js';
@@ -68,6 +69,7 @@ function buildPlanSummary(prepared: PreparedManifest): {
 export async function bridgeStagedIdeaToComputation(
   input: ComputeBridgeInput,
 ): Promise<ComputeBridgeResult> {
+  assertExecutionRunDirectory(input.runDir, input.projectRoot, input.runId);
   const current = new StateManager(input.projectRoot).readState();
   if (current.run_status === 'paused' && current.artifacts.native_execution_status) {
     throw new Error('paused native computation: continuation in place is unsupported');

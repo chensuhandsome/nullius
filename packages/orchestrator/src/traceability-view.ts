@@ -1,4 +1,3 @@
-import { runDirFor } from './run-paths.js';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -9,7 +8,7 @@ import { validateResultRegistry } from './result-registry.js';
 import { checkNotebookStaleness, type NotebookStalenessReport } from './notebook-staleness.js';
 import { analyzeNotebookRunLinks, type NotebookRunLinksReport } from './notebook-run-links.js';
 import { checkCurrentStateBlock, projectionFromRegistryState, type CurrentStateBlockStatus } from './notebook-current-state.js';
-import { listRunDirectories as listRunDirectoriesShared, slugFamilyOf, type RunDirEntry as SharedRunDirEntry } from './run-directories.js';
+import { listRunDirectories as listRunDirectoriesShared, readRunDirectoryInventory, slugFamilyOf, type RunDirectoryIssue, type RunDirEntry as SharedRunDirEntry } from './run-directories.js';
 import { checkRunIndexBlock, computeRunIndexProjection, type RunIndexBlockStatus } from './run-index.js';
 import { canonicalJson } from './validity-ledger.js';
 
@@ -49,6 +48,8 @@ export type TraceabilityView = {
   };
   runs: {
     total_directories: number;
+    locations?: SharedRunDirEntry[];
+    directory_issues?: RunDirectoryIssue[];
     counts: Record<TraceabilityRunClass, number>;
     stamped: number;
     /** Distribution of stamp binding qualities among stamped runs. The
@@ -299,7 +300,7 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
       // Orientation split (project-level): how much of the untracked total
       // is run-root accumulation. The count itself stays the full set.
       untrackedUnderRunRoots = paths
-        .filter(line => line.startsWith('artifacts/runs/')).length;
+        .filter(line => line.startsWith('artifacts/runs/') || line.startsWith('team/runs/')).length;
     }
     // Same submodule honesty as the stamp: content dirty INSIDE a submodule
     // is invisible to the superproject probes above and must not read clean.
@@ -313,7 +314,8 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
   }
 
   const ledger: ValidityLedgerView = readValidityLedger(projectRoot);
-  const directories = listRunDirectories(projectRoot);
+  const inventory = readRunDirectoryInventory(projectRoot);
+  const directories = inventory.runs;
   const directoryIds = new Set(directories.map(entry => entry.run_id));
 
   const counts: Record<TraceabilityRunClass, number> = {
@@ -326,7 +328,7 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
   const voided: TraceabilityView['runs']['voided'] = [];
   const noIdentity: string[] = [];
   for (const entry of directories) {
-    const known: RunValidity | undefined = ledger.runs.get(entry.run_id);
+    const known: RunValidity | undefined = entry.ambiguous ? undefined : ledger.runs.get(entry.run_id);
     if (!known || (!known.stamped && known.scoped_annotations.length === 0
       && known.validity === 'active' && !known.no_authoritative_identity
       && ledger.events.every(e => e.run_id !== entry.run_id && e.by_run_id !== entry.run_id))) {
@@ -525,7 +527,7 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
     const family = slugFamilyOf(entry.run_id);
     const stats = familyStats.get(family) ?? { runs: 0, void: 0, superseded: 0 };
     stats.runs += 1;
-    const validity = ledger.runs.get(entry.run_id)?.validity;
+    const validity = entry.ambiguous ? undefined : ledger.runs.get(entry.run_id)?.validity;
     if (validity === 'void') stats.void += 1;
     else if (validity === 'superseded') stats.superseded += 1;
     familyStats.set(family, stats);
@@ -554,8 +556,8 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
   const mirrorDivergence: string[] = [];
   for (const entry of directories) {
     const known = ledger.runs.get(entry.run_id);
-    if (!known?.stamped || !known.origin) continue;
-    const mirrorPath = path.join(runDirFor(projectRoot, entry.run_id), 'run_origin.json');
+    if (entry.ambiguous || !known?.stamped || !known.origin) continue;
+    const mirrorPath = path.join(projectRoot, entry.relative_path, 'run_origin.json');
     if (!fs.existsSync(mirrorPath)) {
       // A mirror the stamp reported WRITTEN that has since disappeared is
       // divergence too — silence here would hide a deletion. Only a ledger
@@ -705,6 +707,8 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
     },
     runs: {
       total_directories: directories.length,
+      locations: directories,
+      directory_issues: inventory.issues,
       counts,
       stamped,
       binding_quality_counts: bindingQualityCounts,
@@ -727,12 +731,12 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
         .filter(entry => entry.attempts.chain_defect || entry.attempts.conflicting_attempts)
         .map(entry => entry.run_id)
         .sort(),
-      crashed_unretried: directories
+      crashed_unretried: directories.filter(entry => !entry.historical && !entry.ambiguous)
         .filter((entry) => {
           // The status file lives wherever the manifest put the workspace —
           // same discovery as the retry entrance. A run with ANY completed
           // status is not a crash; one failed status makes it a candidate.
-          const runDirAbs = runDirFor(projectRoot, entry.run_id);
+          const runDirAbs = path.join(projectRoot, entry.relative_path);
           const statuses: string[] = [];
           const statusWorkspaces: Array<{ statusPath: string; manifestPath: string | null }> = [];
           const manifestPaths: string[] = [];
@@ -864,6 +868,7 @@ export function renderRunDirectoryCounts(runs: Pick<TraceabilityView['runs'], 'c
 
 export function renderTraceabilityProse(view: TraceabilityView): string {
   const lines: string[] = [];
+  for (const issue of view.runs.directory_issues ?? []) lines.push(`- ${issue.code}: ${issue.path} — ${issue.message}`);
   lines.push('# Current project state');
   lines.push('');
 

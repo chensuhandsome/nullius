@@ -1,12 +1,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { runDirFor } from '../run-paths.js';
+import { readRunDirFor } from '../run-directories.js';
 import type { RunState } from '../types.js';
 import { TeamExecutionStateManager } from '../team-execution-storage.js';
 import { buildTeamLiveStatusView } from '../team-execution-view.js';
 
 function expectsTeamState(projectRoot: string, runId: string): boolean {
-  const resultPath = path.join(runDirFor(projectRoot, runId), 'artifacts', 'computation_result_v1.json');
+  const resultPath = path.join(readRunDirFor(projectRoot, runId), 'artifacts', 'computation_result_v1.json');
   if (!fs.existsSync(resultPath)) {
     return false;
   }
@@ -30,6 +30,7 @@ export function readTeamSummaryView(projectRoot: string, state: RunState): {
   if (!state.run_id) {
     return { team_summary: null, team_summary_error: null };
   }
+  try {
   const manager = new TeamExecutionStateManager(projectRoot);
   const filePath = manager.pathFor(state.run_id);
   const expected = fs.existsSync(filePath) || expectsTeamState(projectRoot, state.run_id);
@@ -45,7 +46,6 @@ export function readTeamSummaryView(projectRoot: string, state: RunState): {
       },
     };
   }
-  try {
     const loaded = manager.load(state.run_id);
     if (!loaded) {
       return {

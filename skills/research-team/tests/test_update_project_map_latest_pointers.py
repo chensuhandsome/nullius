@@ -739,7 +739,7 @@ class TestUpdateProjectMapLatestPointers(unittest.TestCase):
 
         self.assertFalse((bundle_dir / "artifacts" / "LATEST.md").exists())
         self.assertIn("[warn] skipped artifacts/LATEST.md", manifest)
-        self.assertIn("pointer path is not the canonical target", manifest)
+        self.assertIn("pointer path does not match the original run location", manifest)
         self.assertNotIn("Use `artifacts/LATEST.md`", manifest)
 
     def test_export_bundle_sanitizes_bundle_navigation_for_skipped_optional_pointers(self) -> None:

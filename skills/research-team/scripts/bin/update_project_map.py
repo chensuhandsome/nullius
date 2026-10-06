@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
-from run_paths import canonical_run_root
+from run_paths import canonical_run_root, read_run_directory, read_team_payloads
 
 
 
@@ -77,12 +77,9 @@ def _find_project_root(seed: Path) -> Path:
 
 
 def _pick_latest_run_dir(team_dir: Path) -> Path | None:
-    runs = team_dir.parent / "artifacts" / "runs"
-    if not runs.is_dir():
-        return None
+    payloads = read_team_payloads(team_dir.absolute().parent)
     best: tuple[float, Path] | None = None
-    for p in runs.iterdir():
-        p = p / "research_team"
+    for p in payloads:
         if not p.is_dir():
             continue
         try:
@@ -113,7 +110,7 @@ def _infer_latest_tag_and_status(
 
     latest_dir = _pick_latest_run_dir(team_dir)
     if latest_dir is not None and not tag:
-        tag = latest_dir.parent.name
+        tag = latest_dir.parent.name if latest_dir.name == "research_team" else latest_dir.name
 
     if tag and not status:
         traj = team_dir / "trajectory_index.json"
@@ -142,8 +139,8 @@ def _infer_latest_tag_and_status(
 def _detect_latest_artifacts_dir(project_root: Path, tag: str) -> Path | None:
     if not tag:
         return None
-    cand = project_root / "artifacts" / "runs" / tag
-    if cand.is_dir():
+    cand = read_run_directory(project_root, tag)
+    if cand is not None:
         return cand
     return None
 
@@ -168,9 +165,14 @@ def _extract_pointer_field(text: str, prefix: str) -> str:
 def _detect_team_run_dir(team_dir: Path, tag: str) -> Path | None:
     if not _active_pointer_value(tag):
         return None
-    cand = team_dir.parent / "artifacts" / "runs" / tag / "research_team"
-    if cand.is_dir():
+    run = read_run_directory(team_dir.absolute().parent, tag)
+    if run is None:
+        return None
+    cand = run / "research_team"
+    if cand.is_dir() and not cand.is_symlink():
         return cand
+    if run.parent == team_dir.absolute() / "runs":
+        return run
     return None
 
 

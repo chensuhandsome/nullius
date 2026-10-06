@@ -101,3 +101,5 @@ export * from './team-execution-runtime.js';
 export * from './team-execution-bridge.js';
 export * from './team-execution-view.js';
 export * from './team-unified-runtime.js';
+
+export { assertWritableRunId } from './run-paths.js';

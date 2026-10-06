@@ -1,3 +1,4 @@
+import { resolveEvidencePath } from '../run-directories.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { MutationProposalV1 } from '@nullius/shared';
@@ -20,7 +21,7 @@ function resolveMutationProposalPath(projectRoot: string, pointer: string): stri
       pointer,
     });
   }
-  return resolved;
+  return resolveEvidencePath(projectRoot, resolved);
 }
 
 function readJsonFile<T>(filePath: string): T {

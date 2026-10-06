@@ -12,7 +12,7 @@
 ## Stable Public Invariants
 
 - `nullius` 是 generic front door 与长期 control plane；HEP 是当前最成熟的 domain pack，不是根产品身份。
-- 不考虑向后兼容负担。项目尚未正式发布，默认允许直接 breaking change；不要为了旧 shell、旧 schema、旧数据或旧 prompt 保留 fallback、shim、compatibility backend。
+- 项目尚未正式发布，默认允许 API、执行后端和新写入格式直接 breaking change；不要为旧 shell、旧 prompt 或旧执行后端保留 fallback、shim、compatibility backend。历史研究证据必须仍可在原位置读取、索引、引用和导出，保留原始字节、来源、有效性与替代关系；历史可读不授予重新执行或原地改写权限，不得仅因旧目录存在而拒绝整个项目。
 - 已退役的 provider-local Python parser/package 不得重新获得 generic authority。
 - 真实研究项目必须使用开发仓外部的绝对 `project root`；开发仓本身不是 real-project authority。
 - 真实研究运行产物不得回流开发仓；repo 内 gitignored 工作区只能作为显式 maintainer fixture，不得伪装成 public 默认路径。

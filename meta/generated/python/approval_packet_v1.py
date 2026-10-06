@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
@@ -13,7 +13,7 @@ class Budgets(BaseModel):
         extra="forbid",
     )
     max_network_calls: Annotated[int | None, Field(ge=0)] = None
-    max_runtime_minutes: Annotated[int | None, Field(ge=0)] = None
+    max_runtime_minutes: Annotated[float | None, Field(ge=0.0)] = None
     max_cpu_hours: Annotated[float | None, Field(ge=0.0)] = None
     max_gpu_hours: Annotated[float | None, Field(ge=0.0)] = None
     max_disk_gb: Annotated[float | None, Field(ge=0.0)] = None
@@ -27,6 +27,14 @@ class GateResolutionTraceItem(BaseModel):
     triggered_by: str | None = None
     reason: str | None = None
     timestamp_utc: str | None = None
+
+
+class ExecutionBinding(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    sha256: Annotated[str, Field(pattern="^[0-9a-f]{64}$")]
+    content: dict[str, Any]
 
 
 class ApprovalpacketV1(BaseModel):
@@ -104,4 +112,10 @@ class ApprovalpacketV1(BaseModel):
     ] = None
     details_md: Annotated[
         str | None, Field(description="Optional extended details in Markdown format.")
+    ] = None
+    execution_binding: Annotated[
+        ExecutionBinding | None,
+        Field(
+            description="Content identity of the declared execution inputs covered by this approval. Revalidated by the execution consumer before dispatch."
+        ),
     ] = None

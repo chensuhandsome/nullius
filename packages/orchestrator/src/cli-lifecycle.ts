@@ -14,6 +14,7 @@ import { handleOrchRunRecordProposalDecision } from './orch-tools/proposal-decis
 import { handleOrchRunRecordVerification } from './orch-tools/verification.js';
 import { handleOrchRunPause, handleOrchRunResume } from './orch-tools/control.js';
 import { handleOrchRunStatus } from './orch-tools/create-status-list.js';
+import { renderRunDirectoryCounts, type TraceabilityView } from './traceability-view.js';
 import type { ParsedCliArgs } from './cli-args.js';
 
 export type CliIo = {
@@ -334,6 +335,10 @@ function writeStatusText(io: CliIo, payload: Record<string, unknown>, statusProj
   }
   if (payload.decision_ledger_error && typeof payload.decision_ledger_error === 'object') {
     io.stdout(`decision_ledger_error: ${JSON.stringify(payload.decision_ledger_error)}\n`);
+  }
+  const traceability = payload.traceability as TraceabilityView | null;
+  if (traceability?.runs) {
+    io.stdout(`${renderRunDirectoryCounts(traceability.runs)}\n`);
   }
   const digestError = payload.project_recent_digest_error;
   if (digestError && typeof digestError === 'object') {

@@ -8,7 +8,7 @@ Until a draft cycle is configured and run, treat this file as a disabled status 
 - Status: not configured
 - Run directory: (no draft cycle has run yet)
 - Activation note: enable and run a draft cycle before treating this file as a live restart surface.
-- Expected per-run outputs (under `team/runs/<tag>/...`):
+- Expected per-run outputs (under `artifacts/runs/<tag>/research_team/...`):
   - `<tag>_draft_packet.md`
   - `<tag>_draft_preflight.md` + `<tag>_draft_structure.json`
   - `<tag>_draft_member_a.md` / `<tag>_draft_member_b.md` / `<tag>_draft_member_c_leader.md`

@@ -1,68 +1,66 @@
-# Writing MCP：Draft Path 最短闭环（Draft JSON → LaTeX → Pack）
+# Writing MCP：Draft JSON → LaTeX → 导出包
 
-Draft Path：你在 MCP 外部（本地 LLM / 人工）产出结构化 `ReportDraft/SectionDraft` JSON；MCP 负责**确定性渲染**与**硬验证（verifier）**，最后导出 `research_pack.zip`。
+外部模型或人工提供结构化 `ReportDraft` / `SectionDraft` JSON，`hep_render_latex` 确定性地生成 LaTeX 与逐句归属信息，`hep_export_project` 导出文稿和参考文献文件。
 
-## 适用场景与限制
+渲染成功只表示草稿已经转换为文件。渲染器不核验原文是否支持句子，也不执行引用 allowlist、事实句缺引用或手写引用归属检查。正式使用前，需要对照源材料核验事实、计算与引用。
 
-- 适用：你已经有草稿内容（或让外部 LLM 生成内容），需要可复现的渲染/导出闭环。
-- 限制：
-  - MCP 不会在本路径里“自动修复”引用/原创性问题；验证失败会直接报错，需要你回到上游修改 JSON。
-  - **事实句（`type: "fact"`）必须提供 `recids`**；否则 verifier 会判该句缺引用并计入 `rendered_latex_verification.json` 的 `missing_count`（`pass=false`）。
-- 导出阶段要求 `master.bib` 覆盖 LaTeX 里出现的所有 citekey：若内容里有 `\\cite{...}`，则必须在 `writing_master.bib` 或 `bibliography_raw_v1.json` 中找到对应 BibTeX；**任意缺失都会导致** `hep_export_project` hard fail。
+`is_grounded` 是调用方提供的声明：省略时保持未知，明确的 `false` 和 `true` 原样保留。提供 `true` 不会触发核验，也不使草稿获得已验证状态。尚未核验的草稿可以渲染，但不得依靠元数据把它表述为已核验结果。
 
-## 5 步 Recipe（不含一次性环境安装/启动）
+Executable idea-to-computation planning requires a supplied `method_spec` with `files` and `run_card`. Missing methods are refused before executable artifacts are written; planning never substitutes a result-writing runner for the requested operation.
 
-### Step 1：创建 project/run
+## 1. 创建项目与产物会话
+
+持久材料应属于已初始化的外部研究项目。先运行 `nullius status --json`，并在 HEP 调用中持续传入该项目的绝对 `project_root`。
 
 ```json
-{ "tool": "hep_project_create", "args": { "name": "my-writing", "description": "draft-path" } }
+{
+  "tool": "hep_project_create",
+  "args": {
+    "project_root": "/absolute/path/to/external-project",
+    "name": "writing-assets",
+    "description": "Draft and source materials"
+  }
+}
 ```
 
 ```json
-{ "tool": "hep_run_create", "args": { "project_id": "<project_id>" } }
+{
+  "tool": "hep_run_create",
+  "args": {
+    "project_root": "/absolute/path/to/external-project",
+    "project_id": "<project_id>"
+  }
+}
 ```
 
-### Step 2：准备 allowlist + BibTeX（推荐）
+HEP 项目与 run 保存领域目录、manifest 和产物，不负责通用研究生命周期、暂停或审批。
 
-`allowed_citations`（recid tokens）的来源（任选其一或组合）：
+## 2. 准备引用映射与 BibTeX
 
-1. 从 INSPIRE 搜索结果：`inspire_search` / `hep_inspire_search_export`
-2. 从已有论文引用：`inspire_literature(mode=get_references)`
-3. 手动指定：你明确知道要引用的论文 recid
-
-recid token 格式：
-
-- `"627760"` 或 `"inspire:627760"` 都可（建议统一用 `"inspire:<recid>"`）
-
-为了让导出包中的 `master.bib` 覆盖到被引用的 citekeys（避免 export 失败），推荐运行 `hep_run_build_citation_mapping`，写出：
-- `allowed_citations_v1.json`
-- `citekey_to_inspire_v1.json`
-- `bibliography_raw_v1.json`
-
-示例（把你的 corpus recids 放进 `allowed_citations_primary`；`identifier` 可以是 recid / arXiv / DOI）：
+从检索结果或已读文献选定 INSPIRE recid。`recids` 接受数字字符串或 `inspire:<digits>`；引用映射可把这些标识符转换为既有 citekey。
 
 ```json
 {
   "tool": "hep_run_build_citation_mapping",
   "args": {
+    "project_root": "/absolute/path/to/external-project",
     "run_id": "<run_id>",
     "identifier": "arXiv:XXXX.XXXXX",
-    "allowed_citations_primary": ["inspire:627760", "inspire:1833986"],
+    "allowed_citations_primary": ["inspire:627760"],
     "include_mapped_references": true
   }
 }
 ```
 
-> 提示：若你在 Step 4 没传 `cite_mapping`，`hep_render_latex` 会自动读取 run artifact `citekey_to_inspire_v1.json`（若存在）。
+该步骤可生成 `allowed_citations_v1.json`、`citekey_to_inspire_v1.json` 与 `bibliography_raw_v1.json`。allowlist 是上游选材信息，渲染器不强制执行它。未显式提供 `cite_mapping` 时，渲染器读取存在的 `citekey_to_inspire_v1.json`；没有匹配的 citekey 时使用 `inspire:<recid>`。
 
-### Step 3：（可选，但强烈推荐）构建写作证据（P1+：`continue_on_error` + source status）
-
-如果你需要后续做 evidence 检索/回放（或调试 source 失败原因），先构建 writing evidence：
+## 3. 构建和检索源材料
 
 ```json
 {
   "tool": "hep_run_build_writing_evidence",
   "args": {
+    "project_root": "/absolute/path/to/external-project",
     "run_id": "<run_id>",
     "continue_on_error": true,
     "latex_sources": [{ "identifier": "arXiv:XXXX.XXXXX" }]
@@ -70,79 +68,56 @@ recid token 格式：
 }
 ```
 
-- `continue_on_error`：默认 `false`。设为 `true` 时，单个 source 失败不会中断整个 run，但会被记录为 `failed/skipped`。
-- `writing_evidence_source_status.json`：每个 source 的 `success/failed/skipped`、`error_code`、`duration_ms`、`items_extracted` 及汇总统计（用于定位“为什么没抽到/为什么失败”）。
+`continue_on_error` 默认为 `false`。设为 `true` 后，单个 source 失败会记为 `failed/skipped`，可在 `writing_evidence_source_status.json` 中查看错误与抽取数量。部分构建成功不表示材料完整，也不表示论断已有支持。
 
-### Step 4：外部 LLM 输出 `ReportDraft` JSON → `hep_render_latex`（硬门）
+通过 `hep_project_query_evidence` 或 `hep_project_query_evidence_semantic` 定位材料，再用 `hep_project_playback_evidence` 阅读相应段落。引用应经过对原文的实质核对。
 
-外部 LLM / 人工产出 `ReportDraft`（示例）：
+## 4. 渲染结构化草稿
 
-```json
-{
-  "version": 1,
-  "title": "Recent Progress on Exotic Hadrons",
-  "sections": [
-    {
-      "version": 1,
-      "title": "Introduction",
-      "paragraphs": [
-        {
-          "sentences": [
-            {
-              "sentence": "The discovery of the X(3872) in 2003 by Belle opened a new era in hadron spectroscopy.",
-              "type": "fact",
-              "is_grounded": true,
-              "recids": ["627760"]
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
-```
-
-渲染（verifier 会硬失败：missing/unauthorized/orphan citations）：
+尚未核验时省略 `is_grounded`；只有在调用方已经核对相应材料后，才明确声明 `true`。例如以下草稿没有作出 grounding 声明：
 
 ```json
 {
   "tool": "hep_render_latex",
   "args": {
+    "project_root": "/absolute/path/to/external-project",
     "run_id": "<run_id>",
-    "draft": { "...": "ReportDraft JSON here" }
+    "draft": {
+      "version": 1,
+      "title": "Draft section",
+      "paragraphs": [{
+        "sentences": [{
+          "sentence": "A draft statement requiring source verification.",
+          "type": "fact",
+          "recids": ["627760"]
+        }]
+      }]
+    }
   }
 }
 ```
 
-### Step 5：`hep_export_project`
+此步骤生成 `rendered_latex.tex` 和 `rendered_section_output.json`，后者保存逐句归属字段。`recids` 生成 LaTeX 引用；不提供 `recids` 的句子也可渲染。渲染器不生成 `rendered_latex_verification.json`，也不提供将草稿提升为已验证文稿的功能。
+
+## 5. 导出文稿与参考文献
 
 ```json
-{ "tool": "hep_export_project", "args": { "run_id": "<run_id>" } }
+{
+  "tool": "hep_export_project",
+  "args": {
+    "_confirm": true,
+    "project_root": "/absolute/path/to/external-project",
+    "run_id": "<run_id>"
+  }
+}
 ```
 
-会生成并打包：
-- `coverage_report.json`
-- `rendered_latex_verification.json`
-- `report.tex` / `report.md`
-- `master.bib`
-- `research_pack.zip`
+导出可生成 `coverage_report.json`、`report.tex`、`report.md`、`master.bib` 与 `research_pack.zip`。LaTeX 中出现的每个 citekey 必须有真实 BibTeX 条目，导出器会拒绝缺失项。可通过 `writing_master.bib` 或 `bibliography_raw_v1.json` 补齐。
 
-## 常见失败与修复（按阶段）
+## 失败处理
 
-### A) source 失败（Step 3：evidence build）
+- 源材料构建失败：检查 `writing_evidence_source_status.json`，补齐下载或解析失败的材料。
+- 草稿格式或 recid 不合法：修正输入 JSON，再渲染。
+- 导出提示 `Missing BibTeX entries for one or more cite keys`：为报告中的全部 citekey 补齐 BibTeX，不能用占位条目替代。
 
-- 查看 `writing_evidence_source_status.json`：定位是下载失败/解析失败/预算限制/类型过滤等。
-- `continue_on_error=false` 时：首个失败会导致 tool 直接失败；改为 `true` 可先拿到部分产物用于排障。
-
-### B) verifier 失败（Step 4：render）
-
-verifier 失败时 `rendered_latex_verification.json` 的 `pass=false`，`statistics` 给出 `missing_count` / `unauthorized_count` / `orphan_count` 计数，逐条问题列在 `issues[]`：
-
-- `missing_count`（缺引用 / missing）：事实句没有 `recids`（或为空）→ 为每个事实句补齐 `recids`（或将该句改为非 grounded 类型）。
-- `unauthorized_count`（越权引用 / unauthorized）：引用不在 allowlist → 把该 recid 加入 `allowed_citations`（或修订文本）。
-- `orphan_count`（孤儿引用 / orphan）：内容里出现 `\\cite{...}` 但 attribution 里没有对应 citation → 不要在 `sentence`/`sentence_latex` 里手写 `\\cite{...}`；让系统根据 `recids` 生成引用。
-- `Missing allowed_citations`：run 中缺少 allowlist artifact → 运行 `hep_run_build_citation_mapping` 生成 `allowed_citations_v1.json` 并同步补齐 `bibliography_raw_v1.json` / `writing_master.bib`。
-
-### C) export 失败（Step 5）
-
-- `Missing BibTeX entries for one or more cite keys`：说明 LaTeX 里有 citekey 没有对应 BibTeX → 先运行 `hep_run_build_citation_mapping` 生成/补齐 `writing_master.bib` 与 `bibliography_raw_v1.json`，或确认现有 `writing_master.bib` / `bibliography_raw_v1.json` 已覆盖到所有被引用的 citekeys。
+BibTeX 完整性保证引用键能在参考文献中找到条目；它不证明来源支持正文的论断。

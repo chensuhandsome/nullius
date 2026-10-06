@@ -15,6 +15,7 @@ import {
   sortKeysRecursive,
   writeBytesAtomicDurable,
   writeJsonAtomicDurable,
+  withLedgerLock,
 } from '@nullius/shared';
 import type { RunState, RunStatus, ApprovalPolicy, ApprovalHistoryEntry, LedgerEvent } from './types.js';
 import { utcNowIso } from './util.js';
@@ -535,6 +536,7 @@ function commitStagedFileWithRetry(params: {
   finalPath: string;
   label: string;
   maxAttempts?: number;
+  requireDurability?: boolean;
 }): void {
   const maxAttempts = params.maxAttempts ?? 3;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -546,7 +548,7 @@ function commitStagedFileWithRetry(params: {
       // exists, staged is gone), the only thing that can have failed is
       // the parent-dir fsync. Treat that as a soft warning and return —
       // the new bytes are on disk and visible to subsequent reads.
-      if (!fs.existsSync(params.stagedPath) && fs.existsSync(params.finalPath)) {
+      if (!params.requireDurability && !fs.existsSync(params.stagedPath) && fs.existsSync(params.finalPath)) {
         return;
       }
       if (!isRetryableCommitError(error) || attempt === maxAttempts) {
@@ -582,6 +584,41 @@ const VALID_TRANSITIONS: Record<string, RunStatus[]> = {
   rejected: [],
 };
 
+// A read identity follows the mutable state object across manager instances.
+// Untracked replacement objects may initialize an absent file only.
+const stateReadIdentities = new WeakMap<RunState, { path: string; raw: string | null }>();
+type StateEventOptions = {
+  step_id?: string | null;
+  details?: Record<string, unknown>;
+  additional_events?: Array<{ event_type: string; details?: Record<string, unknown> }>;
+  before_commit?: () => void;
+  commit_guard?: () => void;
+  on_commit_failure?: () => void;
+  pause_sentinel?: 'write' | 'remove';
+};
+
+// Caught failures of a guarded completion restore only this writer's bytes.
+// This is not crash recovery or a transaction over arbitrary project files.
+function captureControlFile(file: string) {
+  const info = fs.existsSync(file) ? fs.statSync(file) : null;
+  return { file, bytes: info ? fs.readFileSync(file) : null,
+    mode: info ? info.mode & 0o777 : undefined, times: info ? { atime: info.atime, mtime: info.mtime } : null };
+}
+function restoreControlFile(saved: ReturnType<typeof captureControlFile>, published: string, append = false): void {
+  const current = fs.existsSync(saved.file) ? fs.readFileSync(saved.file) : null;
+  if ((current === null && saved.bytes === null) || (saved.bytes !== null && current?.equals(saved.bytes))) return;
+  const owned = current !== null && (append
+    ? current.subarray(0,saved.bytes?.length ?? 0).equals(saved.bytes ?? Buffer.alloc(0))
+      && Buffer.from(published).subarray(0,current.length).equals(current)
+    : current.equals(Buffer.from(published)));
+  if (!owned) throw new Error(`guarded completion changed concurrently; manual reconciliation required: ${saved.file}`);
+  if (saved.bytes === null) fs.unlinkSync(saved.file);
+  else {
+    writeBytesAtomicDurable(saved.file,saved.bytes,saved.mode);
+    if(saved.times) fs.utimesSync(saved.file,saved.times.atime,saved.times.mtime);
+  }
+}
+
 export class StateManager {
   private readonly dir: string;
   private readonly repoRoot: string;
@@ -607,11 +644,10 @@ export class StateManager {
 
   /** Read current state. Returns default state if file doesn't exist. */
   readState(): RunState {
-    if (!fs.existsSync(this.statePath)) {
-      return defaultState();
-    }
-    const raw = fs.readFileSync(this.statePath, 'utf-8');
-    return JSON.parse(raw) as RunState;
+    const raw = this.readStateBytes();
+    const state = raw === null ? defaultState() : JSON.parse(raw) as RunState;
+    stateReadIdentities.set(state, { path: this.statePath, raw });
+    return state;
   }
 
   /** Read approval policy. Returns empty policy if file doesn't exist. */
@@ -678,103 +714,116 @@ export class StateManager {
 
   /** Ensure the runtime directory and empty ledger exist. */
   ensureDirs(): void {
-    if (!fs.existsSync(this.dir)) {
-      fs.mkdirSync(this.dir, { recursive: true });
-    }
-    if (!fs.existsSync(this.ledgerPath)) {
-      writeBytesAtomicDurable(this.ledgerPath, '');
-    }
-  }
-
-  /** Atomic write of state.json. Matches Python save_state().
-   *  Validates plan and derives plan.md when plan is present. */
-  saveState(state: RunState): void {
-    const plan = state.plan;
-    if (isDict(plan)) {
-      this.validatePlan(plan);
-      state.plan_md_path = this.planMdRelativePath;
-    }
-    writeJsonAtomic(this.statePath, state as unknown as Record<string, unknown>);
-    if (isDict(plan)) {
-      // SSOT-first: state.json already persisted, now derive plan.md
-      this.writePlanMd(plan);
-    }
-  }
-
-  /** Append a ledger event. */
-  appendLedger(
-    eventType: string,
-    opts?: {
-      run_id?: string | null;
-      workflow_id?: string | null;
-      step_id?: string | null;
-      details?: Record<string, unknown>;
-    },
-  ): void {
-    this.ensureDirs();
-    appendLedgerLine(this.ledgerPath, {
-      ts: utcNowIso(),
-      event_type: eventType,
-      run_id: opts?.run_id ?? null,
-      workflow_id: opts?.workflow_id ?? null,
-      step_id: opts?.step_id ?? null,
-      details: opts?.details ?? {},
-    });
-  }
-
-  /** Atomically save state + append ledger event.
-   *  Matches Python persist_state_with_ledger_event (staged .next → ledger → replace).
-   *  Validates plan and derives plan.md when plan is present. */
-  saveStateWithLedger(
-    state: RunState,
-    eventType: string,
-    opts?: {
-      step_id?: string | null;
-      details?: Record<string, unknown>;
-    },
-  ): void {
-    this.ensureDirs();
-
-    // 0. Plan validation + plan_md_path (Stage 3c)
-    const plan = state.plan;
-    let renderedPlanMd: string | null = null;
-    if (isDict(plan)) {
-      this.validatePlan(plan);
-      state.plan_md_path = this.planMdRelativePath;
-      renderedPlanMd = this.renderPlanMd(plan);
-    }
-
-    // 1. Stage state to a unique .next
-    const staged = uniqueSiblingPath(this.statePath, 'next');
-    writeJsonAtomic(staged, state as unknown as Record<string, unknown>);
-
-    // 2. Append ledger
-    try {
-      appendLedgerLine(this.ledgerPath, {
-        ts: utcNowIso(),
-        event_type: eventType,
-        run_id: state.run_id,
-        workflow_id: state.workflow_id,
-        step_id: opts?.step_id ?? null,
-        details: opts?.details ?? {},
+    fs.mkdirSync(this.dir, { recursive: true });
+    withLedgerLock(this.statePath,
+      'Stop all project writers and repair a stale lock manually only while quiescent.', () => {
+        if (!fs.existsSync(this.ledgerPath)) writeBytesAtomicDurable(this.ledgerPath, '');
       });
-    } catch (e) {
-      // Cleanup staged file on ledger failure
-      try { fs.unlinkSync(staged); } catch { /* best-effort */ }
-      throw e;
-    }
+  }
 
-    // 3. Commit: rename staged → final
-    commitStagedFileWithRetry({
-      stagedPath: staged,
-      finalPath: this.statePath,
-      label: 'state',
+  private readStateBytes(): string | null {
+    try { return fs.readFileSync(this.statePath, 'utf-8'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+  }
+
+  private withCurrentState(state: RunState, action: () => void): void {
+    fs.mkdirSync(this.dir, { recursive: true });
+    withLedgerLock(this.statePath,
+      'Stop all project writers, inspect the lock holder, and repair a stale lock manually only while quiescent.', () => {
+        const expected = stateReadIdentities.get(state);
+        const fresh = this.readStateBytes();
+        if ((expected && (expected.path !== this.statePath || expected.raw !== fresh)) || (!expected && fresh !== null)) {
+          throw new Error('stale state snapshot: re-read canonical state before retrying; no state event was appended');
+        }
+        action();
+        stateReadIdentities.set(state, { path: this.statePath, raw: this.readStateBytes() });
+      });
+  }
+
+  /** Persist a fresh state snapshot, then derive its readable plan. */
+  saveState(state: RunState): void {
+    this.withCurrentState(state, () => {
+      const plan = state.plan;
+      if (isDict(plan)) {
+        this.validatePlan(plan);
+        state.plan_md_path = this.planMdRelativePath;
+      }
+      writeJsonAtomic(this.statePath, state as unknown as Record<string, unknown>);
+      if (isDict(plan)) this.writePlanMd(plan);
     });
+  }
 
-    // 4. Derive plan.md (after state is safely persisted — SSOT-first)
-    if (isDict(plan)) {
-      this.writePlanMd(plan, renderedPlanMd ?? undefined);
-    }
+  /** Append a history event under the same short state-path lock. */
+  appendLedger(eventType: string, opts?: {
+    run_id?: string | null; workflow_id?: string | null; step_id?: string | null; details?: Record<string, unknown>;
+  }): void {
+    fs.mkdirSync(this.dir, { recursive: true });
+    withLedgerLock(this.statePath,
+      'Stop all project writers and repair a stale lock manually only while quiescent.', () => {
+        appendLedgerLine(this.ledgerPath, {
+          ts: utcNowIso(), event_type: eventType, run_id: opts?.run_id ?? null,
+          workflow_id: opts?.workflow_id ?? null, step_id: opts?.step_id ?? null, details: opts?.details ?? {},
+        });
+      });
+  }
+
+  /** Compare under lock before staging state or appending any combined event.
+   * The ledger remains history; this is not a crash-atomic database transaction. */
+  saveStateWithLedger(state: RunState, eventType: string, opts?: StateEventOptions): void {
+    this.withCurrentState(state, () => {
+      const plan = state.plan;
+      let renderedPlanMd: string | null = null;
+      if (isDict(plan)) {
+        this.validatePlan(plan);
+        state.plan_md_path = this.planMdRelativePath;
+        renderedPlanMd = this.renderPlanMd(plan);
+      }
+      const staged = uniqueSiblingPath(this.statePath, 'next');
+      const guarded = opts?.commit_guard;
+      if (guarded && opts?.pause_sentinel) throw new Error('guarded completion cannot change the pause sentinel');
+      const savedState = guarded ? captureControlFile(this.statePath) : null;
+      const savedLedger = guarded ? captureControlFile(this.ledgerPath) : null;
+      const savedPlan = guarded && isDict(plan) ? captureControlFile(this.planMdPath) : null;
+      const stateBytes = JSON.stringify(sortKeysRecursive(state),null,2)+'\n';
+      let ledgerBytes = savedLedger?.bytes?.toString('utf8') ?? '';
+      try {
+        guarded?.();
+        opts?.before_commit?.();
+        guarded?.();
+        writeJsonAtomic(staged, state as unknown as Record<string, unknown>);
+        guarded?.();
+        for (const event of [...(opts?.additional_events ?? []), { event_type: eventType, details: opts?.details }]) {
+          guarded?.();
+          const entry = {
+            ts: utcNowIso(), event_type: event.event_type, run_id: state.run_id,
+            workflow_id: state.workflow_id, step_id: opts?.step_id ?? null, details: event.details ?? {},
+          };
+          ledgerBytes += JSON.stringify(sortKeysRecursive(entry))+'\n';
+          appendLedgerLine(this.ledgerPath, entry);
+          guarded?.();
+        }
+        guarded?.();
+        commitStagedFileWithRetry({ stagedPath: staged, finalPath: this.statePath, label: 'state', requireDurability: Boolean(guarded) });
+        guarded?.();
+        if (opts?.pause_sentinel === 'write') this.writePauseSentinel();
+        if (opts?.pause_sentinel === 'remove') this.removePauseSentinel();
+        if (isDict(plan)) this.writePlanMd(plan, renderedPlanMd ?? undefined);
+        guarded?.();
+      } catch (error) {
+        try { fs.unlinkSync(staged); } catch { /* best-effort cleanup */ }
+        if (guarded) {
+          try {
+            if(savedPlan) restoreControlFile(savedPlan,renderedPlanMd ?? '');
+            if(savedState) restoreControlFile(savedState,stateBytes);
+            if(savedLedger) restoreControlFile(savedLedger,ledgerBytes,true);
+            opts?.on_commit_failure?.();
+          } catch (restoreError) {
+            throw new Error('guarded completion rollback failed; manual reconciliation required', {cause:restoreError});
+          }
+        }
+        throw error;
+      }
+    });
   }
 
   /** Validate and execute a status transition.
@@ -782,7 +831,7 @@ export class StateManager {
   transitionStatus(
     state: RunState,
     newStatus: RunStatus,
-    opts?: { notes?: string; details?: Record<string, unknown>; eventType?: string },
+    opts?: { notes?: string; details?: Record<string, unknown>; eventType?: string; pause_sentinel?: 'write' | 'remove'; before_commit?: () => void; commit_guard?: () => void; on_commit_failure?: () => void },
   ): void {
     const current = state.run_status;
     const allowed = VALID_TRANSITIONS[current] ?? [];
@@ -806,6 +855,10 @@ export class StateManager {
     this.saveStateWithLedger(state, eventType, {
       step_id: state.current_step?.step_id ?? null,
       details,
+      pause_sentinel: opts?.pause_sentinel,
+      before_commit: opts?.before_commit,
+      commit_guard: opts?.commit_guard,
+      on_commit_failure: opts?.on_commit_failure,
     });
   }
 
@@ -862,6 +915,7 @@ export class StateManager {
       state_note?: string;
       details?: Record<string, unknown>;
       artifact_updates?: Record<string, string>;
+      packet_sha256?: string;
     },
   ): void {
     if (state.run_status !== 'awaiting_approval') {
@@ -882,6 +936,7 @@ export class StateManager {
       category: pending.category,
       decision: 'approved',
       note: note ?? '',
+      ...((opts?.packet_sha256 ?? pending.packet_sha256) ? { packet_sha256: opts?.packet_sha256 ?? pending.packet_sha256 } : {}),
     };
     state.approval_history.push(entry);
     // Python uses category as key: st["gate_satisfied"][str(category)] = approval_id
@@ -928,8 +983,6 @@ export class StateManager {
       );
     }
 
-    // Write .pause sentinel (matching Python cmd_reject L1649)
-    this.writePauseSentinel();
 
     const entry: ApprovalHistoryEntry = {
       ts: utcNowIso(),
@@ -945,6 +998,7 @@ export class StateManager {
       notes: `rejected ${approvalId}${note ? ': ' + note : ''}`,
       details: { approval_id: approvalId, category: pending.category, note: note ?? '' },
       eventType: 'approval_rejected',
+      pause_sentinel: 'write',
     });
   }
 
@@ -952,8 +1006,6 @@ export class StateManager {
    *  Writes .pause sentinel and saves paused_from_status (matching Python cmd_pause L728-749).
    *  Python allows pausing from ANY status — no transition validation. */
   pauseRun(state: RunState, note?: string): void {
-    // Write .pause sentinel (matching Python cmd_pause L732)
-    this.writePauseSentinel();
     // Save original status for resume (matching Python cmd_pause L735-736)
     if (state.run_status !== 'paused') {
       state.paused_from_status = state.run_status;
@@ -964,6 +1016,7 @@ export class StateManager {
     this.saveStateWithLedger(state, 'paused', {
       step_id: state.current_step?.step_id ?? null,
       details: { note: note ?? '' },
+      pause_sentinel: 'write',
     });
   }
 
@@ -977,8 +1030,12 @@ export class StateManager {
         `cannot resume: pending_approval exists (${state.pending_approval.approval_id}); approve or reject first`,
       );
     }
-    // Remove .pause sentinel BEFORE the idle guard (matching Python cmd_resume L760-761)
-    this.removePauseSentinel();
+    const nativeStatusRef = state.artifacts?.native_execution_status;
+    const nativeStatus = nativeStatusRef && fs.existsSync(path.resolve(this.repoRoot, nativeStatusRef))
+      ? JSON.parse(fs.readFileSync(path.resolve(this.repoRoot, nativeStatusRef), 'utf-8')) : null;
+    if (nativeStatusRef && (state.run_status === 'paused' || nativeStatus?.status === 'paused')) {
+      throw new Error('paused native computation: continuation in place is unsupported, including --force; create a separately approved fresh run');
+    }
     // Guard against resume from terminal/idle without force (matching Python cmd_resume L763-764)
     if (['idle', 'completed', 'failed'].includes(state.run_status) && !opts?.force) {
       throw new Error(
@@ -996,6 +1053,7 @@ export class StateManager {
     this.saveStateWithLedger(state, 'resumed', {
       step_id: state.current_step?.step_id ?? null,
       details: { note: opts?.note ?? '' },
+      pause_sentinel: 'remove',
     });
   }
 
@@ -1043,15 +1101,19 @@ export class StateManager {
       note?: string;
       force?: boolean;
       allow_completed?: boolean;
+      replace_pending?: boolean;
+      packet_sha256?: string;
+      before_commit?: () => void;
     },
   ): string {
-    if (state.pending_approval && !opts.force) {
+    if (state.pending_approval && !opts.force && !opts.replace_pending) {
       throw new Error(
         `already awaiting approval: ${state.pending_approval.approval_id}`,
       );
     }
     const allowCompleted = opts.allow_completed === true && state.run_status === 'completed';
-    if (state.run_status !== 'running' && !allowCompleted) {
+    const replacePending = opts.replace_pending === true && state.run_status === 'awaiting_approval' && state.pending_approval?.category === category;
+    if (state.run_status !== 'running' && !allowCompleted && !replacePending) {
       throw new Error(
         `cannot request approval: current status is '${state.run_status}', expected 'running'`,
       );
@@ -1084,13 +1146,21 @@ export class StateManager {
       timeout_at: timeoutAt,
       on_timeout: onTimeout,
       packet_path: opts.packet_path,
+      ...(opts.packet_sha256 ? { packet_sha256: opts.packet_sha256 } : {}),
     };
     state.notes = opts.note ?? `awaiting approval ${approvalId}`;
 
-    this.transitionStatus(state, 'awaiting_approval', {
-      details: { approval_id: approvalId, category, packet_path: opts.packet_path },
-      eventType: 'approval_requested',
-    });
+    if (replacePending) {
+      this.saveStateWithLedger(state, 'approval_requested', {
+        details: { approval_id: approvalId, category, packet_path: opts.packet_path, replaced_pending: true },
+        before_commit: opts.before_commit,
+      });
+    } else {
+      this.transitionStatus(state, 'awaiting_approval', {
+        details: { approval_id: approvalId, category, packet_path: opts.packet_path },
+        eventType: 'approval_requested', before_commit: opts.before_commit,
+      });
+    }
 
     return approvalId;
   }
@@ -1565,7 +1635,7 @@ export class StateManager {
    *  place with a final parent-dir fsync. Returns relative path. */
   writePlanMd(plan: Record<string, unknown>, preRenderedContent?: string): string {
     this.validatePlan(plan);
-    this.ensureDirs();
+    fs.mkdirSync(this.dir, { recursive: true });
     const content = preRenderedContent ?? this.renderPlanMd(plan);
     const p = this.planMdPath;
     const tmp = uniqueSiblingPath(p, 'tmp');

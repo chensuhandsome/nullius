@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Prune ephemeral per-member workspaces under team/runs/<tag>/workspaces/.
+Prune ephemeral per-member workspaces under artifacts/runs/<tag>/research_team/workspaces/.
 
 Each research-team run creates two member workspaces (`member_a_<uuid>` and
 `member_b_<uuid>`) that are full filtered snapshots of the project tree. They
@@ -9,17 +9,17 @@ references/ or artifacts/.
 
 The workspaces are **ephemeral scratch space**, not durable artifacts. The
 durable forensic data for each run lives at the run_dir top level:
-  team/runs/<tag>/cycle_state.json
-  team/runs/<tag>/<tag>_member_a.md
-  team/runs/<tag>/<tag>_member_b.md
-  team/runs/<tag>/member_a_evidence.json
-  team/runs/<tag>/member_b_evidence.json
-  team/runs/<tag>/member_a_audit.jsonl
-  team/runs/<tag>/member_b_audit.jsonl
-  team/runs/<tag>/logs/member_a/
-  team/runs/<tag>/logs/member_b/
+  artifacts/runs/<tag>/research_team/cycle_state.json
+  artifacts/runs/<tag>/research_team/<tag>_member_a.md
+  artifacts/runs/<tag>/research_team/<tag>_member_b.md
+  artifacts/runs/<tag>/research_team/member_a_evidence.json
+  artifacts/runs/<tag>/research_team/member_b_evidence.json
+  artifacts/runs/<tag>/research_team/member_a_audit.jsonl
+  artifacts/runs/<tag>/research_team/member_b_audit.jsonl
+  artifacts/runs/<tag>/research_team/logs/member_a/
+  artifacts/runs/<tag>/research_team/logs/member_b/
 
-This tool only deletes `team/runs/<tag>/workspaces/` subdirectories. It never
+This tool only deletes `artifacts/runs/<tag>/research_team/workspaces/` subdirectories. It never
 touches the forensic data above.
 
 Safety policy (default):
@@ -35,7 +35,7 @@ Safety policy (default):
   cycle_state status values, e.g. "completed,converged,early_stop,preflight_only"
   for the recommended startup-orphan-prune profile).
 - Path-containment guard refuses symlinked tag/ or workspaces/ entries that
-  resolve outside the project's team/runs/ subtree.
+  resolve outside the project's artifacts/runs/ subtree.
 
 Exit codes:
   0  success (plan computed and printed; apply succeeded)
@@ -55,6 +55,10 @@ import sys
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from run_paths import canonical_run_root
+
 
 
 @dataclass
@@ -156,32 +160,37 @@ def find_plans(
     only_status: frozenset[str] | None = None,
     now: datetime | None = None,
 ) -> list[WorkspacePlan]:
-    """Walk team/runs/<tag>/ and decide deletion plan for each workspaces dir.
+    """Walk artifacts/runs/<tag>/research_team/ and decide deletion plan for each workspaces dir.
 
     `only_status` restricts deletion eligibility to runs whose cycle_state status
     is in the given set. None or empty means no restriction (existing default).
     """
     if now is None:
         now = datetime.now(timezone.utc)
-    runs_root = (project_root / "team" / "runs").resolve()
+    runs_root = canonical_run_root(project_root.resolve())
+    if runs_root.parent.is_symlink() or runs_root.is_symlink():
+        raise ValueError("canonical run root must not contain symlinks")
     if not runs_root.is_dir():
         return []
     candidates: list[WorkspacePlan] = []
     for tag_dir in sorted(runs_root.iterdir()):
         if not tag_dir.is_dir() or tag_dir.is_symlink():
             continue
-        ws_dir = tag_dir / "workspaces"
+        payload_dir = tag_dir / "research_team"
+        if not payload_dir.is_dir() or payload_dir.is_symlink():
+            continue
+        ws_dir = payload_dir / "workspaces"
         if not ws_dir.is_dir() or ws_dir.is_symlink():
             continue
         # Containment guard: refuse to plan a deletion for any workspaces path
-        # that resolves outside team/runs/. Symlinked tag/ or workspaces/ dirs
+        # that resolves outside artifacts/runs/. Symlinked tag/ or workspaces/ dirs
         # could otherwise escape via realpath.
         try:
             ws_real = ws_dir.resolve(strict=True)
             ws_real.relative_to(runs_root)
         except (OSError, ValueError):
             continue
-        status, last_update = _read_cycle_state(tag_dir)
+        status, last_update = _read_cycle_state(payload_dir)
         ws_mtime = datetime.fromtimestamp(ws_dir.stat().st_mtime, tz=timezone.utc)
         effective_update = last_update or ws_mtime
         # status="unknown" with a fresh mtime is treated the same as "running"
@@ -225,7 +234,7 @@ def find_plans(
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--root", type=Path, required=True, help="Project root directory (contains team/runs/).")
+    p.add_argument("--root", type=Path, required=True, help="Project root directory (contains artifacts/runs/).")
     p.add_argument("--apply", action="store_true", help="Actually delete (default: dry-run preview).")
     p.add_argument("--keep-last", type=int, default=0, help="Keep workspaces for the N most recently-updated runs (default 0).")
     p.add_argument("--keep-failed", action="store_true", help="Preserve workspaces of failed runs (cycle_state status not in {completed, running, unknown}).")
@@ -278,7 +287,7 @@ def main() -> int:
     else:
         total_to_delete = sum(p.size_bytes for p in plans if p.action == "delete")
         total_to_skip = sum(p.size_bytes for p in plans if p.action == "skip")
-        print(f"Found {len(plans)} workspaces under {project_root}/team/runs/")
+        print(f"Found {len(plans)} workspaces under {project_root}/artifacts/runs/")
         print(f"  to delete: {delete_count} ({_format_bytes(total_to_delete)})")
         print(f"  to skip:   {sum(1 for p in plans if p.action == 'skip')} ({_format_bytes(total_to_skip)})")
         print("")

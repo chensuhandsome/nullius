@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { explicitArtifactWriterMethod } from './explicitArtifactWriterMethod.js';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -68,7 +69,7 @@ function createBridgeRun(runId: string, projectRoot: string) {
     },
   });
   writeJson(executionPlanArtifactPath(runDir), executionPlan);
-  const { manifestPath } = materializeExecutionPlan(runDir, executionPlan);
+  const { manifestPath } = materializeExecutionPlan(runDir, executionPlan, { methodSpec: explicitArtifactWriterMethod(executionPlan) });
   return { runDir, manifestPath };
 }
 
@@ -112,7 +113,7 @@ function createIdeaOriginBridgeRun(runId: string, projectRoot: string) {
     hints: staged.hintsSnapshot.hints,
   });
   writeJson(executionPlanArtifactPath(runDir), executionPlan);
-  const { manifestPath } = materializeExecutionPlan(runDir, executionPlan);
+  const { manifestPath } = materializeExecutionPlan(runDir, executionPlan, { methodSpec: explicitArtifactWriterMethod(executionPlan) });
   return { campaignId, handoffPath, manifestPath, runDir };
 }
 

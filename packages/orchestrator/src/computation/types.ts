@@ -11,7 +11,7 @@ import type { NativeRuntimeIdentity } from './runtime-identity.js';
 export type { StepExecutionSnapshotV1 } from '@nullius/shared';
 
 export type ManifestTool = 'mathematica' | 'julia' | 'python' | 'bash';
-export type ExecutionStatus = 'dry_run' | 'planned' | 'requires_approval' | 'completed' | 'failed';
+export type ExecutionStatus = 'dry_run' | 'planned' | 'requires_approval' | 'paused' | 'completed' | 'failed';
 export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
 
 export interface ExecuteComputationManifestInput {
@@ -101,6 +101,7 @@ export interface PlannedExecutionResult {
 }
 
 export interface ApprovalRequiredExecutionResult {
+  origin_stamp?: ExecutionOriginStampOutcome;
   status: 'requires_approval';
   requires_approval: true;
   gate_id: 'A3';
@@ -172,9 +173,20 @@ export interface FailedExecutionResult {
   origin_stamp?: ExecutionOriginStampOutcome;
 }
 
+export interface PausedExecutionResult {
+  status: 'paused';
+  run_id: string;
+  continuation_supported: false;
+  message: string;
+  artifact_paths: { execution_status: string; logs_dir: string };
+  produced_outputs: string[];
+  origin_stamp?: ExecutionOriginStampOutcome;
+}
+
 export type ExecuteComputationManifestResult =
   | DryRunExecutionResult
   | ApprovalRequiredExecutionResult
+  | PausedExecutionResult
   | CompletedExecutionResult
   | FailedExecutionResult;
 
@@ -183,7 +195,11 @@ export interface ExecutionStatusFile {
   run_id: string;
   manifest_path: string;
   manifest_sha256: string;
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'paused' | 'awaiting_approval' | 'completed' | 'failed';
+  deadline_at: string | null;
+  execution_binding_sha256: string;
+  active_child: { kind: 'preflight' | 'step'; id: string } | null;
+  continuation_supported?: false;
   started_at: string;
   completed_at: string | null;
   errors: string[];

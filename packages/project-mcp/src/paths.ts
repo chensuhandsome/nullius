@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { invalidParams, McpError } from '@nullius/shared';
+import { invalidParams, McpError, assertExternalProjectRoot } from '@nullius/shared';
 
 const workspace = fs.realpathSync(fileURLToPath(new URL('../../..', import.meta.url)));
 export function within(parent: string, child: string): boolean {
@@ -11,10 +11,10 @@ export function within(parent: string, child: string): boolean {
 export function projectRoot(value: string | undefined): string {
   if (process.env.NULLIUS_CONTROL_DIR) throw invalidParams('Remove NULLIUS_CONTROL_DIR before starting project-mcp; the bound project owns its control directory.');
   if (!value || !path.isAbsolute(value)) throw invalidParams('NULLIUS_PROJECT_ROOT must name one absolute external project directory.');
-  const root = fs.realpathSync(value);
-  if (!fs.statSync(root).isDirectory() || root === path.parse(root).root || within(workspace, root) || within(root, workspace)) {
-    throw invalidParams('Bind a specific external research project, not the Nullius checkout or an ancestor.');
-  }
+  let root: string;
+  try { root = assertExternalProjectRoot(value, workspace); }
+  catch (error) { throw invalidParams(error instanceof Error ? error.message : String(error)); }
+  if (!fs.statSync(root).isDirectory()) throw invalidParams('Bind a specific external research project directory.');
   return root;
 }
 

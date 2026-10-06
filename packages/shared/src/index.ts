@@ -166,3 +166,5 @@ export {
   verifyIntegrityReceipt,
   readIntegrityReceipts,
 } from './integrity-receipt.js';
+
+export { canonicalProjectPath, assertExternalProjectRoot } from './project-root.js';

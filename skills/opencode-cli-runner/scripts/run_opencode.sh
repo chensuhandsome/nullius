@@ -838,6 +838,7 @@ classify_deterministic_failure() {
         'quota exceeded' \
         'insufficient quota' \
         'usage limit reached' \
+        "reached your usage limit for this billing cycle" \
         'out of usage' \
         'auto-rejecting' \
         'permission denied' \

@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { explicitArtifactWriterMethod } from './explicitArtifactWriterMethod.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { executeComputationManifest } from '../src/computation/index.js';
@@ -13,6 +14,16 @@ import {
   registerCleanup,
   writeJson,
 } from './executeManifestTestUtils.js';
+
+it('refuses direct materialization without an explicit method before writing computation files', () => {
+  const runDir = makeTmpDir(); registerCleanup(runDir);
+  const executionPlan = compileExecutionPlan('method-required', {
+    outline_seed_path: 'artifacts/outline_seed_v1.json',
+    outline: { thesis: 'An explicit operation is required.', claims: [{ claim_text: 'No output is presumed.' }], hypotheses: ['No launch without a method'], source_handoff_uri: 'fixture://raw/input' },
+  });
+  expect(() => materializeExecutionPlan(runDir, executionPlan)).toThrow('method_spec with files and run_card is required');
+  expect(fs.existsSync(path.join(runDir, 'computation'))).toBe(false);
+});
 
 afterEach(() => {
   cleanupRegisteredDirs();
@@ -34,7 +45,7 @@ function createBridgeRun(runId: string, projectRoot: string) {
     },
   });
   writeJson(executionPlanArtifactPath(runDir), executionPlan);
-  const { manifestPath } = materializeExecutionPlan(runDir, executionPlan);
+  const { manifestPath } = materializeExecutionPlan(runDir, executionPlan, { methodSpec: explicitArtifactWriterMethod(executionPlan) });
   return { runDir, manifestPath };
 }
 

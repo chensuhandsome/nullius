@@ -18,13 +18,15 @@ import type { RunState } from '../src/types.js';
 import { runCli } from '../src/cli.js';
 import { parseCliArgs } from '../src/cli-args.js';
 import { renderHelp } from '../src/cli-help.js';
+import { executeComputationManifest } from '../src/computation/index.js';
+import { handleOrchRunApprove } from '../src/orch-tools/approval.js';
 import { handleOrchRunExport } from '../src/orch-tools/control.js';
 import { getFrontDoorAuthoritySurface } from '../../../scripts/lib/front-door-authority-map.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
 function makeTempProjectRoot(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'nullius-cli-'));
+  return fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'nullius-cli-')));
 }
 
 function makeIo(cwd: string) {
@@ -260,6 +262,30 @@ function writeProjectSurfaceGuidanceFiles(
 }
 
 describe('nullius CLI', () => {
+  it.each([0, 2])('retains generic run directory counts in JSON and text status for %i directories', async (count) => {
+    const projectRoot = makeTempProjectRoot();
+    const manager = new StateManager(projectRoot);
+    manager.ensureDirs();
+    manager.saveState(manager.readState() as RunState);
+    for (let i = 0; i < count; i++) {
+      fs.mkdirSync(path.join(projectRoot, 'artifacts', 'runs', `plain-${i}`), { recursive: true });
+    }
+    const jsonIo = makeIo(projectRoot);
+    expect(await runCli(['status', '--json'], jsonIo.io)).toBe(0);
+    const runs = JSON.parse(jsonIo.stdout.join('')).traceability.runs;
+    expect(runs).toMatchObject({
+      total_directories: count,
+      counts: { active: 0, superseded: 0, void: 0, unclassified: count },
+      stamped: 0,
+    });
+    const textIo = makeIo(projectRoot);
+    expect(await runCli(['status'], textIo.io)).toBe(0);
+    expect(textIo.stdout.join('')).toContain(
+      `${count} run directories: 0 active, 0 superseded, 0 void, ${count} unclassified legacy; 0 carry origin stamps.`,
+    );
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
   it('renders top-level help with the canonical lifecycle scope', async () => {
     const { io, stdout } = makeIo(process.cwd());
     const code = await runCli(['--help'], io);
@@ -730,11 +756,11 @@ describe('nullius CLI', () => {
       '--available-tool', 'inspire_trace_original_source',
     ], makeIo(projectRoot).io);
 
-    const cloneState = (): RunState => JSON.parse(JSON.stringify(manager.readState())) as RunState;
+    const readFreshState = (): RunState => manager.readState();
     const firstExecution = (state: RunState): Record<string, unknown> =>
       ((((state.plan as Record<string, unknown>).steps as Record<string, unknown>[])[0]?.execution ?? {}) as Record<string, unknown>);
 
-    const invalidSearchState = cloneState();
+    const invalidSearchState = readFreshState();
     const invalidSearchExecution = firstExecution(invalidSearchState);
     const invalidSearchHints = (invalidSearchExecution.consumer_hints ?? {}) as Record<string, unknown>;
     invalidSearchExecution.consumer_hints = {
@@ -746,7 +772,7 @@ describe('nullius CLI', () => {
     };
     expect(() => manager.saveState(invalidSearchState)).toThrow(/schema validation failed/);
 
-    const invalidReadingState = cloneState();
+    const invalidReadingState = readFreshState();
     const invalidReadingExecution = firstExecution(invalidReadingState);
     const invalidReadingHints = (invalidReadingExecution.consumer_hints ?? {}) as Record<string, unknown>;
     invalidReadingExecution.consumer_hints = {
@@ -758,7 +784,7 @@ describe('nullius CLI', () => {
     };
     expect(() => manager.saveState(invalidReadingState)).toThrow(/schema validation failed/);
 
-    const truncatedPreferenceState = cloneState();
+    const truncatedPreferenceState = readFreshState();
     const truncatedPreferenceExecution = firstExecution(truncatedPreferenceState);
     const truncatedPreferenceHints = (truncatedPreferenceExecution.consumer_hints ?? {}) as Record<string, unknown>;
     truncatedPreferenceExecution.consumer_hints = {
@@ -770,7 +796,7 @@ describe('nullius CLI', () => {
     };
     expect(() => manager.saveState(truncatedPreferenceState)).toThrow(/schema validation failed/);
 
-    const invalidSaturationState = cloneState();
+    const invalidSaturationState = readFreshState();
     const invalidSaturationExecution = firstExecution(invalidSaturationState);
     const invalidSaturationHints = (invalidSaturationExecution.consumer_hints ?? {}) as Record<string, unknown>;
     invalidSaturationExecution.consumer_hints = {
@@ -2637,9 +2663,11 @@ describe('nullius CLI', () => {
     state.run_id = runId;
     state.workflow_id = 'computation';
     state.run_status = 'running';
-    state.gate_satisfied.A3 = 'A3-0001';
     manager.saveState(state);
     const { runDir, manifestPath } = createComputationFixture(projectRoot, runId);
+    const request = await executeComputationManifest({projectRoot,runId,runDir,manifestPath});
+    if (request.status !== 'requires_approval') throw new Error('expected bound A3 request');
+    await handleOrchRunApprove({project_root:projectRoot,approval_id:request.approval_id,approval_packet_sha256:request.approval_packet_sha256});
     const { io, stdout } = makeIo(projectRoot);
 
     const code = await runCli([

@@ -1,8 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { invalidParams } from '@nullius/shared';
+import { invalidParams, type ApprovalPacketV1 } from '@nullius/shared';
 import { StateManager } from '../state-manager.js';
 import { utcNowIso } from '../util.js';
+import { executionBinding } from './execution-binding.js';
 import { assertExecutionPlanValid } from './execution-plan.js';
 import { ensureDir, sha256Text, toPosixRelative, writeJsonAtomic, writeTextAtomic } from './io.js';
 import type { ApprovalRequiredExecutionResult, PreparedManifest } from './types.js';
@@ -32,7 +33,7 @@ function bridgeDetails(prepared: PreparedManifest): string {
   const observables = executionPlan.source.required_observables?.join(', ') ?? 'none recorded';
   const executionSurfaceNote = executionPlan.source.method_spec_present
     ? 'Execution surface: provider-backed manifest materialized from the staged method bundle.'
-    : 'Execution surface: no staged method bundle was supplied, so the bridge is using an internal fixture runner for bounded contract validation.';
+    : 'Execution surface: the explicit manifest and its listed commands define the operation; planning metadata alone grants no execution authority.';
   const taskLines = executionPlan.tasks.map(task => {
     const artifacts = task.expected_artifacts.map(artifact => artifact.path).join(', ');
     return `- ${task.task_id}: ${task.title} [capabilities: ${task.capabilities.join(', ')}] -> ${artifacts}`;
@@ -52,7 +53,7 @@ function bridgeDetails(prepared: PreparedManifest): string {
   ].join('\n');
 }
 
-function buildApprovalPacket(prepared: PreparedManifest, requestedAt: string, approvalId: string) {
+function buildApprovalPacket(projectRoot: string, prepared: PreparedManifest, requestedAt: string, approvalId: string): ApprovalPacketV1 {
   // The manifest preflight executes between approval and the first step, so
   // the packet must list it — an approved run must never execute a command
   // the approver did not see.
@@ -82,15 +83,13 @@ function buildApprovalPacket(prepared: PreparedManifest, requestedAt: string, ap
       'Declared outputs are enforced fail-closed; missing outputs mark the run failed.',
       prepared.manifest.description?.includes('Provider-backed execution materialized from staged method_spec.run_card')
         ? 'Execution authority comes from the staged method bundle; review the materialized provider-backed manifest rather than inferring missing runtime steps.'
-        : 'No staged method bundle was supplied, so approval covers an internal fixture manifest used only for bounded contract validation.',
+        : 'Execution authority comes from the explicit run-local manifest; review its commands and supplied scripts before approving.',
     ],
     budgets: {
       ...(prepared.manifest.computation_budget?.max_runtime_minutes !== undefined
-        ? { max_runtime_minutes: Math.ceil(prepared.manifest.computation_budget.max_runtime_minutes) }
+        ? { max_runtime_minutes: prepared.manifest.computation_budget.max_runtime_minutes }
         : {}),
-      ...(prepared.manifest.computation_budget?.max_disk_gb !== undefined
-        ? { max_disk_gb: prepared.manifest.computation_budget.max_disk_gb }
-        : {}),
+
     },
     outputs,
     rollback: `Reject approval or remove outputs under ${toPosixRelative(prepared.runDir, prepared.workspaceDir)}.`,
@@ -103,6 +102,7 @@ function buildApprovalPacket(prepared: PreparedManifest, requestedAt: string, ap
     requested_at: requestedAt,
     run_card_path: prepared.manifestRelativePath,
     run_card_sha256: prepared.manifestSha256,
+    execution_binding: executionBinding(projectRoot, prepared),
     plan_step_ids: prepared.stepOrder,
     details_md: bridgeDetails(prepared),
   };
@@ -112,12 +112,18 @@ function writeApprovalPacketArtifacts(projectRoot: string, prepared: PreparedMan
   packetPath: string;
   packetJsonPath: string;
   packetSha256: string;
+  commit: () => void;
 } {
   const requestedAt = utcNowIso();
-  const packet = buildApprovalPacket(prepared, requestedAt, approvalId);
+  const packet = buildApprovalPacket(projectRoot, prepared, requestedAt, approvalId);
   const artifacts = approvalArtifacts(projectRoot, prepared.runId, approvalId);
-  ensureDir(artifacts.approvalDir);
   const packetJsonText = JSON.stringify(packet, null, 2) + '\n';
+  return {
+    packetPath: toPosixRelative(projectRoot, artifacts.packetPath),
+    packetJsonPath: toPosixRelative(projectRoot, artifacts.packetJsonPath),
+    packetSha256: sha256Text(packetJsonText),
+    commit: () => {
+      ensureDir(artifacts.approvalDir);
   writeTextAtomic(
     artifacts.packetPath,
     `# Approval: ${approvalId} (A3)\n\nRun: ${prepared.runId}\nManifest: ${prepared.manifestRelativePath}\nRequested: ${requestedAt}\n`,
@@ -127,10 +133,7 @@ function writeApprovalPacketArtifacts(projectRoot: string, prepared: PreparedMan
     `# Approval packet — ${approvalId} (A3)\n\n${packet.purpose}\n\n## Commands\n${packet.commands.map(command => `- ${command}`).join('\n')}\n`,
   );
   writeJsonAtomic(artifacts.packetJsonPath, packet);
-  return {
-    packetPath: toPosixRelative(projectRoot, artifacts.packetPath),
-    packetJsonPath: toPosixRelative(projectRoot, artifacts.packetJsonPath),
-    packetSha256: sha256Text(packetJsonText),
+    },
   };
 }
 
@@ -149,39 +152,36 @@ export function ensureA3Approval(
   }
   // A3 (compute_runs) is opt-in: only machine-gate compute when the policy explicitly
   // enables it (default off — interactive use needs no pause; unattended runs opt in).
-  if (stateManager.readPolicy().require_approval_for?.compute_runs !== true) {
+  if (state.pending_approval && state.pending_approval.category !== 'A3') throw invalidParams('another root approval is pending; resolve it before computing');
+  const previousA3Authority = state.approval_history.some(entry => entry.category === 'A3' && entry.decision === 'approved');
+  if (stateManager.readPolicy().require_approval_for?.compute_runs !== true && !previousA3Authority && state.pending_approval?.category !== 'A3') {
     return null;
   }
+  const binding = executionBinding(projectRoot, prepared);
+  const matchesPacket = (approvalId: string, expectedHash: string | undefined): boolean => {
+    try {
+      const bytes = fs.readFileSync(approvalArtifacts(projectRoot, prepared.runId, approvalId).packetJsonPath, 'utf-8');
+      const packet = JSON.parse(bytes);
+      return Boolean(expectedHash && sha256Text(bytes) === expectedHash && packet.run_id === prepared.runId
+        && packet.execution_binding?.sha256 === binding.sha256);
+    } catch { return false; }
+  };
   const satisfiedA3 = typeof state.gate_satisfied.A3 === 'string' ? state.gate_satisfied.A3 : null;
-  if (satisfiedA3) {
-    return null;
-  }
+  const approved = [...state.approval_history].reverse().find(entry => entry.category === 'A3' && entry.approval_id === satisfiedA3 && entry.decision === 'approved');
+  if (satisfiedA3 && matchesPacket(satisfiedA3, approved?.packet_sha256)) return null;
   const pending = state.pending_approval;
-  if (pending?.category === 'A3' && pending.approval_id) {
+  if (pending?.category === 'A3' && matchesPacket(pending.approval_id, pending.packet_sha256)) {
     const artifacts = approvalArtifacts(projectRoot, prepared.runId, pending.approval_id);
-    if (!fs.existsSync(artifacts.packetJsonPath)) {
-      throw invalidParams('pending A3 approval is missing approval_packet_v1.json', {
-        approval_id: pending.approval_id,
-        packet_path: pending.packet_path,
-      });
-    }
-    return {
-      status: 'requires_approval',
-      requires_approval: true,
-      gate_id: 'A3',
-      run_id: prepared.runId,
-      approval_id: pending.approval_id,
-      approval_packet_sha256: sha256Text(fs.readFileSync(artifacts.packetJsonPath, 'utf-8')),
-      packet_path: pending.packet_path,
-      packet_json_path: toPosixRelative(projectRoot, artifacts.packetJsonPath),
-      message: `Approval required: ${pending.approval_id}`,
-    };
+    return { status: 'requires_approval', requires_approval: true, gate_id: 'A3', run_id: prepared.runId,
+      approval_id: pending.approval_id, approval_packet_sha256: pending.packet_sha256!, packet_path: pending.packet_path,
+      packet_json_path: toPosixRelative(projectRoot, artifacts.packetJsonPath), message: `Approval required: ${pending.approval_id}` };
   }
+  if (pending && pending.category !== 'A3') throw invalidParams('another root approval is pending; resolve it before computing');
+  delete state.gate_satisfied.A3;
   const approvalId = previewApprovalId(state.approval_seq.A3 ?? 0);
   const packet = writeApprovalPacketArtifacts(projectRoot, prepared, approvalId);
   const packetPath = packet.packetPath;
-  const mutatedState = stateManager.readState();
-  const returnedApprovalId = stateManager.requestApproval(mutatedState, 'A3', { packet_path: packetPath });
+  const returnedApprovalId = stateManager.requestApproval(state, 'A3', { packet_path: packetPath, packet_sha256: packet.packetSha256, replace_pending: pending?.category === 'A3', before_commit: packet.commit });
   if (returnedApprovalId !== approvalId) {
     throw invalidParams('approval_id drifted while creating A3 request', {
       expected: approvalId,
@@ -199,4 +199,17 @@ export function ensureA3Approval(
     packet_json_path: packet.packetJsonPath,
     message: `Approval required: ${approvalId}`,
   };
+}
+
+export function hasBoundA3Approval(projectRoot: string, prepared: PreparedManifest): boolean {
+  const state = new StateManager(projectRoot).readState();
+  const id = state.gate_satisfied.A3;
+  const approved = [...state.approval_history].reverse().find(entry => entry.category === 'A3' && entry.approval_id === id && entry.decision === 'approved');
+  if (typeof id !== 'string' || !approved?.packet_sha256) return false;
+  try {
+    const bytes = fs.readFileSync(approvalArtifacts(projectRoot,prepared.runId,id).packetJsonPath,'utf-8');
+    const packet = JSON.parse(bytes);
+    return sha256Text(bytes) === approved.packet_sha256 && packet.run_id === prepared.runId
+      && packet.execution_binding?.sha256 === executionBinding(projectRoot,prepared).sha256;
+  } catch {return false;}
 }

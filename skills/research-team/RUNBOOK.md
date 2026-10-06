@@ -90,8 +90,8 @@ Notes:
 ## Project stage (exploration vs development)
 
 - Default stage is `development` (fail-fast gates).
-- If `research_team_config.json` sets `project_stage=exploration`, `run_team_cycle.sh` keeps the Capsule gate (minimal variant) but downgrades selected preflight gates to warn-only and records debt at `team/runs/<tag>/<tag>_exploration_debt.md`.
-- Switching back to `development` restores fail-fast behavior: clear the recorded debt first by marking checklist items `- [ ]` → `- [x]` in `team/runs/*/*_exploration_debt.md`.
+- If `research_team_config.json` sets `project_stage=exploration`, `run_team_cycle.sh` keeps the Capsule gate (minimal variant) but downgrades selected preflight gates to warn-only and records debt at `artifacts/runs/<tag>/research_team/<tag>_exploration_debt.md`.
+- Switching back to `development` restores fail-fast behavior: clear the recorded debt first by marking checklist items `- [ ]` → `- [x]` in `artifacts/runs/*/research_team/*_exploration_debt.md`.
 - Debt helper (list/summary/close): `python3 "${SKILL_DIR}/scripts/bin/exploration_debt_dashboard.py" summary --team-dir team`
 
 ## Review access mode (packet_only vs full_access)
@@ -101,9 +101,9 @@ Notes:
   - `review_access_mode=full_access`: reviewers request file reads / command runs / network fetches via a leader proxy; every access is logged and gated.
   - `isolation_strategy=separate_worktrees|sequential_with_acl`: best-effort isolation for `full_access` runs (audited via evidence + gates).
 - Evidence files (full_access):
-  - `team/runs/<tag>/member_a_evidence.json`
-  - `team/runs/<tag>/member_b_evidence.json`
-  - Validate: `python3 "${SKILL_DIR}/scripts/bin/validate_evidence.py" team/runs/<tag>/member_a_evidence.json`
+  - `artifacts/runs/<tag>/research_team/member_a_evidence.json`
+  - `artifacts/runs/<tag>/research_team/member_b_evidence.json`
+  - Validate: `python3 "${SKILL_DIR}/scripts/bin/validate_evidence.py" artifacts/runs/<tag>/research_team/member_a_evidence.json`
 
 ## Orientation (avoid “file swamp”)
 
@@ -111,9 +111,9 @@ In projects scaffolded by `research-team`, use the navigation front door instead
 - `project_index.md` (project root) is the single “start here” page (template: [project_map_template.md](assets/project_map_template.md)).
 - `team/LATEST.md` is the stable pointer index written by [update_project_map.py](scripts/bin/update_project_map.py).
 - `team/LATEST_TEAM.md`, `team/LATEST_DRAFT.md`, and `artifacts/LATEST.md` appear only after the corresponding live cycle/run has been materialized; older/stale placeholders should not be treated as guaranteed navigation surfaces.
-- Per-run outputs are grouped under `team/runs/<tag>/...` (packet, member reports, gate reports, adjudication).
-- On convergence, when an `nullius` CLI is reachable (project-local `.nullius/bin/nullius` or on `PATH`), two dependency graphs are rendered best-effort via `nullius graph` (consuming the `@nullius/shared/graph-viz` engine): the **Claim DAG** to `knowledge_graph/claims.dot` (the epistemic view — only when `knowledge_graph/claims.jsonl` + `edges.jsonl` exist) and the **milestone/task progress map** to `team/runs/<tag>/progress.dot` (the planning view — only when `research_plan.md` exists). Each is skipped silently when its inputs or the CLI are absent, is bounded so it can never hang, and never affects convergence.
-- Draft-cycle convergence artifacts (when enabled) live under `team/runs/<tag>/...`:
+- Per-run outputs are grouped under `artifacts/runs/<tag>/research_team/...` (packet, member reports, gate reports, adjudication).
+- On convergence, when an `nullius` CLI is reachable (project-local `.nullius/bin/nullius` or on `PATH`), two dependency graphs are rendered best-effort via `nullius graph` (consuming the `@nullius/shared/graph-viz` engine): the **Claim DAG** to `knowledge_graph/claims.dot` (the epistemic view — only when `knowledge_graph/claims.jsonl` + `edges.jsonl` exist) and the **milestone/task progress map** to `artifacts/runs/<tag>/research_team/progress.dot` (the planning view — only when `research_plan.md` exists). Each is skipped silently when its inputs or the CLI are absent, is bounded so it can never hang, and never affects convergence.
+- Draft-cycle convergence artifacts (when enabled) live under `artifacts/runs/<tag>/research_team/...`:
   - `<tag>_draft_convergence_log.md`
   - `<tag>_draft_converged_summary.md`
 - Run ledger: `team/trajectory_index.json` (machine-readable run history; linked from `team/LATEST.md` and any live cycle pointers).
@@ -126,8 +126,8 @@ In projects scaffolded by `research-team`, use the navigation front door instead
 - Gate: [check_draft_convergence.py](scripts/gates/check_draft_convergence.py)
 - Symptom: `draft cycle not converged` (exit 1) or `parse errors` (exit 2)
 - Where to look:
-  - `team/runs/<tag>/<tag>_draft_convergence_log.md`
-  - `team/runs/<tag>/<tag>_draft_converged_summary.md`
+  - `artifacts/runs/<tag>/research_team/<tag>_draft_convergence_log.md`
+  - `artifacts/runs/<tag>/research_team/<tag>_draft_converged_summary.md`
 - Fix:
   - If exit 1: apply all **Blocking** items from A/B/Leader reports (each must be actionable and locatable) and rerun with a new tag (e.g. `D0-r2`) until converged.
   - If exit 2: at least one report violated the output contract (missing `Verdict:` or `Blocking issues count:`). Update your prompt templates under `prompts/` to the latest scaffold defaults and rerun.
@@ -167,10 +167,11 @@ In projects scaffolded by `research-team`, use the navigation front door instead
 - Gate: [check_project_map.py](scripts/gates/check_project_map.py)
 - Symptom: `missing project_index.md` / `project_index.md missing required link(s)`
 - Fix:
-  - If you never scaffolded: rerun `scaffold_research_workflow.sh` (without `--force`) to fill missing navigation files.
-  - Or generate/update deterministically:
+  - If the root index is missing, run `nullius init --project-root "$PWD"` from the external project root to create the missing scaffold.
+  - If an existing index lacks required links, edit its navigation explicitly, preserving human content and curated result/report selections. Ensure it links to the canonical docs + `team/LATEST.md`; `artifacts/LATEST.md` should appear only after a live artifact run materializes it.
+  - To refresh only executor-local latest pointers after the root index exists:
     - `python3 "${SKILL_DIR}/scripts/bin/update_project_map.py" --notes research_contract.md --team-dir team`
-  - Ensure `project_index.md` links to the canonical docs + `team/LATEST.md`; `artifacts/LATEST.md` should appear only after a live artifact run materializes it.
+    - This helper neither creates nor edits `project_index.md`; it refuses a missing root index with `nullius init` guidance.
 - Rerun:
   - Preflight-only command.
 
@@ -369,7 +370,7 @@ In projects scaffolded by `research-team`, use the navigation front door instead
 ### Pointer lint gate (code pointers)
 
 - Gate: [check_pointer_lint.py](scripts/gates/check_pointer_lint.py)
-- Symptom: `pointer lint failed` (and a generated report under `team/runs/<tag>/<tag>_pointer_lint.md`)
+- Symptom: `pointer lint failed` (and a generated report under `artifacts/runs/<tag>/research_team/<tag>_pointer_lint.md`)
 - Fix:
   - Ensure notebook code pointers are valid for the configured strategy:
     - `python_import`: dotted pointers like `pkg.module.symbol` must import-resolve.
@@ -422,7 +423,7 @@ In projects scaffolded by `research-team`, use the navigation front door instead
     - Note: a line like `Hook registry initialized...` is a harmless stderr preamble; the runner ignores it.
   - Claude attempt-level diagnostics (new):
     - `run_team_cycle.sh` now writes per-attempt logs under:
-      - `team/runs/<tag>/logs/`
+      - `artifacts/runs/<tag>/research_team/logs/`
       - Examples: `<tag>_member_a_attempt_01.stderr.log`, `<tag>_member_b_attempt_02.meta.json`
     - `cycle_state.json` now records attempt summaries when logs are available:
       - `runners.member_a.attempts_total`
@@ -439,11 +440,11 @@ In projects scaffolded by `research-team`, use the navigation front door instead
 - Symptom: `[gate] Not converged. Apply fixes and re-run...`
 - Fix:
   - Read:
-    - `team/runs/<tag>/<tag>_member_a.md`
-    - `team/runs/<tag>/<tag>_member_b.md`
+    - `artifacts/runs/<tag>/research_team/<tag>_member_a.md`
+    - `artifacts/runs/<tag>/research_team/<tag>_member_b.md`
   - Write an adjudication note:
-    - `mkdir -p team/runs/<next_tag>`
-    - `python3 "${SKILL_DIR}/scripts/bin/build_adjudication_response.py" --tag <next_tag> --member-a team/runs/<tag>/<tag>_member_a.md --member-b team/runs/<tag>/<tag>_member_b.md --out team/runs/<next_tag>/<next_tag>_adjudication.md`
+    - `mkdir -p artifacts/runs/<next_tag>/research_team`
+    - `python3 "${SKILL_DIR}/scripts/bin/build_adjudication_response.py" --tag <next_tag> --member-a artifacts/runs/<tag>/research_team/<tag>_member_a.md --member-b artifacts/runs/<tag>/research_team/<tag>_member_b.md --out artifacts/runs/<next_tag>/research_team/<next_tag>_adjudication.md`
   - Grade the findings per the severity contract in SKILL.md (blocking vs
     non-blocking); give every non-blocking finding an explicit disposition in
     the adjudication (fix now / attach to a named acceptance point / discard

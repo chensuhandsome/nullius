@@ -40,7 +40,7 @@ class TestRunArtifactIdentity(unittest.TestCase):
         )
 
         self.assertIn("artifacts/runs/<run_id>/", docs)
-        self.assertIn("team/runs/<tag>/", docs)
+        self.assertIn("artifacts/runs/<tag>/research_team/", docs)
         self.assertIn("20260502T023000Z-m0-topic", docs)
         self.assertIn("Do not use bare UUIDs or `run_<uuid>`", docs)
         self.assertNotIn("M0-r1", docs)
@@ -96,7 +96,7 @@ class TestRunArtifactIdentity(unittest.TestCase):
                     "--tag",
                     "20260502T023000Z-m0-topic",
                     "--out-dir",
-                    td,
+                    str(Path(td) / "artifacts"),
                 ],
                 check=True,
                 stdout=subprocess.PIPE,

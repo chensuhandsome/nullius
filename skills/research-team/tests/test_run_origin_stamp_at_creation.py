@@ -8,7 +8,7 @@ happen (hundreds of runs later reconstructed heuristically). These tests pin
     unconditionally: re-entry idempotency lives in the ledger-locked stamp
     writer (one stamp per run id), never in an on-disk mirror check the
     ledger does not vouch for,
-(c) a failing or missing launcher warns and never aborts the cycle.
+(c) a failing launcher refuses before payload creation; a missing launcher warns.
 """
 
 from __future__ import annotations
@@ -35,22 +35,23 @@ def _stamp_block(script: str) -> str:
 
 def test_stamp_block_sits_between_run_dir_creation_and_cycle_trap() -> None:
     script = RUN_TEAM_CYCLE.read_text(encoding="utf-8")
-    mkdir_idx = script.find('run_dir="${OUT_DIR}/runs/${safe_tag}"')
+    mkdir_idx = script.find('mkdir -p "${run_root}"')
+    payload_idx = script.find('mkdir -p "${run_dir}"', mkdir_idx)
     stamp_idx = script.find(BLOCK_START)
     trap_idx = script.find("trap on_exit EXIT")
     assert mkdir_idx != -1 and stamp_idx != -1 and trap_idx != -1
-    assert mkdir_idx < stamp_idx < trap_idx
+    assert mkdir_idx < stamp_idx < payload_idx < trap_idx
 
 
-def test_stamp_block_never_exits_the_cycle_on_failure() -> None:
+def test_stamp_block_refuses_failed_origin_binding() -> None:
     block = _stamp_block(RUN_TEAM_CYCLE.read_text(encoding="utf-8"))
-    assert "exit" not in block, "the stamp is bookkeeping, not a gate: no exit paths allowed"
+    assert "exit 1" in block
     assert "WARNING" in block
 
 
 def _run_block(tmp_path: Path, *, launcher_body: str | None) -> subprocess.CompletedProcess[str]:
     project_root = tmp_path / "proj"
-    run_dir = project_root / "team" / "runs" / "tag-r1"
+    run_dir = project_root / "artifacts" / "runs" / "tag-r1"
     run_dir.mkdir(parents=True)
     calls = tmp_path / "calls.log"
     if launcher_body is not None:
@@ -70,9 +71,11 @@ def _run_block(tmp_path: Path, *, launcher_body: str | None) -> subprocess.Compl
     driver = (
         "set -euo pipefail\n"
         f"PROJECT_ROOT={project_root}\n"
-        f"run_dir=team/runs/tag-r1\n"
+        f"run_dir={run_dir}/research_team\n"
+        f"run_root={run_dir}\n"
         f"run_dir_abs={run_dir}\n"
         f"{block}"
+        'mkdir -p "${run_dir}"\n'
         "echo CYCLE_CONTINUED\n"
     )
     return subprocess.run(
@@ -92,12 +95,13 @@ def test_launcher_invoked_once_with_project_root_and_absolute_run_dir(tmp_path: 
     assert result.returncode == 0
     assert "CYCLE_CONTINUED" in result.stdout
     assert "[trace] origin stamped tag-r1" in result.stdout
+    assert (tmp_path / 'proj/artifacts/runs/tag-r1/research_team').is_dir()
     calls = (tmp_path / "calls.log").read_text(encoding="utf-8").strip().splitlines()
     assert len(calls) == 1
     call = calls[0]
     assert f"--project-root {tmp_path / 'proj'}" in call
     assert "trace stamp" in call
-    assert str(tmp_path / "proj" / "team" / "runs" / "tag-r1") in call
+    assert str(tmp_path / "proj" / "artifacts" / "runs" / "tag-r1") in call
 
 
 def test_reentry_invokes_the_idempotent_writer_and_continues(tmp_path: Path) -> None:
@@ -125,15 +129,16 @@ def test_stamp_block_consults_no_mirror_file(tmp_path: Path) -> None:
     )
 
 
-def test_failed_stamp_warns_and_continues(tmp_path: Path) -> None:
+def test_failed_stamp_refuses_before_cycle_work(tmp_path: Path) -> None:
     result = _run_block(
         tmp_path,
         launcher_body='echo "boom" >&2\nexit 1\n',
     )
-    assert result.returncode == 0
-    assert "CYCLE_CONTINUED" in result.stdout
+    assert result.returncode == 1
+    assert "CYCLE_CONTINUED" not in result.stdout
     assert "WARNING: origin stamp failed" in result.stderr
     assert "unstamped" in result.stderr
+    assert not (tmp_path / 'proj/artifacts/runs/tag-r1/research_team').exists()
 
 
 def test_missing_launcher_notes_and_continues(tmp_path: Path) -> None:

@@ -685,7 +685,7 @@ describe('refresh, hooks, and staleness', () => {
     const src = path.join(__dirname, '..', 'src');
     const read = (name: string): string => fs.readFileSync(path.join(src, name), 'utf-8');
     const runStamp = read('run-stamp.ts');
-    expect(runStamp).toContain("import { refreshRunIndexBlock } from './run-index.js'");
+    expect(runStamp).toMatch(/import\s*\{[^}]*\brefreshRunIndexBlock\b[^}]*\}\s*from ['"]\.\/run-index\.js['"]/);
     // Two call sites: the shared stamp writer AND the retry entrance.
     expect((runStamp.match(/refreshRunIndexBlock\(projectRoot, \{ insertIfMissing: false \}\)/g) ?? []).length)
       .toBeGreaterThanOrEqual(2);
@@ -796,10 +796,12 @@ describe('refresh, hooks, and staleness', () => {
     mkRun(projectRoot, '20260809-m1-r001-order');
     const carrier = path.join(projectRoot, 'project_index.md');
     let renders = 0;
+    let inputVersion = 1;
     const outcome = refreshManagedBlock(
       carrier,
       () => {
         renders += 1;
+        const projectedVersion = inputVersion;
         if (renders === 1) {
           // Simulate the rival: it lands AFTER our read (the engine read
           // the carrier before calling us), so the write guard must see
@@ -808,8 +810,9 @@ describe('refresh, hooks, and staleness', () => {
           // happens BEFORE the read, no retry occurs, and renders
           // stays 1 — turning this control red.
           fs.appendFileSync(carrier, '\nrival line\n');
+          inputVersion = 2;
         }
-        return [RUN_INDEX_START, '<!-- run-index-digest: ' + 'a'.repeat(64) + ' -->', `render ${renders}`, RUN_INDEX_END].join('\n');
+        return [RUN_INDEX_START, '<!-- run-index-digest: ' + 'a'.repeat(64) + ' -->', `render ${projectedVersion}`, RUN_INDEX_END].join('\n');
       },
       {
         startMarker: RUN_INDEX_START,
@@ -828,7 +831,8 @@ describe('refresh, hooks, and staleness', () => {
     expect(renders).toBeGreaterThanOrEqual(2);
     const text = fs.readFileSync(carrier, 'utf-8');
     expect(text).toContain('rival line');
-    expect(text).toContain(`render ${renders}`);
+    expect(text).toContain('render 2');
+    expect(text).not.toContain('render 1');
   });
 
   it('an ACTIVE but never-stamped run cannot star a clean current result (reinstate-only entry)', () => {

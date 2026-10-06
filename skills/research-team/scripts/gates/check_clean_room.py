@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from audit_interceptor import AuditEntry, load_audit_log  # type: ignore
 from provenance import extract_tool_call_ids, validate_tool_call_ids_against_audit  # type: ignore
+from review_paths import is_forbidden_review_path
 from team_config import load_team_config  # type: ignore
 
 
@@ -55,7 +56,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--notes", type=Path, required=True, help="Notebook path (used to locate config).")
     p.add_argument("--member-a", type=Path, required=True, help="Member A evidence JSON path.")
     p.add_argument("--member-b", type=Path, required=True, help="Member B evidence JSON path.")
-    p.add_argument("--safe-tag", default="", help="Safe tag used in team/runs/<tag>.")
+    p.add_argument("--safe-tag", default="", help="Safe canonical run id.")
     p.add_argument("--audit-a", type=Path, default=None, help="Member A audit JSONL path (optional).")
     p.add_argument("--audit-b", type=Path, default=None, help="Member B audit JSONL path (optional).")
     p.add_argument("--workspace-id-a", default="", help="Member A workspace ID (for provenance check).")
@@ -78,38 +79,10 @@ def _as_list(d: dict[str, Any], key: str) -> list[Any]:
     return v if isinstance(v, list) else []
 
 
-def _forbidden_patterns(member: str, safe_tag: str) -> list[re.Pattern[str]]:
-    other = "member_b" if member == "member_a" else "member_a"
-    base: list[str] = []
-    if safe_tag:
-        base.extend(
-            [
-                rf"team/runs/{re.escape(safe_tag)}/{re.escape(other)}(?:/|$)",
-                rf"team/runs/{re.escape(safe_tag)}/{re.escape(other)}_evidence\.json",
-                rf"artifacts/runs/{re.escape(safe_tag)}/research_team/{re.escape(other)}(?:/|$)",
-                # Workspace isolation dirs: block access to other member's isolated workspace.
-                rf"team/runs/{re.escape(safe_tag)}/workspaces/{re.escape(other)}_",
-                # Top-level member report file (e.g. <safe_tag>_member_b.md in run dir).
-                rf"team/runs/{re.escape(safe_tag)}/{re.escape(safe_tag)}_{re.escape(other)}\.md",
-                # Audit log and per-member attempt log subdir.
-                rf"team/runs/{re.escape(safe_tag)}/{re.escape(other)}_audit\.jsonl",
-                rf"team/runs/{re.escape(safe_tag)}/logs/{re.escape(other)}(?:/|$)",
-            ]
-        )
-    else:
-        base.extend(
-            [
-                rf"/{re.escape(other)}/",
-                rf"{re.escape(other)}_evidence\.json",
-                rf"artifacts/runs/.+/research_team/{re.escape(other)}/",
-            ]
-        )
-    return [re.compile(x) for x in base]
 
 
 def _scan_member_paths(member: str, ev: dict[str, Any], safe_tag: str) -> list[Issue]:
     issues: list[Issue] = []
-    pats = _forbidden_patterns(member, safe_tag)
     _dotdot_re = re.compile(r"(?:(?:^|[^\w.])\.\.(?:[^\w.]|$))")
 
     def bad(s: str) -> bool:
@@ -117,7 +90,7 @@ def _scan_member_paths(member: str, ev: dict[str, Any], safe_tag: str) -> list[I
         # Detect path traversal via '..' components (e.g., ../../member_b/...).
         if _dotdot_re.search(normalized):
             return True
-        return any(p.search(normalized) for p in pats)
+        return is_forbidden_review_path(member, safe_tag, normalized)
 
     for i, it in enumerate(_as_list(ev, "files_read")):
         if not isinstance(it, dict):
@@ -162,7 +135,9 @@ def _scan_member_paths(member: str, ev: dict[str, Any], safe_tag: str) -> list[I
         if not isinstance(it, dict):
             continue
         path = str(it.get("path", "")).strip()
-        if path and bad(path):
+        own_report = f"artifacts/runs/{safe_tag}/research_team/{safe_tag}_{member}.md"
+        # The proxy emits this report; recording its produced path is not read access.
+        if path and path.removeprefix("./") != own_report and bad(path):
             issues.append(
                 Issue(member, f"outputs_produced[{i}].path", f"CONTAMINATION_DETECTED: forbidden cross-member output path: {path!r}", hard_fail=True)
             )

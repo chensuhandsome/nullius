@@ -20,17 +20,17 @@ _IGNORED_NAMES = {
     "build",
     "dist",
     "node_modules",
-    "team",  # default scaffold out-dir; custom out-dir roots are excluded via excluded_root
+    "team",  # Coordinator definitions and navigation are not original review inputs.
+    "workspaces",
     "venv",
 }
+_IGNORED_NAMES = {name.casefold() for name in _IGNORED_NAMES}
 
 
 def _copy_tree_filtered(
     src_root: Path,
     dst_root: Path,
     *,
-    safe_tag: str = "",
-    excluded_root: str = "",
     skip_snapshot_noise: bool = False,
     replace: bool = False,
 ) -> None:
@@ -48,15 +48,13 @@ def _copy_tree_filtered(
                 child = root / name
                 if child.is_symlink():
                     continue
-                if not rel_dir and excluded_root and name == excluded_root:
+                if name.casefold() in _IGNORED_NAMES or name.casefold().endswith(".egg-info"):
                     continue
-                if name in _IGNORED_NAMES or name.endswith(".egg-info"):
-                    continue
-                rel_parts = rel_dir.split("/") if rel_dir else []
+                rel_parts = rel_dir.casefold().split("/") if rel_dir else []
                 if (
-                    safe_tag
-                    and rel_parts == ["artifacts", "runs", safe_tag, "research_team"]
-                    and name in {"member_a", "member_b"}
+                    len(rel_parts) == 3
+                    and rel_parts[:2] == ["artifacts", "runs"]
+                    and name.casefold() == "research_team"
                 ):
                     continue
                 kept_dirs.append(name)
@@ -69,7 +67,7 @@ def _copy_tree_filtered(
             src = root / name
             if src.is_symlink():
                 continue
-            if skip_snapshot_noise and (name in _IGNORED_NAMES or name.endswith((".pyc", ".pyo"))):
+            if skip_snapshot_noise and (name.casefold() in _IGNORED_NAMES or name.casefold().endswith((".pyc", ".pyo"))):
                 continue
             dst = dest_dir / name
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -92,16 +90,9 @@ def create_isolated_workspace(
     ws_dir = run_dir / "workspaces" / f"{member_id}_{workspace_id}"
     ws_dir.mkdir(parents=True, exist_ok=True)
     if project_root is not None and project_root.is_dir():
-        excluded_root = ""
-        try:
-            excluded_root = run_dir.resolve().relative_to(project_root.resolve()).parts[0]
-        except Exception:
-            excluded_root = ""
         _copy_tree_filtered(
             project_root,
             ws_dir,
-            safe_tag=safe_tag,
-            excluded_root=excluded_root,
             skip_snapshot_noise=True,
         )
     ws_dir.chmod(0o700)

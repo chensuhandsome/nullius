@@ -158,12 +158,6 @@ export const HepRunIngestSkillArtifactsToolSchema = z.object({
   tags: z.array(z.string()).max(20).optional().describe('Classification tags (e.g. feyncalc, one-loop)'),
 });
 
-export const HepRunCreateFromIdeaToolSchema = z.object({
-  handoff_uri: z.string().min(1).describe('hep:// URI or file path pointing to an IdeaHandoffC2 artifact'),
-  project_id: SafePathSegmentSchema.optional().describe('Existing project ID; auto-created from thesis if omitted'),
-  run_label: z.string().optional().describe('Optional label for the new run'),
-});
-
 export const SearchExportFormatSchema = z.enum(['jsonl', 'json']);
 
 export const HepInspireSearchExportToolSchema = z.object({

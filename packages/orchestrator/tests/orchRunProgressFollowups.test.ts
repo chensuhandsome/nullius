@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { explicitArtifactWriterMethod } from './explicitArtifactWriterMethod.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { handleToolCall } from '../src/tooling.js';
 import { executeComputationManifest, stageContentInRunDir } from '../src/computation/index.js';
@@ -57,7 +58,7 @@ function createFeedbackBridgeRun(runId: string, projectRoot: string) {
     },
   });
   writeJson(executionPlanArtifactPath(runDir), executionPlan);
-  const { manifestPath } = materializeExecutionPlan(runDir, executionPlan);
+  const { manifestPath } = materializeExecutionPlan(runDir, executionPlan, { methodSpec: explicitArtifactWriterMethod(executionPlan) });
   return { runDir, manifestPath };
 }
 

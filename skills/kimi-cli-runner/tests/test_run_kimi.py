@@ -1,12 +1,56 @@
 from __future__ import annotations
 
 import os
+import json
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 RUNNER = SKILL_DIR / "scripts" / "run_kimi.sh"
+
+
+def test_cancel_during_backoff_does_not_wait_or_start_retry(tmp_path: Path) -> None:
+    bindir = tmp_path / 'bin'
+    bindir.mkdir()
+    _write_fake_kimi(bindir)
+    prompt = tmp_path / 'prompt'
+    prompt.write_text('Review the input.')
+    out = tmp_path / 'out'
+    log = tmp_path / 'calls'
+    env = os.environ.copy()
+    env.update(PATH=str(bindir)+os.pathsep+env.get('PATH',''), FAKE_MODE='fail_once_then_success',
+               FAKE_LOG=str(log), FAKE_STATE=str(tmp_path/'state'))
+    cmd = ['bash',str(RUNNER),'--prompt-file',str(prompt),'--out',str(out),
+           '--max-attempts','2','--sleep-secs','20']
+    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        deadline = time.monotonic()+3
+        roots = []
+        while time.monotonic()<deadline:
+            roots = list(Path(str(out)+'.attempts').glob('run.*'))
+            if roots and (roots[0]/'budget.json').exists():
+                budget = json.loads((roots[0]/'budget.json').read_text())
+                if budget['attempts'] and budget['attempts'][-1]['status'] != 'running':
+                    break
+            time.sleep(.02)
+        assert roots and log.exists()
+        time.sleep(.15)
+        assert proc.poll() is None
+        start = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        stdout, stderr = proc.communicate(timeout=3)
+        assert time.monotonic()-start < 3
+        assert proc.returncode == 143, stdout+stderr
+        assert log.read_text().count('cwd=') == 1
+        assert json.loads((roots[0]/'budget.json').read_text())['status'] == 'cancelled'
+        assert not out.exists()
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.communicate(timeout=3)
 
 
 def _write_fake_kimi(bin_dir: Path) -> Path:
@@ -145,6 +189,15 @@ PY
     fi
     echo '{"role":"assistant","content":"OK_AFTER_RESET"}'
     ;;
+  quota_error)
+    echo '{"role":"error","content":"You have reached your usage limit for this billing cycle. Your quota will be refreshed in the next cycle."}'
+    ;;
+  quota_adjacent)
+    echo '{"role":"error","content":"quota exceeded"}'
+    ;;
+  quota_quote_in_body)
+    echo '{"role":"assistant","content":"Documentation says: reached your usage limit for this billing cycle. A network error can also be transient."}'
+    ;;
   emit_metadata)
     python3 - "${model}" "${output_format}" "${#add_dirs[@]}" "${#skills_dirs[@]}" <<'PY'
 import json
@@ -243,7 +296,7 @@ def test_default_dry_run_uses_isolated_mode_no_workspace_and_empty_skills(tmp_pa
     assert "Work dir: (temporary isolated directory)" in proc.stdout
     assert "Workspace dirs: (none)" in proc.stdout
     assert "Skills dirs: (empty temporary directory)" in proc.stdout
-    assert "Timeout: 900s total invocation deadline" in proc.stdout
+    assert "Timeout: disabled" in proc.stdout
     assert "--output-format stream-json" in proc.stdout
     assert "--add-dir" not in proc.stdout
     assert "--skills-dir" in proc.stdout
@@ -543,3 +596,21 @@ def test_transient_connection_reset_is_retried_then_succeeds(tmp_path: Path) -> 
     assert _log_text(log_path).count("args=") == 2, "transient failure must keep the retry budget"
     assert "Attempt 1 failed in requested-model mode" in proc.stderr
     assert _out_text(out_path) == "OK_AFTER_RESET\n"
+
+
+def test_billing_cycle_and_adjacent_quota_stop_without_retry(tmp_path):
+    for mode in ("quota_error", "quota_adjacent"):
+        case = tmp_path / mode
+        case.mkdir()
+        proc, out, log = _run_runner(case, args=["--max-attempts", "3", "--sleep-secs", "1"], fake_mode=mode)
+        assert proc.returncode == 11
+        assert _log_text(log).count("args=") == 1
+        assert "deterministic error" in proc.stderr
+        assert not out.exists()
+
+
+def test_billing_cycle_words_in_normal_body_do_not_classify_failure(tmp_path):
+    proc, out, log = _run_runner(tmp_path, args=[], fake_mode="quota_quote_in_body")
+    assert proc.returncode == 0
+    assert "billing cycle" in _out_text(out)
+    assert _log_text(log).count("args=") == 1

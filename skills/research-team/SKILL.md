@@ -98,12 +98,9 @@ Use `research-team` when you want a project workflow with:
   lives in the run's origin stamp, and sub-day precision in names measured as
   unreliable in practice. The older
   `<YYYYMMDDTHHMMSSZ>-<milestone>-<short-topic>-rN` shape stays valid for
-  existing runs. `team/runs/<tag>/` is the
-  research-team reviewer packet/log surface and a first-class evidence root in
-  its own right: contract claims may cite `team/runs/<tag>/...` paths directly.
-  Mirror or summarize under `artifacts/runs/<run_id>/research_team/` when a
-  milestone's headline evidence should live with the run record, not as a
-  precondition for citing it.
+  existing runs. Team and draft payloads live in `artifacts/runs/<tag>/research_team/`;
+  the tag is the same parent run identity. Packets, checkpoints, reports and
+  logs are executor evidence; the parent run holds the origin stamp.
 - **Stamp the run at creation (mandatory where the project has a nullius
   launcher)**: immediately after creating `artifacts/runs/<run_id>/`, run
   `nullius trace stamp <run_id>` from the project root. The stamp binds the
@@ -186,22 +183,20 @@ SKILL_DIR="${SKILL_DIR:-$(for r in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${CODE
 bash "${SKILL_DIR}/scripts/bin/run_team_cycle.sh" \
   --tag 20260502T023000Z-m0-topic --auto-tag \
   --notes research_contract.md \
-  --out-dir team \
+  --out-dir artifacts \
   --member-a-system prompts/_system_member_a.txt \
   --member-b-system prompts/_system_member_b.txt
 ```
 
 Tip: add `--preflight-only` to run deterministic gates without calling external LLMs.
 By default, Member A and Member B should be assigned through the current host agent's official subagent mechanism with config-derived reasoning depth. `run_team_cycle.sh` keeps CLI compatibility runners for shell-only environments; use `--member-a-runner-kind` / `--member-b-runner-kind` or `research_team_config.json` only when you explicitly want a provider-specific CLI runner.
-Keep `--out-dir` on a real-project path as well; do not point real-project team outputs back into the development repo.
-The command above writes reviewer-cycle packets and logs under `team/runs/<tag>/`.
-`team/runs/<tag>/` is a first-class evidence root: durable claims may cite its
-paths directly, alongside the canonical lifecycle root `artifacts/runs/<run_id>/`.
-When a milestone's headline evidence should live with the run record, record or
-summarize it under `artifacts/runs/<run_id>/research_team/`; otherwise keep the
-`team/runs/<tag>/` paths as the cited reviewer provenance.
+`--out-dir` must resolve to the project's `artifacts` directory; unsupported
+output overrides refuse before directory creation. Team and draft payloads
+live in `artifacts/runs/<tag>/research_team/`. A present project-local launcher
+must accept the parent origin stamp before cycle work; a missing launcher is
+reported as unstamped. Conflicting origin never silently rebinds the run.
 
-**Workspace disk policy**: `team/runs/<tag>/workspaces/` contains per-member
+**Workspace disk policy**: `artifacts/runs/<tag>/research_team/workspaces/` contains per-member
 project snapshots that the reviewer subprocess runs against. They can grow
 large (full project tree × 2 members × N runs). They are **ephemeral scratch
 space**, not durable artifacts — every piece of forensic data needed to audit
@@ -229,7 +224,7 @@ a run lives at the run_dir top level (`cycle_state.json`, `<tag>_member_*.md`,
   python3 "${SKILL_DIR}/scripts/bin/prune_team_workspaces.py" --root /path/to/project \
     --keep-last 3 --keep-failed --apply
   ```
-  The tool only touches `team/runs/<tag>/workspaces/` subdirectories; all
+  The tool only touches `artifacts/runs/<tag>/research_team/workspaces/` subdirectories; all
   forensic data at the run_dir top level is preserved. Pass `--json` to emit
   a machine-readable plan plus, after `--apply`, a `result` envelope.
 - For projects that run cycles in an unattended loop, either keep the
@@ -266,7 +261,7 @@ a run lives at the run_dir top level (`cycle_state.json`, `<tag>_member_*.md`,
 - **Exploration stage debt helper**: `scripts/bin/exploration_debt_dashboard.py`.
 - **Scaffold pruning (move/archive optional files)**: `scripts/bin/prune_optional_scaffold.py`.
 - **Environment snapshot**: `scripts/bin/capture_env_snapshot.sh`.
-- **Lifecycle updates**: `scripts/bin/update_project_map.py`, `scripts/bin/update_research_plan_progress.py`, `scripts/bin/update_trajectory_index.py`.
+- **Executor navigation and progress**: `scripts/bin/update_project_map.py`, `scripts/bin/update_research_plan_progress.py`, `scripts/bin/update_trajectory_index.py`.
 - **Main research report promotion**: the canonical domain-neutral template
   and registry live in the `project-contracts` scaffold under
   `reports/main_research_report_template.md` and
@@ -551,3 +546,9 @@ it does not decide whether the scientific narrative is sufficient.
 - Troubleshooting / rerun recipes: `RUNBOOK.md`
 - Gate contract notes: `FULL_VALIDATION_CONTRACT.md`
 - Artifact contract: `references/artifact_contract.md`
+
+All newly generated managed project runs use `artifacts/runs/<run_id>/`; team and draft executor payloads live in `research_team/` beneath that run. Origin stamps bind the parent run. If retired `team/runs` contains run directories, dependent views report the count and `init --runtime-only` refuses before rebinding. An unreadable retired root is an error. Retain the prior runtime with its matching skills, or perform a separately reviewed migration before switching. The `inventory_run_relocation.py --fixture-root <anonymous-fixture> --source-manifest <hash-manifest>` helper only inventories pinned fixture bytes, references, collisions and unresolved bindings; it has no apply mode. Independent reviewer snapshots omit every run's executor payload and all workspace trees, retain production artifacts, and allow only each member's own declared output prefix. Historical reports/adjudications remain coordinator evidence. `team/LATEST*.md` and `artifacts/LATEST.md` are navigation pointers.
+
+The generic scaffold creates `project_index.md`; the team helper updates only executor-local latest pointers and requires `nullius init` when the root index is missing. Selected-result and derived-block writers share a short path lock, reread their inputs, and make at most three attempts when edits are detected while preserving human bytes, mode and EOL outside their marked region. Arbitrary writers that ignore the lock remain outside its guarantee. Generic run counts do not interpret execution round limits; the Python executor resolver and suffix gate own those settings.
+
+Existing `PROJECT_INDEX_AUTO` blocks are historical, unmaintained observations; the team helper neither parses nor updates them. Current `RUN_INDEX` navigation and curated result/report registries have separate owners. Do not silently rewrite or delete an old block.

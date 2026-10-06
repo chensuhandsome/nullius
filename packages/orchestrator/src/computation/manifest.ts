@@ -88,6 +88,11 @@ export function prepareManifest(input: ExecuteComputationManifestInput): Prepare
   assertNoSymlinkComponents(input.runDir, input.manifestPath, 'manifest_path');
   const raw = JSON.parse(fs.readFileSync(input.manifestPath, 'utf-8')) as unknown;
   const manifest = assertComputationManifestValid(raw);
+  for (const key of ['max_memory_gb', 'max_cpu_cores', 'max_disk_gb']) {
+    if ((manifest.computation_budget as Record<string, unknown> | undefined)?.[key] !== undefined) {
+      readinessError(`unsupported hard resource constraint: ${key}; native execution enforces direct-child time limits only`);
+    }
+  }
   const workspaceDir = path.dirname(resolveWithinRoot(input.runDir, input.manifestPath, 'manifest_path'));
   const dependencies = manifest.dependencies as ComputationManifestV1['dependencies'] & {
     external_dependency_refs?: Array<{ path: string }>;

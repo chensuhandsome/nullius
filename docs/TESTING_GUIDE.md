@@ -10,6 +10,18 @@
 
 ---
 
+
+原生执行控制的定向检查：
+
+```bash
+pnpm --filter @nullius/orchestrator exec vitest run tests/execution-invariants.test.ts tests/execute-manifest-core.test.ts tests/execute-manifest-failure-policy.test.ts tests/computation-launch-stamp.test.ts tests/cli-run-workflow-recovery.test.ts
+python3 -m pytest -q packages/project-contracts/tests/test_root_policy.py packages/project-contracts/tests/test_output_policy.py
+```
+
+这些检查覆盖审批内容绑定、暂停后的字节保持、最后一步竞争、总截止时间、锁内状态比较与根目录准入；它们不构成科学结果的独立验证。
+
+外部项目边界的验收还应覆盖：从另一处运行时拒绝开发仓、尚未创建的仓内后代与仓目录别名，并确认拒绝发生在任何项目文件写入之前；同父目录的正常外部研究项目仍应可初始化。
+
 ## 0. 一次性准备
 
 ### 0.0 先确认 front-door 角色
@@ -21,7 +33,7 @@
 - `@nullius/hep-mcp` = 当前最成熟的 domain MCP front door
 - legacy Python CLI 不再属于公开 front-door；如仍需覆盖，只作为 maintainer/eval/regression-only 内部路径测试
 - `nullius init` 使用 canonical generic scaffold；`.mcp.template.json`、根级 `specs/plan.schema.json`、`prompts/`、`team/`、`research_team_config.json` 等 optional support surfaces 只应由明确项目需要或 host-specific tooling 后续创建
-- `nullius init --refresh` 把更新后的 managed scaffold 文档（`AGENTS.md`）重新落到已生成项目：覆盖前会把变更文件备份到 `.nullius/backups/`，且绝不改写 `research_plan.md`、`research_notebook.md`、`research_contract.md`、`project_charter.md`、`project_index.md`、`reports/main_research_report_template.md`、`.gitignore` 等用户 seed 文件；`--dry-run` 可先预览。测试它时用开发仓外的临时 root，断言“变更 managed 文件被备份并刷新、seed 文件原样保留、`--dry-run` 零写入”
+- `nullius init --refresh` 生成缺失的 `AGENTS.md`，scaffold 保留已有定制指导及用户 seed 内容（`research_plan.md`、`research_notebook.md`、`research_contract.md`、`project_charter.md`、`project_index.md`、`reports/main_research_report_template.md`、`.gitignore`）；CLI 仍可能同步 notebook 和 index 中已存在的机器管理块，不会插入缺失块；`--dry-run` 可先预览。需要更新已有指导时，在开发仓外的临时 root 生成模板后手工合并。验证定制内容的原始字节、换行和权限保留，以及 `--dry-run` 零写入。
 - `nullius init --mode=<engine|file>` 声明项目真相所在（engine=run/approve lifecycle 驱动；file=手工/外部 runner 执行、`run_status` 长期 `idle` 属正常），可随时重跑改声明。`nullius decision record|pending` 追加写 `.nullius/decisions.jsonl`，`decision list` 只读回放，`decision land` 只在分支尾已进入权威主干后原子落号。手动验收至少覆盖：
   - 在开发仓外临时 root 运行 `nullius init --runtime-only --mode=file`，再执行 `nullius decision pending "<问题>"`；打印的 id 必须是 6 字符 Crockford-base32 handle，`status --json` 必须把它计入 `pending_count`、`open_count` 和 `unlanded_count`。随后用该 handle 执行 `nullius decision record "<决定>" --resolves <handle>`，断言 open 数归零，两个 provisional 条目仍完整进入 decided/pending 计数。另用 `--relates <id>` 记录非关闭关系（`record` 与 `pending` 均可），断言它可以指向更早且可读的 decided/pending 条目，并且绝不改变 open 数；同一条 record 可以同时带 `--resolves` 与 `--relates`。
   - 执行 `nullius decision land --json`，断言它按当前主干 ledger 顺序分配后续 `D<n>`、把 answer 的 `resolves` 与任意 `relates` 改成 landed target id、在各条目保留 `provisional_id` 映射，并把 `unlanded_count` 清零；JSON 中的 `rewritten_resolution_count` / `rewritten_related_link_count` 必须与实际改写数一致。若所有 entry 已有 durable id、但迟到的 branch relation 仍指向旧 handle，land 仍须通过保留映射只改写该引用；再次对规范 ledger 执行才是零改写的幂等 no-op。展示顺序按毫秒精度 `ts`，不按随机 handle。
@@ -37,7 +49,7 @@
 - `research_plan.md#Current Status` 是给人的当前状态入口；测试 scaffold/read-model 时要保证它被作为恢复指引暴露，同时不新增单独状态文档
 - `research_notebook.md` 是问题逻辑主线，不是日期 run log，也不承载状态追踪；重要文献 note 必须记录全文/source-first 阅读、section/page/equation/figure 覆盖，并用 LaTeX math 写科学记号；测试 scaffold/read-model 时要保证空模板不会被误判为 substantive，同时真实逻辑内容会进入 reconnect recommended files
 - `project_index.md#Main research report` 是主研究报告的唯一当前入口与 supersession registry。验收 `nullius report-validate` 时至少覆盖：短 status/closeout 冒充主报告、已有 superseding report 但 current pointer 未切换、机器 provenance 取代解释性叙事或人类证据、同实现/同输入/同环境 replay 被标作 independent validation；另验 hash 不可变和双向 supersession metadata。结构通过不等于 reviewer 对科学充分性的通过，禁止使用最小字数门槛
-- `team/runs/` 是 `research-team` 执行与 reviewer packet/log surface，也是与 `artifacts/runs/<run_id>/` 并列的一等证据根（claim 可直接引用其路径）；两者都不是主研究报告，完整结论必须写入新报告，机器 receipt 只作绑定
+- `research-team` 的 team/draft cycle 使用 `artifacts/runs/<run_id>/research_team/`，父 run 持有来源记录；执行 receipt 与导航指针不授予科学验收。完整结论须写入新报告。
 
 ### 0.1 构建与计数检查
 
@@ -394,7 +406,9 @@ EOF
 **预期**
 
 - 成功时生成渲染后的 LaTeX artifacts
-- 若引用缺失或未授权，应 fail-fast
+- `is_grounded` 省略时，归属信息不添加该字段；明确的 `false` / `true` 原样保留
+- 非布尔 grounding 输入应在 manifest 和渲染产物写入前拒绝
+- 缺少 `recids` 的草稿也可渲染；渲染不执行来源支持、引用 allowlist 或手写引用归属检查，也不生成 `rendered_latex_verification.json`
 
 ### 4.3 `hep_export_project`
 
@@ -412,6 +426,8 @@ EOF
 - 生成 `master.bib`
 - 生成 `report.tex` / `report.md`
 - 生成 `research_pack.zip`
+- 缺少任一已用引用键的 BibTeX 时拒绝导出；补齐全部条目后可导出
+- BibTeX 完整性不代表正文论断已有来源支持
 
 ### 4.4 `hep_export_paper_scaffold`
 
@@ -587,3 +603,7 @@ nullius workflow-plan \
 - [`docs/ARCHITECTURE.md`](./ARCHITECTURE.md)
 - [`docs/TOOL_CATEGORIES.md`](./TOOL_CATEGORIES.md)
 - [`docs/URI_REGISTRY.md`](./URI_REGISTRY.md)
+
+新项目运行统一位于 `artifacts/runs/<run_id>/`，team/draft 执行记录放在其 `research_team/` 子目录，来源记录盖章在父 run 上。旧 `team/runs` 含 run 目录时，相关视图报告数量，`init --runtime-only` 在重新绑定前拒绝；旧根不可读也明确报错。应保留旧运行时及配套 skills，或先完成另行审查的迁移。`inventory_run_relocation.py --fixture-root <匿名fixture> --source-manifest <哈希清单>` 只盘点已固定输入的引用、冲突与未解决绑定，没有 apply 模式。独立 reviewer 快照排除所有轮次的执行 payload 和工作区树，保留生产输入；读取仅允许自己的声明输出前缀。历史报告与裁决保留给协调者。`team/LATEST*.md` 与 `artifacts/LATEST.md` 只提供导航。
+
+Carrier ownership checks must cover direct and reverse pointer aliases before any navigation write. Existing `PROJECT_INDEX_AUTO` blocks are unmaintained historical observations; test that helper execution preserves their exact bytes. Live `init --help` must match preserve-existing refresh behavior.

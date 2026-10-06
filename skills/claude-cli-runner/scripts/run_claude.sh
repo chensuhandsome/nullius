@@ -22,6 +22,14 @@ DRY_RUN=0
 PERSIST_SESSION=0
 SESSION_ID_FILE=""
 RESUME_SESSION=""
+LIVE_CAPTURE=0
+TIMEOUT_SECS=0
+EXPECTED_SECS=1200
+INACTIVITY_SECS=0
+INACTIVITY_GRACE_SECS=30
+TRACE_DIR=""
+ACTIVE_PID=""
+PROCESS_BUDGET="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/process_budget.py"
 
 usage() {
   cat <<'EOF'
@@ -42,6 +50,12 @@ Options:
   --dry-run                Print invocation details and exit 0 (no Claude call)
   --max-retries N          Default: 6
   --sleep-secs SECONDS     Default: 10 (base; exponential backoff)
+  --timeout-secs SECONDS   Explicit hard cap across calls/backoff; default: no hard budget (0).
+  --expected-secs SECONDS  Soft expected duration only (default: 1200); never kills generation.
+  --live-capture           Opt into durable stream-json events, partial answer and terminal result.
+  --inactivity-secs S      Opt-in diagnostic threshold (default: disabled); unknown capture never kills.
+  --inactivity-grace-secs S  Further observable inactivity check before termination (default: 30).
+  --trace-dir DIR          Durable per-invocation raw events/diagnostics (default: OUT.attempts).
 
 Session continuation (OPT-IN; the default stays a clean-room one-shot with --no-session-persistence):
   --persist-session        Record this conversation so a later invocation can resume it.
@@ -67,6 +81,12 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift 1;;
     --max-retries) MAX_RETRIES="$2"; shift 2;;
     --sleep-secs) SLEEP_SECS="$2"; shift 2;;
+    --timeout-secs) TIMEOUT_SECS="$2"; shift 2;;
+    --expected-secs) EXPECTED_SECS="$2"; shift 2;;
+    --live-capture) LIVE_CAPTURE=1; shift 1;;
+    --inactivity-secs) INACTIVITY_SECS="$2"; shift 2;;
+    --inactivity-grace-secs) INACTIVITY_GRACE_SECS="$2"; shift 2;;
+    --trace-dir) TRACE_DIR="$2"; shift 2;;
     --persist-session) PERSIST_SESSION=1; shift 1;;
     --session-id-file) SESSION_ID_FILE="$2"; shift 2;;
     --resume-session) RESUME_SESSION="$2"; shift 2;;
@@ -126,7 +146,9 @@ if [[ -n "${RESUME_SESSION}" ]]; then
   SESSION_ARGS+=(--resume "${RESUME_SESSION}")
 fi
 FORMAT_ARGS=()
-if [[ -n "${SESSION_ID_FILE}" ]]; then
+if [[ "${LIVE_CAPTURE}" -eq 1 ]]; then
+  FORMAT_ARGS=(--output-format stream-json --include-partial-messages --verbose)
+elif [[ -n "${SESSION_ID_FILE}" ]]; then
   FORMAT_ARGS=(--output-format json)
 fi
 
@@ -191,7 +213,9 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
   fi
   echo "System prompt file: ${SYSTEM_PROMPT_FILE} (bytes=${sys_size}, sha256=${sys_sha})"
   echo "Prompt file (stdin): ${PROMPT_FILE} (bytes=${prompt_size}, sha256=${prompt_sha})"
-  echo "Output (stdout+stderr): ${OUT}"
+  echo "Output: ${OUT} (buffered bytes preserved unless live capture is enabled)"
+  echo "Hard budget: ${TIMEOUT_SECS}s (0 = none); expected duration: ${EXPECTED_SECS}s (soft only)"
+  echo "Live capture: ${LIVE_CAPTURE}; inactivity: ${INACTIVITY_SECS}s; grace: ${INACTIVITY_GRACE_SECS}s"
   if [[ "${PERSIST_SESSION}" -eq 1 ]]; then
     echo -n "Session: persisted"
     [[ -n "${RESUME_SESSION}" ]] && echo -n ", resuming ${RESUME_SESSION}"
@@ -208,7 +232,9 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
   if [[ -n "${RESUME_SESSION}" ]]; then
     echo -n " --resume ${RESUME_SESSION}"
   fi
-  if [[ -n "${SESSION_ID_FILE}" ]]; then
+  if [[ "${LIVE_CAPTURE}" -eq 1 ]]; then
+    echo -n " --output-format stream-json --include-partial-messages --verbose"
+  elif [[ -n "${SESSION_ID_FILE}" ]]; then
     echo -n " --output-format json"
   fi
   if [[ "${STRICT_MCP_CONFIG}" -eq 1 ]]; then
@@ -232,10 +258,35 @@ if [[ -n "${MODEL}" ]]; then
   MODEL_ARG=(--model "${MODEL}")
 fi
 
-tmp_out="$(mktemp)"
-tmp_stdout="$(mktemp)"
-tmp_stderr="$(mktemp)"
-trap 'rm -f "${tmp_out}" "${tmp_stdout}" "${tmp_stderr}"' EXIT
+mkdir -p "$(dirname "${OUT}")" "${TRACE_DIR:-${OUT}.attempts}"
+TRACE_RUN_DIR="$(mktemp -d "${TRACE_DIR:-${OUT}.attempts}/run.XXXXXX")"
+BUDGET_STATE="${TRACE_RUN_DIR}/budget.json"
+policy_args=(--timeout-secs "${TIMEOUT_SECS}" --expected-secs "${EXPECTED_SECS}"
+             --inactivity-secs "${INACTIVITY_SECS}" --inactivity-grace-secs "${INACTIVITY_GRACE_SECS}")
+if [[ "${LIVE_CAPTURE}" -eq 1 ]]; then policy_args+=(--capture); fi
+python3 "${PROCESS_BUDGET}" init --state "${BUDGET_STATE}" --max-attempts "${MAX_RETRIES}" \
+  "${policy_args[@]}" --prompt-file "${PROMPT_FILE}" --system-file "${SYSTEM_PROMPT_FILE}" --out "${OUT}"
+tmp_out="${TRACE_RUN_DIR}/buffered-output.txt"
+tmp_stdout=""
+tmp_stderr=""
+cleanup() {
+  local result="${1:-$?}"
+  if [[ -n "${ACTIVE_PID}" ]]; then
+    kill -TERM "${ACTIVE_PID}" 2>/dev/null || true
+    wait "${ACTIVE_PID}" 2>/dev/null || true
+    ACTIVE_PID=""
+  fi
+  python3 "${PROCESS_BUDGET}" finish --state "${BUDGET_STATE}" --exit-code "${result}" || true
+}
+cleanup_and_exit() {
+  local code="$1"
+  cleanup "${code}"
+  trap - EXIT INT TERM
+  exit "${code}"
+}
+trap cleanup EXIT
+trap 'cleanup_and_exit 130' INT
+trap 'cleanup_and_exit 143' TERM
 
 ATTEMPT_LOG_DIR="${RESEARCH_TEAM_ATTEMPT_LOG_DIR:-}"
 ATTEMPT_LOG_PREFIX="${RESEARCH_TEAM_ATTEMPT_LOG_PREFIX:-}"
@@ -254,7 +305,9 @@ write_attempt_logs() {
   local backoff_secs="$3"
   local stdout_file="$4"
   local stderr_file="$5"
-  if [[ "${ATTEMPT_LOG_ENABLED}" -ne 1 ]]; then
+  # Live raw capture belongs only to this seat's durable attempt directory.
+  # Ambient legacy log destinations may be shared with peer workspaces.
+  if [[ "${LIVE_CAPTURE}" -eq 1 || "${ATTEMPT_LOG_ENABLED}" -ne 1 ]]; then
     return 0
   fi
 
@@ -345,6 +398,14 @@ classify_deterministic_failure() {
         'location is not supported' \
         'unauthorized' \
         'forbidden' \
+        'quota exhausted' \
+        'quota exceeded' \
+        'insufficient quota' \
+        'usage limit reached' \
+        "reached your usage limit for this billing cycle" \
+        'out of usage' \
+        'auto-rejecting' \
+        'permission denied' \
         'invalid api key'; do
         if grep -qiF -- "${pat}" "${f}" 2>/dev/null; then
           reason="diagnostic output matched '${pat}'"
@@ -361,17 +422,43 @@ classify_deterministic_failure() {
 
 attempt=1
 while true; do
-  : >"${tmp_stdout}"
-  : >"${tmp_stderr}"
-  set +e
-  claude --print "${SESSION_ARGS[@]+"${SESSION_ARGS[@]}"}" "${FORMAT_ARGS[@]+"${FORMAT_ARGS[@]}"}" "${STRICT_ARG[@]}" "${MODEL_ARG[@]+"${MODEL_ARG[@]}"}" --tools "${TOOLS}" \
-    --input-format text \
-    --system-prompt "${SYSTEM_PROMPT}" \
-    <"${PROMPT_FILE}" >"${tmp_stdout}" 2>"${tmp_stderr}"
-  code=$?
-  set -e
+  tmp_stdout="${TRACE_RUN_DIR}/attempt_${attempt}.events.jsonl"
+  tmp_stderr="${TRACE_RUN_DIR}/attempt_${attempt}.stderr.log"
+  session_capture_args=()
+  if [[ -n "${SESSION_ID_FILE}" ]]; then session_capture_args=(--session-id-file "${SESSION_ID_FILE}"); fi
+  python3 "${PROCESS_BUDGET}" run --state "${BUDGET_STATE}" "${policy_args[@]}" \
+    "${session_capture_args[@]+"${session_capture_args[@]}"}" --out "${OUT}" --stdin "${PROMPT_FILE}" \
+    --stdout "${tmp_stdout}" --stderr "${tmp_stderr}" -- \
+    claude --print "${SESSION_ARGS[@]+"${SESSION_ARGS[@]}"}" "${FORMAT_ARGS[@]+"${FORMAT_ARGS[@]}"}" \
+    "${STRICT_ARG[@]+"${STRICT_ARG[@]}"}" "${MODEL_ARG[@]+"${MODEL_ARG[@]}"}" --tools "${TOOLS}" \
+    --input-format text --system-prompt "${SYSTEM_PROMPT}" &
+  ACTIVE_PID=$!
+  code=0
+  wait "${ACTIVE_PID}" || code=$?
+  ACTIVE_PID=""
 
-  if [[ $code -eq 0 && -n "${SESSION_ID_FILE}" ]]; then
+  if [[ "${LIVE_CAPTURE}" -eq 1 ]]; then
+    sleep_for=0
+    write_attempt_logs "${attempt}" "${code}" "${sleep_for}" "${tmp_stdout}" "${tmp_stderr}"
+    if [[ "${code}" -eq 0 ]]; then exit 0; fi
+    if det_reason="$(classify_deterministic_failure "${code}" "${tmp_stderr}" "${tmp_stdout%.jsonl}.error.log")"; then
+      echo "Claude failed with a deterministic error (${det_reason}); not retrying." >&2
+      exit "${code}"
+    fi
+    # Never print raw event payloads: they may contain private reasoning.
+    if [[ "${code}" -eq 65 || "${code}" -eq 69 || "${code}" -eq 124 || "${code}" -eq 125 || "${code}" -ge 128 ]]; then
+      echo "Claude did not deliver a successful complete result (exit ${code}); durable evidence retained." >&2
+      exit "${code}"
+    fi
+  elif [[ "${code}" -eq 124 || "${code}" -eq 125 || "${code}" -ge 128 ]]; then
+    if [[ -s "${tmp_stdout}" ]]; then cp "${tmp_stdout}" "${OUT}.partial"; fi
+    echo "Claude invocation interrupted or budget exhausted (exit ${code}); durable evidence retained." >&2
+    exit "${code}"
+  fi
+
+  if [[ "${LIVE_CAPTURE}" -eq 1 ]]; then
+    cp "${tmp_stderr}" "${tmp_out}"
+  elif [[ $code -eq 0 && -n "${SESSION_ID_FILE}" ]]; then
     # JSON-envelope mode: OUT receives only the final result text; the new session id goes to its
     # own file so a later invocation can chain with --resume-session.
     if python3 - "${tmp_stdout}" "${tmp_out}" "${SESSION_ID_FILE}" <<'PY'
@@ -425,6 +512,11 @@ PY
 
   echo "Attempt ${attempt} failed (exit ${code}); retrying in ${sleep_for}s..." >&2
   print_stderr_excerpt "${tmp_stderr}"
-  sleep "${sleep_for}"
+  python3 "${PROCESS_BUDGET}" sleep --state "${BUDGET_STATE}" --seconds "${sleep_for}" &
+  ACTIVE_PID=$!
+  sleep_code=0
+  wait "${ACTIVE_PID}" || sleep_code=$?
+  ACTIVE_PID=""
+  if [[ "${sleep_code}" -ne 0 ]]; then exit "${sleep_code}"; fi
   attempt=$(( attempt + 1 ))
 done

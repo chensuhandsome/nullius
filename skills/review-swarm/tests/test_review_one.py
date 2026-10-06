@@ -1353,7 +1353,7 @@ class ReviewOneTests(unittest.TestCase):
                 )
             self.assertEqual(rc, 2)
             message = stderr.getvalue()
-            self.assertIn("your own (host) family", message)
+            self.assertIn("matching your declared host label", message)
             self.assertIn("in-host", message)
 
     def test_host_family_mismatch_runs_normally(self):

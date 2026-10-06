@@ -61,6 +61,16 @@ describe('orchestrator MCP tools spec drift guard', () => {
     expect(referenced).toEqual(live);
   });
 
+  it('documents the required method at the generic computation planning entry', () => {
+    const md = readText(root, 'meta/docs/orchestrator-mcp-tools-spec.md');
+    const row = md.split('\n').find(line => line.startsWith('| `orch_run_plan_computation` |'));
+    expect(row).toContain('requiring a supplied `method_spec` with files and `run_card`');
+    expect(row).toContain('missing methods are refused before executable artifacts are written');
+    const live = ORCH_TOOL_SPECS.find(tool => tool.name === 'orch_run_plan_computation');
+    expect(live?.description).toContain('requiring a supplied method_spec with files and run_card');
+    expect(live?.description).toContain('missing methods are refused before executable artifacts are written');
+  });
+
   it('meta/docs/orchestrator-mcp-tools-spec.md keeps orchestrator-owned narrative invariants', () => {
     const md = readText(root, 'meta/docs/orchestrator-mcp-tools-spec.md');
 

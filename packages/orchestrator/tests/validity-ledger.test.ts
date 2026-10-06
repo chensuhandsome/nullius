@@ -278,7 +278,7 @@ describe('isTraceabilityArtifactPath (narrow by construction)', () => {
     expect(isTraceabilityArtifactPath('artifacts/runs/validity_ledger.jsonl.lock')).toBe(true);
     expect(isTraceabilityArtifactPath('artifacts/runs/.gitattributes')).toBe(true);
     expect(isTraceabilityArtifactPath('artifacts/runs/some-run/run_origin.json')).toBe(true);
-    expect(isTraceabilityArtifactPath('team/runs/some-run/run_origin.json')).toBe(true);
+    expect(isTraceabilityArtifactPath('team/runs/some-run/run_origin.json')).toBe(false);
     // Lookalikes OUTSIDE the machinery locations still count as untracked.
     expect(isTraceabilityArtifactPath('src/run_origin.json')).toBe(false);
     expect(isTraceabilityArtifactPath('validity_ledger.jsonl')).toBe(false);
@@ -307,17 +307,11 @@ describe('traceability view and CLI (review-locked)', () => {
     };
   };
 
-  it('merges mirrored run ids with artifacts/runs canonical', () => {
+  it('refuses retired run roots rather than merging run identities', () => {
     fs.mkdirSync(path.join(projectRoot, 'artifacts', 'runs', 'shared-run'), { recursive: true });
     fs.mkdirSync(path.join(projectRoot, 'team', 'runs', 'shared-run'), { recursive: true });
     fs.mkdirSync(path.join(projectRoot, 'team', 'runs', 'team-only-run'), { recursive: true });
-    const entries = listRunDirectories(projectRoot);
-    const shared = entries.find(entry => entry.run_id === 'shared-run');
-    expect(shared?.canonical_root).toBe(path.join('artifacts', 'runs'));
-    expect(shared?.mirrored).toBe(true);
-    expect(entries.find(entry => entry.run_id === 'team-only-run')?.canonical_root)
-      .toBe(path.join('team', 'runs'));
-    expect(entries).toHaveLength(2);
+    expect(() => listRunDirectories(projectRoot)).toThrow('retired team/runs root contains 2 run directories');
   });
 
   it('reads the manuscript pointer in all three states without over-claiming', () => {
@@ -415,7 +409,7 @@ describe('traceability view and CLI (review-locked)', () => {
     expect(runTraceCommand(projectRoot, {
       action: 'stamp', target: 'team/runs/the-run', eventId: null, ...parsedBase,
     }, stdio3)).toBe(1);
-    expect(stdio3.err.join('')).toContain('canonical');
+    expect(stdio3.err.join('')).toContain('retired run root');
   });
 
   it('propagates a stash-create failure instead of grading it exact_clean', () => {

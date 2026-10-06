@@ -47,7 +47,7 @@ def main() -> int:
     ap.add_argument('action', choices=['init', 'run', 'sleep', 'finish'])
     ap.add_argument('--state', type=Path, required=True)
     ap.add_argument('--max-attempts', type=int, default=3)
-    ap.add_argument('--timeout-secs', type=float, default=900)
+    ap.add_argument('--timeout-secs', type=float, default=0)
     ap.add_argument('--seconds', type=float, default=0)
     ap.add_argument('--cwd')
     ap.add_argument('--stdin', type=Path)

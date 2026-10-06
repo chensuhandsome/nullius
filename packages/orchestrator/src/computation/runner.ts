@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { writeBytesAtomicDurable } from '@nullius/shared';
+import { ensureA3Approval, hasBoundA3Approval } from './approval.js';
+import { prepareManifest } from './manifest.js';
+import { executionBinding, preparedPreflight } from './execution-binding.js';
+import { assertNativeEntry, nativePauseRequested, nativeDeadlineExpired } from './native-control.js';
+import { invalidParams, writeBytesAtomicDurable } from '@nullius/shared';
 import { StateManager } from '../state-manager.js';
 import { maybeQueueIdeaEngineComputationFeedback } from './idea-engine-feedback.js';
 import { maybeGenerateSkillProposal } from './skill-proposal-genesis.js';
@@ -16,6 +20,8 @@ import { assertNoSymlinkComponents, resolveWithinRoot } from './path-safety.js';
 import { assertNativeRuntimeIdentityLive } from './runtime-identity.js';
 import type {
   CompletedExecutionResult,
+  PausedExecutionResult,
+  ApprovalRequiredExecutionResult,
   ExternalDependencySnapshotEntry,
   ExecutionStatusFile,
   FailedExecutionResult,
@@ -38,6 +44,9 @@ function buildStatus(prepared: PreparedManifest): ExecutionStatusFile {
     manifest_path: prepared.manifestRelativePath,
     manifest_sha256: prepared.manifestSha256,
     status: 'running',
+    deadline_at: null,
+    execution_binding_sha256: '',
+    active_child: null,
     started_at: utcNowIso(),
     completed_at: null,
     errors: [],
@@ -241,28 +250,91 @@ function writeStepLogs(
 export async function runPreparedManifest(
   projectRoot: string,
   prepared: PreparedManifest,
-): Promise<CompletedExecutionResult | FailedExecutionResult> {
-  assertPreparedExecutionBinding(prepared);
+  beforeSteps?: () => void,
+): Promise<CompletedExecutionResult | FailedExecutionResult | PausedExecutionResult | ApprovalRequiredExecutionResult> {
+  assertNativeEntry(projectRoot, prepared.runId, prepared.workspaceDir);
+  const expired = nativeDeadlineExpired(prepared.workspaceDir);
+  const admissionApproval = expired ? null : ensureA3Approval(projectRoot, prepareManifest({ projectRoot, runId: prepared.runId, runDir: prepared.runDir, manifestPath: prepared.manifestPath }));
+  if (admissionApproval) return admissionApproval;
+  if (!expired) assertPreparedExecutionBinding(prepared);
   const stateManager = new StateManager(projectRoot);
   const logsDir = path.join(prepared.workspaceDir, 'logs');
   const statusPath = path.join(prepared.workspaceDir, 'execution_status.json');
-  const status = buildStatus(prepared);
+  const previous = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, 'utf-8')) as ExecutionStatusFile : null;
+  const preflight = expired ? null : preparedPreflight(prepared);
+  if (!preflight && !expired) {
+    const freshPrepared = prepareManifest({ projectRoot, runId: prepared.runId, runDir: prepared.runDir, manifestPath: prepared.manifestPath });
+    const approval = ensureA3Approval(projectRoot, freshPrepared);
+    if (approval) return approval;
+    if (nativePauseRequested(stateManager, prepared.runId)) throw new Error('paused native computation: continuation in place is unsupported');
+    // Inspect the previous attempt before replacing its terminal status.
+    // With no preflight child, capture still precedes the first status write.
+    beforeSteps?.();
+  }
+  const status = expired && previous ? previous : buildStatus(prepared);
+  const budget = prepared.manifest.computation_budget?.max_runtime_minutes;
+  if (previous && previous.run_id !== prepared.runId) throw new Error('execution status run identity mismatch');
+  if (previous && budget !== undefined && (!Object.hasOwn(previous, 'deadline_at') || previous.deadline_at === null)) throw new Error('existing native status has no anchored deadline; use a fresh run');
+  status.started_at = previous?.started_at ?? status.started_at;
+  status.deadline_at = previous ? previous.deadline_at ?? null : budget === undefined ? null : new Date(Date.now() + budget * 60_000).toISOString();
+  if (status.deadline_at && !Number.isFinite(Date.parse(status.deadline_at))) throw new Error('invalid persisted native deadline');
+  if (!expired) status.execution_binding_sha256 = executionBinding(projectRoot, prepared).sha256;
+  const initialState = stateManager.readState();
+  if (nativePauseRequested(stateManager, prepared.runId)) throw new Error('paused native computation: continuation in place is unsupported');
+  // Admitted terminal re-execution is a new dispatch within the same persisted deadline.
+  // Paused attempts were refused before this point and never enter this path.
+  if (initialState.run_status === 'completed' || initialState.run_status === 'failed') initialState.run_status = 'running';
+  initialState.artifacts.native_execution_status = toPosixRelative(projectRoot, statusPath);
+  stateManager.saveState(initialState);
   writeJsonAtomic(statusPath, status);
+  const finalizePausedRun = (): PausedExecutionResult => {
+    const fresh = stateManager.readState();
+    if (fresh.run_id !== prepared.runId) throw new Error('native execution identity changed during pause');
+    if (fresh.run_status !== 'paused') stateManager.pauseRun(fresh, 'native pause observed after current child returned');
+    status.active_child = null;
+    status.status = 'paused'; status.continuation_supported = false;
+    status.completed_at = null;
+    writeJsonAtomic(statusPath, status);
+    return { status: 'paused', run_id: prepared.runId, continuation_supported: false,
+      message: 'Paused; native continuation in place is unsupported. Create a separately approved fresh run.',
+      artifact_paths: { execution_status: statusPath, logs_dir: logsDir },
+      produced_outputs: status.steps.flatMap(step => step.output_refs.map(ref => ref.relative_path)) };
+  };
+  const remaining = (): number | undefined => status.deadline_at ? Date.parse(status.deadline_at) - Date.now() : undefined;
+  const childTimeout = (minutes: number | null, fallback?: number): number | undefined => {
+    const limits = [remaining(), minutes === null ? fallback : minutes * 60_000].filter((value): value is number => value !== undefined);
+    return limits.length ? Math.max(0, Math.ceil(Math.min(...limits))) : undefined;
+  };
+  const deadlineExpired = () => remaining() !== undefined && remaining()! <= 0;
+  const approvalBeforeDispatch = (): ApprovalRequiredExecutionResult | null => {
+    const freshPrepared = prepareManifest({ projectRoot, runId: prepared.runId, runDir: prepared.runDir, manifestPath: prepared.manifestPath });
+    const approval = ensureA3Approval(projectRoot, freshPrepared);
+    if (approval) { status.active_child = null; status.status = 'awaiting_approval'; writeJsonAtomic(statusPath, status); return approval; }
+    if (executionBinding(projectRoot, freshPrepared).sha256 !== status.execution_binding_sha256) throw new Error('approved execution inputs changed after native execution started');
+    return null;
+  };
   const failedSteps = new Set<string>();
   const skippedSteps = new Set<string>();
   const finalizeFailedRun = async (
     failureReason: string,
     failedStepId: string,
-  ): Promise<FailedExecutionResult> => {
+  ): Promise<FailedExecutionResult | PausedExecutionResult> => {
+    if (nativePauseRequested(stateManager, prepared.runId)) return finalizePausedRun();
+    status.active_child = null;
     status.status = 'failed';
     status.completed_at = utcNowIso();
     writeJsonAtomic(statusPath, status);
     const failedState = stateManager.readState();
     if (failedState.run_status === 'running') {
-      stateManager.transitionStatus(failedState, 'failed', {
-        eventType: 'execution_failed',
-        details: { run_id: prepared.runId, step_id: failedStepId, execution_status: statusPath },
-      });
+      try {
+        stateManager.transitionStatus(failedState, 'failed', {
+          eventType: 'execution_failed',
+          details: { run_id: prepared.runId, step_id: failedStepId, execution_status: statusPath },
+        });
+      } catch (error) {
+        if (nativePauseRequested(stateManager, prepared.runId)) return finalizePausedRun();
+        throw error;
+      }
     }
     const { computationResult, computationResultPath, computationResultRef } = writeComputationResultArtifact({
       prepared,
@@ -287,10 +359,7 @@ export async function runPreparedManifest(
         ...state.artifacts,
         mutation_proposal_repair_v1: toPosixRelative(projectRoot, memoryGraph.repairProposalPath),
       };
-      stateManager.saveState(state);
-      stateManager.appendLedger('repair_mutation_proposed', {
-        run_id: prepared.runId,
-        workflow_id: 'computation',
+      stateManager.saveStateWithLedger(state, 'repair_mutation_proposed', {
         details: {
           proposal_id: memoryGraph.repairProposalId,
           proposal_path: toPosixRelative(projectRoot, memoryGraph.repairProposalPath),
@@ -319,10 +388,7 @@ export async function runPreparedManifest(
         ...state.artifacts,
         skill_proposal_v2: toPosixRelative(projectRoot, skillProposal.proposalPath),
       };
-      stateManager.saveState(state);
-      stateManager.appendLedger('skill_proposal_generated', {
-        run_id: prepared.runId,
-        workflow_id: 'computation',
+      stateManager.saveStateWithLedger(state, 'skill_proposal_generated', {
         details: {
           proposal_id: skillProposal.proposal.proposal_id,
           proposal_path: toPosixRelative(projectRoot, skillProposal.proposalPath),
@@ -352,7 +418,7 @@ export async function runPreparedManifest(
         ...(generatedProposal(opportunityProposals.optimize) ? { mutation_proposal_optimize_v1: toPosixRelative(projectRoot, opportunityProposals.optimize.proposalPath) } : {}),
         ...(generatedProposal(opportunityProposals.innovate) ? { mutation_proposal_innovate_v1: toPosixRelative(projectRoot, opportunityProposals.innovate.proposalPath) } : {}),
       };
-      stateManager.saveState(state);
+      stateManager.saveStateWithLedger(state, 'opportunity_proposals_recorded');
       for (const [proposalKind, proposal] of [['optimize', opportunityProposals.optimize], ['innovate', opportunityProposals.innovate]] as const) {
         if (proposal && !('proposalPath' in proposal)) {
           stateManager.appendLedger('proposal_suppressed', {
@@ -385,7 +451,34 @@ export async function runPreparedManifest(
       errors: [...status.errors],
     };
   };
+  if (nativePauseRequested(stateManager, prepared.runId)) return finalizePausedRun();
+  if (deadlineExpired()) { status.errors.push('native whole-run deadline expired before dispatch'); return finalizeFailedRun(status.errors.at(-1)!, 'preflight'); }
+  if (preflight) {
+    if (nativePauseRequested(stateManager, prepared.runId)) return finalizePausedRun();
+    status.active_child = { kind: 'preflight', id: 'preflight' }; writeJsonAtomic(statusPath, status);
+    const approval = approvalBeforeDispatch(); if (approval) return approval;
+    if (nativePauseRequested(stateManager, prepared.runId)) { status.active_child = null; return finalizePausedRun(); }
+    const timeout = childTimeout(preflight.stepLimitMinutes, 300_000);
+    if (timeout === 0 || deadlineExpired()) { status.active_child = null; status.errors.push('native whole-run deadline expired before preflight child'); return finalizeFailedRun(status.errors.at(-1)!, 'preflight'); }
+    const output = spawnSync(preflight.argv[0]!, preflight.argv.slice(1), { cwd: prepared.workspaceDir, encoding: 'utf-8', env: preflight.environment.variables, timeout });
+    status.active_child = null; writeJsonAtomic(statusPath, status);
+    const logDir = path.join(logsDir, 'preflight'); ensureDir(logDir);
+    writeBytesAtomicDurable(path.join(logDir, 'stdout.txt'), output.stdout ?? '');
+    writeBytesAtomicDurable(path.join(logDir, 'stderr.txt'), output.stderr ?? '');
+    writeJsonAtomic(path.join(logDir, 'meta.json'), { command: preflight.argv, exit_code: output.status, error: output.error?.message ?? null });
+    if (nativePauseRequested(stateManager, prepared.runId)) return finalizePausedRun();
+    if (deadlineExpired()) { status.errors.push('native whole-run deadline expired during preflight'); return finalizeFailedRun(status.errors.at(-1)!, 'preflight'); }
+    if (output.error || output.status !== 0) {
+      status.status = 'failed'; status.completed_at = utcNowIso(); status.errors.push('manifest preflight refused the entry source'); writeJsonAtomic(statusPath, status);
+      throw invalidParams(`manifest preflight refused the entry source (exit ${output.status ?? 'spawn-error'}): ${output.error?.message ?? output.stderr}`, { validation_layer: 'preflight', preflight: preflight.argv });
+    }
+  }
+  if (nativePauseRequested(stateManager, prepared.runId)) return finalizePausedRun();
+  if (preflight) beforeSteps?.();
   for (const stepId of prepared.stepOrder) {
+    if (nativePauseRequested(stateManager, prepared.runId)) return finalizePausedRun();
+    if (deadlineExpired()) { status.errors.push('native whole-run deadline expired before next dispatch'); return finalizeFailedRun(status.errors.at(-1)!, stepId); }
+    const approval = approvalBeforeDispatch(); if (approval) return approval;
     const step = prepared.steps.find(candidate => candidate.id === stepId)!;
     const statusStep = status.steps.find(candidate => candidate.id === stepId)!;
     const logDir = path.join(logsDir, stepId);
@@ -413,7 +506,7 @@ export async function runPreparedManifest(
       // fails the step closed instead of minting an approval packet.
       const gateState = stateManager.readState();
       const unsatisfiedGates = step.gates.filter(
-        gateId => typeof gateState.gate_satisfied[gateId] !== 'string',
+        gateId => typeof gateState.gate_satisfied[gateId] !== 'string' || (gateId === 'A3' && !hasBoundA3Approval(projectRoot, prepared)),
       );
       if (unsatisfiedGates.length > 0) {
         integrityFailure = `step '${step.id}' requires unsatisfied approval gate(s): ${unsatisfiedGates.join(', ')} — record the approval(s) before re-running`;
@@ -495,14 +588,32 @@ export async function runPreparedManifest(
     } else if (!integrityFailure && (statusStep.command.length !== step.argv.length || statusStep.command.some((value, index) => value !== step.argv[index]))) {
       integrityFailure = `structured command for step '${step.id}' changed after the execution plan was recorded`;
     }
+    if (!integrityFailure) {
+      if (nativePauseRequested(stateManager, prepared.runId)) return finalizePausedRun();
+      if (deadlineExpired()) { status.errors.push('native whole-run deadline expired before child'); return finalizeFailedRun(status.errors.at(-1)!, step.id); }
+      // Finish local writes before revalidating the authority and inputs that
+      // authorize this child. A status writer can observe and revoke approval.
+      status.active_child = { kind: 'step', id: step.id }; writeJsonAtomic(statusPath, status);
+      const dispatchApproval = approvalBeforeDispatch(); if (dispatchApproval) return dispatchApproval;
+      const liveGates = stateManager.readState();
+      if (step.gates.some(gate => typeof liveGates.gate_satisfied[gate] !== 'string' || (gate === 'A3' && !hasBoundA3Approval(projectRoot, prepared)))) {
+        statusStep.status = 'failed'; statusStep.completed_at = utcNowIso();
+        status.errors.push(`step '${step.id}' approval gate changed before child`);
+        return finalizeFailedRun(status.errors.at(-1)!, step.id);
+      }
+    }
+    if (!integrityFailure && nativePauseRequested(stateManager, prepared.runId)) { status.active_child = null; return finalizePausedRun(); }
+    const timeout = integrityFailure ? undefined : childTimeout(step.timeoutMinutes);
+    if (!integrityFailure && (timeout === 0 || deadlineExpired())) { status.active_child = null; status.errors.push('native whole-run deadline expired before child dispatch'); return finalizeFailedRun(status.errors.at(-1)!, step.id); }
     const output = integrityFailure
       ? syntheticIntegrityFailureOutput(integrityFailure)
       : spawnSync(step.argv[0]!, step.argv.slice(1), {
         cwd: prepared.workspaceDir,
         encoding: 'utf-8',
         env: step.executionEnvironment.variables,
-        timeout: step.timeoutMinutes ? step.timeoutMinutes * 60_000 : undefined,
+        timeout,
       });
+    status.active_child = null;
     if (!integrityFailure) {
       try {
         assertNativeRuntimeIdentityLive({
@@ -580,6 +691,8 @@ export async function runPreparedManifest(
           ? `step '${step.id}' exited with code ${output.status}`
           : `step '${step.id}' did not produce expected outputs: ${missingOutputs.map(filePath => toPosixRelative(prepared.runDir, filePath)).join(', ')}`);
       status.errors.push(failureReason);
+      if (nativePauseRequested(stateManager, prepared.runId)) return finalizePausedRun();
+      if (deadlineExpired()) { status.errors.push('native whole-run deadline expired during child'); return finalizeFailedRun(status.errors.at(-1)!, step.id); }
       if (prepared.onFailure === 'continue') {
         // on_failure=continue: persist the recorded failure and keep
         // executing steps whose dependencies all completed (their
@@ -595,6 +708,8 @@ export async function runPreparedManifest(
     }
     statusStep.status = 'completed';
     writeJsonAtomic(statusPath, status);
+    if (nativePauseRequested(stateManager, prepared.runId)) return finalizePausedRun();
+    if (deadlineExpired()) { status.errors.push('native whole-run deadline expired after child'); return finalizeFailedRun(status.errors.at(-1)!, step.id); }
   }
   if (failedSteps.size > 0) {
     // on_failure=continue reached the end of the sequence with recorded
@@ -622,24 +737,34 @@ export async function runPreparedManifest(
     writeJsonAtomic(statusPath, status);
     throw new Error(message);
   }
-  status.status = 'completed';
-  status.completed_at = utcNowIso();
-  writeJsonAtomic(statusPath, status);
-  const completedState = stateManager.readState();
-  if (completedState.run_status === 'running') {
-    stateManager.transitionStatus(completedState, 'completed', {
-      eventType: 'execution_completed',
-      details: { run_id: prepared.runId, execution_status: statusPath },
-    });
-  }
+  if (nativePauseRequested(stateManager, prepared.runId)) return finalizePausedRun();
+  if (deadlineExpired()) { status.errors.push('native whole-run deadline expired before finalization'); return finalizeFailedRun(status.errors.at(-1)!, 'finalization'); }
   const producedOutputs = prepared.steps.flatMap(step => step.expectedOutputPaths.filter(filePath => fs.existsSync(filePath)));
-  const { computationResult, computationResultPath, computationResultRef } = writeComputationResultArtifact({
-    prepared,
-    status,
-    statusPath,
-    logsDir,
-    producedOutputs,
-  });
+  const completedStatus: ExecutionStatusFile = {...status,status:'completed',completed_at:utcNowIso()};
+  const publication = writeComputationResultArtifact({prepared,status:completedStatus,statusPath,logsDir,producedOutputs,deferPublication:true});
+  const assertPublicationLive = (): void => {
+    if (nativePauseRequested(stateManager,prepared.runId)) throw new Error('native pause before local outcome publication');
+    if (deadlineExpired()) throw new Error('native whole-run deadline expired during local outcome publication');
+  };
+  const completedState = stateManager.readState();
+  try {
+    assertPublicationLive();
+    if (completedState.run_status !== 'running') throw new Error('native execution is not running at local outcome publication');
+    stateManager.transitionStatus(completedState,'completed',{eventType:'execution_completed',details:{run_id:prepared.runId,execution_status:statusPath},commit_guard:assertPublicationLive,on_commit_failure:publication.rollback,before_commit:()=>{
+      assertPublicationLive();
+      publication.commit(assertPublicationLive);
+      assertPublicationLive();
+    }});
+  } catch (error) {
+    publication.rollback();
+    if (error instanceof Error && error.message.includes('manual reconciliation required')) throw error;
+    if (nativePauseRequested(stateManager,prepared.runId)) return finalizePausedRun();
+    if (deadlineExpired()) {status.errors.push('native whole-run deadline expired during local outcome publication');return finalizeFailedRun(status.errors.at(-1)!,'finalization');}
+    throw error;
+  }
+  publication.release();
+  Object.assign(status,completedStatus);
+  const {computationResult,computationResultPath,computationResultRef} = publication;
   maybeQueueIdeaEngineComputationFeedback({
     prepared,
     computationResult,
@@ -655,10 +780,7 @@ export async function runPreparedManifest(
       ...state.artifacts,
       mutation_proposal_repair_v1: toPosixRelative(projectRoot, memoryGraph.repairProposalPath),
     };
-    stateManager.saveState(state);
-    stateManager.appendLedger('repair_mutation_proposed', {
-      run_id: prepared.runId,
-      workflow_id: 'computation',
+    stateManager.saveStateWithLedger(state, 'repair_mutation_proposed', {
       details: {
         proposal_id: memoryGraph.repairProposalId,
         proposal_path: toPosixRelative(projectRoot, memoryGraph.repairProposalPath),
@@ -687,10 +809,7 @@ export async function runPreparedManifest(
       ...state.artifacts,
       skill_proposal_v2: toPosixRelative(projectRoot, skillProposal.proposalPath),
     };
-    stateManager.saveState(state);
-    stateManager.appendLedger('skill_proposal_generated', {
-      run_id: prepared.runId,
-      workflow_id: 'computation',
+    stateManager.saveStateWithLedger(state, 'skill_proposal_generated', {
       details: {
         proposal_id: skillProposal.proposal.proposal_id,
         proposal_path: toPosixRelative(projectRoot, skillProposal.proposalPath),
@@ -720,7 +839,7 @@ export async function runPreparedManifest(
       ...(generatedProposal(opportunityProposals.optimize) ? { mutation_proposal_optimize_v1: toPosixRelative(projectRoot, opportunityProposals.optimize.proposalPath) } : {}),
       ...(generatedProposal(opportunityProposals.innovate) ? { mutation_proposal_innovate_v1: toPosixRelative(projectRoot, opportunityProposals.innovate.proposalPath) } : {}),
     };
-    stateManager.saveState(state);
+    stateManager.saveStateWithLedger(state, 'opportunity_proposals_recorded');
     for (const [proposalKind, proposal] of [['optimize', opportunityProposals.optimize], ['innovate', opportunityProposals.innovate]] as const) {
       if (proposal && !('proposalPath' in proposal)) {
         stateManager.appendLedger('proposal_suppressed', {

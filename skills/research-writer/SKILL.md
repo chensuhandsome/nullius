@@ -115,7 +115,7 @@ The workflow is a four-step loop:
 3. **Draft each section against retrieved evidence** — before writing prose, `hep_project_query_evidence` (lexical) or `hep_project_query_evidence_semantic` (concept-level), then ground each claim-bearing sentence and structure it as a SectionDraft.
 4. **Render + export** — `hep_render_latex` (using the citation mapping) then `hep_export_project`.
 
-**Grounding rule:** a sentence that asserts a specific claim must carry `evidence_ids` (evidence-catalog items used) and `recids` (INSPIRE record ids), with `is_grounded: true`; ungrounded assertions are not admissible.
+**Grounding rule:** check the cited source actually supports each specific claim, then record its `evidence_ids` and `recids`. Set `is_grounded: true` only after that check; omit the field while support is unknown, or use `false` for a known unsupported draft assertion. The flag is a caller declaration, and `hep_render_latex` does not perform this check. Unchecked draft text must not be presented as a verified result. Export requires complete BibTeX entries, which is a separate requirement from source support.
 
 Full tool-call payloads, the SectionDraft JSON shape, and the end-to-end flow diagram: see `RUNBOOK.md` section 9 ("Evidence-grounded writing via hep-mcp — detailed tool-call recipes").
 

@@ -125,7 +125,7 @@ if [[ "${VARIANT}" != "full" ]]; then
   exit 0
 fi
 
-mkdir -p "${ROOT}/prompts" "${ROOT}/team/runs" "${ROOT}/artifacts/runs"
+mkdir -p "${ROOT}/prompts" "${ROOT}/team" "${ROOT}/artifacts/runs"
 mkdir -p "${ROOT}/references/inspire" "${ROOT}/references/arxiv_src" "${ROOT}/references/github"
 mkdir -p "${ROOT}/knowledge_base/literature" "${ROOT}/knowledge_base/methodology_traces" "${ROOT}/knowledge_base/priors"
 mkdir -p "${ROOT}/knowledge_graph" "${ROOT}/mechanisms"

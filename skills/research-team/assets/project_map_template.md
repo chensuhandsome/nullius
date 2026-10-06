@@ -58,10 +58,6 @@ Goal: make the derivation chain, algorithm-design chain, evidence trail, and wri
 
 ---
 
-<!-- PROJECT_INDEX_AUTO_START -->
-<!-- This block is auto-generated. Do not edit by hand. -->
-<!-- PROJECT_INDEX_AUTO_END -->
-
 ## Notes (manual)
 
 - (Optional) Add short “what changed / what’s blocked” notes here.

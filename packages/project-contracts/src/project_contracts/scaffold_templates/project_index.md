@@ -16,7 +16,7 @@ Use it to find the human notebook, the machine contract, and the current plan wi
 6) [research_notebook.md](research_notebook.md) — living problem logic, derivations, interpretation, and figures, when it already contains substantive content
 7) [Main research report](#main-research-report) — immutable researcher-facing report registry and current report entry point
 
-The session-start, reconnect, recovery, and approval-boundary protocol lives in [AGENTS.md](AGENTS.md) — the managed scaffold file that `nullius init --refresh` keeps current. Follow it there before starting work; this file deliberately carries no copy of the protocol commands, because copies in user-owned files go stale.
+The session-start, reconnect, recovery, and approval-boundary protocol lives in [AGENTS.md](AGENTS.md) — the project instructions that `nullius init --refresh` preserves when customized. Follow it there before starting work; this file deliberately carries no copy of the protocol commands, because copies in user-owned files go stale.
 
 ## Core working surfaces
 
@@ -100,10 +100,6 @@ as malformed (fail-closed).
 <!-- RUN_INDEX_START -->
 (machine-maintained run index — per-family map of every run directory; rendered by `nullius index sync` and refreshed automatically after ledger-writing commands; do not edit between these markers)
 <!-- RUN_INDEX_END -->
-
-<!-- PROJECT_INDEX_AUTO_START -->
-<!-- This block is auto-generated. Do not edit by hand. -->
-<!-- PROJECT_INDEX_AUTO_END -->
 
 ## Notes (manual)
 

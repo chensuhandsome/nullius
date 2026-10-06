@@ -1,6 +1,8 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { assertProjectRootAllowed } from './project-policy.js';
+import { readNulliusHarnessSentinelHealth } from './nullius-harness-sentinel.js';
 
 function looksLikeProjectRoot(candidate: string): boolean {
   const nulliusDir = path.join(candidate, '.nullius');
@@ -16,16 +18,14 @@ function looksLikeProjectRoot(candidate: string): boolean {
   } else if (!hasState || (!hasPolicy && !hasLedger)) {
     return false;
   }
+  if (readNulliusHarnessSentinelHealth(candidate).valid) return true;
   for (const marker of ['project_charter.md', 'AGENTS.md', 'docs', 'specs', 'artifacts', '.git']) {
     if (fs.existsSync(path.join(candidate, marker))) return true;
   }
   return false;
 }
 
-export function resolveLifecycleProjectRoot(projectRoot: string | null, cwd: string): string {
-  if (projectRoot) {
-    return path.resolve(cwd, projectRoot);
-  }
+export function findLifecycleProjectRoot(cwd: string): string | null {
   let current = path.resolve(cwd);
   const home = path.resolve(os.homedir());
   for (let depth = 0; depth < 50; depth += 1) {
@@ -38,5 +38,12 @@ export function resolveLifecycleProjectRoot(projectRoot: string | null, cwd: str
     }
     current = parent;
   }
-  return path.resolve(cwd);
+  return null;
+}
+
+export function resolveLifecycleProjectRoot(projectRoot: string | null, cwd: string): string {
+  if (projectRoot) {
+    return assertProjectRootAllowed(path.resolve(cwd, projectRoot));
+  }
+  return assertProjectRootAllowed(findLifecycleProjectRoot(cwd) ?? path.resolve(cwd));
 }

@@ -2,17 +2,17 @@
 
 Runs clean-room, multi-backend review loops across Claude / Gemini / Codex /
 OpenCode / Kimi with strict review-contract checks, a fallback policy, and
-convergence gates. Use it to add reviewers from model families OTHER than the one
-you run as — your own family reviews natively in-host; the swarm brings in the
-other families so each reviewer is independent of you (see the host-aware
-execution notes in `SKILL.md`). Do not list your own family in `--models`.
+convergence gates. Choose reviewers with evidenced model-family diversity and
+separately verify method and input independence. Same-family reviews normally
+run natively in-host; the launcher aggregates only the reviewers it executes
+(see the host-aware execution notes in `SKILL.md`).
 
 Designed to be driven by a tool-using agent; the commands below are what the agent
 runs, and you can run them yourself for reproducibility and debugging.
 
 ## Requirements
 
-- `python3` — the runner itself
+- `python3` — the launcher; Claude and Kimi process supervision requires Python 3.10 or newer
 - Runner skills for whichever backends you use, with their CLIs on `PATH`:
   - `claude-cli-runner` (for `claude/...` models)
   - `gemini-cli-runner` (for `gemini/...` models)
@@ -22,11 +22,12 @@ runs, and you can run them yourself for reproducibility and debugging.
 
 ## Quick start
 
-Single reviewer, one command — no hand-written prompt files. A single reviewer
-is one model family; whether a final verdict additionally requires cross-family
-review follows the artifact's scoping in SKILL.md (result-bearing /
-public-surface / irreversible artifacts do; internal implementation variants
-may close single-family, labeled as such):
+Single reviewer, one command — no hand-written prompt files. Its verdict is
+advisory, and its model family remains unknown until supported by identity
+evidence. Whether a final verdict requires cross-family review follows the
+artifact's scoping in SKILL.md (result-bearing / public-surface / irreversible
+artifacts do; internal implementation variants may close with a same-family
+review, labeled as such):
 
 ```bash
 python3 scripts/bin/review_one.py \
@@ -73,9 +74,9 @@ a PDF or scan requires a separate `--source-provenance-evidence` record; its
 presence and hash are enforced, while its scientific accuracy remains a reviewer
 responsibility.
 
-Cross-family review with contract checking — list only families OTHER than your
-own; your own family reviews natively in-host, the other families go through the
-launcher (example driven from a Claude host: three non-Claude reviewers):
+Review with contract checking — choose the intended reviewer models explicitly
+and provide an agents file with exact model mappings when family attribution is
+required. These route examples alone cannot establish cross-family quorum:
 
 ```bash
 python3 scripts/bin/run_multi_task.py \
@@ -83,10 +84,23 @@ python3 scripts/bin/run_multi_task.py \
   --system /path/to/reviewer_system.md \
   --prompt /path/to/packet.md \
   --models codex/default,gemini/default,zhipuai-coding-plan/glm-5.2 \
+  --agents-file /path/to/agents.json \
   --check-review-contract
 ```
 
 Per-reviewer outputs, the convergence check, and contract status land under `--out-dir`.
+
+There is no implicit hard review deadline. `--expected-secs` is a soft estimate;
+`--timeout-secs` retains its explicit hard-cap meaning across phases/retries/fallback.
+`--claude-live-capture` enables durable Claude events and partial text. Inactivity
+termination is opt-in, requires observable advancing content plus a further grace
+check, and cannot be inferred from silent buffered output. Partial text never supplies
+a completed review seat.
+
+Model route, requested/resolved arguments and reported identity are separate.
+Unmatched family evidence stays unknown. Completed contract-valid eligible families
+supply quorum; roster availability does not. Method and input independence require
+separate evidence even when model-family evidence is present.
 
 ## Docs
 

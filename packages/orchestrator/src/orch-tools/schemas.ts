@@ -127,7 +127,7 @@ export const OrchRunStageContentSchema = z.object({
 
 export const OrchRunPlanComputationSchema = z.object({
   project_root: ProjectRootSchema,
-  run_id: RunIdSchema.describe('Run identifier whose existing staged idea artifacts should be compiled into execution_plan_v1 and a run-local computation/manifest.json, preferring provider-backed materialization when the staged surface carries an explicit method bundle.'),
+  run_id: RunIdSchema.describe('Run identifier whose existing staged idea artifacts should be compiled into execution_plan_v1 and a run-local computation/manifest.json, requiring a supplied method_spec with files and run_card; missing methods are refused before executable artifacts are written.'),
   run_dir: RunDirSchema,
   dry_run: z.boolean().optional().default(false).describe('Validate and materialize the execution plan without requesting approval or executing any computation step.'),
 });

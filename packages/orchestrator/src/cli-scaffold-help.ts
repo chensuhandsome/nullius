@@ -6,14 +6,17 @@ Behavior:
   Always writes the project-local fallback launcher at \`.nullius/bin/nullius\`.
   That wrapper keeps \`nullius status --json\` as the canonical recovery command even when
   \`nullius\` is unavailable on PATH for a fresh external project.
-  --refresh re-applies the current managed scaffold doc (AGENTS.md),
-  backing up any changed file under \`.nullius/backups/<timestamp>/\` before overwriting it.
-  Refresh never writes user-owned files (research_plan.md, research_notebook.md,
+  nullius init --refresh generates missing support guidance (AGENTS.md). Pair with --dry-run to preview.
+  Scaffold refresh preserves user-owned seed content (research_plan.md, research_notebook.md,
   research_contract.md, project_charter.md, project_index.md,
-  reports/main_research_report_template.md, .gitignore). Pair with --dry-run to preview.
+  reports/main_research_report_template.md, .gitignore).
+  Existing machine-managed notebook and index blocks may still synchronize with runtime state.
+  Existing differing instructions are preserved byte-for-byte; refresh creates no backups.
+  To update existing guidance, render a scaffold in a separate temporary external root
+  and explicitly merge desired changes.
 
 Existing-project main-report migration:
-  Checkpoint the project first. Refresh AGENTS.md, then render a fresh scaffold
+  Checkpoint the project first, then render a fresh scaffold
   in a separate temporary external root with \`nullius init --project-root <temporary-root>\`.
   Copy only a missing reports/main_research_report_template.md from that root;
   never overwrite an existing copy. Manually merge the temporary

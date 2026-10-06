@@ -8,7 +8,8 @@ import {
 } from '@nullius/shared';
 import { z } from 'zod';
 import type { ExecutionMode } from '../types.js';
-import { createStateManager, requireState } from './common.js';
+import { createStateManager, requireState, resolveProjectRoot } from './common.js';
+import { assertNoRetiredRunRoot } from '../run-directories.js';
 import { buildRunStatusView, readRunListView } from './run-read-model.js';
 import { OrchRunCreateSchema, OrchRunListSchema, OrchRunStatusSchema } from './schemas.js';
 
@@ -43,12 +44,13 @@ export async function handleOrchRunCreate(
   params: z.output<typeof OrchRunCreateSchema>,
 ): Promise<unknown> {
   const { manager, projectRoot } = createStateManager(params.project_root);
+  const state = manager.readState();
   manager.ensureDirs();
   // A declared execution mode is a project-level fact, not a per-run one;
   // creating a run must not silently erase it.
   let declaredMode: ExecutionMode | null = null;
   if (fs.existsSync(manager.statePath)) {
-    const existing = JSON.parse(fs.readFileSync(manager.statePath, 'utf-8')) as Record<string, unknown>;
+    const existing = state as unknown as Record<string, unknown>;
     if (existing.execution_mode === 'engine' || existing.execution_mode === 'file') {
       declaredMode = existing.execution_mode;
     }
@@ -70,22 +72,19 @@ export async function handleOrchRunCreate(
     }
   }
 
-  const state = buildIdleState(params.run_id, params.workflow_id);
+  for (const key of Object.keys(state)) delete (state as unknown as Record<string, unknown>)[key];
+  Object.assign(state, buildIdleState(params.run_id, params.workflow_id));
   state.execution_mode = declaredMode;
   if (params.idempotency_key) {
-    (state as Record<string, unknown>).idempotency_key = params.idempotency_key;
+    (state as unknown as Record<string, unknown>).idempotency_key = params.idempotency_key;
   }
-  manager.saveState(state);
+  manager.saveStateWithLedger(state, 'initialized', { details: { source: 'orch_run_create' } });
 
   const initializedPath = path.join(path.dirname(manager.statePath), '.initialized');
   if (!fs.existsSync(initializedPath)) {
     writeBytesAtomicDurable(initializedPath, `${new Date().toISOString()}\n`);
   }
-  manager.appendLedger('initialized', {
-    run_id: params.run_id,
-    workflow_id: params.workflow_id ?? null,
-    details: { source: 'orch_run_create' },
-  });
+
 
   return {
     run_id: params.run_id,
@@ -99,6 +98,8 @@ export async function handleOrchRunCreate(
 export async function handleOrchRunStatus(
   params: z.output<typeof OrchRunStatusSchema>,
 ): Promise<unknown> {
+  // A refused status call must not renew the runtime admission receipt.
+  assertNoRetiredRunRoot(resolveProjectRoot(params.project_root));
   const { manager, projectRoot } = createStateManager(params.project_root);
   const state = requireState(projectRoot, manager);
   const view = buildRunStatusView(projectRoot, state);
@@ -114,6 +115,7 @@ export async function handleOrchRunStatus(
 export async function handleOrchRunList(
   params: z.output<typeof OrchRunListSchema>,
 ): Promise<unknown> {
+  assertNoRetiredRunRoot(resolveProjectRoot(params.project_root));
   const { manager } = createStateManager(params.project_root);
   const { runs, total, returned, errors } = readRunListView(manager, params);
   return { runs, total, returned, errors };

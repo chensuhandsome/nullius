@@ -8,7 +8,7 @@ import { StateManager } from '../src/state-manager.js';
 import { compileWorkflowRuntimeRequest, parsePersistedWorkflowExecution } from '../src/workflow-runtime.js';
 
 function fixture(stepCount = 2) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nullius-workflow-recovery-'));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'nullius-workflow-recovery-')));
   const manager = new StateManager(root);
   manager.ensureDirs();
   const state = manager.readState();

@@ -4,6 +4,8 @@ import * as path from 'node:path';
 import { type CliIo } from './cli-lifecycle.js';
 import { StateManager } from './state-manager.js';
 import { resolveUserPath } from './project-policy.js';
+import { listRunDirectories } from './run-directories.js';
+import { runDirFor } from './run-paths.js';
 
 type ExportOptions = { includeKbProfile: boolean; out: string | null; runId: string | null };
 
@@ -44,16 +46,16 @@ function safeKbFile(projectRoot: string, candidatePath: string): string {
 
 export async function runExportCommand(projectRoot: string, cwd: string, args: string[], io: CliIo): Promise<void> {
   const options = parseExportArgs(args);
+  const runs = listRunDirectories(projectRoot);
   const state = new StateManager(projectRoot).readState();
   const runId = options.runId ?? state.run_id;
   if (!runId) throw new Error('missing run_id (pass --run-id or start a run first)');
+  if (!/^[A-Za-z0-9._-]+$/.test(runId) || runId === '.' || runId.includes('..')) throw new Error('run_id must be one safe path segment');
 
   const outPath = options.out ? resolveUserPath(options.out, cwd) : path.join(projectRoot, 'exports', `${runId}.zip`);
-  fs.mkdirSync(path.dirname(outPath), { recursive: true });
 
   const files = new Set<string>();
-  for (const baseDir of [path.join(projectRoot, 'artifacts', 'runs', runId), path.join(projectRoot, 'team', 'runs', runId)]) {
-    if (!fs.existsSync(baseDir)) continue;
+  for (const baseDir of runs.some(run => run.run_id === runId) ? [runDirFor(projectRoot, runId)] : []) {
     for (const entry of fs.readdirSync(baseDir, { recursive: true, withFileTypes: true })) {
       if (entry.isFile()) files.add(path.join(entry.parentPath, entry.name));
     }
@@ -80,11 +82,12 @@ export async function runExportCommand(projectRoot: string, cwd: string, args: s
     if (issues.length > 0) throw new Error(`kb-profile export safety check failed:\n${issues.slice(0, 10).map(item => `- ${item}`).join('\n')}`);
   }
 
-  fs.rmSync(outPath, { force: true });
   const archiveEntries = [...files].map(filePath => relativePath(projectRoot, filePath)).sort();
   if (archiveEntries.length === 0) {
     throw new Error(`EXPORT_PAYLOAD_UNAVAILABLE: no exportable files were found for run ${runId}`);
   }
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  fs.rmSync(outPath, { force: true });
   const result = spawnSync('zip', ['-q', outPath, '-@'], { cwd: projectRoot, encoding: 'utf-8', input: `${archiveEntries.join('\n')}\n` });
   if (result.status !== 0) throw new Error(result.stderr?.trim() || `zip failed with status ${String(result.status)}`);
   io.stdout(`[ok] wrote: ${outPath}\n`);

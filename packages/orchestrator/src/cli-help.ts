@@ -59,8 +59,10 @@ Options:
 
 Behavior:
   Requires an initialized external project root (\`nullius init\`).
-  Computation requests A3 approval when gate_satisfied.A3 is absent.
-  Computation stamps the run's code origin automatically at launch (after approval, before the first step) when the run dir sits under artifacts/runs/ or team/runs/; the outcome is reported as \`origin_stamp\` in the result and never blocks execution. A same-tree relaunch is not re-stamped; a relaunch on changed code reports \`stale_stamp\` and asks for a fresh run id. Inside those run roots the directory basename must equal --run-id (one run, one identity).
+  Root A3 policy or prior A3 authority requires a current content-bound approval; changed or missing binding requests fresh root approval. A step-only A3 mismatch fails closed without creating a root request.
+  Native pause lets the current direct child return, then stops as paused even after the final step. Same-run re-entry and resume --force cannot continue a paused native run.
+  One persisted absolute deadline includes preflight and all direct children; retries do not reset it. Unsupported hard CPU, memory and disk constraints refuse at preparation.
+  Computation stamps the run's code origin automatically at launch (after approval, before the first step) when the run dir sits under artifacts/runs/; the outcome is reported as \`origin_stamp\` in the result. A provenance capture error is reported without inventing a binding. A same-tree relaunch is not re-stamped; conflicting completed provenance refuses execution and requires a fresh run id. Inside that run root the directory basename must equal --run-id (one run, one identity).
   Persisted workflow-plan steps advance in a bounded loop until completion or a blocking failure is reached.
   A \`connection_scan\` step with an empty \`recids\` paper set is skipped with a structured no-input result instead of being reported as a tool failure.
   Workflow-step execution requires a configured local MCP stdio server via \`NULLIUS_RUN_MCP_COMMAND\`
@@ -319,7 +321,7 @@ exact revision (including a run's snapshot commit) and skips that check.
 A fixed exclusion list keeps run products, machine state, and internal
 process files out of the export — and the receipt PRINTS which of them were
 actually present in the exported tree, so nothing is dropped silently:
-  artifacts/, team/runs/, .nullius/, host-agent dirs (.claude/ etc.),
+  artifacts/, .nullius/, host-agent dirs (.claude/ etc.),
   research_plan.md, research_notebook.md, research_contract.md,
   project_index.md, AGENTS.md, CLAUDE.md
 

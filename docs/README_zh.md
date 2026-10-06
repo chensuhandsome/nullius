@@ -7,6 +7,9 @@
 
 Nullius 是一个面向理论研究的 domain-neutral、evidence-first monorepo。当前仓库把通用 lifecycle/control-plane 包、本地 MCP provider 包，以及可被 agent client 或 shell 入口消费的 checked-in workflow recipes 放在同一个工作台里。root 就是这个 domain-neutral 基座与 control plane；HEP 是在其上构建的、目前最成熟的 provider family 与最强的端到端 workflow 示例。
 
+
+原生计算将启用的 A3 审批绑定到当前 manifest、脚本、声明的输入与依赖文件、解析后的可执行文件字节、生产环境和审批策略。packet 缺失、历史审批没有内容绑定或输入发生变化时，必须在派发前申请新的根审批；仅有步骤级 A3 而绑定失效时直接拒绝，不创建根审批请求。暂停请求允许当前直接子进程返回，保留该步骤证据，并将整体运行保持为 paused；最后一步也适用。原生计算不支持原地续行：同一运行重入和 `resume --force` 均在修改暂停产物前拒绝；另行审批的新运行是独立执行。`execution_status.json` 持久化一个覆盖 preflight、后续直接子进程与本地结果发布的绝对截止时间，重试不重置，每个子进程使用剩余总预算与步骤上限的较小值。硬 CPU、内存和磁盘约束在 preparation 阶段拒绝；这些限制不负责任意后代进程或远程作业。规范状态写入在短独占锁内比较调用者的读取快照，比较通过后才追加组合事件；过期快照拒绝，过期锁须在写入者停止后人工修复。CLI 与项目传输共用外部根目录准入，并解析未创建路径的已存在软链接祖先。
+
 ## 1. Surface Policy
 
 - `nullius` 继续作为已初始化外部 project root 的 stateful CLI front door。lifecycle state、bounded execution、`workflow-plan`、verification、更高结论 gate、主报告结构校验、proposal decisions 与 conversational decision ledger 都从这里进入。
@@ -185,12 +188,12 @@ nullius init
 Then read the generated AGENTS.md and run:
 ./.nullius/bin/nullius status --json
 
-To pull newer managed scaffold doc (AGENTS.md) into an
-already-initialized project without touching your own notes, preview then apply:
+To restore a missing AGENTS.md while preserving existing project instructions,
+preview then apply:
 nullius init --refresh --dry-run
 nullius init --refresh
 
-Refresh does not migrate user-owned report files. For a project that predates
+Refresh preserves an existing AGENTS.md byte-for-byte when it differs from the current template. To update its guidance, render a current scaffold in a temporary external root and manually merge the desired changes. Refresh may synchronize existing machine-managed notebook and index blocks, while preserving user-owned content and not inserting missing blocks. It does not migrate user-owned report files. For a project that predates
 the main-report registry, checkpoint it, render a current scaffold in a separate
 temporary external root with `nullius init --project-root <temporary-root>`, copy
 only a missing reports/main_research_report_template.md, and manually merge the
@@ -281,6 +284,8 @@ pnpm --filter @nullius/hep-mcp docs:tool-counts:check
 1. `hep_render_latex`
 1. `hep_export_project`
 
+HEP 项目与 run 保存领域输入和产物目录，通用生命周期与审批仍归 orchestrator。草稿渲染保留调用方的 grounding 声明，省略时保持未知，不核验论断；导出要求 BibTeX 覆盖全部引用键。
+
 ## 文档
 
 - [功能测试指南](./TESTING_GUIDE.md)
@@ -299,3 +304,9 @@ pnpm --filter @nullius/hep-mcp docs:tool-counts:check
 ## License
 
 MIT
+
+新生成的受控项目运行统一位于 `artifacts/runs/<run_id>/`，team/draft 执行记录放在其 `research_team/` 子目录，来源记录盖章在父 run 上。旧 `team/runs` 含 run 目录时，相关视图报告数量，`init --runtime-only` 在重新绑定前拒绝；旧根不可读也明确报错。应保留旧运行时及配套 skills，或先完成另行审查的迁移。`inventory_run_relocation.py --fixture-root <匿名fixture> --source-manifest <哈希清单>` 只盘点已固定输入的引用、冲突与未解决绑定，没有 apply 模式。独立 reviewer 快照排除所有轮次的执行 payload 和工作区树，保留生产输入；读取仅允许自己的声明输出前缀。历史报告与裁决保留给协调者。`team/LATEST*.md` 与 `artifacts/LATEST.md` 只提供导航。
+
+通用 scaffold 创建 `project_index.md`；team helper 只维护执行器本地导航指针，根索引缺失时要求 `nullius init`。结果登记和派生区块写入共用短路径锁，重新读取输入，对检测到的编辑最多尝试三次，保留区块外人工内容、模式和换行。忽略该锁的任意写入者不在锁的保证范围内。通用运行计数不解释执行轮次上限；这些设置由 Python 执行器解析和后缀门负责。
+
+既有的 `PROJECT_INDEX_AUTO` 块是历史记录，不再维护；team helper 不解析也不更新它。当前 `RUN_INDEX` 导航和人工选择的结果／报告登记区由各自的写入者维护。不要静默改写或删除旧块。

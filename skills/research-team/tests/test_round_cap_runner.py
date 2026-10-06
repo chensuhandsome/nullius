@@ -100,7 +100,7 @@ def _run(root: Path, tag: str) -> subprocess.CompletedProcess:
             "--notes",
             "research_contract.md",
             "--out-dir",
-            "team",
+            "artifacts",
             "--member-a-system",
             "prompts/_system_member_a.txt",
             "--member-b-system",
@@ -122,7 +122,7 @@ def test_round_beyond_cap_brakes_with_narrowing_message(project: Path) -> None:
     assert "narrow the candidate's scope" in proc.stderr
     assert "bounded_rounds.max_per_tag_family" in proc.stderr
     # The brake fires before any run directory is created for the tag.
-    assert not (project / "team" / "runs" / tag).exists()
+    assert not (project / "artifacts" / "runs" / tag).exists()
 
 
 def test_config_raise_allows_more_rounds(project: Path) -> None:

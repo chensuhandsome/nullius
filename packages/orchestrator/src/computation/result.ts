@@ -1,5 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { createArtifactRefV1, writeBytesAtomicDurable } from '@nullius/shared';
+import { createHash } from 'node:crypto';
 import type {
   ArtifactRefV1,
   ComputationResultV1,
@@ -58,6 +60,7 @@ function collectProducedArtifactRefs(params: {
   statusPath: string;
   logsDir: string;
   producedOutputs: string[];
+  fileRef?: (filePath: string, kind: string) => ArtifactRefV1;
 }): ArtifactRefV1[] {
   const files = [
     params.statusPath,
@@ -71,9 +74,7 @@ function collectProducedArtifactRefs(params: {
       seen.add(filePath);
       return true;
     })
-    .map(filePath => createRunArtifactRef(
-      params.prepared.runId,
-      params.prepared.runDir,
+    .map(filePath => (params.fileRef ?? ((file, kind) => createRunArtifactRef(params.prepared.runId, params.prepared.runDir, file, kind)))(
       filePath,
       filePath === params.statusPath
         ? 'execution_status'
@@ -91,6 +92,8 @@ function writeComputationVerificationArtifacts(params: {
   summary: string;
   executionStatus: Extract<ComputationResultV1['execution_status'], 'completed' | 'failed'>;
   generatedAt: string;
+  writeJson: (filePath: string, payload: unknown) => void;
+  fileRef: (filePath: string, kind: string) => ArtifactRefV1;
 }): NonNullable<ComputationResultV1['verification_refs']> {
   const subjectId = `result:${params.prepared.runId}:computation_result`;
   const verdictId = `verdict:${params.prepared.runId}:computation_result`;
@@ -119,8 +122,8 @@ function writeComputationVerificationArtifacts(params: {
       id_value: makeRunArtifactUri(params.prepared.runId, 'artifacts/computation_result_v1.json'),
     }],
   };
-  writeJsonAtomic(subjectPath, subject);
-  const subjectRef = createRunArtifactRef(params.prepared.runId, params.prepared.runDir, subjectPath, 'verification_subject');
+  params.writeJson(subjectPath, subject);
+  const subjectRef = params.fileRef(subjectPath, 'verification_subject');
 
   const verdict: VerificationSubjectVerdictV1 = {
     schema_version: 1,
@@ -135,8 +138,8 @@ function writeComputationVerificationArtifacts(params: {
     check_run_refs: [],
     missing_decisive_checks: [missingCheck],
   };
-  writeJsonAtomic(verdictPath, verdict);
-  const verdictRef = createRunArtifactRef(params.prepared.runId, params.prepared.runDir, verdictPath, 'verification_subject_verdict');
+  params.writeJson(verdictPath, verdict);
+  const verdictRef = params.fileRef(verdictPath, 'verification_subject_verdict');
 
   const coverage: VerificationCoverageV1 = {
     schema_version: 1,
@@ -161,8 +164,8 @@ function writeComputationVerificationArtifacts(params: {
       priority: missingCheck.priority,
     }],
   };
-  writeJsonAtomic(coveragePath, coverage);
-  const coverageRef = createRunArtifactRef(params.prepared.runId, params.prepared.runDir, coveragePath, 'verification_coverage');
+  params.writeJson(coveragePath, coverage);
+  const coverageRef = params.fileRef(coveragePath, 'verification_coverage');
 
   return {
     subject_refs: [subjectRef],
@@ -178,21 +181,39 @@ export function writeComputationResultArtifact(params: {
   logsDir: string;
   producedOutputs: string[];
   failureReason?: string;
+  deferPublication?: boolean;
 }): {
   computationResult: ComputationResultV1;
   computationResultPath: string;
   computationResultRef: ArtifactRefV1;
+  commit: (guard?: () => void) => void;
+  rollback: () => void;
+  release: () => void;
 } {
-  if (params.status.status === 'running' || !params.status.completed_at) {
+  if ((params.status.status !== 'completed' && params.status.status !== 'failed') || !params.status.completed_at) {
     throw new Error('computation result can only be written after execution reaches a terminal state');
   }
+  const pending = new Map<string, string>();
+  const writeJson = (filePath: string, payload: unknown): void => {
+    if (params.deferPublication) pending.set(filePath, JSON.stringify(payload, null, 2) + '\n');
+    else writeJsonAtomic(filePath, payload);
+  };
+  const fileRef = (filePath: string, kind: string): ArtifactRefV1 => {
+    const bytes = pending.get(filePath);
+    return bytes === undefined ? createRunArtifactRef(params.prepared.runId,params.prepared.runDir,filePath,kind)
+      : createArtifactRefV1({uri:makeRunArtifactUri(params.prepared.runId,path.relative(params.prepared.runDir,filePath).split(path.sep).join('/')),
+          sha256:createHash('sha256').update(bytes).digest('hex'),size_bytes:Buffer.byteLength(bytes),kind,produced_by:'@nullius/orchestrator'});
+  };
+  // Local publication is prepared before the canonical completion lock.
+  // Raw child outputs/logs are never staged or rolled back here.
+  if (params.deferPublication) writeJson(params.statusPath, params.status);
   const manifestRef = createRunArtifactRef(
     params.prepared.runId,
     params.prepared.runDir,
     params.prepared.manifestPath,
     'computation_manifest',
   );
-  const producedArtifactRefs = collectProducedArtifactRefs(params);
+  const producedArtifactRefs = collectProducedArtifactRefs({...params,fileRef});
   const objectiveTitle = loadExecutionPlanTitle(params.prepared);
   const summary = buildSummary(params.status, params.producedOutputs.length);
   const computationResultPath = path.join(params.prepared.runDir, 'artifacts', 'computation_result_v1.json');
@@ -232,6 +253,7 @@ export function writeComputationResultArtifact(params: {
     summary,
     executionStatus: params.status.status,
     generatedAt: params.status.completed_at,
+    writeJson, fileRef,
   });
   const resultWithVerification = {
     ...baseResult,
@@ -243,6 +265,7 @@ export function writeComputationResultArtifact(params: {
     params.prepared.runId,
     params.prepared.runDir,
     followupBridges.bridgePlans,
+    {writeJson,fileRef},
   );
   const computationResult = assertComputationResultValid({
     ...resultWithVerification,
@@ -250,15 +273,47 @@ export function writeComputationResultArtifact(params: {
     followup_bridge_refs: followupBridgeRefs,
     workspace_feedback: workspaceFeedback,
   });
-  writeJsonAtomic(computationResultPath, computationResult);
+  writeJson(computationResultPath, computationResult);
+  // Keep this journal until canonical completion succeeds. A writer can throw
+  // after rename (directory fsync), and a later state guard can still refuse.
+  const written: Array<{file:string; bytes:Buffer|null; mode:number|undefined; originalTimes:{atime:Date;mtime:Date}|null; published:string}> = [];
+  const rollback = (): void => {
+    while (written.length) {
+      const entry = written.at(-1)!;
+      const current = fs.existsSync(entry.file) ? fs.readFileSync(entry.file) : null;
+      if (current?.equals(Buffer.from(entry.published))) {
+        if (entry.bytes === null) fs.unlinkSync(entry.file);
+        else {
+          writeBytesAtomicDurable(entry.file,entry.bytes,entry.mode);
+          if(entry.originalTimes) fs.utimesSync(entry.file,entry.originalTimes.atime,entry.originalTimes.mtime);
+        }
+      } else if (!(current === null && entry.bytes === null) && !(entry.bytes !== null && current?.equals(entry.bytes))) {
+        throw new Error('local publication changed concurrently; manual reconciliation required');
+      }
+      written.pop();
+    }
+  };
   return {
     computationResult,
     computationResultPath,
-    computationResultRef: createRunArtifactRef(
-      params.prepared.runId,
-      params.prepared.runDir,
-      computationResultPath,
-      'computation_result',
-    ),
+    computationResultRef: fileRef(computationResultPath,'computation_result'),
+    rollback,
+    release: () => { written.length = 0; },
+    commit: guard => {
+      try {
+        for (const [file,published] of pending) {
+          guard?.();
+          const previous = fs.existsSync(file) ? fs.statSync(file) : null;
+          const bytes = previous ? fs.readFileSync(file) : null;
+          const mode = previous ? previous.mode & 0o777 : undefined;
+          written.push({file,bytes,mode,originalTimes:previous?{atime:previous.atime,mtime:previous.mtime}:null,published});
+          writeBytesAtomicDurable(file,published,mode,guard);
+        }
+        guard?.();
+      } catch (error) {
+        try { rollback(); } catch (restoreError) { throw new Error('local publication rollback failed; manual reconciliation required', {cause:restoreError}); }
+        throw error;
+      }
+    },
   };
 }

@@ -20,7 +20,7 @@ MAX_ATTEMPTS=3
 MAX_ATTEMPTS_HARD_MAX=20
 SLEEP_SECS=5
 MAX_BACKOFF_SECS=300
-TIMEOUT_SECS=900
+TIMEOUT_SECS=0
 NO_FALLBACK=0
 DRY_RUN=0
 RAW_OUT=""
@@ -57,7 +57,7 @@ Options:
   --max-retries N         Deprecated alias of --max-attempts
   --sleep-secs SECONDS    Exponential backoff base seconds (default: 5)
   --timeout-secs SECONDS  Total invocation deadline, including backoff and fallback.
-                          Default: 900. Use 0 to disable.
+                          Default: no hard deadline (0). Explicit positive values are hard caps.
   --raw-out FILE          Optional. Copy raw Kimi stdout from the last attempt here.
   --stderr-out FILE       Optional. Copy raw Kimi stderr from the last attempt here.
   --trace-dir DIR         Retain every attempt's raw events and budget receipt here.
@@ -359,6 +359,7 @@ classify_deterministic_failure() {
         'quota exceeded' \
         'insufficient quota' \
         'usage limit reached' \
+        "reached your usage limit for this billing cycle" \
         'out of usage' \
         'auto-rejecting' \
         'permission denied' \
@@ -855,7 +856,12 @@ run_mode() {
       sleep_for="${MAX_BACKOFF_SECS}"
     fi
     echo "Attempt ${attempt} failed in ${label} mode (exit ${code}); retrying in ${sleep_for}s..." >&2
-    python3 "${PROCESS_BUDGET}" sleep --state "${BUDGET_STATE}" --seconds "${sleep_for}" || return $?
+    python3 "${PROCESS_BUDGET}" sleep --state "${BUDGET_STATE}" --seconds "${sleep_for}" &
+    ACTIVE_PID=$!
+    local sleep_code=0
+    wait "${ACTIVE_PID}" || sleep_code=$?
+    ACTIVE_PID=""
+    if [[ "${sleep_code}" -ne 0 ]]; then return "${sleep_code}"; fi
     attempt=$(( attempt + 1 ))
   done
 }

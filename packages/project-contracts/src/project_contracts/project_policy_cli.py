@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import re
 from pathlib import Path
 
 from .project_policy import (
@@ -10,6 +11,7 @@ from .project_policy import (
     assert_path_allowed,
     assert_path_within_project,
     assert_project_root_allowed,
+    assert_no_retired_run_root,
     resolve_user_path,
 )
 
@@ -39,6 +41,7 @@ def main() -> int:
     p_run.add_argument("--out-dir", required=True, type=Path)
     p_run.add_argument("--project-policy", choices=PROJECT_POLICY_CHOICES, default="real_project")
     p_run.add_argument("--resolve-from", type=Path, default=Path.cwd())
+    p_run.add_argument("--run-id", default="", help="Check the canonical executor payload path before creation.")
 
     args = ap.parse_args()
 
@@ -66,6 +69,19 @@ def main() -> int:
     )
     assert_path_allowed(notes, project_policy=args.project_policy, label="research notebook")
     assert_path_within_project(notes, project_root=project_root, label="research notebook")
+    assert_no_retired_run_root(project_root)
+    assert_path_within_project(out_dir, project_root=project_root, label="team output path")
+    if out_dir != (project_root / "artifacts").resolve():
+        raise ValueError("team output path must be the canonical project artifacts directory; team/runs and custom output roots are unsupported.")
+    paths = [project_root / "artifacts", project_root / "artifacts" / "runs"]
+    if args.run_id:
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", args.run_id) or args.run_id == "." or ".." in args.run_id:
+            raise ValueError("run id must be one safe path segment")
+        run_root = paths[-1] / args.run_id
+        paths += [run_root, run_root / "research_team"]
+    for path in paths:
+        if path.is_symlink():
+            raise ValueError(f"canonical run path must not contain symlinks: {path}")
     return _print(
         {
             "notes": str(notes),

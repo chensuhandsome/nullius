@@ -6,6 +6,8 @@ import { describe, expect, it } from 'vitest';
 import { StateManager } from '../src/state-manager.js';
 import type { RunState } from '../src/types.js';
 import { runCli } from '../src/cli.js';
+import { findLifecycleProjectRoot } from '../src/cli-project-root.js';
+import { assertProjectRootAllowed } from '../src/project-policy.js';
 import { readProjectLocalNulliusLauncherHealth } from '../src/project-local-nullius.js';
 import { ensureProjectScaffold } from '../src/project-scaffold.js';
 
@@ -73,11 +75,20 @@ function makeIo(cwd: string) {
 }
 
 describe('nullius CLI init/export', () => {
+  it('publishes the preserve-existing refresh contract through live init help', async () => {
+    const io = makeIo(process.cwd());
+    await runCli(['init', '--help'], io.io);
+    const help = io.stdout.join('\n');
+    expect(help).toContain('Existing differing instructions are preserved byte-for-byte');
+    expect(help).toContain('refresh creates no backups');
+    expect(help).not.toContain('before overwriting');
+    expect(help).not.toContain('re-applies');
+  });
   it('rejects repo-internal init before writing runtime state', async () => {
     const projectRoot = path.join(process.cwd(), '.tmp', `repo-internal-init-denied-${Date.now()}`);
 
     await expect(runCli([`--project-root=${projectRoot}`, 'init'], makeIo(process.cwd()).io)).rejects.toThrow(
-      'project root must resolve outside the nullius dev repo for real projects',
+      'project root must resolve outside the nullius dev repo; only the explicit maintainer_fixture directory is permitted',
     );
 
     expect(fs.existsSync(projectRoot)).toBe(false);
@@ -87,10 +98,150 @@ describe('nullius CLI init/export', () => {
     const projectRoot = path.join(process.cwd(), '.tmp', `repo-internal-runtime-only-denied-${Date.now()}`);
 
     await expect(runCli([`--project-root=${projectRoot}`, 'init', '--runtime-only'], makeIo(process.cwd()).io)).rejects.toThrow(
-      'project root must resolve outside the nullius dev repo for real projects',
+      'project root must resolve outside the nullius dev repo; only the explicit maintainer_fixture directory is permitted',
     );
 
     expect(fs.existsSync(projectRoot)).toBe(false);
+  });
+
+  it('rejects a different development checkout and its uncreated descendants before init writes', async () => {
+    const parent = makeTempDir('nullius-cli-other-checkout-');
+    const checkout = path.join(parent, 'source');
+    fs.mkdirSync(path.join(checkout, 'packages/orchestrator'), { recursive: true });
+    fs.mkdirSync(path.join(checkout, 'packages/shared'), { recursive: true });
+    fs.writeFileSync(path.join(checkout, 'package.json'), JSON.stringify({ name: 'nullius' }));
+    fs.writeFileSync(path.join(checkout, 'pnpm-workspace.yaml'), 'packages: [packages/*]\n');
+    fs.writeFileSync(path.join(checkout, 'packages/orchestrator/package.json'), JSON.stringify({ name: '@nullius/orchestrator' }));
+    fs.writeFileSync(path.join(checkout, 'packages/shared/package.json'), JSON.stringify({ name: '@nullius/shared' }));
+    const alias = path.join(parent, 'source-alias');
+    fs.symlinkSync(checkout, alias, 'dir');
+    try {
+      for (const target of [checkout, path.join(checkout, 'not-created'), path.join(alias, 'not-created')]) {
+        for (const flags of [[], ['--runtime-only']]) {
+          await expect(runCli(['--project-root', target, 'init', '--no-git', ...flags], makeIo(parent).io))
+            .rejects.toThrow('outside the nullius dev repo');
+          expect(fs.existsSync(path.join(target, '.nullius'))).toBe(false);
+        }
+      }
+      expect(fs.existsSync(path.join(checkout, 'not-created'))).toBe(false);
+      const sibling = path.join(parent, 'research');
+      expect(await runCli(['--project-root', sibling, 'init', '--runtime-only', '--no-git'], makeIo(parent).io)).toBe(0);
+      expect(fs.existsSync(path.join(sibling, '.nullius/state.json'))).toBe(true);
+    } finally { fs.rmSync(parent, { recursive: true, force: true }); }
+  });
+
+  it('uses the same strict UTF-8 and JSON package identity grammar as Python', () => {
+    const parent = makeTempDir('nullius-cli-package-identity-');
+    const checkout = path.join(parent, 'source');
+    const installation = path.join(parent, 'installation');
+    fs.mkdirSync(installation);
+    for (const name of ['orchestrator', 'shared']) {
+      fs.mkdirSync(path.join(checkout, 'packages', name), { recursive: true });
+      fs.writeFileSync(path.join(checkout, 'packages', name, 'package.json'), JSON.stringify({ name: `@nullius/${name}` }));
+    }
+    fs.writeFileSync(path.join(checkout, 'pnpm-workspace.yaml'), 'packages: [packages/*]\n');
+    const valid = Buffer.from('{"name":"nullius","note":"é"}', 'utf8');
+    const malformed = [
+      Buffer.concat([Buffer.from('{"name":"nullius","note":"'), Buffer.from([255]), Buffer.from('"}')]),
+      Buffer.from('{"name":"nullius","unused":NaN}'),
+      Buffer.from('{"name":"nullius","unused":Infinity}'),
+      Buffer.from('{"name":"nullius","unused":-Infinity}'),
+      Buffer.concat([Buffer.from([239, 187, 191]), valid]),
+    ];
+    try {
+      fs.writeFileSync(path.join(checkout, 'package.json'), valid);
+      expect(() => assertProjectRootAllowed(checkout, 'real_project', installation)).toThrow('outside the nullius dev repo');
+      for (const raw of malformed) {
+        fs.writeFileSync(path.join(checkout, 'package.json'), raw);
+        expect(() => assertProjectRootAllowed(checkout, 'real_project', installation)).toThrow('ambiguous development-checkout metadata');
+      }
+      expect(fs.existsSync(path.join(checkout, '.nullius'))).toBe(false);
+    } finally { fs.rmSync(parent, { recursive: true, force: true }); }
+  });
+
+  it('refuses looping and dangling development markers before init writes', async () => {
+    const parent = makeTempDir('nullius-cli-marker-errors-');
+    const checkout = path.join(parent, 'source');
+    fs.mkdirSync(checkout);
+    fs.writeFileSync(path.join(checkout, 'package.json'), JSON.stringify({ name: 'nullius' }));
+    fs.writeFileSync(path.join(checkout, 'pnpm-workspace.yaml'), 'packages: [packages/*]\n');
+    fs.symlinkSync('packages', path.join(checkout, 'packages'), 'dir');
+    try {
+      await expect(runCli(['--project-root', checkout, 'init', '--runtime-only', '--no-git'], makeIo(parent).io))
+        .rejects.toThrow('ambiguous development-checkout metadata');
+      expect(fs.existsSync(path.join(checkout, '.nullius'))).toBe(false);
+      fs.unlinkSync(path.join(checkout, 'packages'));
+      for (const name of ['orchestrator', 'shared']) {
+        fs.mkdirSync(path.join(checkout, 'packages', name), { recursive: true });
+        fs.writeFileSync(path.join(checkout, 'packages', name, 'package.json'), JSON.stringify({ name: `@nullius/${name}` }));
+      }
+      fs.unlinkSync(path.join(checkout, 'package.json'));
+      fs.symlinkSync('missing-package.json', path.join(checkout, 'package.json'));
+      await expect(runCli(['--project-root', checkout, 'init', '--runtime-only', '--no-git'], makeIo(parent).io))
+        .rejects.toThrow('ambiguous development-checkout metadata');
+      expect(fs.existsSync(path.join(checkout, '.nullius'))).toBe(false);
+    } finally { fs.rmSync(parent, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.getuid?.() === 0)('refuses inaccessible development markers before init writes', async () => {
+    const parent = makeTempDir('nullius-cli-marker-permission-');
+    const checkout = path.join(parent, 'source');
+    const packages = path.join(checkout, 'packages');
+    fs.mkdirSync(packages, { recursive: true });
+    fs.writeFileSync(path.join(checkout, 'package.json'), JSON.stringify({ name: 'nullius' }));
+    fs.writeFileSync(path.join(checkout, 'pnpm-workspace.yaml'), 'packages: [packages/*]\n');
+    fs.chmodSync(packages, 0);
+    try {
+      await expect(runCli(['--project-root', checkout, 'init', '--runtime-only', '--no-git'], makeIo(parent).io))
+        .rejects.toThrow('ambiguous development-checkout metadata');
+      expect(fs.existsSync(path.join(checkout, '.nullius'))).toBe(false);
+    } finally {
+      fs.chmodSync(packages, 0o755);
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses immediate-parent project nesting unless explicitly allowed', async () => {
+    const parentRoot = makeTempDir('nullius-cli-parent-project-');
+    expect(await runCli([`--project-root=${parentRoot}`, 'init', '--runtime-only', '--no-git'], makeIo(parentRoot).io)).toBe(0);
+    expect(fs.existsSync(path.join(parentRoot, 'project_charter.md'))).toBe(false);
+    expect(fs.existsSync(path.join(parentRoot, '.git'))).toBe(false);
+    const parentState = fs.readFileSync(path.join(parentRoot, '.nullius', 'state.json'));
+    const childRoot = path.join(parentRoot, 'child-project');
+
+    await expect(runCli([`--project-root=${childRoot}`, 'init', '--runtime-only', '--no-git'], makeIo(parentRoot).io))
+      .rejects.toThrow('a parent directory is already a project root');
+    expect(fs.existsSync(childRoot)).toBe(false);
+    expect(fs.readFileSync(path.join(parentRoot, '.nullius', 'state.json'))).toEqual(parentState);
+
+    expect(await runCli([`--project-root=${childRoot}`, 'init', '--runtime-only', '--no-git', '--allow-nested'], makeIo(parentRoot).io)).toBe(0);
+    expect(fs.existsSync(path.join(childRoot, '.nullius', 'state.json'))).toBe(true);
+    expect(fs.readFileSync(path.join(parentRoot, '.nullius', 'state.json'))).toEqual(parentState);
+  });
+
+  it('discovers a runtime-only project from a descendant without scaffold markers', async () => {
+    const projectRoot = makeTempDir('nullius-cli-runtime-discovery-');
+    expect(await runCli([`--project-root=${projectRoot}`, 'init', '--runtime-only', '--no-git'], makeIo(projectRoot).io)).toBe(0);
+    const before = fs.readFileSync(path.join(projectRoot, '.nullius', 'state.json'));
+    const descendant = path.join(projectRoot, 'scratch', 'nested');
+    fs.mkdirSync(descendant, { recursive: true });
+    expect(findLifecycleProjectRoot(descendant)).toBe(projectRoot);
+    const status = makeIo(descendant);
+    expect(await runCli(['status', '--json'], status.io)).toBe(0);
+    const payload = JSON.parse(status.stdout.join(''));
+    expect(payload.recovery_context.control_files.harness).toMatchObject({ exists: true, valid: true });
+    expect(fs.readFileSync(path.join(projectRoot, '.nullius', 'state.json'))).toEqual(before);
+  });
+
+  it('does not discover empty runtime directories or invalid handshake records', () => {
+    const candidate = makeTempDir('nullius-cli-runtime-empty-');
+    const runtime = path.join(candidate, '.nullius');
+    fs.mkdirSync(runtime);
+    expect(findLifecycleProjectRoot(candidate)).toBeNull();
+    fs.writeFileSync(path.join(runtime, 'state.json'), '{}');
+    fs.writeFileSync(path.join(runtime, 'approval_policy.json'), '{}');
+    fs.writeFileSync(path.join(runtime, 'HARNESS'), '{}');
+    expect(findLifecycleProjectRoot(candidate)).toBeNull();
   });
 
   it('initializes a real project root with the neutral scaffold', async () => {
@@ -654,7 +805,7 @@ describe('nullius CLI init/export', () => {
     manager.saveState(state);
 
     const artifactFile = path.join(projectRoot, 'artifacts', 'runs', 'M1', 'result.txt');
-    const teamFile = path.join(projectRoot, 'team', 'runs', 'M1', 'summary.md');
+    const teamFile = path.join(projectRoot, 'artifacts', 'runs', 'M1', 'research_team', 'summary.md');
     const kbFile = path.join(projectRoot, 'knowledge_base', 'literature', 'paper.md');
     const kbProfilePath = path.join(projectRoot, 'artifacts', 'runs', 'M1', 'kb_profile', 'kb_profile.json');
     fs.mkdirSync(path.dirname(artifactFile), { recursive: true });
@@ -681,7 +832,7 @@ describe('nullius CLI init/export', () => {
     expect(output).not.toContain('no files copied');
     const archiveListing = execFileSync('unzip', ['-Z', '-1', outPath], { encoding: 'utf-8' }).trim().split('\n');
     expect(archiveListing).toContain('artifacts/runs/M1/result.txt');
-    expect(archiveListing).toContain('team/runs/M1/summary.md');
+    expect(archiveListing).toContain('artifacts/runs/M1/research_team/summary.md');
     expect(archiveListing).toContain('knowledge_base/literature/paper.md');
   });
 
@@ -704,34 +855,24 @@ describe('nullius CLI init/export', () => {
 });
 
 describe('nullius CLI init --refresh', () => {
-  it('refreshes changed managed docs with a backup and preserves user seed files', async () => {
+  it('preserves customized instructions and user seed files during refresh', async () => {
     const parentDir = makeTempDir('nullius-cli-refresh-');
     const projectRoot = path.join(parentDir, 'project-root');
     expect(await runCli([`--project-root=${projectRoot}`, 'init'], makeIo(parentDir).io)).toBe(0);
-
     const agentsPath = path.join(projectRoot, 'AGENTS.md');
+    const raw = Buffer.from('# Owner instructions\r\nKeep custom scope.\r\n');
+    fs.writeFileSync(agentsPath, raw);
+    fs.chmodSync(agentsPath, 0o640);
     const planPath = path.join(projectRoot, 'research_plan.md');
-    fs.writeFileSync(agentsPath, 'HACKED AGENTS\n', 'utf-8');
     const userPlan = '# research_plan.md\n\nUSER RESEARCH CONTENT\n'.repeat(20);
-    fs.writeFileSync(planPath, userPlan, 'utf-8');
-
+    fs.writeFileSync(planPath, userPlan);
     const { io, stdout } = makeIo(parentDir);
-    const code = await runCli([`--project-root=${projectRoot}`, 'init', '--refresh'], io);
-
-    expect(code).toBe(0);
-    const out = stdout.join('');
-    expect(out).toContain('scaffold refresh');
-    expect(out).toContain('refreshed: AGENTS.md');
-    expect(out).toContain('backed up');
-    const agentsNow = fs.readFileSync(agentsPath, 'utf-8');
-    expect(agentsNow).toContain('This file anchors the workflow');
-    expect(agentsNow).not.toContain('HACKED');
+    expect(await runCli([`--project-root=${projectRoot}`, 'init', '--refresh'], io)).toBe(0);
+    expect(stdout.join('')).toContain('preserved (user-owned, untouched): AGENTS.md');
+    expect(fs.readFileSync(agentsPath)).toEqual(raw);
+    expect(fs.statSync(agentsPath).mode & 0o7777).toBe(0o640);
     expect(fs.readFileSync(planPath, 'utf-8')).toBe(userPlan);
-
-    const backupsDir = path.join(projectRoot, '.nullius', 'backups');
-    expect(fs.existsSync(backupsDir)).toBe(true);
-    const stamp = fs.readdirSync(backupsDir)[0]!;
-    expect(fs.readFileSync(path.join(backupsDir, stamp, 'AGENTS.md'), 'utf-8')).toBe('HACKED AGENTS\n');
+    expect(fs.existsSync(path.join(projectRoot, '.nullius', 'backups'))).toBe(false);
   });
 
   it('--refresh --dry-run previews without writing anything', async () => {
@@ -800,7 +941,7 @@ describe('nullius CLI init --refresh', () => {
       [
         '#!/bin/sh',
         `printf '%s\\n' "$@" > ${JSON.stringify(argvLog)}`,
-        'printf \'{"created":[],"skipped":[],"refreshed":["AGENTS.md"],"backed_up":["AGENTS.md"],"unchanged":[],"preserved":["research_plan.md"],"missing":[],"backup_dir":".nullius/backups/X","dry_run":true}\\n\'',
+        'printf \'{"created":[],"skipped":[],"refreshed":[],"backed_up":[],"unchanged":[],"preserved":["AGENTS.md","research_plan.md"],"missing":[],"backup_dir":null,"dry_run":true}\\n\'',
       ].join('\n') + '\n',
       'utf-8',
     );
@@ -818,10 +959,10 @@ describe('nullius CLI init --refresh', () => {
     const argv = fs.readFileSync(argvLog, 'utf-8').trim().split('\n');
     expect(argv).toContain('--refresh');
     expect(argv).toContain('--dry-run');
-    expect(result.refreshed).toEqual(['AGENTS.md']);
-    expect(result.backedUp).toEqual(['AGENTS.md']);
-    expect(result.preserved).toEqual(['research_plan.md']);
-    expect(result.backupDir).toBe('.nullius/backups/X');
+    expect(result.refreshed).toEqual([]);
+    expect(result.backedUp).toEqual([]);
+    expect(result.preserved).toEqual(['AGENTS.md', 'research_plan.md']);
+    expect(result.backupDir).toBeNull();
     expect(result.dryRun).toBe(true);
   });
 });

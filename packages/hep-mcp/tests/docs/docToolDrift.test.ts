@@ -152,6 +152,26 @@ function mustMatch(md: string, re: RegExp, label: string): RegExpMatchArray {
 
 describe('Docs tool drift guard', () => {
   const root = repoRootFromThisFile();
+  it('keeps historical index blocks distinct from current navigation ownership', () => {
+    for (const file of ['README.md', 'docs/QUICKSTART.md', 'docs/ARCHITECTURE.md',
+      'docs/PROJECT_STATUS.md', 'packages/orchestrator/README.md',
+      'skills/research-harness/SKILL.md', 'skills/research-team/SKILL.md']) {
+      const text = readText(root, file);
+      expect(text, file).toContain('`PROJECT_INDEX_AUTO` blocks are historical, unmaintained');
+      expect(text, file).toContain('neither parses nor updates them');
+    }
+    expect(readText(root, 'docs/README_zh.md')).toContain('`PROJECT_INDEX_AUTO` 块是历史记录，不再维护');
+    expect(readText(root, 'packages/orchestrator/README.md')).not.toContain('re-applies the managed scaffold');
+  });
+  it('routes root-index repair to its owner rather than the latest-pointer helper', () => {
+    const runbook = readText(root, 'skills/research-team/RUNBOOK.md');
+    const section = runbook.split('### Project map gate (navigation front door)')[1]!.split('\n### ')[0]!;
+    expect(section).toContain('nullius init --project-root "$PWD"');
+    expect(section).toContain('edit its navigation explicitly');
+    expect(section).toContain('refresh only executor-local latest pointers');
+    expect(section).toContain('neither creates nor edits `project_index.md`');
+    expect(section).not.toContain('Or generate/update deterministically');
+  });
   const originalEnv = {
     HEP_ENABLE_ZOTERO: process.env.HEP_ENABLE_ZOTERO,
   };
@@ -267,12 +287,17 @@ describe('Docs tool drift guard', () => {
         '`zotero://select/library/items/{item_key}`',
         '`hep://` and `orch://` are separate owned namespaces.',
         'There is no implicit `hep://` <-> `orch://` aliasing layer in live authority.',
+        '`node.promote` and `rank.compute` return `project://` refs',
+        'it does not resolve `project://` refs and does not consume ranking refs.',
+        'this producer/consumer limitation remains open.',
+        '`node.promote` and `rank.compute` hash canonical JSON payloads',
+        'The ordinary idea-store loader validates hash syntax and path containment but does not recompute the digest.',
       ],
       label: 'docs/URI_REGISTRY.md',
     });
     assertContainsNone({
       text: md,
-      snippets: ['| `hep://corpora` | Live |'],
+      snippets: ['| `hep://corpora` | Live |', '`handoff`/`ranking` refs are consumed by the orchestrator computation and feedback owners.', 'emit via `pathToFileURL(...).href`', "The fragment pins the referenced content's exact bytes."],
       label: 'docs/URI_REGISTRY.md',
     });
   });
@@ -441,4 +466,23 @@ describe('Docs tool drift guard', () => {
       assertOrdered({ text, snippets: orderedSnippets, label: relPath });
     }
   });
+  it('keeps draft rendering claims separate from source verification and BibTeX completeness', () => {
+    const root = repoRootFromThisFile();
+    const files = [
+      'README.md', 'docs/README_zh.md', 'docs/QUICKSTART.md', 'docs/ARCHITECTURE.md',
+      'docs/PROJECT_STATUS.md', 'docs/TESTING_GUIDE.md', 'docs/WRITING_RECIPE_DRAFT_PATH.md',
+      'packages/hep-mcp/README.md', 'skills/research-writer/SKILL.md', 'skills/research-writer/RUNBOOK.md',
+    ];
+    for (const file of files) {
+      expect(readText(root, file), file).not.toMatch(
+        /verifier-enforced rendering|Missing or unauthorized writing citations fail hard at render time|verification_artifact_name.*必填|若引用缺失或未授权，应 fail-fast|verifier 会硬失败|MCP 负责.*硬验证/,
+      );
+    }
+    const guide = readText(root, 'docs/WRITING_RECIPE_DRAFT_PATH.md');
+    expect(guide).toContain('省略时保持未知');
+    expect(guide).toContain('不证明来源支持正文的论断');
+    expect(guide).toContain('不生成 `rendered_latex_verification.json`');
+    expect(guide).toContain('导出器会拒绝缺失项');
+  });
+
 });

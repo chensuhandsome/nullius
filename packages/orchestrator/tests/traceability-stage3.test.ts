@@ -598,8 +598,8 @@ describe('stage-3 r2 native-seat locks', () => {
   });
 });
 
-describe('round-cap warning and mirror divergence in the view (D9 + hook)', () => {
-  it('warns past the slug threshold and on mirrors diverging from the ledger', () => {
+describe('generic counts and mirror divergence in the view', () => {
+  it('retains generic counts and mirror divergence without interpreting round limits', () => {
     initRepo(projectRoot);
     commitAt(projectRoot, '2026-08-01T10:00:00Z', 'a.txt');
     for (let round = 1; round <= 6; round += 1) {
@@ -612,10 +612,11 @@ describe('round-cap warning and mirror divergence in the view (D9 + hook)', () =
     mirror.binding_quality = 'exact_clean';
     fs.writeFileSync(mirrorPath, JSON.stringify(mirror));
     const view = buildTraceabilityView(projectRoot);
-    expect(view.warnings.round_cap.some(cap => cap.slug === 'hot-topic' && cap.runs === 6)).toBe(true);
+    expect(view.runs.total_directories).toBe(6);
+    expect(view.warnings).not.toHaveProperty('round_cap');
     expect(view.warnings.mirror_divergence).toContain('20260801T100000Z-m1-hot-topic-r1');
     const prose = renderTraceabilityProse(view);
-    expect(prose).toContain('ROUND CAP');
+    expect(prose).not.toContain('ROUND CAP');
     expect(prose).toContain('MIRROR DIVERGENCE');
     expect(prose).toContain('trust the ledger');
   });
@@ -706,7 +707,7 @@ describe('validity verbs: run-id normalization, existence gate, landing receipts
   it('stripRunRootPrefix strips exactly the recognizable run-root shapes', () => {
     expect(stripRunRootPrefix('20260810-m2-r376-count')).toBe('20260810-m2-r376-count');
     expect(stripRunRootPrefix('artifacts/runs/20260810-m2-r376-count')).toBe('20260810-m2-r376-count');
-    expect(stripRunRootPrefix('team/runs/20260810-m2-r376-count/')).toBe('20260810-m2-r376-count');
+    expect(stripRunRootPrefix('team/runs/20260810-m2-r376-count/')).toBeNull();
     expect(stripRunRootPrefix('./artifacts/runs/20260810-m2-r376-count')).toBe('20260810-m2-r376-count');
     expect(stripRunRootPrefix('artifacts\\runs\\20260810-m2-r376-count')).toBe('20260810-m2-r376-count');
     expect(stripRunRootPrefix('some/other/path')).toBeNull();

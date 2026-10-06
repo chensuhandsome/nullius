@@ -8,6 +8,11 @@
 
 > 参数名以当前 Zod schema 为准；请始终以 MCP tool `inputSchema` 为最终准据。
 
+
+原生计算将启用的 A3 审批绑定到当前 manifest、脚本、声明的输入与依赖文件、解析后的可执行文件字节、生产环境和审批策略。packet 缺失、历史审批没有内容绑定或输入发生变化时，必须在派发前重新审批。暂停请求允许当前直接子进程返回，保留该步骤证据，并将整体运行保持为 paused；最后一步也适用。原生计算不支持原地续行：同一运行重入和 `resume --force` 均在修改暂停产物前拒绝；另行审批的新运行是独立执行。`execution_status.json` 持久化一个覆盖 preflight、后续直接子进程与最终收尾的绝对截止时间，重试不重置，每个子进程使用剩余总预算与步骤上限的较小值。硬 CPU、内存和磁盘约束在 preparation 阶段拒绝；这些限制不负责任意后代进程或远程作业。规范状态写入在短独占锁内比较调用者的读取快照，比较通过后才追加组合事件；过期快照拒绝，过期锁须在写入者停止后人工修复。CLI 与项目传输共用外部根目录准入，并解析未创建路径的已存在软链接祖先。
+
+运行时复制或移动到其它位置后，原开发仓及其它 Nullius 开发仓副本仍不能作为真实研究项目根。
+
 ## Generic First-Touch（先走 generic front door）
 
 普通安装、独立 skills 和[个人插件](../packages/skills-market/docs/PERSONAL_PLUGIN.md)共用本机 Nullius CLI。先在 checkout 根目录构建并安装命令入口：
@@ -76,12 +81,12 @@ nullius init
 Then read the generated AGENTS.md and run:
 ./.nullius/bin/nullius status --json
 
-To pull newer managed scaffold doc (AGENTS.md) into an
-already-initialized project without touching your own notes, preview then apply:
+To restore a missing AGENTS.md while preserving existing project instructions,
+preview then apply:
 nullius init --refresh --dry-run
 nullius init --refresh
 
-Refresh does not migrate user-owned report files. For a project that predates
+Refresh preserves an existing AGENTS.md byte-for-byte when it differs from the current template. To update its guidance, render a current scaffold in a temporary external root and manually merge the desired changes. Refresh may synchronize existing machine-managed notebook and index blocks, while preserving user-owned content and not inserting missing blocks. It does not migrate user-owned report files. For a project that predates
 the main-report registry, checkpoint it, render a current scaffold in a separate
 temporary external root with `nullius init --project-root <temporary-root>`, copy
 only a missing reports/main_research_report_template.md, and manually merge the
@@ -139,9 +144,11 @@ nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-
 
 研究记录约定：`research_plan.md#Current Status` 是简洁状态入口，`research_notebook.md` 是持续更新的问题逻辑主线；二者都不能冒充主研究报告。主报告从 `reports/main_research_report_template.md` 创建为不可变新文件，经 `project_index.md#Main research report` 登记并指向唯一当前版本，再以 `nullius report-validate` 检查结构、hash、链接、supersession 与 validation 分类。该检查通过不等于科学充分性通过。机器 JSON、hash、receipt 只绑定 provenance，不能替代解释性叙事与可点击的人类可读证据。重要文献 note 必须全文/source-first 阅读，记录 section/page/equation/figure 覆盖，并用 LaTeX math 写科学记号；带日期的 run log、原始检索摘要、下载尝试和控制面观察写入 `research_plan.md` progress log 或 `artifacts/runs/<run_id>/`，再把稳定理解折回 notebook。
 
-`research-team` 的 `team/runs/` 是执行与 reviewer packet/log surface，同时也是与 `artifacts/runs/<run_id>/` 并列的一等证据根：claim 可以直接引用 `team/runs/<run>/` 下的证据路径。但它不是主研究报告；需要提升的完整结论还必须写成新的不可变报告，并通过 `project_index.md#Main research report` 切换当前入口。
+`research-team` 的新 team/draft cycle 使用 `artifacts/runs/<run_id>/research_team/` 保存 packet、日志、检查点与成员工作区；来源记录盖章在父 run 上。它们可被证据引用，但完整结论仍须写入新的不可变报告，并通过 `project_index.md#Main research report` 切换入口。
 
 ## Draft Path（最简路径）
+
+先在外部研究项目执行 `nullius init` 和 `nullius status --json`，并在每次持久 HEP 调用中传入其绝对 `project_root`。HEP 项目与 run 是领域产物会话；通用生命周期与审批仍由 orchestrator 管理。
 
 1) `hep_project_create`
 - 关键参数：`name`（必填），`description`（可选）
@@ -160,12 +167,12 @@ nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-
 - 关键参数：
   - `run_id`（必填）
   - `draft`（必填，`ReportDraft` 或 `SectionDraft`）
-  - `latex_artifact_name`（必填）
-  - `section_output_artifact_name`（必填）
-  - `verification_artifact_name`（必填）
+  - `latex_artifact_name`（可选，默认 `rendered_latex.tex`）
+  - `section_output_artifact_name`（可选，默认 `rendered_section_output.json`）
+- `is_grounded` 省略时保持未知；明确的布尔值是调用方声明。渲染器不核验来源支持，也不生成验证报告。
 
 5) `hep_export_project`
-- 关键参数：`run_id`（必填）+ 各导出 artifact 名（按需）
+- 关键参数：`_confirm: true`、`run_id`（必填）+ 各导出 artifact 名（按需）。导出要求 BibTeX 覆盖全部引用键；参考文献完整性不证明来源支持正文论断。
 
 ## Client Path（高质量路径）
 
@@ -173,7 +180,7 @@ nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-
 - 先建立 project/run 作为 run-scoped artifacts 的容器。
 
 2) `hep_run_build_citation_mapping`（构建引用白名单）
-- 后续写作验证和导出依赖该映射。
+- 为草稿生成引用键及参考文献；渲染不强制执行引用 allowlist。
 
 3) `hep_run_build_writing_evidence`（**必需**）
 - 若缺少该步骤，后续依赖 evidence/embeddings 的流程会 fail-fast。
@@ -191,5 +198,9 @@ nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-
 ## 常见提示
 
 - 若返回 `invalidParams` 且提示缺少 `run_id`：先执行 `hep_project_create` + `hep_run_create`。
-- 若 citation verifier 失败：重新执行 `hep_run_build_citation_mapping` 后重试。
+- 若导出提示缺少 BibTeX：为全部引用键补齐对应条目；来源是否支持句子仍需核对原文。
 - 若 token gate overflow：按返回的 overflow artifact 和 `next_actions` 收敛上下文规模，不要绕过门控。
+
+新项目运行统一位于 `artifacts/runs/<run_id>/`，team/draft 执行记录放在其 `research_team/` 子目录，来源记录盖章在父 run 上。旧 `team/runs` 含 run 目录时，相关视图报告数量，`init --runtime-only` 在重新绑定前拒绝；旧根不可读也明确报错。应保留旧运行时及配套 skills，或先完成另行审查的迁移。`inventory_run_relocation.py --fixture-root <匿名fixture> --source-manifest <哈希清单>` 只盘点已固定输入的引用、冲突与未解决绑定，没有 apply 模式。独立 reviewer 快照排除所有轮次的执行 payload 和工作区树，保留生产输入；读取仅允许自己的声明输出前缀。历史报告与裁决保留给协调者。`team/LATEST*.md` 与 `artifacts/LATEST.md` 只提供导航。
+
+Existing `PROJECT_INDEX_AUTO` blocks are historical, unmaintained observations; the team helper neither parses nor updates them. Current `RUN_INDEX` navigation and curated result/report registries have separate owners. Do not silently rewrite or delete an old block.

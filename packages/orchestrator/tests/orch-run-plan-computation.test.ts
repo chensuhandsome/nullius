@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { withExplicitHandoffMethod } from './explicitArtifactWriterMethod.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { handleToolCall, stageIdeaArtifactsIntoRun } from '../src/index.js';
@@ -16,7 +17,7 @@ function extractPayload(res: unknown): Record<string, unknown> {
 }
 
 function makeHandoff(): Record<string, unknown> {
-  return {
+  return withExplicitHandoffMethod({
     campaign_id: 'cccccc01',
     node_id: 'nnnnnn02',
     idea_id: 'dddddd03',
@@ -36,7 +37,7 @@ function makeHandoff(): Record<string, unknown> {
       failures: [],
       timestamp: '2026-03-13T00:00:00Z',
     },
-  };
+  });
 }
 
 function makeProviderBackedHandoff(): Record<string, unknown> {
@@ -120,7 +121,7 @@ describe('orch_run_plan_computation tool', () => {
     expect(payload.task_ids).toEqual(['task_001']);
   });
 
-  it('keeps provider-backed execution on the public orch_* path and leaves the fixture runner as an internal seam', async () => {
+  it('keeps the supplied provider-backed operation on the public orch_* path', async () => {
     const projectRoot = makeTmpDir('orch-plan-project-');
     const runDir = makeTmpDir('orch-plan-run-');
     CLEANUP_DIRS.push(projectRoot, runDir);

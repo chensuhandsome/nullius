@@ -41,7 +41,7 @@ SKILL_DIR="${SKILL_DIR:-$(for r in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${CODE
 bash "${SKILL_DIR}/scripts/bin/run_team_cycle.sh" \
   --tag 20260502T023000Z-m0-topic \
   --notes research_contract.md \
-  --out-dir team \
+  --out-dir artifacts \
   --member-a-system prompts/_system_member_a.txt \
   --member-b-system prompts/_system_member_b.txt \
   --auto-tag \
@@ -52,13 +52,10 @@ bash "${SKILL_DIR}/scripts/bin/run_team_cycle.sh" \
 如果要用这个 shell 脚本直接执行 reviewer，必须显式提供 CLI runner kind 和 runner path；
 脚本不会自动切换 provider。
 
-`--auto-tag` 会把有意义的 base tag 解析成 `<base>-rN`。如果这一轮对应
-`nullius` control-plane run，就把解析后的同一个值作为项目本地
-`run_id`。lifecycle run 的 canonical artifact root 是 `artifacts/runs/<run_id>/`；
-`team/runs/<tag>/` 是 research-team reviewer packet/log surface，同时也是与之
-并列的一等证据根：contract claim 可以直接引用它的路径。当某个 milestone 的
-headline 证据应当与 run 记录放在一起时，可镜像或摘要到
-`artifacts/runs/<run_id>/research_team/`——这是可选项，不是引用该证据的前提。
+`--auto-tag` 将 base tag 解析为 `<base>-rN`，同一个值就是父 run 的
+`run_id`。新 team/draft cycle 的 packet、日志、检查点与工作区位于
+`artifacts/runs/<tag>/research_team/`，来源记录盖章在父 run 上。
+`--out-dir` 必须指向项目的 `artifacts` 目录。执行 receipt 与导航指针不授予科学验收。
 不要把裸 UUID 或 `run_<uuid>` 当作给人看的研究 tag。
 
 ## 只跑确定性 preflight（不调用外部 LLM；适合 CI/无网环境）
@@ -68,7 +65,7 @@ SKILL_DIR="${SKILL_DIR:-$(for r in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${CODE
 bash "${SKILL_DIR}/scripts/bin/run_team_cycle.sh" \
   --tag 20260502T023000Z-m0-topic \
   --notes research_contract.md \
-  --out-dir team \
+  --out-dir artifacts \
   --member-a-system prompts/_system_member_a.txt \
   --member-b-system prompts/_system_member_b.txt \
   --preflight-only
@@ -81,10 +78,10 @@ bash "${SKILL_DIR}/scripts/bin/run_team_cycle.sh" \
 
 在 `research_team_config.json` 配置：
 - `review_access_mode=packet_only`：审阅者只能使用 team packet（离线可携带；legacy 模式）。
-- `review_access_mode=full_access`：审阅者仍无直接工具；通过 leader proxy 申请文件读取 / 命令执行 / 网络抓取，并把所有访问写入 `team/runs/<tag>/member_{a,b}_evidence.json`；最终由确定性 gates 校验。
+- `review_access_mode=full_access`：审阅者仍无直接工具；通过 leader proxy 申请文件读取 / 命令执行 / 网络抓取，并把所有访问写入 `artifacts/runs/<tag>/research_team/member_{a,b}_evidence.json`；最终由确定性 gates 校验。
 
 第三方可离线复核：
-- `python3 "${SKILL_DIR:-$(for r in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${CODEX_HOME:-$HOME/.codex}" "$HOME/.config/opencode" "$HOME/.kimi-code"; do [ -d "$r/skills/research-team" ] && echo "$r/skills/research-team" && break; done || true)}/scripts/bin/validate_evidence.py" team/runs/<tag>/member_a_evidence.json`
+- `python3 "${SKILL_DIR:-$(for r in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${CODEX_HOME:-$HOME/.codex}" "$HOME/.config/opencode" "$HOME/.kimi-code"; do [ -d "$r/skills/research-team" ] && echo "$r/skills/research-team" && break; done || true)}/scripts/bin/validate_evidence.py" artifacts/runs/<tag>/research_team/member_a_evidence.json`
 
 ## knowledge_base（三层）
 

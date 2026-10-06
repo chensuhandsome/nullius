@@ -8,8 +8,8 @@ import {
   createManifest,
   createPythonStep,
   initRunState,
-  makeTmpDir,
   markA3Satisfied,
+  makeTmpDir,
   registerCleanup,
 } from './executeManifestTestUtils.js';
 
@@ -168,14 +168,14 @@ describe('computation manifest step gates', () => {
   }
 
   it('fails a step closed when a named gate is not satisfied, without executing it', async () => {
-    const { projectRoot, runDir, runId, manifestPath } = scaffoldGatedProject(['A3']);
+    const { projectRoot, runDir, runId, manifestPath } = scaffoldGatedProject(['A2']);
 
     const result = await executeComputationManifest({ manifestPath, projectRoot, runDir, runId });
     expect(result.status).toBe('failed');
     if (result.status === 'failed') {
       expect(
         result.errors.some(message =>
-          message.includes("step 'gated' requires unsatisfied approval gate(s): A3"),
+          message.includes("step 'gated' requires unsatisfied approval gate(s): A2"),
         ),
       ).toBe(true);
     }
@@ -184,7 +184,11 @@ describe('computation manifest step gates', () => {
 
   it('executes a gated step once the gate is recorded as satisfied', async () => {
     const { projectRoot, runDir, runId, manifestPath, manager } = scaffoldGatedProject(['A3']);
-    markA3Satisfied(manager, 'A3-0001');
+    fs.writeFileSync(manager.policyPath,JSON.stringify({require_approval_for:{compute_runs:true}}));
+    const request = await executeComputationManifest({ manifestPath, projectRoot, runDir, runId });
+    expect(request.status).toBe('requires_approval');
+    if (request.status !== 'requires_approval') throw new Error('expected content-bound A3 request');
+    manager.approveRun(manager.readState(), request.approval_id);
 
     const result = await executeComputationManifest({ manifestPath, projectRoot, runDir, runId });
     expect(result.status).toBe('completed');

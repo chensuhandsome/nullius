@@ -8,6 +8,10 @@ import shutil
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from run_paths import canonical_run_root
+
+
 AUTO_START = "<!-- PROJECT_INDEX_AUTO_START -->"
 AUTO_END = "<!-- PROJECT_INDEX_AUTO_END -->"
 
@@ -59,22 +63,12 @@ def _extract_pointer_field(text: str, prefix: str) -> str:
 
 
 def _detect_team_run_dir(project_root: Path, team_dir: Path, safe_tag: str) -> Path | None:
-    cand = team_dir / "runs" / safe_tag
-    if cand.is_dir():
-        return cand
-    # Fallback: older layouts / user-provided out-dir without runs/.
-    if team_dir.is_dir():
-        any_match = (team_dir / f"{safe_tag}_member_a.md").is_file() or (team_dir / f"{safe_tag}_member_b.md").is_file()
-        if any_match:
-            return team_dir
-    return None
+    cand = project_root / "artifacts" / "runs" / safe_tag / "research_team"
+    return cand if cand.is_dir() and not cand.is_symlink() else None
 
 
 def _detect_artifacts_run_dir(project_root: Path, safe_tag: str) -> Path | None:
     cand = project_root / "artifacts" / "runs" / safe_tag
-    if cand.is_dir():
-        return cand
-    cand = project_root / "artifacts" / safe_tag
     if cand.is_dir():
         return cand
     return None
@@ -103,6 +97,17 @@ def _copy_latest_pointer_if_live(
         return False
     if not target_exists:
         notes.append(f"[warn] skipped {label}: missing target for pointer tag {pointer_tag}")
+        return False
+    text = _norm_text(src.read_text(encoding="utf-8", errors="replace"))
+    field = "- Canonical artifacts directory:" if label == "artifacts/LATEST.md" else "- Run directory:"
+    pointer = _extract_pointer_field(text, field)
+    match = re.fullmatch(r"\[[^\]]+\]\(([^)]+)\)", pointer)
+    project_root = src.parent.parent
+    expected = project_root / "artifacts" / "runs" / requested_safe_tag
+    if label != "artifacts/LATEST.md":
+        expected = expected / "research_team"
+    if match is None or (src.parent / match.group(1)).resolve() != expected.resolve():
+        notes.append(f"[warn] skipped {label}: pointer path is not the canonical target")
         return False
     _copy_file(src, dst)
     return True
@@ -259,6 +264,7 @@ def main() -> int:
     tag = args.tag.strip()
     safe = _safe_tag(tag)
     project_root = _find_project_root(Path.cwd())
+    canonical_run_root(project_root)
     team_dir = (project_root / args.team_dir).resolve()
     out_base = (project_root / args.out).resolve()
     bundle_dir = out_base / f"paper_bundle_{safe}"
@@ -324,21 +330,6 @@ def main() -> int:
             _copy_file(trajectory, team_out / "trajectory_index.json")
             copied.append("team/trajectory_index.json")
             copied_trajectory = True
-        if run_dir is not None and run_dir.is_dir():
-            if run_dir == team_dir:
-                # Old layout: copy only tag-matched files to avoid pulling in unrelated history.
-                dst_run = team_out / "runs" / safe
-                dst_run.mkdir(parents=True, exist_ok=True)
-                for p in sorted(team_dir.iterdir()):
-                    if not p.is_file():
-                        continue
-                    if p.name.startswith(f"{safe}_") or p.name == f"team_packet_{safe}.txt":
-                        _copy_file(p, dst_run / p.name)
-                        copied.append(f"team/runs/{safe}/{p.name}")
-            else:
-                dst_run = team_out / "runs" / safe
-                _copy_tree(run_dir, dst_run)
-                copied.append(f"team/runs/{safe}/ (dir)")
         if latest_index.is_file() or copied_team_cycle or copied_draft_cycle or copied_trajectory:
             _write_team_latest_index(
                 team_out / "LATEST.md",

@@ -20,6 +20,18 @@ afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursiv
 const body = (result: Awaited<ReturnType<ProjectAdapter['call']>>) => JSON.parse(result.content[0]!.text);
 
 describe('single-project transport boundaries', () => {
+  it('refuses a different development checkout before binding or writing project state', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nullius-other-checkout-')));
+    roots.push(root);
+    for (const name of ['orchestrator', 'shared']) {
+      fs.mkdirSync(path.join(root, 'packages', name), { recursive: true });
+      fs.writeFileSync(path.join(root, 'packages', name, 'package.json'), JSON.stringify({ name: `@nullius/${name}` }));
+    }
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'nullius' }));
+    fs.writeFileSync(path.join(root, 'pnpm-workspace.yaml'), 'packages: [packages/*]\n');
+    expect(() => new ProjectAdapter(root)).toThrow('outside the nullius dev repo');
+    expect(fs.existsSync(path.join(root, '.nullius'))).toBe(false);
+  });
   it('requires create-only or matching hashes and returns bounded source bytes', async () => {
     const { adapter } = fixture();
     const args = { path: 'inputs/example.txt', content: 'αβ example', expected_sha256: null };

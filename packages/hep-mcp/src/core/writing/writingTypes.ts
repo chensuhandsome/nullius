@@ -22,6 +22,6 @@ export interface SentenceAttribution {
   evidence_fingerprints?: string[];
   citations: string[];
   type: SentenceType;
-  is_grounded: boolean;
+  is_grounded?: boolean;
   sentence_latex?: string;
 }

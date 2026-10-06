@@ -3,7 +3,7 @@
 Validate a research-team per-member evidence JSON file.
 
 This is a deterministic checker intended for third-party audit:
-  python3 validate_evidence.py team/runs/<tag>/member_a_evidence.json
+  python3 validate_evidence.py artifacts/runs/<tag>/research_team/member_a_evidence.json
 
 Exit codes:
   0  PASS (no schema errors)

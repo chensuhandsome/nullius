@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import { RUNS_ROOT_RELATIVE } from './run-paths.js';
 import { createHash } from 'node:crypto';
 import { canonicalJson, readValidityLedger, stripRunRootPrefix, type ValidityLedgerView } from './validity-ledger.js';
 import { checkChains, currentRowLedgerDefective, parseResultRegistry, type ResultRegistryRow } from './result-registry.js';
@@ -9,6 +10,7 @@ import {
   encodeLinkTarget,
   escapeMarkdownCell,
   refreshManagedBlock,
+  textOutsideManagedBlock,
   type MarkdownFence,
   type ManagedBlockLocation,
   type ManagedBlockSpec,
@@ -27,8 +29,7 @@ import {
  *  browsing the project file.
  *
  *  One block, one writer: this block is orchestrator-owned. The adjacent
- *  PROJECT_INDEX_AUTO block belongs to the research-team latest-pointers
- *  updater and is never touched.
+ *  curated registries and human navigation remain untouched.
  *
  *  Deterministic render + digest/byte dual-channel freshness, exactly the
  *  notebook current-state block's contract (shared engine). Inputs are
@@ -52,6 +53,10 @@ const RUN_INDEX_BLOCK_SPEC: ManagedBlockSpec = {
   frontMatterPosition: false,
   stateChangedReason: 'run/ledger state changed since the block was written',
 };
+
+export function textOutsideRunIndex(text: string): string | null {
+  return textOutsideManagedBlock(text, RUN_INDEX_BLOCK_SPEC);
+}
 
 export type RunIndexFamilyLatest = {
   run_id: string;
@@ -97,7 +102,6 @@ export type RunIndexMisaddressedRuling = {
 
 export type RunIndexProjection = {
   run_directories: number;
-  mirrored: number;
   totals: { active: number; superseded: number; void: number; unclassified: number; stamped: number };
   families: RunIndexFamily[];
   /** Ledger honesty defects — rendered unconditionally when nonzero.
@@ -177,10 +181,8 @@ export function computeRunIndexProjection(
   };
   const families = new Map<string, FamilyAccumulator>();
   const totals = { active: 0, superseded: 0, void: 0, unclassified: 0, stamped: 0 };
-  let mirrored = 0;
 
   for (const entry of directories) {
-    if (entry.mirrored) mirrored += 1;
     const known = ledger.runs.get(entry.run_id);
     const validity: RunIndexFamilyLatest['validity'] = known ? known.validity : 'unclassified';
     totals[validity] += 1;
@@ -188,7 +190,7 @@ export function computeRunIndexProjection(
     if (stamped) totals.stamped += 1;
     const latest: RunIndexFamilyLatest = {
       run_id: entry.run_id,
-      root: entry.canonical_root.split(path.sep).join('/'),
+      root: RUNS_ROOT_RELATIVE.split(path.sep).join('/'),
       validity,
       stamped,
       latest_ordinal: known?.attempts.latest_ordinal ?? 1,
@@ -339,7 +341,6 @@ export function computeRunIndexProjection(
 
   return {
     run_directories: directories.length,
-    mirrored,
     totals,
     families: [...families.values()]
       .sort((a, b) => b.runs - a.runs || (a.family < b.family ? -1 : a.family > b.family ? 1 : 0))
@@ -395,12 +396,12 @@ export function renderRunIndexBlock(projection: RunIndexProjection): string {
   lines.push('answer (defect details, crashed runs, attempt chains): `nullius current`.');
   lines.push('');
   if (projection.run_directories === 0) {
-    lines.push('No run directories yet under artifacts/runs/ or team/runs/ — an honest');
+    lines.push('No run directories yet under artifacts/runs/ — an honest');
     lines.push('empty state, not an error. Runs appear here as they are created.');
   } else {
     const { totals } = projection;
     lines.push(`${projection.run_directories} run director${projection.run_directories === 1 ? 'y' : 'ies'}`
-      + `${projection.mirrored > 0 ? ` (${projection.mirrored} mirrored in both roots)` : ''}: `
+      + ': '
       + `${totals.active} active · ${totals.superseded} superseded · ${totals.void} void · `
       + `${totals.unclassified} unclassified · ${totals.stamped} stamped.`);
     lines.push('');
@@ -580,7 +581,7 @@ export function refreshRunIndexBlock(
   // The supplied projection/ledgerView therefore never reach a RENDER;
   // they only seed the returned projection on the one path that renders
   // nothing (carrier missing → skipped), so a normal refresh computes
-  // exactly one projection.
+  // a fresh projection, revalidated before commit.
   let latestProjection: RunIndexProjection | null = null;
   const outcome = refreshManagedBlock(
     path.join(projectRoot, 'project_index.md'),

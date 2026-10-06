@@ -33,7 +33,7 @@
 | `orch_run_create` | `write` | Initialize or replay an orchestrator run in a project root |
 | `orch_run_stage_idea` | `write` | Stage IdeaHandoffC2 artifacts into an existing domain-owned run directory |
 | `orch_run_stage_content` | `write` | Stage generic writing/review content into an existing run directory and return a `rep://runs/.../artifact/...` staging URI; loop-owned draft/review tasks may attach task-scoped provenance so completion and downstream review refresh can fail closed on missing outputs |
-| `orch_run_plan_computation` | `write` | Compile staged idea artifacts into `execution_plan_v1.json` and a run-local `computation/manifest.json`, preferring provider-backed materialization when the staged surface carries an explicit method bundle |
+| `orch_run_plan_computation` | `write` | Compile staged idea artifacts into `execution_plan_v1.json` and a run-local `computation/manifest.json`, requiring a supplied `method_spec` with files and `run_card`; missing methods are refused before executable artifacts are written |
 | `orch_run_execute_manifest` | `destructive` | Execute an approved run-local `computation_manifest_v1` from an existing run directory |
 | `orch_run_progress_followups` | `destructive` | Progress exactly one computation-generated follow-up through the generic delegated runtime surface; delegated idea/literature feedback and writer/reviewer continuation are live |
 | `orch_run_record_proposal_decision` | `write` | Record one local operator decision for the current run's current repair/skill/optimize/innovate proposal and write proposal decision memory into `.nullius/proposal_decisions_v1.json` |

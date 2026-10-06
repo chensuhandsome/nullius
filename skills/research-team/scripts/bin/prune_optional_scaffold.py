@@ -393,9 +393,9 @@ def _check_team_dir(project_root: Path, *, assets_dir: Path, project_name: str, 
         return False, f"contains non-default files: {extra[:5]!r}"
 
     runs_dir = team / "runs"
-    if not runs_dir.is_dir():
-        return False, "missing runs/"
-    if any(runs_dir.iterdir()):
+    if runs_dir.is_symlink() or (runs_dir.exists() and not runs_dir.is_dir()):
+        return False, "retired team/runs is not a real directory"
+    if runs_dir.is_dir() and any(runs_dir.iterdir()):
         return False, "team/runs is not empty"
 
     for rel, asset in mapping.items():

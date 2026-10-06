@@ -1,10 +1,9 @@
 import * as path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { invalidParams } from '@nullius/shared';
-import { assertCommandAllowed } from './path-safety.js';
 import { prepareManifest } from './manifest.js';
 import { ensureA3Approval } from './approval.js';
 import { stampComputationLaunch } from './launch-stamp.js';
+import { assertNativeEntry, nativeDeadlineExpired, readExpiredNativeFailure } from './native-control.js';
 import { isInsideStampableRoot } from '../run-stamp.js';
 import { runPreparedManifest } from './runner.js';
 import type {
@@ -66,70 +65,21 @@ export async function executeComputationManifest(
   if (input.dryRun) {
     return dryRunResult(input);
   }
+  assertNativeEntry(input.projectRoot, input.runId, path.dirname(input.manifestPath));
+  const previousFailure = readExpiredNativeFailure(input.projectRoot, input.runId, input.runDir, path.dirname(input.manifestPath));
+  if (previousFailure) return previousFailure;
+  const expired = nativeDeadlineExpired(path.dirname(input.manifestPath));
   const prepared = prepareManifest(input);
-  const approval = ensureA3Approval(input.projectRoot, prepared);
+  const approval = expired ? null : ensureA3Approval(input.projectRoot, prepared);
   if (approval) {
     return approval;
   }
-  // Manifest preflight BEFORE any capture: a non-zero exit means the entry
-  // source cannot even load — broken-at-parse code must never enter the
-  // ledger, and the two field voids of the stamp-predates-source class are
-  // exactly what this gate prevents.
-  runManifestPreflight(prepared);
-  // Origin stamp at launch: approval has cleared and the next thing that
-  // happens is execution, so the tree captured here IS the code that
-  // produces the results. Never blocks the run (see launch-stamp.ts) with
-  // ONE deliberate exception: relaunching a COMPLETED run under a changed
-  // tree is refused — that overwrite is content territory.
-  const originStamp = stampComputationLaunch(input.projectRoot, input.runDir);
-  if (originStamp.status === 'refused_relaunch') {
-    throw invalidParams(originStamp.detail, {
-      validation_layer: 'attempt_boundary',
-      run_id: input.runId,
-    });
-  }
-  const result = await runPreparedManifest(input.projectRoot, prepared);
-  return { ...result, origin_stamp: originStamp };
-}
-
-/** Manifest-declared preflight: an argv template whose `{entry}` token is
- *  substituted with the resolved entry-point path, run in the workspace.
- *  Generic by construction — the project supplies the interpreter/loader
- *  command; the front door only enforces "exit 0 or nothing gets stamped".
- *  The command passes the SAME blocked-command gate as every step, and it
- *  runs under the entry step's production environment — a preflight that
- *  inherited the host environment would probe a different world than the
- *  execution it vouches for. */
-function runManifestPreflight(prepared: {
-  manifest: { preflight?: string[] };
-  entryPointScriptPath: string;
-  workspaceDir: string;
-  steps: Array<{ scriptPath: string; executionEnvironment: { variables: Record<string, string> } }>;
-}): void {
-  const template = prepared.manifest.preflight;
-  if (!template || template.length === 0) return;
-  const argv = template.map(part => part.split('{entry}').join(prepared.entryPointScriptPath));
-  assertCommandAllowed(argv);
-  const entryStep = prepared.steps.find(step => step.scriptPath === prepared.entryPointScriptPath)
-    ?? prepared.steps[0];
-  const environment = entryStep
-    ? entryStep.executionEnvironment.variables
-    : { LANG: 'C', LC_ALL: 'C', PATH: '/usr/bin:/bin', TZ: 'UTC' };
-  const result = spawnSync(argv[0]!, argv.slice(1), {
-    cwd: prepared.workspaceDir,
-    encoding: 'utf-8',
-    timeout: 300_000,
-    env: environment,
+  let originStamp: ReturnType<typeof stampComputationLaunch> | undefined;
+  const result = await runPreparedManifest(input.projectRoot, prepared, () => {
+    originStamp = stampComputationLaunch(input.projectRoot, input.runDir);
+    if (originStamp.status === 'refused_relaunch') throw invalidParams(originStamp.detail, { validation_layer: 'attempt_boundary', run_id: input.runId });
   });
-  if (result.error || result.status !== 0) {
-    const detail = result.error
-      ? result.error.message
-      : `${(result.stderr || result.stdout || '').trim().split('\n').slice(-3).join(' | ')}`;
-    throw invalidParams(
-      `manifest preflight refused the entry source (exit ${result.status ?? 'spawn-error'}): ${detail || 'no output'}`,
-      { validation_layer: 'preflight', preflight: argv },
-    );
-  }
+  return originStamp ? { ...result, origin_stamp: originStamp } : result;
 }
 
 export async function planComputationFromRunDir(input: {

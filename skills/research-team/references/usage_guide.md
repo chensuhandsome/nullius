@@ -65,7 +65,7 @@ SKILL_DIR="${SKILL_DIR:-$(for r in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${CODE
 bash "${SKILL_DIR}/scripts/bin/run_team_cycle.sh" \
   --tag 20260502T023000Z-m0-topic \
   --notes research_contract.md \
-  --out-dir team \
+  --out-dir artifacts \
   --member-a-system prompts/_system_member_a.txt \
   --member-b-system prompts/_system_member_b.txt \
   --auto-tag \
@@ -77,14 +77,11 @@ owned by the current agent app/CLI. If you use this shell script to execute
 reviewers directly, provide explicit CLI runner kinds and runner paths; the
 script does not switch providers automatically.
 
-Use the resolved `<base>-rN` as the research-team cycle tag. When this cycle is
-part of an `nullius` control-plane run, use that same resolved value as the
-project-local `run_id` for the reviewed cycle. The canonical lifecycle artifact
-root is `artifacts/runs/<run_id>/`; `team/runs/<tag>/` is the reviewer packet/log
-surface and a first-class evidence root — contract claims may cite its paths
-directly. Mirror or summarize under `artifacts/runs/<run_id>/research_team/`
-when a milestone's headline evidence should live with the run record, not as a
-precondition for citing it.
+Use the resolved `<base>-rN` as the parent project-local `run_id`. New team
+and draft packets, logs, checkpoints and workspaces live in
+`artifacts/runs/<tag>/research_team/`; the parent run holds its origin stamp.
+`--out-dir` must resolve to the project artifacts directory. Evidence may be
+cited there; execution receipts and navigation pointers do not grant scientific acceptance.
 Do not use bare UUIDs or `run_<uuid>` as human-facing research tags.
 
 ## Deterministic preflight-only (no external LLM calls)
@@ -96,7 +93,7 @@ SKILL_DIR="${SKILL_DIR:-$(for r in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${CODE
 bash "${SKILL_DIR}/scripts/bin/run_team_cycle.sh" \
   --tag 20260502T023000Z-m0-topic \
   --notes research_contract.md \
-  --out-dir team \
+  --out-dir artifacts \
   --member-a-system prompts/_system_member_a.txt \
   --member-b-system prompts/_system_member_b.txt \
   --preflight-only
@@ -109,12 +106,12 @@ Keep `--out-dir` on the real-project side as well; do not route real-project out
 
 Configured in `research_team_config.json`:
 - `review_access_mode=packet_only`: reviewers must use only the team packet (offline/portable review; legacy mode).
-- `review_access_mode=full_access`: reviewers still have no direct tools; they request file reads / command runs / network fetches via a leader-run proxy. Every access is logged to `team/runs/<tag>/member_{a,b}_evidence.json` and enforced by deterministic gates.
+- `review_access_mode=full_access`: reviewers still have no direct tools; they request file reads / command runs / network fetches via a leader-run proxy. Every access is logged to `artifacts/runs/<tag>/research_team/member_{a,b}_evidence.json` and enforced by deterministic gates.
 
-Independence of the two reproduction paths is machine-checked (`check_independent_reproduction.py`): reproduction sources that import/include the declared kernel-under-test (`independent_reproduction.kernel_modules`), or that share the same project-local module across both members, fail the gate with verdict `not_independent` (`SHARED_KERNEL_INHERITANCE`); the verdict JSON is written to `team/runs/<tag>/independent_reproduction_gate.json`. Disagreements between reproductions are resolved by tracing the first diverging intermediate quantity — never by majority vote.
+Independence of the two reproduction paths is machine-checked (`check_independent_reproduction.py`): reproduction sources that import/include the declared kernel-under-test (`independent_reproduction.kernel_modules`), or that share the same project-local module across both members, fail the gate with verdict `not_independent` (`SHARED_KERNEL_INHERITANCE`); the verdict JSON is written to `artifacts/runs/<tag>/research_team/independent_reproduction_gate.json`. Disagreements between reproductions are resolved by tracing the first diverging intermediate quantity — never by majority vote.
 
 Third-party validation (offline):
-- `python3 "${SKILL_DIR:-$(for r in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${CODEX_HOME:-$HOME/.codex}" "$HOME/.config/opencode" "$HOME/.kimi-code"; do [ -d "$r/skills/research-team" ] && echo "$r/skills/research-team" && break; done || true)}/scripts/bin/validate_evidence.py" team/runs/<tag>/member_a_evidence.json`
+- `python3 "${SKILL_DIR:-$(for r in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${CODEX_HOME:-$HOME/.codex}" "$HOME/.config/opencode" "$HOME/.kimi-code"; do [ -d "$r/skills/research-team" ] && echo "$r/skills/research-team" && break; done || true)}/scripts/bin/validate_evidence.py" artifacts/runs/<tag>/research_team/member_a_evidence.json`
 
 ## Knowledge base (3 layers)
 

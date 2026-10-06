@@ -1,8 +1,8 @@
 import * as path from 'node:path';
 
 /** The canonical run root, relative to the project root. Every run the
- *  control plane creates by default lives here — it is one of the two
- *  stampable run roots, so a front-door run is visible to the traceability
+ *  control plane creates by default lives here — it is the
+ *  stampable run root, so a front-door run is visible to the traceability
  *  read model and receives its automatic launch stamp. */
 export const RUNS_ROOT_RELATIVE = path.join('artifacts', 'runs');
 

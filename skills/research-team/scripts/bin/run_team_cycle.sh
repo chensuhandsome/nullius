@@ -594,7 +594,7 @@ on_exit() {
   cleanup_workspaces_post_run "${final_status}" "${code}"
 }
 
-# Per-member workspaces under team/runs/<tag>/workspaces/ are ephemeral scratch
+# Per-member workspaces under artifacts/runs/<tag>/research_team/workspaces/ are ephemeral scratch
 # space — full filtered snapshots of the project tree at run start. The durable
 # forensic data (cycle_state.json, <tag>_member_*.md, member_*_evidence.json,
 # member_*_audit.jsonl, logs/member_*/) lives at the run_dir top level and is
@@ -650,15 +650,15 @@ Mandatory convergence gate (AFTER both members produce reports):
 - exits non-zero if the two reports do not converge (mismatch/fail/needs revision).
 
 Usage:
-  run_team_cycle.sh --tag TAG --packet PACKET.txt [--out-dir team] \
+  run_team_cycle.sh --tag TAG --packet PACKET.txt [--out-dir artifacts] \
     --member-a-system SYS_MEMBER_A.txt --member-b-system SYS_MEMBER_B.txt
 
   # Alternative (no manual packet): build team packet from the notebook automatically
-  run_team_cycle.sh --tag TAG --notes research_contract.md [--out-dir team] \
+  run_team_cycle.sh --tag TAG --notes research_contract.md [--out-dir artifacts] \
     --member-a-system SYS_MEMBER_A.txt --member-b-system SYS_MEMBER_B.txt
 
 Options:
-  --out-dir DIR               Optional. Output directory (default: team).
+  --out-dir DIR               Optional. Output directory (default: project artifacts).
   --auto-tag                  Optional. Auto-pick the next clean round tag (<base>-rN) by scanning --out-dir.
                               Also auto-enabled when TAG is malformed like M3-r1-r1-r1 (prevents tag explosion).
                               Use a meaningful base such as 20260502T023000Z-m3-branch-scan.
@@ -754,10 +754,6 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown arg: $1" >&2; usage; exit 2 ;;
   esac
 done
-
-if [[ -z "${OUT_DIR}" ]]; then
-  OUT_DIR="team"
-fi
 
 case "${PROJECT_POLICY}" in
   real_project|maintainer_fixture) ;;
@@ -992,7 +988,16 @@ if [[ -f "${CAPSULE_CHECK_SCRIPT}" ]]; then
   if [[ -n "${TEAM_CONFIG_FILE}" ]]; then
     export RESEARCH_TEAM_CONFIG="${TEAM_CONFIG_FILE}"
   fi
-  PROJECT_ROOT="$(cd "$(dirname "${NOTEBOOK_PATH}")" && pwd)"
+  PROJECT_ROOT="$(python3 - "${NOTEBOOK_PATH}" <<'ROOT'
+from pathlib import Path
+import sys
+seed = Path(sys.argv[1]).resolve().parent
+root = next((p for p in (seed, *seed.parents) if (p / ".nullius").is_dir() or ((p / "project_charter.md").is_file() and (p / "research_contract.md").is_file())), seed)
+print(root)
+ROOT
+)"
+  if [[ -z "${OUT_DIR}" ]]; then OUT_DIR="${PROJECT_ROOT}/artifacts"; fi
+  TEAM_DIR="${PROJECT_ROOT}/team"
   project_contracts_policy_cli assert-run-paths \
     --project-root "${PROJECT_ROOT}" \
     --notes "${NOTEBOOK_PATH}" \
@@ -1082,31 +1087,32 @@ if [[ "${round_cap_check}" == exceeded* ]]; then
 fi
 
 safe_tag="${RESOLVED_TAG}"
-run_dir="${OUT_DIR}/runs/${safe_tag}"
-mkdir -p "${run_dir}"
-run_dir_abs="$(cd "${run_dir}" && pwd)"
+project_contracts_policy_cli assert-run-paths --project-root "${PROJECT_ROOT}" \
+  --notes "${NOTEBOOK_PATH}" --out-dir "${OUT_DIR}" --project-policy "${PROJECT_POLICY}" \
+  --resolve-from "$(pwd)" --run-id "${safe_tag}" >/dev/null
+run_root="${PROJECT_ROOT}/artifacts/runs/${safe_tag}"
+run_dir="${run_root}/research_team"
+mkdir -p "${run_root}"
 # Origin stamp at run creation: bind this cycle's run directory to the exact
 # code state BEFORE any member work starts — recorded now, when the binding
 # is exact, not reconstructed later, when it can only be a heuristic. The
-# stamp is bookkeeping, never a gate: a missing launcher or a failed stamp
-# must not abort the cycle (the run then surfaces as unstamped in the
-# traceability read model until stamped by hand). Re-entry safety lives in
-# the stamp writer itself, which is ledger-idempotent (one stamp per run id,
-# enforced under the ledger lock; a same-tree re-stamp is a no-op success) —
-# the LEDGER is the authority, so no on-disk mirror file is consulted here.
-# (PROJECT_ROOT at this point is the notebook's directory, the same root the
-# project-local launcher anchors to under the notebook-at-root convention.)
+# A present launcher must accept this run identity before any cycle work.
+# Missing launchers leave an explicitly unstamped run. Existing same-origin
+# stamps are ledger-idempotent; a refused stamp never silently rebinds the run.
 NULLIUS_LAUNCHER="${PROJECT_ROOT}/.nullius/bin/nullius"
 if [[ -x "${NULLIUS_LAUNCHER}" ]]; then
-  if stamp_output="$("${NULLIUS_LAUNCHER}" --project-root "${PROJECT_ROOT}" trace stamp "${run_dir_abs}" 2>&1)"; then
+  if stamp_output="$("${NULLIUS_LAUNCHER}" --project-root "${PROJECT_ROOT}" trace stamp "${run_root}" 2>&1)"; then
     echo "[trace] origin ${stamp_output}" | head -n 1
   else
     echo "[trace] WARNING: origin stamp failed for ${run_dir}: ${stamp_output}" >&2
-    echo "[trace] the run's origin record was NOT updated by this cycle — see the refusal above (an unstamped run can be stamped by hand: nullius trace stamp '${run_dir_abs}'; a stale stamp means this tag belongs to different code — use a fresh run id)." >&2
+    echo "[trace] the run's origin record was NOT updated by this cycle — see the refusal above (an unstamped run can be stamped by hand: nullius trace stamp '${run_root}'; a stale stamp means this tag belongs to different code — use a fresh run id)." >&2
+    exit 1
   fi
 else
   echo "[trace] note: no nullius launcher at .nullius/bin/nullius; run origin not stamped (enable with 'nullius init --runtime-only', then runs bind to code automatically)." >&2
 fi
+mkdir -p "${run_dir}"
+run_dir_abs="$(cd "${run_dir}" && pwd)"
 attempt_logs_dir="${run_dir}/logs"
 # Per-member subdirs isolate attempt logs so deny_other_outputs can revoke cross-member access.
 mkdir -p "${attempt_logs_dir}" "${attempt_logs_dir}/member_a" "${attempt_logs_dir}/member_b" >/dev/null 2>&1 || true
@@ -1118,7 +1124,7 @@ trap on_exit EXIT
 
 # Anti crash-ratchet: a previous cycle may have died (SIGKILL / OOM / power loss)
 # before its on_exit trap could clean up its own workspace, leaving an orphaned
-# team/runs/<old_tag>/workspaces/ tree on disk. The EXIT trap above only fires
+# artifacts/runs/<old_tag>/research_team/workspaces/ tree on disk. The EXIT trap above only fires
 # for graceful exits, so we sweep at startup of every new cycle. Restrict the
 # allowlist to clean successful exits so an in-progress sibling cycle or a
 # failed run preserved for debugging is never destroyed.
@@ -1135,7 +1141,7 @@ fi
 
 # Ensure project_index.md exists early (warn-only). This is a usability affordance, not part of the scientific gates.
 if [[ -f "${PROJECT_INDEX_UPDATE_SCRIPT}" ]]; then
-  python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${NOTEBOOK_PATH}" --team-dir "${OUT_DIR}" --latest-kind team --tag "${RESOLVED_TAG}" --status "preflight_init" >/dev/null 2>&1 || true
+  python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${NOTEBOOK_PATH}" --team-dir "${TEAM_DIR}" --latest-kind team --tag "${RESOLVED_TAG}" --status "preflight_init" >/dev/null 2>&1 || true
 fi
 cycle_state_update "preflight_init" "done" "running" ""
 
@@ -1211,12 +1217,12 @@ fi
 
 if [[ "${PROJECT_STAGE}" != "exploration" && -f "${DEBT_GATE_SCRIPT}" ]]; then
   set +e
-  python3 "${DEBT_GATE_SCRIPT}" --team-dir "${OUT_DIR}"
+  python3 "${DEBT_GATE_SCRIPT}" --team-dir "${TEAM_DIR}"
   debt_code=$?
   set -e
   if [[ ${debt_code} -ne 0 ]]; then
     echo "" >&2
-    echo "[gate] Fail-fast: exploration debt still open. Close items in ${OUT_DIR}/runs/*/*_exploration_debt.md (mark '- [ ]' -> '- [x]') or set project_stage=exploration." >&2
+    echo "[gate] Fail-fast: exploration debt still open. Close items in ${PROJECT_ROOT}/artifacts/runs/*/research_team/*_exploration_debt.md (mark '- [ ]' -> '- [x]') or set project_stage=exploration." >&2
     exit ${debt_code}
   fi
 fi
@@ -1764,13 +1770,6 @@ if [[ -z "${PACKET}" ]]; then
   if [[ -n "${POINTER_IMPORT_CMD}" ]]; then
     build_args+=( --pointer-import-cmd "${POINTER_IMPORT_CMD}" )
   fi
-  adjudication_path="${run_dir}/${safe_tag}_adjudication.md"
-  if [[ -f "${adjudication_path}" ]]; then
-    build_args+=( --adjudication "${adjudication_path}" )
-  elif [[ -f "${OUT_DIR}/${safe_tag}_adjudication.md" ]]; then
-    # Back-compat fallback (if a project still keeps adjudication notes at the team root).
-    build_args+=( --adjudication "${OUT_DIR}/${safe_tag}_adjudication.md" )
-  fi
   # RT-01: pass workflow-mode and related flags
   if [[ -n "${WORKFLOW_MODE}" ]]; then
     build_args+=( --workflow-mode "${WORKFLOW_MODE}" )
@@ -1826,12 +1825,6 @@ if [[ ! -f "${MEMBER_B_SYSTEM}" ]]; then
   exit 2
 fi
 
-PROJECT_ROOT=""
-if [[ -n "${TEAM_CONFIG_FILE}" ]]; then
-  PROJECT_ROOT="$(cd "$(dirname "${TEAM_CONFIG_FILE}")" && pwd)"
-else
-  PROJECT_ROOT="$(cd "$(dirname "${NOTEBOOK_PATH}")" && pwd)"
-fi
 
 # Resolve optional config-relative Member B Claude system prompt.
 if [[ "${MEMBER_B_SYSTEM_CLAUDE_FROM_CONFIG}" -eq 1 && -n "${MEMBER_B_SYSTEM_CLAUDE}" && "${MEMBER_B_SYSTEM_CLAUDE}" != /* ]]; then
@@ -1962,7 +1955,7 @@ if [[ "${REVIEW_ACCESS_MODE}" == "full_access" || "${MEMBER_A_TOOL_ACCESS}" == "
 fi
 
 if [[ -f "${TRAJ_SCRIPT}" ]]; then
-  python3 "${TRAJ_SCRIPT}" --notes "${NOTEBOOK_PATH}" --out-dir "${OUT_DIR}" --tag "${RESOLVED_TAG}" --stage "preflight_start" --packet "${PACKET}" >/dev/null 2>&1 || true
+  python3 "${TRAJ_SCRIPT}" --notes "${NOTEBOOK_PATH}" --out-dir "${TEAM_DIR}" --tag "${RESOLVED_TAG}" --stage "preflight_start" --packet "${PACKET}" >/dev/null 2>&1 || true
 fi
 
 POINTER_LINT_SCRIPT="${GATES_DIR}/check_pointer_lint.py"
@@ -2160,11 +2153,11 @@ packet_for_run="${run_dir}/team_packet_${safe_tag}.txt"
 python3 "${PATCH_PACKET_SCRIPT}" --src "${PACKET}" --dst "${packet_for_run}" --tag "${RESOLVED_TAG}" --pointer-lint-report "${pointer_lint_report}"
 
 if [[ -f "${TRAJ_SCRIPT}" ]]; then
-  python3 "${TRAJ_SCRIPT}" --notes "${NOTEBOOK_PATH}" --out-dir "${OUT_DIR}" --tag "${RESOLVED_TAG}" --stage "preflight_ok" --packet "${packet_for_run}" --gate "preflight_ok" >/dev/null 2>&1 || true
+  python3 "${TRAJ_SCRIPT}" --notes "${NOTEBOOK_PATH}" --out-dir "${TEAM_DIR}" --tag "${RESOLVED_TAG}" --stage "preflight_ok" --packet "${packet_for_run}" --gate "preflight_ok" >/dev/null 2>&1 || true
 fi
 
 if [[ -f "${PROJECT_INDEX_UPDATE_SCRIPT}" ]]; then
-  python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${NOTEBOOK_PATH}" --team-dir "${OUT_DIR}" --tag "${RESOLVED_TAG}" --status "preflight_ok" --run-dir "${run_dir_abs}" >/dev/null 2>&1 || true
+  python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${NOTEBOOK_PATH}" --team-dir "${TEAM_DIR}" --tag "${RESOLVED_TAG}" --status "preflight_ok" --run-dir "${run_dir_abs}" >/dev/null 2>&1 || true
 fi
 cycle_state_update "preflight_ok" "done" "running" ""
 
@@ -3184,7 +3177,7 @@ fi
 
 # Record member reports.
 if [[ -f "${TRAJ_SCRIPT}" ]]; then
-  python3 "${TRAJ_SCRIPT}" --notes "${NOTEBOOK_PATH}" --out-dir "${OUT_DIR}" --tag "${RESOLVED_TAG}" --stage "member_reports" --packet "${packet_for_run}" --member-a "${member_a_out}" --member-b "${member_b_out}" >/dev/null 2>&1 || true
+  python3 "${TRAJ_SCRIPT}" --notes "${NOTEBOOK_PATH}" --out-dir "${TEAM_DIR}" --tag "${RESOLVED_TAG}" --stage "member_reports" --packet "${packet_for_run}" --member-a "${member_a_out}" --member-b "${member_b_out}" >/dev/null 2>&1 || true
 fi
 
 # Mandatory convergence gate.
@@ -3286,13 +3279,13 @@ PY
     echo "[gate] Parse error: convergence gate result is invalid. Fix report contract drift before retry." >&2
     echo "[gate] Structured result: ${gate_json}" >&2
     if [[ -f "${TRAJ_SCRIPT}" ]]; then
-      python3 "${TRAJ_SCRIPT}" --notes "${NOTEBOOK_PATH}" --out-dir "${OUT_DIR}" --tag "${RESOLVED_TAG}" --stage "convergence_error" --packet "${packet_for_run}" --member-a "${member_a_out}" --member-b "${member_b_out}" --gate "parse_error" >/dev/null 2>&1 || true
+      python3 "${TRAJ_SCRIPT}" --notes "${NOTEBOOK_PATH}" --out-dir "${TEAM_DIR}" --tag "${RESOLVED_TAG}" --stage "convergence_error" --packet "${packet_for_run}" --member-a "${member_a_out}" --member-b "${member_b_out}" --gate "parse_error" >/dev/null 2>&1 || true
     fi
     if [[ -f "${PLAN_UPDATE_SCRIPT}" ]]; then
       python3 "${PLAN_UPDATE_SCRIPT}" --notes "${NOTEBOOK_PATH}" --tag "${RESOLVED_TAG}" --status "error" >/dev/null 2>&1 || true
     fi
     if [[ -f "${PROJECT_INDEX_UPDATE_SCRIPT}" ]]; then
-      python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${NOTEBOOK_PATH}" --team-dir "${OUT_DIR}" --tag "${RESOLVED_TAG}" --status "convergence_error" --run-dir "${run_dir_abs}" >/dev/null 2>&1 || true
+      python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${NOTEBOOK_PATH}" --team-dir "${TEAM_DIR}" --tag "${RESOLVED_TAG}" --status "convergence_error" --run-dir "${run_dir_abs}" >/dev/null 2>&1 || true
     fi
     CYCLE_FINAL_STATUS="convergence_error"
     cycle_state_update "convergence" "error" "${CYCLE_FINAL_STATUS}" ""
@@ -3320,17 +3313,17 @@ PY
     echo "[next] Create an adjudication/response note (accept/modify/reject with evidence) and attach it to the next team packet:" >&2
     echo "  python3 ${SCRIPT_DIR}/build_adjudication_response.py --tag ${next_tag} \\" >&2
     echo "    --member-a ${member_a_out} --member-b ${member_b_out} \\" >&2
-    echo "    --out ${OUT_DIR}/runs/${next_tag}/${next_tag}_adjudication.md" >&2
+    echo "    --out ${PROJECT_ROOT}/artifacts/runs/${next_tag}/research_team/${next_tag}_adjudication.md" >&2
 
     if [[ -f "${TRAJ_SCRIPT}" ]]; then
-      python3 "${TRAJ_SCRIPT}" --notes "${NOTEBOOK_PATH}" --out-dir "${OUT_DIR}" --tag "${RESOLVED_TAG}" --stage "not_converged" --packet "${packet_for_run}" --member-a "${member_a_out}" --member-b "${member_b_out}" --gate "not_converged" >/dev/null 2>&1 || true
+      python3 "${TRAJ_SCRIPT}" --notes "${NOTEBOOK_PATH}" --out-dir "${TEAM_DIR}" --tag "${RESOLVED_TAG}" --stage "not_converged" --packet "${packet_for_run}" --member-a "${member_a_out}" --member-b "${member_b_out}" --gate "not_converged" >/dev/null 2>&1 || true
     fi
     if [[ -f "${PLAN_UPDATE_SCRIPT}" ]]; then
       python3 "${PLAN_UPDATE_SCRIPT}" --notes "${NOTEBOOK_PATH}" --tag "${RESOLVED_TAG}" --status "not_converged" >/dev/null 2>&1 || true
     fi
 
     if [[ -f "${PROJECT_INDEX_UPDATE_SCRIPT}" ]]; then
-      python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${NOTEBOOK_PATH}" --team-dir "${OUT_DIR}" --tag "${RESOLVED_TAG}" --status "not_converged" --run-dir "${run_dir_abs}" >/dev/null 2>&1 || true
+      python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${NOTEBOOK_PATH}" --team-dir "${TEAM_DIR}" --tag "${RESOLVED_TAG}" --status "not_converged" --run-dir "${run_dir_abs}" >/dev/null 2>&1 || true
     fi
 
     CYCLE_FINAL_STATUS="not_converged"
@@ -3436,7 +3429,7 @@ CYCLE_FINAL_STATUS="converged"
 cycle_state_update "convergence" "converged" "${CYCLE_FINAL_STATUS}" ""
 
 if [[ -f "${TRAJ_SCRIPT}" ]]; then
-  python3 "${TRAJ_SCRIPT}" --notes "${NOTEBOOK_PATH}" --out-dir "${OUT_DIR}" --tag "${RESOLVED_TAG}" --stage "converged" --packet "${packet_for_run}" --member-a "${member_a_out}" --member-b "${member_b_out}" --gate "converged" >/dev/null 2>&1 || true
+  python3 "${TRAJ_SCRIPT}" --notes "${NOTEBOOK_PATH}" --out-dir "${TEAM_DIR}" --tag "${RESOLVED_TAG}" --stage "converged" --packet "${packet_for_run}" --member-a "${member_a_out}" --member-b "${member_b_out}" --gate "converged" >/dev/null 2>&1 || true
 fi
 # Fold guard: convergence is the members' verdict, but the automatic
 # plan/claim fold below is a durable-record write. When the converged cycle
@@ -3531,7 +3524,7 @@ if [[ -n "${graph_cli}" ]]; then
 fi
 
 if [[ -f "${PROJECT_INDEX_UPDATE_SCRIPT}" ]]; then
-  python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${NOTEBOOK_PATH}" --team-dir "${OUT_DIR}" --tag "${RESOLVED_TAG}" --status "converged" --run-dir "${run_dir_abs}" >/dev/null 2>&1 || true
+  python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${NOTEBOOK_PATH}" --team-dir "${TEAM_DIR}" --tag "${RESOLVED_TAG}" --status "converged" --run-dir "${run_dir_abs}" >/dev/null 2>&1 || true
 fi
 
 # Sidecars are non-blocking with respect to convergence accounting and trajectory updates.

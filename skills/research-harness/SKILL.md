@@ -1,6 +1,6 @@
 ---
 name: research-harness
-description: Use when working inside an external research project that has or may need nullius state, research_plan.md, research_contract.md, artifacts/runs, team/runs, Codex/Claude Code continuation, recovery, verification, approval, export, handoff, compute environment/tool readiness validation (import + seeded witness + agent-follows-doc), surviving long-running / kill-prone compute jobs (checkpoint + heartbeat + deadline + resume), an opt-in independent reproduction check (fresh-checkout rerun compared against declared expected values), or a production launch authorization preflight (frozen plan hash + hash-bound review verdicts + exact environment fingerprint before a large production run may start).
+description: Use when working inside an external research project that has or may need nullius state, research_plan.md, research_contract.md, artifacts/runs, Codex/Claude Code continuation, recovery, verification, approval, export, handoff, compute environment/tool readiness validation (import + seeded witness + agent-follows-doc), surviving long-running / kill-prone compute jobs (checkpoint + heartbeat + deadline + resume), an opt-in independent reproduction check (fresh-checkout rerun compared against declared expected values), or a production launch authorization preflight (frozen plan hash + hash-bound review verdicts + exact environment fingerprint before a large production run may start).
 ---
 
 # Research Harness
@@ -105,13 +105,13 @@ The check is also skipped for:
    - `research_plan.md`, especially `# Current Status`
    - `research_contract.md`
    - `research_notebook.md` when it contains substantive project notes
-   - the relevant `artifacts/runs/<run_id>/` and `team/runs/` directories
+   - the relevant `artifacts/runs/<run_id>/` and `artifacts/runs/` directories
    - the current main research report linked from
      `project_index.md#Main research report`, when one is promoted
 
 **Anchor on the final adopted version — never build on a superseded one.** A long project accumulates earlier fits, methods, grids, and exploratory scripts; a *newer* adopted result (a better minimum, a more robust method, a finer grid) can silently coexist in the repo with the deprecated ones it replaced. Where the project has a nullius launcher, the machine-readable answer comes first: `nullius current` renders the results registry (which result rows are current, produced by which run at which commit) and the validity ledger (which runs are still active, which are superseded or voided and why) — consult it before any manual archaeology, and keep it authoritative by recording supersessions there when you replace a run. Where that surface is absent or silent on the question, resolve from the durable record (`research_plan.md#Current Status`, `research_contract.md`, the latest dated `artifacts/runs/<run_id>/`, and any explicit `superseded` / `voided` markers) **which** parameters, method, and configuration are the *current adopted* version — not the first script you happen to open or the most-cited earlier draft. Then **regression-anchor**: run that adopted reference configuration and assert it reproduces its known result (the published χ²/value/pole) *before* trusting any variation built on it. This is the project-state half of the [`numerical-reliability-gate`](../numerical-reliability-gate/SKILL.md) G4 anchor; skipping it is how work silently gets rebuilt on a stale fit or a retired method.
 
-To pull newer managed scaffold doc (`AGENTS.md`) into an existing project without disturbing user notes, run `nullius init --refresh` (preview with `nullius init --refresh --dry-run`). It backs up any changed managed file under `.nullius/backups/` and never rewrites `research_plan.md`, `research_notebook.md`, `research_contract.md`, `project_charter.md`, `project_index.md`, `reports/main_research_report_template.md`, or `.gitignore`.
+Use `nullius init --refresh` to generate missing `AGENTS.md` support guidance (preview with `--dry-run`). Scaffold refresh preserves differing instructions and user-owned seed content (`research_plan.md`, `research_notebook.md`, `research_contract.md`, `project_charter.md`, `project_index.md`, `reports/main_research_report_template.md`, `.gitignore`). The CLI may still synchronize existing machine-managed blocks in the notebook and project index; it does not insert missing blocks during refresh. For updated guidance, render a scaffold in a temporary external root and merge the desired changes explicitly.
 
 For an existing project that predates the main-report registry, checkpoint the
 project before migration. Render the current scaffold in a separate temporary
@@ -263,8 +263,9 @@ themselves:
    itself that a run was superseded.
 4. The results registry block is pasted into `project_index.md` by hand
    once, copying the Current results section from the scaffold template —
-   existing generated projects never gain it automatically, because
-   refresh never rewrites user-owned files. `nullius result set-current`
+   existing generated projects do not gain it through refresh: scaffold
+   refresh does not migrate the user-owned results registry, and the CLI
+   does not insert missing managed blocks. `nullius result set-current`
    refuses with exactly this instruction until the block exists.
 
 ## Runaway Protection Is Not a Performance Gate
@@ -414,7 +415,7 @@ If `hep-mcp` or a needed provider is unavailable, state that limitation explicit
 
 ## Fold Results Back
 
-`research-team` output is not complete while it only lives in `team/runs` as an unreferenced log: the durable conclusion must land in the project contract and plan, with evidence pointers. `team/runs/<run>/` itself is a first-class evidence root alongside `artifacts/runs/<run_id>/` — cite the path that actually holds the evidence; do not copy files between roots just to satisfy a pointer convention.
+`research-team` payloads live under `artifacts/runs/<run_id>/research_team/`. Durable conclusions belong in the project contract, plan and immutable reports with evidence pointers. Executor status and navigation pointers do not supply scientific acceptance.
 
 Keep three artifact classes separate at this boundary. A checkpoint, status,
 or closeout summary coordinates state and may stay concise. A main research
@@ -439,7 +440,7 @@ Then land the folded result:
 
 - Summarize the durable conclusion in `research_contract.md`.
 - Update `research_plan.md#Current Status` with the current state, next step, blockers, and evidence pointers.
-- Cite the relevant run evidence where it lives — under `artifacts/runs/<run_id>/` or `team/runs/<run>/`. Mirroring into `artifacts/runs/<run_id>/` is optional: do it when the source location is transient, or when a milestone's headline evidence should live with the run record.
+- Cite evidence under the parent `artifacts/runs/<run_id>/`, including its `research_team/` payload where relevant.
 - Preserve unresolved questions as explicit blockers rather than burying them in chat or transient team logs. When a question needs the project owner's decision, also record it with `nullius decision pending "<question>"` — it stays counted in every status receipt (the oldest ten itemized; the rest via `nullius decision list`) until a later `nullius decision record "<what was decided>" --resolves <id>` closes it, instead of scrolling away in conversation. Use `--relates <id>` when a new decided or pending entry needs non-closing context from an earlier readable entry; do not overload `--resolves` for a standing directive that remains in force. A replayed malformed relation is diagnosed without voiding the containing record. Legacy string kinds remain readable under current `decided` semantics and retain their original spelling in diagnostics: only the exact persisted `pending` kind creates an open item, while an otherwise valid `resolves` on a normalized entry still closes its pending target. Branch-local records carry provisional six-character handles; after all contributing branch tails are merged into the authoritative trunk, run `nullius decision land` there before citing the resulting durable `D<n>` ids. Never land on an unmerged branch; `decisions_unlanded` in the status receipt names work that is not yet ready for durable citation.
 - At a milestone handoff or stakeholder plan-summary, produce a **roadmap dependency-map** (summary table + milestone/lane dependency graph + binding-constraint + critical path) via `research-team` (`assets/roadmap_dependency_map_template.md`, rendered with `nullius graph --kind roadmap`). It is a planning view — distinct from the Claim DAG and from `research_plan.md#Current Status`, and it makes "what gates what / what caps feasibility / shortest route to the goal" legible to whoever picks up the work next.
 
@@ -498,3 +499,9 @@ tests) in the project repo; and when the project owner had to ask for
 the same type of verification more than once, promote that moment into
 the event → workflow dispatch table as a default trigger instead of
 leaving it a reminder.
+
+All newly generated managed project runs use `artifacts/runs/<run_id>/`; team and draft executor payloads live in `research_team/` beneath that run. Origin stamps bind the parent run. If retired `team/runs` contains run directories, dependent views report the count and `init --runtime-only` refuses before rebinding. An unreadable retired root is an error. Retain the prior runtime with its matching skills, or perform a separately reviewed migration before switching. The `inventory_run_relocation.py --fixture-root <anonymous-fixture> --source-manifest <hash-manifest>` helper only inventories pinned fixture bytes, references, collisions and unresolved bindings; it has no apply mode. Independent reviewer snapshots omit every run's executor payload and all workspace trees, retain production artifacts, and allow only each member's own declared output prefix. Historical reports/adjudications remain coordinator evidence. `team/LATEST*.md` and `artifacts/LATEST.md` are navigation pointers.
+
+The generic scaffold creates `project_index.md`; the team helper updates only executor-local latest pointers and requires `nullius init` when the root index is missing. Selected-result and derived-block writers share a short path lock, reread their inputs, and make at most three attempts when edits are detected while preserving human bytes, mode and EOL outside their marked region. Arbitrary writers that ignore the lock remain outside its guarantee. Generic run counts do not interpret execution round limits; the Python executor resolver and suffix gate own those settings.
+
+Existing `PROJECT_INDEX_AUTO` blocks are historical, unmaintained observations; the team helper neither parses nor updates them. Current `RUN_INDEX` navigation and curated result/report registries have separate owners. Do not silently rewrite or delete an old block.

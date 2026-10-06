@@ -74,9 +74,11 @@ bash "${SKILL_DIR}/scripts/run_kimi.sh" \
 
 - The runner defaults to `--output-format stream-json` and writes only assistant text content to `--out`; tool calls, tool results, metadata, and non-text assistant blocks are not represented in that output file.
 - Tool result and metadata events are ignored in parsed output.
-- Kimi Code may spend a long time in thinking or tool-use before emitting final assistant text. `--timeout-secs` bounds the entire invocation, including retries, fallback and backoff (default 900 seconds). Expiry and cancellation terminate locally created CLI process groups and their descendants. This does not attest cancellation of a remote provider job.
+- Kimi Code may spend a long time in thinking or tool-use before emitting final assistant text. `--timeout-secs` bounds the entire invocation, including retries, fallback and backoff (no hard deadline by default; an explicit positive value is a hard cap). Expiry and cancellation terminate locally created CLI process groups and their descendants. This does not attest cancellation of a remote provider job.
 - If a specific `--model` fails with a model-not-found style error, the runner retries with Kimi's configured default model unless `--no-fallback` is set.
-- `--max-attempts` caps all CLI calls in this invocation; fallback consumes the same remaining budget. `--sleep-secs` backoff consumes the same deadline. Quota exhaustion and deterministic permission refusals stop instead of repeating the blocked call.
+- `--max-attempts` caps all CLI calls in this invocation; fallback consumes the same remaining budget. `--sleep-secs` backoff consumes the same deadline. Quota exhaustion, the reported billing-cycle usage-limit wording and deterministic permission
+  refusals stop instead of repeating the blocked call. These phrases in successful assistant prose do
+  not turn a completed body into an error; classification runs on failed calls/error diagnostics.
 - Exit 0 requires nonblank assistant text and successful execution without an error event. Interrupted text is retained as `OUT.partial`, without a completed `OUT`. Every call's raw events, diagnostics and budget receipt remain under `OUT.attempts/run.*` (or `--trace-dir DIR`). Requested model aliases are recorded; actual provider model identity remains unknown unless separately attested. A completed invocation is not scientific acceptance.
 - Deterministic failures (usage/auth/region-ineligibility errors, exit codes 2/126/127, and similar, detected from the exit code and diagnostics) fail immediately with the diagnostic instead of burning the retry backoff; model-not-found keeps its default-model fallback.
 - The merged prompt limit defaults to a conservative OS-argument-safe value. Override with `KIMI_MAX_PROMPT_BYTES` when you know your platform can accept larger prompt arguments.
@@ -118,7 +120,7 @@ establish live session recovery for a configured provider.
 | `--max-attempts N` | 3 | Total CLI calls, including fallback |
 | `--max-retries N` | 3 | Deprecated alias for `--max-attempts` |
 | `--sleep-secs S` | 5 | Base exponential backoff |
-| `--timeout-secs S` | 900 | Total invocation deadline, including backoff/fallback; 0 explicitly disables it |
+| `--timeout-secs S` | 0 (no hard budget) | Explicit hard total deadline, including backoff/fallback |
 | `--raw-out FILE` | none | Copy raw Kimi stdout from the last attempt to this file for audit/debugging |
 | `--stderr-out FILE` | none | Copy raw Kimi stderr from the last attempt to this file for audit/debugging |
 | `--trace-dir DIR` | `OUT.attempts` | Retain every attempt's events, diagnostics and budget receipt in a unique run directory |

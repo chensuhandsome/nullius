@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -84,13 +84,11 @@ def _refresh_project_scaffold(
     profile: str,
     dry_run: bool,
 ) -> dict[str, Any]:
-    """Re-apply the managed scaffold boilerplate, never touching user seed files.
+    """Generate missing support guidance and preserve existing project instructions.
 
-    Managed support files are re-rendered from the current templates; a changed
-    file's prior content is backed up before it is overwritten. Seed (user-owned)
-    files are reported but never written. ``sync_research_contract`` is deliberately
-    not run here: notebook->contract sync is a plain-init concern and would write a
-    seed file. The pass is non-transactional but recoverable via the backup copy.
+    A differing existing support file may contain owner customizations. Its name
+    does not establish whole-file ownership, so routine refresh reports it as
+    preserved. Owners can render a fresh scaffold separately and merge changes.
     """
     # Seed (user-owned) files: status only, never written by refresh.
     preserved: list[str] = []
@@ -105,11 +103,6 @@ def _refresh_project_scaffold(
         for rel in SCAFFOLD_SUPPORT_FILES
     }
 
-    # Microsecond precision so two refreshes in the same second cannot share a
-    # backup directory and clobber an earlier managed-file backup.
-    backup_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
-    backup_root = repo_root / ".nullius" / "backups" / backup_stamp
-
     created: list[str] = []
     refreshed: list[str] = []
     backed_up: list[str] = []
@@ -118,28 +111,20 @@ def _refresh_project_scaffold(
     for rel in SCAFFOLD_SUPPORT_FILES:
         path = repo_root / rel
         new_text = rendered[rel]
-        if not path.exists():
+        if not os.path.lexists(path):
             if not dry_run:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(new_text, encoding="utf-8")
             created.append(rel)
             continue
-        # Read raw bytes so the backup is byte-exact even if a managed file was
-        # replaced with non-UTF-8 content; decode only for the change comparison.
-        old_bytes = path.read_bytes()
-        if old_bytes.decode("utf-8", errors="replace") == new_text:
+        if path.is_symlink() or not path.is_file():
+            preserved.append(rel)
+        elif path.read_bytes() == new_text.encode("utf-8"):
             unchanged.append(rel)
-            continue
-        if not dry_run:
-            backup_path = backup_root / rel
-            assert_path_within_project(backup_path, project_root=repo_root, label="scaffold backup")
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            backup_path.write_bytes(old_bytes)
-            path.write_text(new_text, encoding="utf-8")
-        refreshed.append(rel)
-        backed_up.append(rel)
+        else:
+            preserved.append(rel)
 
-    backup_dir = _safe_rel(repo_root, backup_root) if backed_up and not dry_run else None
+    backup_dir = None
 
     return {
         "created": sorted(dict.fromkeys(created)),

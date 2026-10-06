@@ -1,3 +1,4 @@
+import { runDirFor } from './run-paths.js';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -48,7 +49,6 @@ export type TraceabilityView = {
   };
   runs: {
     total_directories: number;
-    mirrored_ids: number;
     counts: Record<TraceabilityRunClass, number>;
     stamped: number;
     /** Distribution of stamp binding qualities among stamped runs. The
@@ -204,10 +204,6 @@ export type TraceabilityView = {
     };
   };
   warnings: {
-    /** Slugs whose run count crossed the bounded-rounds threshold. An
-     *  OBSERVATION in a different dimension than the team-cycle tag-round
-     *  enforcement, which stays authoritative where it applies. */
-    round_cap: Array<{ slug: string; runs: number; threshold: number }>;
     /** Runs whose run-directory mirror diverges from the authoritative
      *  ledger stamp (the narrow unlocked-preflight window, or a hand edit).
      *  The ledger is the truth; a divergent mirror misleads humans browsing
@@ -303,7 +299,7 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
       // Orientation split (project-level): how much of the untracked total
       // is run-root accumulation. The count itself stays the full set.
       untrackedUnderRunRoots = paths
-        .filter(line => line.startsWith('artifacts/runs/') || line.startsWith('team/runs/')).length;
+        .filter(line => line.startsWith('artifacts/runs/')).length;
     }
     // Same submodule honesty as the stamp: content dirty INSIDE a submodule
     // is invisible to the superproject probes above and must not read clean.
@@ -514,7 +510,7 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
       .filter(line => line.length > 0)
       .filter(line => !isTraceabilityArtifactPath(line))
       .filter(line => !(line === '.nullius' || line.startsWith('.nullius/')));
-    const research = files.filter(line => !line.startsWith('artifacts/runs/') && !line.startsWith('team/runs/'));
+    const research = files.filter(line => !line.startsWith('artifacts/runs/'));
     current.changed_from_previous = {
       total: research.length,
       files: research.slice(0, 5),
@@ -552,33 +548,6 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
     projectRoot, projectionFromRegistryState(resultRegistry),
   );
 
-  // D9 round-cap observation: same-slug run counts across BOTH roots against
-  // the configured team-cycle threshold (default 5). Slug = run id minus
-  // timestamp/milestone/ordinal prefixes and the trailing round suffix.
-  let roundThreshold = 5;
-  try {
-    const teamConfigPath = path.join(projectRoot, 'research_team_config.json');
-    if (fs.existsSync(teamConfigPath)) {
-      const parsed = JSON.parse(fs.readFileSync(teamConfigPath, 'utf-8')) as {
-        bounded_rounds?: { max_per_tag_family?: number };
-      };
-      const raw = parsed.bounded_rounds?.max_per_tag_family;
-      if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 1) roundThreshold = raw;
-    }
-  } catch {
-    // unreadable config keeps the default
-  }
-  const slugCounts = new Map<string, number>();
-  const SLUG_FROM_ID = /^(?:\d{8}(?:T\d{6}Z)?)[-_.](?:m\d+-)?(?:r\d+-)?(.+?)(?:-r\d+)?$/;
-  for (const entry of directories) {
-    const slug = SLUG_FROM_ID.exec(entry.run_id)?.[1] ?? entry.run_id;
-    slugCounts.set(slug, (slugCounts.get(slug) ?? 0) + 1);
-  }
-  const roundCap = [...slugCounts.entries()]
-    .filter(([, count]) => count > roundThreshold)
-    .map(([slug, runs]) => ({ slug, runs, threshold: roundThreshold }))
-    .sort((a, b) => b.runs - a.runs);
-
   // Mirror-vs-ledger divergence (stage-1 acceptance hook): the ledger is the
   // authority; a run-directory mirror that no longer matches it — the narrow
   // unlocked-preflight window, or a hand edit — is surfaced, never trusted.
@@ -586,7 +555,7 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
   for (const entry of directories) {
     const known = ledger.runs.get(entry.run_id);
     if (!known?.stamped || !known.origin) continue;
-    const mirrorPath = path.join(projectRoot, entry.canonical_root, entry.run_id, 'run_origin.json');
+    const mirrorPath = path.join(runDirFor(projectRoot, entry.run_id), 'run_origin.json');
     if (!fs.existsSync(mirrorPath)) {
       // A mirror the stamp reported WRITTEN that has since disappeared is
       // divergence too — silence here would hide a deletion. Only a ledger
@@ -736,7 +705,6 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
     },
     runs: {
       total_directories: directories.length,
-      mirrored_ids: directories.filter(entry => entry.mirrored).length,
       counts,
       stamped,
       binding_quality_counts: bindingQualityCounts,
@@ -764,7 +732,7 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
           // The status file lives wherever the manifest put the workspace —
           // same discovery as the retry entrance. A run with ANY completed
           // status is not a crash; one failed status makes it a candidate.
-          const runDirAbs = path.join(projectRoot, entry.canonical_root, entry.run_id);
+          const runDirAbs = runDirFor(projectRoot, entry.run_id);
           const statuses: string[] = [];
           const statusWorkspaces: Array<{ statusPath: string; manifestPath: string | null }> = [];
           const manifestPaths: string[] = [];
@@ -863,7 +831,6 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
       },
     },
     warnings: {
-      round_cap: roundCap,
       mirror_divergence: mirrorDivergence,
     },
     run_index: runIndexBlock,
@@ -888,6 +855,13 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
 
 /** Human prose rendering — the acceptance sentence, answered in order, with
  *  every unanswerable clause stated rather than skipped. */
+export function renderRunDirectoryCounts(runs: Pick<TraceabilityView['runs'], 'counts' | 'total_directories' | 'stamped'>): string {
+  const { counts, total_directories, stamped } = runs;
+  return `${total_directories} run directories: `
+    + `${counts.active} active, ${counts.superseded} superseded, ${counts.void} void, `
+    + `${counts.unclassified} unclassified legacy; ${stamped} carry origin stamps.`;
+}
+
 export function renderTraceabilityProse(view: TraceabilityView): string {
   const lines: string[] = [];
   lines.push('# Current project state');
@@ -1057,12 +1031,7 @@ export function renderTraceabilityProse(view: TraceabilityView): string {
   lines.push('');
 
   lines.push('## Runs');
-  const { counts, total_directories, mirrored_ids, stamped } = view.runs;
-  lines.push(
-    `${total_directories} run directories (${mirrored_ids} mirrored across both roots): `
-    + `${counts.active} active, ${counts.superseded} superseded, ${counts.void} void, `
-    + `${counts.unclassified} unclassified legacy; ${stamped} carry origin stamps.`,
-  );
+  lines.push(renderRunDirectoryCounts(view.runs));
   const qualityEntries = Object.entries(view.runs.binding_quality_counts);
   if (qualityEntries.length > 0) {
     lines.push(`- stamp binding qualities: ${qualityEntries.map(([q, n]) => `${n} ${q}`).join(', ')}`
@@ -1117,12 +1086,6 @@ export function renderTraceabilityProse(view: TraceabilityView): string {
   }
   if (view.ledger.malformed_lines > 0 || view.ledger.integrity_defects > 0) {
     lines.push(`- ledger health: ${view.ledger.malformed_lines} malformed line(s), ${view.ledger.integrity_defects} integrity defect(s).`);
-  }
-  for (const cap of view.warnings.round_cap.slice(0, 5)) {
-    lines.push(
-      `- ROUND CAP: ${cap.runs} runs share the object "${cap.slug}" (threshold ${cap.threshold}) — `
-      + 'an observation in the slug dimension; the team-cycle tag-round gate stays authoritative where it applies.',
-    );
   }
   if (view.warnings.mirror_divergence.length > 0) {
     // A repair worklist like the two above (each entry has a mechanical

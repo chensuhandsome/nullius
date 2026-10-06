@@ -102,4 +102,13 @@ export interface ApprovalPacketV1 {
    * Optional extended details in Markdown format.
    */
   details_md?: string;
+  /**
+   * Content identity of the declared execution inputs covered by this approval. Revalidated by the execution consumer before dispatch.
+   */
+  execution_binding?: {
+    sha256: string;
+    content: {
+      [k: string]: unknown;
+    };
+  };
 }

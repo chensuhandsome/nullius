@@ -24,7 +24,7 @@ current entry point and supersession registry in
 
 ## Restart And Status Rule
 
-- The session-start, reconnect, recovery, and approval-boundary protocol lives in [AGENTS.md](AGENTS.md), the managed scaffold file that `nullius init --refresh` keeps current. Follow it there after a new session, reconnect, interruption, context reset, handoff, milestone start, or closeout; this file deliberately carries no copy of the protocol commands, because copies in user-owned files go stale.
+- The session-start, reconnect, recovery, and approval-boundary protocol lives in [AGENTS.md](AGENTS.md), the project instructions that `nullius init --refresh` preserves when customized. Follow it there after a new session, reconnect, interruption, context reset, handoff, milestone start, or closeout; this file deliberately carries no copy of the protocol commands, because copies in user-owned files go stale.
 - If evidence is incomplete, mark the state `uncertain`, `abstained`, `unavailable`, or as a reading gap instead of writing a stronger conclusion.
 - After the protocol, re-read [project_index.md](project_index.md), [AGENTS.md](AGENTS.md), [project_charter.md](project_charter.md), [research_plan.md](research_plan.md), and this file before resuming.
 - Read [research_notebook.md](research_notebook.md) when it already contains substantive content.
@@ -62,16 +62,9 @@ current entry point and supersession registry in
   adjudication indexes — a hashed status file forces a re-hash cascade on
   every lifecycle advance. When a hash-bound artifact must change, freeze a
   new version and supersede the old one instead of re-hashing in place.
-- `team/runs/<run>/` (written by milestone-executor review cycles) is a
-  first-class evidence root alongside `artifacts/runs/<run_id>/`. A claim may
-  cite evidence from either root directly; cite the path that actually holds
-  the evidence instead of copying files between roots. Mirroring into
-  `artifacts/runs/<run_id>/` is optional: do it when the source location is
-  transient, or when a milestone's headline evidence should live with the run
-  record.
+- Milestone-executor review cycles write payloads to `artifacts/runs/<run_id>/research_team/` within the canonical run directory. Cite the actual payload file; `run_origin.json` belongs to the parent run. Navigation pointers in `team/LATEST*.md` and `artifacts/LATEST.md` do not duplicate evidence.
 - Choose `run_id` as a project-local research identity, not as an opaque machine
-  identity. Prefer `<YYYYMMDDTHHMMSSZ>-<milestone>-<short-topic>-rN`, for
-  example `20260502T023000Z-m3-branch-scan-r1`.
+  identity. Prefer `<YYYYMMDDTHHMMSSZ>-<milestone>-<short-topic>-rN`.
 - A valid human-facing `run_id` uses only letters, digits, `.`, `_`, and `-`;
   it must not contain path separators, `..`, whitespace, bare UUIDs,
   `run_<uuid>`, or other low-information generated names.

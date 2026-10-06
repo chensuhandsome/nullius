@@ -5,6 +5,7 @@ TAG=""
 TEX=""
 BIB=""
 OUT_DIR=""
+PROJECT_POLICY="real_project"
 PREFLIGHT_ONLY=0
 
 MEMBER_A_SYSTEM=""
@@ -44,19 +45,19 @@ Run a LaTeX-source-first draft cycle:
      - This shell script cannot spawn host-native subagents; provide explicit runner paths when using it for reviewer execution.
 
 Usage:
-  run_draft_cycle.sh --tag TAG --tex main.tex --bib refs.bib [--out-dir team] [--preflight-only]
+  run_draft_cycle.sh --tag TAG --tex main.tex --bib refs.bib [--out-dir artifacts] [--preflight-only]
 
   # With A/B reviewers (optional)
-  run_draft_cycle.sh --tag TAG --tex main.tex --bib refs.bib [--out-dir team] \
+  run_draft_cycle.sh --tag TAG --tex main.tex --bib refs.bib [--out-dir artifacts] \
     --member-a-system SYS_A.txt --member-b-system SYS_B.txt
 
   # With A/B + Team Leader audit (Member C) + mandatory convergence gate
-  run_draft_cycle.sh --tag TAG --tex main.tex --bib refs.bib [--out-dir team] \
+  run_draft_cycle.sh --tag TAG --tex main.tex --bib refs.bib [--out-dir artifacts] \
     --member-a-system SYS_A.txt --member-b-system SYS_B.txt --member-c-system SYS_C.txt \
     --require-convergence
 
 Options:
-  --out-dir DIR               Default: team
+  --out-dir DIR               Default: <project-root>/artifacts; custom output roots are rejected
   --preflight-only            Run deterministic preflight + packet build, then exit before any LLM calls.
 
   --member-a-system PATH      Member A system prompt file (optional unless running A/B).
@@ -91,6 +92,7 @@ while [[ $# -gt 0 ]]; do
     --tag) TAG="${2:-}"; shift 2 ;;
     --tex) TEX="${2:-}"; shift 2 ;;
     --bib) BIB="${2:-}"; shift 2 ;;
+    --project-policy) PROJECT_POLICY="${2:-}"; shift 2 ;;
     --out-dir) OUT_DIR="${2:-}"; shift 2 ;;
     --preflight-only) PREFLIGHT_ONLY=1; shift ;;
     --member-a-system) MEMBER_A_SYSTEM="${2:-}"; shift 2 ;;
@@ -120,10 +122,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "${OUT_DIR}" ]]; then
-  OUT_DIR="team"
-fi
-
 if [[ -z "${TAG}" || -z "${TEX}" || -z "${BIB}" ]]; then
   echo "ERROR: --tag, --tex, and --bib are required." >&2
   usage
@@ -146,10 +144,25 @@ PACKET_BUILDER="${SCRIPT_DIR}/build_draft_packet.py"
 TRAJ="${SCRIPT_DIR}/update_trajectory_index.py"
 PROJECT_INDEX_UPDATE_SCRIPT="${SCRIPT_DIR}/update_project_map.py"
 
-OUT_DIR_ABS="${OUT_DIR}"
-if [[ "${OUT_DIR_ABS}" != /* ]]; then
-  OUT_DIR_ABS="$(pwd)/${OUT_DIR_ABS}"
-fi
+PROJECT_ROOT="$(python3 - "${TEX}" <<'ROOT'
+from pathlib import Path
+import sys
+seed = Path(sys.argv[1]).resolve().parent
+root = next((p for p in (seed, *seed.parents) if (p / ".nullius").is_dir() or ((p / "project_charter.md").is_file() and (p / "research_contract.md").is_file())), seed)
+print(root)
+ROOT
+)"
+if [[ -z "${OUT_DIR}" ]]; then OUT_DIR="${PROJECT_ROOT}/artifacts"; fi
+TEAM_DIR="${PROJECT_ROOT}/team"
+REPO_ROOT="$(python3 "${SCRIPT_DIR}/../lib/literature_workflow_plan.py")"
+PROJECT_CONTRACTS_SRC="${REPO_ROOT}/packages/project-contracts/src"
+project_contracts_policy_cli() {
+  if [[ -d "${PROJECT_CONTRACTS_SRC}" ]]; then
+    PYTHONPATH="${PROJECT_CONTRACTS_SRC}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m project_contracts.project_policy_cli "$@"
+    return
+  fi
+  python3 -m project_contracts.project_policy_cli "$@"
+}
 if [[ ! "${TAG}" =~ ^[A-Za-z0-9._-]+$ || "${TAG}" == "." || "${TAG}" == *..* ]]; then
   echo "ERROR: draft tag must be one safe path segment using only [A-Za-z0-9._-], not '.' and no '..': ${TAG}" >&2
   exit 2
@@ -159,15 +172,31 @@ if [[ "${TAG}" =~ ^run_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{
   exit 2
 fi
 safe_tag="${TAG}"
-run_dir="${OUT_DIR_ABS}/runs/${safe_tag}"
-mkdir -p "${run_dir}"
+project_contracts_policy_cli assert-run-paths --project-root "${PROJECT_ROOT}" \
+  --notes "${TEX}" --out-dir "${OUT_DIR}" --project-policy "${PROJECT_POLICY}" \
+  --resolve-from "$(pwd)" --run-id "${safe_tag}" >/dev/null
+run_root="${PROJECT_ROOT}/artifacts/runs/${safe_tag}"
+run_dir="${run_root}/research_team"
+mkdir -p "${run_root}"
+NULLIUS_LAUNCHER="${PROJECT_ROOT}/.nullius/bin/nullius"
+if [[ -x "${NULLIUS_LAUNCHER}" ]]; then
+  if stamp_output="$("${NULLIUS_LAUNCHER}" --project-root "${PROJECT_ROOT}" trace stamp "${run_root}" 2>&1)"; then
+    echo "[trace] origin ${stamp_output}" | head -n 1
+  else
+    echo "[trace] WARNING: origin stamp failed for ${run_root}: ${stamp_output}" >&2
+    exit 1
+  fi
+else
+  echo "[trace] note: no nullius launcher; run origin not stamped." >&2
+fi
 
+mkdir -p "${run_dir}"
 preflight_json="${run_dir}/${safe_tag}_draft_structure.json"
 preflight_report="${run_dir}/${safe_tag}_draft_preflight.md"
 packet_path="${run_dir}/${safe_tag}_draft_packet.md"
 
 echo "[traj] stage=draft_preflight_start"
-python3 "${TRAJ}" --notes "${TEX}" --out-dir "${OUT_DIR}" --tag "${TAG}" --stage "draft_preflight_start" >/dev/null 2>&1 || true
+python3 "${TRAJ}" --notes "${TEX}" --out-dir "${TEAM_DIR}" --tag "${TAG}" --stage "draft_preflight_start" >/dev/null 2>&1 || true
 
 echo "[gate] running TeX draft preflight ..."
 set +e
@@ -177,15 +206,15 @@ set -e
 
 if [[ $gate_code -eq 0 ]]; then
   echo "[traj] stage=draft_preflight_ok"
-  python3 "${TRAJ}" --notes "${TEX}" --out-dir "${OUT_DIR}" --tag "${TAG}" --stage "draft_preflight_ok" --gate "tex_draft_preflight:ok" >/dev/null 2>&1 || true
+  python3 "${TRAJ}" --notes "${TEX}" --out-dir "${TEAM_DIR}" --tag "${TAG}" --stage "draft_preflight_ok" --gate "tex_draft_preflight:ok" >/dev/null 2>&1 || true
   if [[ -f "${PROJECT_INDEX_UPDATE_SCRIPT}" ]]; then
-    python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${TEX}" --team-dir "${OUT_DIR}" --latest-kind draft --tag "${safe_tag}" --status "draft_preflight_ok" --run-dir "${run_dir}" >/dev/null 2>&1 || true
+    python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${TEX}" --team-dir "${TEAM_DIR}" --latest-kind draft --tag "${safe_tag}" --status "draft_preflight_ok" --run-dir "${run_dir}" >/dev/null 2>&1 || true
   fi
 else
   echo "[traj] stage=draft_preflight_fail"
-  python3 "${TRAJ}" --notes "${TEX}" --out-dir "${OUT_DIR}" --tag "${TAG}" --stage "draft_preflight_fail" --gate "tex_draft_preflight:fail" >/dev/null 2>&1 || true
+  python3 "${TRAJ}" --notes "${TEX}" --out-dir "${TEAM_DIR}" --tag "${TAG}" --stage "draft_preflight_fail" --gate "tex_draft_preflight:fail" >/dev/null 2>&1 || true
   if [[ -f "${PROJECT_INDEX_UPDATE_SCRIPT}" ]]; then
-    python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${TEX}" --team-dir "${OUT_DIR}" --latest-kind draft --tag "${safe_tag}" --status "draft_preflight_fail" --run-dir "${run_dir}" >/dev/null 2>&1 || true
+    python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${TEX}" --team-dir "${TEAM_DIR}" --latest-kind draft --tag "${safe_tag}" --status "draft_preflight_fail" --run-dir "${run_dir}" >/dev/null 2>&1 || true
   fi
   exit $gate_code
 fi
@@ -225,7 +254,6 @@ if [[ ! -f "${MEMBER_B_SYSTEM}" ]]; then
 fi
 
 SKILLS_DIR="${SKILLS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
-PROJECT_ROOT="$(pwd)"
 LOCAL_CLAUDE_RUNNER="${PROJECT_ROOT}/scripts/run_claude.sh"
 LOCAL_GEMINI_RUNNER="${PROJECT_ROOT}/scripts/run_gemini.sh"
 LIB_DIR="${SCRIPT_DIR}/../lib"
@@ -468,11 +496,11 @@ if [[ -n "${pid_c}" ]]; then
 fi
 
 echo "[traj] stage=draft_member_reports"
-python3 "${TRAJ}" --notes "${TEX}" --out-dir "${OUT_DIR}" --tag "${TAG}" --stage "draft_member_reports" \
+python3 "${TRAJ}" --notes "${TEX}" --out-dir "${TEAM_DIR}" --tag "${TAG}" --stage "draft_member_reports" \
   --packet "${packet_path}" --member-a "${member_a_out}" --member-b "${member_b_out}" ${MEMBER_C_SYSTEM:+--member-c "${member_c_out}"} >/dev/null 2>&1 || true
 
 if [[ -f "${PROJECT_INDEX_UPDATE_SCRIPT}" ]]; then
-  python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${TEX}" --team-dir "${OUT_DIR}" --latest-kind draft --tag "${safe_tag}" --status "draft_member_reports" --run-dir "${run_dir}" >/dev/null 2>&1 || true
+  python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${TEX}" --team-dir "${TEAM_DIR}" --latest-kind draft --tag "${safe_tag}" --status "draft_member_reports" --run-dir "${run_dir}" >/dev/null 2>&1 || true
 fi
 
 if [[ "${REQUIRE_CONVERGENCE}" == "1" ]]; then
@@ -551,11 +579,11 @@ PY
   fi
 
   echo "[traj] stage=${stage}"
-  python3 "${TRAJ}" --notes "${TEX}" --out-dir "${OUT_DIR}" --tag "${TAG}" --stage "${stage}" \
+  python3 "${TRAJ}" --notes "${TEX}" --out-dir "${TEAM_DIR}" --tag "${TAG}" --stage "${stage}" \
     --packet "${packet_path}" --member-a "${member_a_out}" --member-b "${member_b_out}" --member-c "${member_c_out}" --gate "${gate_summary}" >/dev/null 2>&1 || true
 
   if [[ -f "${PROJECT_INDEX_UPDATE_SCRIPT}" ]]; then
-    python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${TEX}" --team-dir "${OUT_DIR}" --latest-kind draft --tag "${safe_tag}" --status "${stage}" --run-dir "${run_dir}" >/dev/null 2>&1 || true
+    python3 "${PROJECT_INDEX_UPDATE_SCRIPT}" --notes "${TEX}" --team-dir "${TEAM_DIR}" --latest-kind draft --tag "${safe_tag}" --status "${stage}" --run-dir "${run_dir}" >/dev/null 2>&1 || true
   fi
 
   if [[ "${conv_status}" == "converged" ]]; then

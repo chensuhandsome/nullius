@@ -5,7 +5,7 @@ Exploration debt gate (deterministic).
 Purpose:
 - `run_team_cycle.sh` can downgrade selected preflight gates to warn-only when
   `project_stage=exploration`, recording failures as a checklist:
-    team/runs/<tag>/<tag>_exploration_debt.md
+    artifacts/runs/<tag>/research_team/<tag>_exploration_debt.md
 - When returning to `project_stage=development` (or publication), those debts
   should be cleared before proceeding with strict runs.
 
@@ -13,7 +13,7 @@ Contract:
 - Debt items are Markdown task-list lines:
   - `- [ ] ...` open
   - `- [x] ...` closed
-- If any open items exist anywhere under team/runs/**, this gate FAILS.
+- If any open items exist anywhere under artifacts/runs/*/research_team/**, this gate FAILS.
 
 Exit codes:
   0 ok (no open debt)
@@ -38,13 +38,11 @@ def main() -> int:
     args = ap.parse_args()
 
     team_dir = args.team_dir
-    if not team_dir.exists():
-        return 0
-    if not team_dir.is_dir():
+    if team_dir.exists() and not team_dir.is_dir():
         print(f"ERROR: --team-dir is not a directory: {team_dir}", file=sys.stderr)
         return 2
 
-    runs_dir = team_dir / "runs"
+    runs_dir = team_dir.resolve().parent / "artifacts" / "runs"
     if not runs_dir.exists():
         return 0
 

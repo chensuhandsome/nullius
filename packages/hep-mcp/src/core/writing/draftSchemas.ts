@@ -23,7 +23,7 @@ export const SentenceDraftSchema = z.object({
   sentence: z.string().min(1),
   sentence_latex: z.string().min(1).optional(),
   type: SentenceTypeSchema.optional().default('fact'),
-  is_grounded: z.boolean().optional().default(true),
+  is_grounded: z.boolean().optional(),
   claim_ids: z.array(z.string().min(1)).optional().default([]),
   evidence_ids: z.array(z.string().min(1)).optional().default([]),
   recids: z.array(RecidTokenSchema).optional().default([]),

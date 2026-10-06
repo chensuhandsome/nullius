@@ -46,7 +46,7 @@ _ACTIVE_PROCESSES: set[subprocess.Popen] = set()
 _STOP_REQUESTED = threading.Event()
 _RE_MODEL_SLUG = re.compile(r"[^A-Za-z0-9._-]+")
 _EXIT_NEEDS_USER_DECISION = 4
-_DEFAULT_TIMEOUT_SECS = 900
+_DEFAULT_TIMEOUT_SECS = 0
 _DEFAULT_MAX_ATTEMPTS = 3
 _DEFAULT_BACKEND_TOOL_MODES = {
     "claude": "none",
@@ -114,9 +114,10 @@ def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
 class SeatBudget:
     """One review seat's runner-call cap and monotonic execution deadline."""
 
-    def __init__(self, max_attempts: int, timeout_secs: int):
+    def __init__(self, max_attempts: int, timeout_secs: int, progress_policy: Optional[dict[str, Any]] = None):
         self.max_attempts = max_attempts
         self.timeout_secs = timeout_secs
+        self.progress_policy = progress_policy or {}
         self.runner_invocations = 0
         self.started_at: Optional[float] = None
         self._lock = threading.Lock()
@@ -140,6 +141,7 @@ class SeatBudget:
             "max_attempts": self.max_attempts,
             "runner_invocations": self.runner_invocations,
             "timeout_secs": self.timeout_secs,
+            "hard_budget_secs": self.timeout_secs or None,
             "elapsed_secs": round(elapsed, 6),
         }
 
@@ -789,6 +791,7 @@ def _build_cmd(
     review_workspace_dir: Path,
     gemini_cli_home: Optional[str],
     timeout_secs: Optional[float] = None,
+    progress_policy: Optional[dict[str, Any]] = None,
 ) -> list[str]:
     cmd = ["bash", str(plan.runner_path)]
     if system is not None:
@@ -811,6 +814,15 @@ def _build_cmd(
         cmd.extend(["--max-attempts", "1"])
         if timeout_secs is not None:
             cmd.extend(["--timeout-secs", str(max(1, math.ceil(timeout_secs)) if timeout_secs > 0 else 0)])
+    if plan.backend == "claude":
+        policy = progress_policy or {}
+        if timeout_secs is not None:
+            cmd.extend(["--timeout-secs", str(max(0, timeout_secs))])
+        if policy.get("live_capture"):
+            cmd.append("--live-capture")
+        for name in ("expected_secs", "inactivity_secs", "inactivity_grace_secs"):
+            if name in policy:
+                cmd.extend(["--" + name.replace("_", "-"), str(policy[name])])
     if plan.backend in {"kimi", "opencode", "gemini"}:
         cmd.append("--no-fallback")
     tool_mode = _resolve_backend_tool_mode(plan.backend, backend_tool_modes)
@@ -969,6 +981,7 @@ def _run_one(
         review_workspace_dir=review_workspace_dir,
         gemini_cli_home=gemini_cli_home,
         timeout_secs=remaining,
+        progress_policy=budget.progress_policy,
     )
 
     start_event: dict[str, Any] = {
@@ -995,6 +1008,7 @@ def _run_one(
             },
         )
 
+    prior_capture_runs = set(Path(str(out_path)+".attempts").glob("run.*")) if plan.backend == "claude" else set()
     try:
         proc = _run_with_timeout(cmd, timeout_secs=remaining)
         if gemini_cli_home:
@@ -1015,6 +1029,40 @@ def _run_one(
             "out": str(out_path),
             "seat_budget": budget.snapshot(),
         }
+        result["reported_model"] = None
+        result["progress"] = {"capture_health": "unknown"}
+        if plan.backend == "claude":
+            current_runs = set(Path(str(out_path)+".attempts").glob("run.*")) - prior_capture_runs
+            if len(current_runs) == 1:
+                capture_root = next(iter(current_runs))
+                receipt_path = capture_root / "budget.json"
+                if receipt_path.is_file():
+                    receipt = json.loads(receipt_path.read_text())
+                    attempts = receipt.get("attempts") or []
+                    if attempts:
+                        attempt = attempts[-1]
+                        result["reported_model"] = attempt.get("reported_model")
+                        result["runner_failure_reason"] = attempt.get("termination_reason")
+                        progress_path = capture_root / str(attempt.get("progress") or "")
+                        if progress_path.is_file():
+                            result["progress"] = json.loads(progress_path.read_text())
+                        result["capture_receipt"] = str(receipt_path)
+        if result.get("runner_failure_reason") == "hard_budget_exhausted":
+            result["timed_out"] = True
+        if not result.get("success") and not result.get("runner_failure_reason"):
+            diagnostics = proc.get("stderr", "").lower()
+            if "deterministic error" in diagnostics:
+                result["runner_failure_reason"] = (
+                    "deterministic_quota" if any(x in diagnostics for x in ("quota", "usage limit", "out of usage")) else
+                    "deterministic_permission" if any(x in diagnostics for x in ("permission", "auto-rejecting", "forbidden")) else
+                    "deterministic_auth" if any(x in diagnostics for x in ("api key", "unauthorized", "not eligible", "location")) else
+                    "deterministic_usage")
+            elif "no assistant content found" in diagnostics:
+                result["runner_failure_reason"] = "incomplete_output"
+            elif "unsupported assistant content shape" in diagnostics:
+                result["runner_failure_reason"] = "unsupported_output"
+            elif any(x in diagnostics for x in ("connection reset", "fetch failed", "connection refused")):
+                result["runner_failure_reason"] = "transient_transport"
         if gemini_review_profile is not None:
             result["gemini_review_profile"] = gemini_review_profile
         event: dict[str, Any] = {
@@ -1351,7 +1399,9 @@ def _classify_failure(failure_reason: Optional[str]) -> Optional[str]:
     if failure_reason is None:
         return None
     reason = str(failure_reason)
-    if reason in _INFRASTRUCTURE_FAILURE_REASONS or reason.startswith("exit_code_"):
+    if reason in _INFRASTRUCTURE_FAILURE_REASONS or reason.startswith(("exit_code_", "deterministic_")) or reason in {
+        "hard_budget_exhausted", "confirmed_inactivity", "user_cancelled", "transient_transport"
+    }:
         return "infrastructure"
     # Everything else — e.g. phase1_criteria_invalid, and any unknown future
     # reason — is "content": misreading a disagreement as an outage would hide
@@ -1439,7 +1489,9 @@ def _postprocess_result(
     if result.get("budget_failure"):
         failure_reason = str(result["budget_failure"])
     elif bool(result.get("timed_out")):
-        failure_reason = "timeout"
+        failure_reason = "hard_budget_exhausted"
+    elif result.get("runner_failure_reason"):
+        failure_reason = str(result["runner_failure_reason"])
     elif not command_success:
         failure_reason = f"exit_code_{result.get('exit_code', 'unknown')}"
     elif blank_output:
@@ -1460,7 +1512,7 @@ def _requested_backend(result: dict[str, Any]) -> str:
     return str(backend or "")
 
 
-def _dual_review_summary(results: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+def _dual_review_summary(results: list[dict[str, Any]], roster: dict[str, Any] | None = None) -> Optional[dict[str, Any]]:
     """Two-reviewer diversity summary over the first two reviewers (by index)
     whose REQUESTED backends differ — any backend pair counts, not a fixed
     seat assignment. Diversity degrades when the RESOLVED backends coincide
@@ -1479,9 +1531,11 @@ def _dual_review_summary(results: list[dict[str, Any]]) -> Optional[dict[str, An
 
     a_resolved = reviewer_a.get("resolved", {}) if isinstance(reviewer_a.get("resolved"), dict) else {}
     b_resolved = reviewer_b.get("resolved", {}) if isinstance(reviewer_b.get("resolved"), dict) else {}
-    diversity = "ok"
-    if a_resolved.get("backend") == b_resolved.get("backend"):
-        diversity = "degraded"
+    a_family = _resolved_family(reviewer_a, roster)
+    b_family = _resolved_family(reviewer_b, roster)
+    diversity = ("unknown" if "unknown" in (a_family, b_family) else
+                 "degraded" if a_family == b_family else "ok")
+    route_diversity = "degraded" if a_resolved.get("backend") == b_resolved.get("backend") else "ok"
 
     return {
         "reviewer_a": {
@@ -1497,6 +1551,7 @@ def _dual_review_summary(results: list[dict[str, Any]]) -> Optional[dict[str, An
             "fallback_reason": reviewer_b.get("fallback_reason"),
         },
         "diversity": diversity,
+        "route_diversity": route_diversity,
     }
 
 
@@ -1738,46 +1793,22 @@ def _resolve_family_spec(spec: str, roster: dict[str, Any] | None) -> str:
 
 
 def _roster_family(backend: str, model: str, roster: dict[str, Any] | None) -> str:
-    """Family label for one resolved (backend, model) execution, used by the
-    independence record. Attribution works on the resolved execution: an exact
-    model-string match against a declared tier wins; a runner used by exactly one
-    declared family maps to that family; opencode model strings match by their
-    provider/ prefix; anything the file cannot attribute keeps the backend name
-    as its family label (the pre-agents-file behavior)."""
-    if not roster:
-        return backend
-    families = roster.get("families") or {}
-    m = (model or "").strip()
-    if backend != "opencode" and m.startswith(backend + "/"):
-        m = m.split("/", 1)[1]
-    runner_families: list[str] = []
-    for fam_name in sorted(families):
-        fam = families[fam_name]
-        if not isinstance(fam, dict):
-            continue
+    """Exact configured identity evidence only; route/provider/alias guesses
+    cannot establish a model family. An agents file is a declaration, not a
+    provider attestation. Keep unmatched and ambiguous identities unknown."""
+    if not roster or not model:
+        return "unknown"
+    def normalize(value: str) -> str:
+        value = value.strip()
+        return value.split("/", 1)[1] if backend != "opencode" and value.startswith(backend + "/") else value
+    m = normalize(model)
+    hits = []
+    for name, fam in (roster.get("families") or {}).items():
         if _AGENTS_RUNNER_BACKEND.get(str(fam.get("runner") or "")) != backend:
             continue
-        runner_families.append(fam_name)
-        tiers = fam.get("models") or {}
-        if m and isinstance(tiers, dict) and m in {str(v).strip() for v in tiers.values()}:
-            return fam_name
-    if backend != "opencode":
-        if len(runner_families) == 1:
-            return runner_families[0]
-        return backend
-    provider = m.split("/", 1)[0] if "/" in m else ""
-    if provider:
-        hits = [
-            fam_name
-            for fam_name in runner_families
-            if any(
-                "/" in str(v) and str(v).strip().split("/", 1)[0] == provider
-                for v in (families[fam_name].get("models") or {}).values()
-            )
-        ]
-        if len(hits) == 1:
-            return hits[0]
-    return backend
+        if m in {normalize(str(v)) for v in (fam.get("models") or {}).values()}:
+            hits.append(name)
+    return hits[0] if len(hits) == 1 else "unknown"
 
 
 def _agents_runner_available(runner: str) -> bool:
@@ -1824,7 +1855,8 @@ def _execution_model(result: dict[str, Any]) -> str:
 
 
 def _resolved_family(result: dict[str, Any], roster: dict[str, Any] | None) -> str:
-    return _roster_family(_execution_backend(result), _execution_model(result), roster)
+    return _roster_family(_execution_backend(result),
+                          str(result.get("reported_model") or _execution_model(result)), roster)
 
 
 def _lane_exclusion_reason(
@@ -1852,10 +1884,14 @@ def _lane_exclusion_reason(
     the modeled mode; ``null`` means the backend is unmodeled and attests
     nothing.
     """
+    if result.get("contract_ok") is False:
+        return "contract_invalid"
+    if result.get("partial"):
+        return "partial_output"
     if contaminated_indices and int(result.get("index", -1)) in contaminated_indices:
         return "AMBIENT_CONTEXT_CONTAMINATED"
     resolved = result.get("resolved") if isinstance(result.get("resolved"), dict) else None
-    if resolved is not None and not resolved.get("model"):
+    if resolved is not None and not resolved.get("model") and result.get("variant") == "fallback":
         # A fallback that ran on a backend's default model has no recorded
         # execution model: its family is unattested (on a multi-family
         # provider the backend label could pair with a real family into a
@@ -1871,6 +1907,8 @@ def _lane_exclusion_reason(
 def _execution_spec(r: dict[str, Any]) -> str:
     backend = _execution_backend(r)
     model = _execution_model(r)
+    if not model and r.get("variant") != "fallback":
+        model = str(r.get("model") or "")  # diagnostic request label, never identity evidence
     return f"{backend}/{model}" if model and "/" not in model else (model or backend)
 
 
@@ -1902,7 +1940,7 @@ def _resolve_contaminated_selectors(
         if raw_arg is not None:
             keys.add(raw_arg)
         family = _roster_family(plan.backend, model, roster)
-        if family:
+        if family != "unknown":
             keys.add(family)
         lane_keys[plan.index] = {k for k in keys if k}
 
@@ -1946,11 +1984,27 @@ def _independence_summary(
     non_independent: list[dict[str, Any]] = []
     independent_families: set[str] = set()
     for r in results:
-        if not r.get("success"):
-            continue
         family = _resolved_family(r, roster)
         spec = _execution_spec(r)
-        reason = _lane_exclusion_reason(r, backend_tool_modes, contaminated_indices)
+        reason = ("not_completed" if not r.get("success") else
+                  _lane_exclusion_reason(r, backend_tool_modes, contaminated_indices))
+        if reason is None and r.get("contract_ok") is not True:
+            reason = "contract_unchecked"
+        if reason is None and family == "unknown":
+            reason = "family_unknown"
+        r["family_evidence"] = {
+            "family": family,
+            "source": "roster_exact_model" if family != "unknown" else "unknown",
+            "model": r.get("reported_model") or _execution_model(r) or None,
+            "reported_by_cli": bool(r.get("reported_model")),
+        }
+        r["independence_evidence"] = {
+            "model_family": r["family_evidence"],
+            "tool_exposure": _recorded_tool_mode(_execution_backend(r), backend_tool_modes or {}),
+            "input_framing": "contaminated" if contaminated_indices and int(r.get("index", -1)) in contaminated_indices else "not_machine_verified",
+            "method": "not_machine_verified",
+        }
+        r["completed_eligible"] = reason is None
         if reason is not None:
             non_independent.append(
                 {
@@ -1975,6 +2029,8 @@ def _independence_summary(
     info: dict[str, Any] = {
         "level": level,
         "participating_families": participating,
+        "completed_eligible_count": sum(bool(r.get("completed_eligible")) for r in results),
+        "machine_below_minimum": None,
         "declared_available_families": None,
         "absent_families": None,
         "cross_family_minimum": None,
@@ -1992,7 +2048,8 @@ def _independence_summary(
                 "declared_available_families": usable,
                 "absent_families": [f for f in declared if f not in participating],
                 "cross_family_minimum": int(minimum),
-                "below_minimum": len(usable) < int(minimum),
+                "below_minimum": len(participating) < int(minimum),
+                "machine_below_minimum": len(usable) < int(minimum),
                 "when_below_minimum": str(policy.get("when_below_minimum", "native_subagents")),
             }
         )
@@ -2264,8 +2321,12 @@ def _parse_args() -> argparse.Namespace:
         "--timeout-secs",
         type=int,
         default=_DEFAULT_TIMEOUT_SECS,
-        help=f"Total deadline per review seat across phases/retries/fallback (0 disables, default: {_DEFAULT_TIMEOUT_SECS}).",
+        help="Explicit hard deadline per review seat across phases/retries/fallback; default: no hard budget (0).",
     )
+    ap.add_argument("--claude-live-capture", action="store_true", help="Opt into durable Claude events and partial answer; a terminal result is required.")
+    ap.add_argument("--expected-secs", type=float, default=1200, help="Soft expected review duration (default: 1200); does not kill generation.")
+    ap.add_argument("--inactivity-secs", type=float, default=0, help="Opt-in Claude stream inactivity diagnostic; unknown capture never terminates (default: disabled).")
+    ap.add_argument("--inactivity-grace-secs", type=float, default=30, help="Further observable-inactivity grace before termination (default: 30).")
     ap.add_argument(
         "--max-attempts", type=int, default=_DEFAULT_MAX_ATTEMPTS,
         help="Total runner subprocess invocations per review seat, including phases, retries, and fallback (default: 3).",
@@ -2454,6 +2515,8 @@ def _main(home_stack: contextlib.ExitStack) -> int:
             raise ValueError("--max-prompt-bytes must be a positive integer")
         if args.max_prompt_chars is not None and args.max_prompt_chars <= 0:
             raise ValueError("--max-prompt-chars must be a positive integer")
+        if any(not math.isfinite(x) or x < 0 for x in (args.expected_secs, args.inactivity_secs)) or not math.isfinite(args.inactivity_grace_secs) or args.inactivity_grace_secs <= 0:
+            raise ValueError("progress estimates/thresholds must be finite and nonnegative; inactivity grace must be positive")
         if args.timeout_secs < 0:
             raise ValueError("--timeout-secs must be >= 0")
         if args.max_attempts < 1:
@@ -2778,7 +2841,9 @@ def _main(home_stack: contextlib.ExitStack) -> int:
     # byte-for-byte identical to the historical behavior (empty extra kwargs).
     agent_fn = _run_two_phase_one if args.two_phase else _run_one
     two_phase_extra: dict[str, Any] = {"scope_prompt": scope_prompt} if args.two_phase else {}
-    seat_budgets = {plan.index: SeatBudget(int(args.max_attempts), int(args.timeout_secs)) for plan in plans}
+    progress_policy = {"live_capture": bool(args.claude_live_capture), "expected_secs": args.expected_secs,
+                       "inactivity_secs": args.inactivity_secs, "inactivity_grace_secs": args.inactivity_grace_secs}
+    seat_budgets = {plan.index: SeatBudget(int(args.max_attempts), int(args.timeout_secs), progress_policy) for plan in plans}
 
     if args.parallel:
         max_workers = min(len(plans), 32)
@@ -2861,7 +2926,8 @@ def _main(home_stack: contextlib.ExitStack) -> int:
     for r in results:
         requested = {"backend": str(r.get("backend")), "model": r.get("model")}
         r["requested"] = requested
-        r["resolved"] = dict(requested)
+        r["resolved"] = {"backend": requested["backend"], "model": r.get("runner_model")}
+        r.setdefault("reported_model", None)
         r["variant"] = "canonical"
         r["fallback_reason"] = None
         r["command_success"] = bool(r.get("success", False))
@@ -2921,6 +2987,8 @@ def _main(home_stack: contextlib.ExitStack) -> int:
                 )
                 if rerun.get("budget_failure"):
                     attempts -= 1  # a denied launch is not a consumed retry
+                for field in ("reported_model", "progress", "runner_failure_reason", "capture_receipt"):
+                    r[field] = rerun.get(field)
                 r["command_success"] = bool(rerun.get("success", False))
                 r["exit_code"] = rerun.get("exit_code")
                 r["timed_out"] = bool(rerun.get("timed_out"))
@@ -3075,6 +3143,10 @@ def _main(home_stack: contextlib.ExitStack) -> int:
                         r["budget_failure"] = fb["budget_failure"]
                     else:
                         r.pop("budget_failure", None)
+                    r["runner_failure_reason"] = fb.get("runner_failure_reason")
+                    r["capture_receipt"] = fb.get("capture_receipt")
+                    r["reported_model"] = fb.get("reported_model")
+                    r["progress"] = fb.get("progress")
                     r["out"] = fb.get("out", r.get("out"))
                     _postprocess_result(r, check_review_contract=bool(args.check_review_contract))
                     if r.get("success"):
@@ -3127,12 +3199,7 @@ def _main(home_stack: contextlib.ExitStack) -> int:
         # A failed lane produced no reviewable output: it can no more occupy
         # a comparison seat or enter the similarity set than an excluded one.
         # A contract-invalid lane HAS output but has not finished delivering.
-        return (
-            bool(r.get("success"))
-            and not _contract_invalid(r)
-            and _lane_exclusion_reason(r, backend_tool_modes, contaminated_lane_indices)
-            is None
-        )
+        return bool(r.get("completed_eligible"))
 
     credit_results = [r for r in results if _credit_eligible(r)]
 
@@ -3159,11 +3226,13 @@ def _main(home_stack: contextlib.ExitStack) -> int:
         if isinstance(sim_value, str):
             sim_value = 0.0
 
-        converged = float(sim_value) >= args.convergence_threshold
+        quorum_satisfied = len(independence["participating_families"]) >= (independence["cross_family_minimum"] or 1)
+        converged = len(output_files) >= 2 and quorum_satisfied and float(sim_value) >= args.convergence_threshold
         convergence_info = {
             "threshold": args.convergence_threshold,
             "similarity": similarity,
             "converged": converged,
+            "quorum_satisfied": quorum_satisfied,
             "evaluated_outputs": [str(p) for p in output_files],
             # Successful lanes whose output was withheld from the similarity
             # set (zero convergence credit) — visible, never silent.
@@ -3178,6 +3247,8 @@ def _main(home_stack: contextlib.ExitStack) -> int:
     meta: dict[str, Any] = {
         "schema_version": 1,
         "created_at": _utc_now(),
+        "progress_policy": progress_policy,
+        "hard_budget_secs": int(args.timeout_secs) or None,
         "n_agents": len(plans),
         "success_count": success_count,
         "failure_count": len(plans) - success_count,
@@ -3206,7 +3277,7 @@ def _main(home_stack: contextlib.ExitStack) -> int:
         }
     # Comparison seats are selected among credit-eligible lanes only: a
     # contaminated or workspace-mode lane never occupies a diversity seat.
-    dual_summary = _dual_review_summary(credit_results)
+    dual_summary = _dual_review_summary(credit_results, agents_roster)
     if dual_summary is not None:
         meta.update(dual_summary)
         paths = meta.get("paths", {})

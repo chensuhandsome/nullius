@@ -528,7 +528,7 @@ Goal:
 
 Constraints:
 - Keep all generated artifacts under the project-local canonical root \`artifacts/runs/<run_id>/\`.
-- Treat \`team/runs/<tag>/\` as reviewer packet/log provenance for this validation.
+- Treat \`artifacts/runs/<tag>/research_team/\` as reviewer packet/log provenance for this validation.
 - Do not call external services during this deterministic harness.
 
 Acceptance:

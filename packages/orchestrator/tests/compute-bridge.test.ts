@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { withExplicitSurfaceMethod } from './explicitArtifactWriterMethod.js';
 import { fileURLToPath } from 'node:url';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -16,6 +17,7 @@ vi.mock('node:child_process', async importOriginal => {
 });
 
 import { bridgeStagedIdeaToComputation } from '../src/computation/bridge.js';
+import { handleToolCall } from '../src/tooling.js';
 import {
   cleanupRegisteredDirs,
   initRunState,
@@ -32,7 +34,7 @@ const executionPlanSchema = JSON.parse(
 ) as Record<string, unknown>;
 
 function stagedIdeaSurface() {
-  return {
+  return withExplicitSurfaceMethod({
     outline_seed_path: 'artifacts/outline_seed_v1.json',
     outline: {
       thesis: 'Bridge staged hypotheses into a provider-neutral execution plan before any compute approval.',
@@ -50,7 +52,7 @@ function stagedIdeaSurface() {
         { step: 'Assemble consistency equations', method: 'structured derivation', estimated_difficulty: 'moderate' },
       ],
     },
-  };
+  });
 }
 
 function stagedIdeaSurfaceWithProviderBundle() {
@@ -95,6 +97,7 @@ function stagedIdeaSurfaceWithProviderBundle() {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   spawnSyncMock.mockClear();
   cleanupRegisteredDirs();
 });
@@ -127,7 +130,7 @@ describe('compute bridge', () => {
     expect((executionPlan.tasks as Array<Record<string, unknown>>)[0]?.capabilities).toContain('observable_estimation');
   });
 
-  it('prefers a staged provider-backed method bundle over the internal fixture runner when present', async () => {
+  it('materializes the explicitly supplied provider-backed method bundle', async () => {
     const projectRoot = makeTmpDir();
     const runDir = path.join(projectRoot, 'run-bridge-provider');
     registerCleanup(projectRoot);
@@ -191,34 +194,68 @@ describe('compute bridge', () => {
     const packet = JSON.parse(fs.readFileSync(packetPath, 'utf-8')) as { details_md: string; risks: string[] };
     expect(packet.details_md).toContain('Bridge objective');
     expect(packet.details_md).toContain('Required observables: observable_a');
-    expect(packet.risks.some(risk => risk.includes('internal fixture manifest'))).toBe(true);
+    expect(packet.risks.some(risk => risk.includes('Execution authority comes from the staged method bundle'))).toBe(true);
   });
 
-  it('returns a ready-to-execute planned result when A3 is already satisfied and still never executes via the bridge surface', async () => {
+  it('requests content-bound approval when a historical A3 marker has no packet', async () => {
+    const projectRoot = makeTmpDir();
+    const runId = 'run-bridge-unbound-approval';
+    const runDir = path.join(projectRoot, runId);
+    registerCleanup(projectRoot);
+    fs.mkdirSync(path.join(runDir, 'artifacts'), { recursive: true });
+    const manager = initRunState(projectRoot, runId);
+    fs.writeFileSync(manager.policyPath, JSON.stringify({ require_approval_for: { compute_runs: true } }) + '\n');
+    markA3Satisfied(manager, 'A3-historical-unbound');
+    const result = await bridgeStagedIdeaToComputation({ dryRun: false, projectRoot, runDir, runId, stagedIdea: stagedIdeaSurface() });
+    expect(result.status).toBe('requires_approval');
+    expect(result.gate_id).toBe('A3');
+    expect(result.approval_id).not.toBe('A3-historical-unbound');
+    expect(fs.existsSync(path.join(projectRoot, result.packet_json_path))).toBe(true);
+    expect(manager.readState().gate_satisfied.A3).toBeUndefined();
+    const executionPlan = JSON.parse(fs.readFileSync(path.join(runDir, 'computation', 'execution_plan_v1.json'), 'utf8')) as { tasks: Array<{ expected_artifacts: Array<{ path: string }> }> };
+    const outputs = executionPlan.tasks.flatMap(task => task.expected_artifacts);
+    expect(outputs.length).toBeGreaterThan(0);
+    for (const output of outputs) expect(fs.existsSync(path.join(runDir, 'computation', output.path))).toBe(false);
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('returns planned for an unchanged content-bound A3 approval and never executes via the bridge', async () => {
+    // A fixed test clock keeps both regenerated manifests and plans byte-identical.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-03-13T00:00:00Z'));
     const projectRoot = makeTmpDir();
     const runId = 'run-bridge-approved';
     const runDir = path.join(projectRoot, runId);
     registerCleanup(projectRoot);
     fs.mkdirSync(path.join(runDir, 'artifacts'), { recursive: true });
-    writeJson(path.join(runDir, 'artifacts', 'outline_seed_v1.json'), stagedIdeaSurface().outline);
     const manager = initRunState(projectRoot, runId);
-    fs.writeFileSync(manager.policyPath, JSON.stringify({ require_approval_for: { compute_runs: true } }) + '\n', 'utf-8'); // gate enabled, but already satisfied below
-    markA3Satisfied(manager, 'A3-0001');
-
-    // A3 already satisfied → no new approval pause. The planning-only bridge hands back
-    // the staged manifest (status 'planned') rather than throwing or executing.
-    const planned = await bridgeStagedIdeaToComputation({
-      dryRun: false,
-      projectRoot,
-      runDir,
-      runId,
-      stagedIdea: stagedIdeaSurface(),
-    });
+    fs.writeFileSync(manager.policyPath, JSON.stringify({ require_approval_for: { compute_runs: true } }) + '\n');
+    const input = { dryRun: false, projectRoot, runDir, runId, stagedIdea: stagedIdeaSurface() };
+    const request = await bridgeStagedIdeaToComputation(input);
+    expect(request.status).toBe('requires_approval');
+    if (request.status !== 'requires_approval') throw new Error('approval request was not created');
+    const approval = await handleToolCall('orch_run_approve', {
+      _confirm: true, project_root: projectRoot, approval_id: request.approval_id,
+      approval_packet_sha256: request.approval_packet_sha256, note: 'Approve the fixed test input.',
+    }, 'full');
+    expect(approval.isError).not.toBe(true);
+    expect(JSON.parse(approval.content[0]!.text).approved).toBe(true);
+    const approvalsDir = path.join(projectRoot, 'artifacts', 'runs', runId, 'approvals');
+    const approvalsBefore = fs.readdirSync(approvalsDir);
+    const manifestBefore = fs.readFileSync(path.join(runDir, request.manifest_path));
+    const planBefore = fs.readFileSync(path.join(runDir, request.execution_plan_path));
+    const planned = await bridgeStagedIdeaToComputation(input);
     expect(planned.status).toBe('planned');
     expect((planned as { requires_approval?: boolean }).requires_approval).toBe(false);
     expect(planned.manifest_path).toBe('computation/manifest.json');
-    // No new approval request was created, and the bridge never executes.
-    expect(fs.existsSync(path.join(projectRoot, 'artifacts', 'runs', runId, 'approvals'))).toBe(false);
+    expect(fs.readFileSync(path.join(runDir, planned.manifest_path))).toEqual(manifestBefore);
+    expect(fs.readFileSync(path.join(runDir, planned.execution_plan_path))).toEqual(planBefore);
+    expect(fs.readdirSync(approvalsDir)).toEqual(approvalsBefore);
+    expect(manager.readState().pending_approval).toBeNull();
+    const executionPlan = JSON.parse(fs.readFileSync(path.join(runDir, 'computation', 'execution_plan_v1.json'), 'utf8')) as { tasks: Array<{ expected_artifacts: Array<{ path: string }> }> };
+    const outputs = executionPlan.tasks.flatMap(task => task.expected_artifacts);
+    expect(outputs.length).toBeGreaterThan(0);
+    for (const output of outputs) expect(fs.existsSync(path.join(runDir, 'computation', output.path))).toBe(false);
     expect(spawnSyncMock).not.toHaveBeenCalled();
   });
 

@@ -60,7 +60,7 @@ if [[ -z "${out}" ]]; then
   exit 2
 fi
 
-printf 'MODEL=%s\\n' "${model}" > "${out}"
+printf '{"verdict":"PASS","blocking_issues":[],"summary":"MODEL=%s"}\\n' "${model}" > "${out}"
 """,
         encoding="utf-8",
     )
@@ -123,6 +123,13 @@ _FULL_FAMILIES = {
     "gem": {"runner": "gemini", "available": False, "notes": "no local access"},
     "host": {"runner": "native", "models": {"default": "fable"}},
 }
+
+_TEST_IDENTITY_ROSTER = _roster({
+    "codex": {"runner": "codex", "models": {"default": "x"}},
+    "opencode": {"runner": "opencode", "models": {"default": "prov/y"}},
+    "claude": {"runner": "claude-cli", "models": {"default": "a"}},
+    "gemini": {"runner": "gemini", "models": {"default": "b", "other": "z"}},
+})
 
 
 class AgentsFileUnitTests(unittest.TestCase):
@@ -263,19 +270,19 @@ class AgentsFileUnitTests(unittest.TestCase):
         roster = _roster(_FULL_FAMILIES)
         fam = self.mod._roster_family
         # No roster: the backend name is the family label (pre-agents-file behavior).
-        self.assertEqual(fam("codex", "codex/gpt-x-strong", None), "codex")
+        self.assertEqual(fam("codex", "codex/gpt-x-strong", None), "unknown")
         # Exact tier match, with and without the backend/ prefix on the model string.
         self.assertEqual(fam("codex", "codex/gpt-x-strong", roster), "gpt")
         self.assertEqual(fam("codex", "gpt-x-default", roster), "gpt")
         # A runner used by exactly one declared family maps to that family even for
         # a model string the file does not list.
-        self.assertEqual(fam("codex", "codex/gpt-99-unknown", roster), "gpt")
-        self.assertEqual(fam("claude", "claude/other", roster), "clc")
+        self.assertEqual(fam("codex", "codex/gpt-99-unknown", roster), "unknown")
+        self.assertEqual(fam("claude", "claude/other", roster), "unknown")
         # OpenCode: exact match, then provider-prefix match, else the backend name.
         self.assertEqual(fam("opencode", "zed/glm-z", roster), "glm")
-        self.assertEqual(fam("opencode", "zed/glm-next", roster), "glm")
-        self.assertEqual(fam("opencode", "minimax/M", roster), "opencode")
-        self.assertEqual(fam("opencode", "default", roster), "opencode")
+        self.assertEqual(fam("opencode", "zed/glm-next", roster), "unknown")
+        self.assertEqual(fam("opencode", "minimax/M", roster), "unknown")
+        self.assertEqual(fam("opencode", "default", roster), "unknown")
 
     def test_roster_family_ambiguous_provider_falls_back(self):
         roster = _roster(
@@ -286,7 +293,7 @@ class AgentsFileUnitTests(unittest.TestCase):
         )
         # Exact tier match still attributes; a provider shared by two families cannot.
         self.assertEqual(self.mod._roster_family("opencode", "zed/one", roster), "glm-a")
-        self.assertEqual(self.mod._roster_family("opencode", "zed/three", roster), "opencode")
+        self.assertEqual(self.mod._roster_family("opencode", "zed/three", roster), "unknown")
 
     def test_usable_families_and_independence_labels(self):
         roster = _roster(_FULL_FAMILIES, policy={"cross_family_minimum": 3, "when_below_minimum": "native_subagents"})
@@ -295,8 +302,8 @@ class AgentsFileUnitTests(unittest.TestCase):
             self.assertEqual(usable, ["clc", "glm", "gpt", "host", "kimi"])  # gem declared unavailable
 
             results = [
-                {"success": True, "resolved": {"backend": "codex", "model": "codex/gpt-x-strong"}},
-                {"success": True, "resolved": {"backend": "opencode", "model": "zed/glm-z"}},
+                {"success": True, "contract_ok": True, "resolved": {"backend": "codex", "model": "codex/gpt-x-strong"}},
+                {"success": True, "contract_ok": True, "resolved": {"backend": "opencode", "model": "zed/glm-z"}},
                 {"success": False, "resolved": {"backend": "kimi", "model": "kimi/kimi-alias"}},
             ]
             info = self.mod._independence_summary(results, roster)
@@ -305,7 +312,8 @@ class AgentsFileUnitTests(unittest.TestCase):
         self.assertEqual(info["declared_available_families"], ["clc", "glm", "gpt", "host", "kimi"])
         self.assertEqual(info["absent_families"], ["clc", "gem", "host", "kimi"])
         self.assertEqual(info["cross_family_minimum"], 3)
-        self.assertFalse(info["below_minimum"])
+        self.assertTrue(info["below_minimum"])
+        self.assertFalse(info["machine_below_minimum"])
         self.assertEqual(info["when_below_minimum"], "native_subagents")
 
     def test_workspace_tool_mode_lane_earns_no_independence_credit(self):
@@ -313,13 +321,13 @@ class AgentsFileUnitTests(unittest.TestCase):
         # (the reviewer read-only rule cannot be attested for it): excluded
         # from family counting, listed with its index and reason.
         results = [
-            {"index": 0, "success": True, "backend": "codex", "model": "codex/x",
+            {"index": 0, "success": True, "contract_ok": True, "backend": "codex", "model": "codex/x",
              "resolved": {"backend": "codex", "model": "codex/x"}},
-            {"index": 1, "success": True, "backend": "opencode", "model": "prov/y",
+            {"index": 1, "success": True, "contract_ok": True, "backend": "opencode", "model": "prov/y",
              "resolved": {"backend": "opencode", "model": "prov/y"}},
         ]
         info = self.mod._independence_summary(
-            results, None, backend_tool_modes={"opencode": "workspace"}
+            results, _TEST_IDENTITY_ROSTER, backend_tool_modes={"opencode": "workspace"}
         )
         self.assertEqual(info["level"], "single_family")
         self.assertEqual(info["participating_families"], ["codex"])
@@ -334,26 +342,26 @@ class AgentsFileUnitTests(unittest.TestCase):
         # browsing modes never forfeit independence credit. Only writable
         # workspace modes and declared contamination do.
         results = [
-            {"index": 0, "success": True, "backend": "claude", "model": "claude/a",
+            {"index": 0, "success": True, "contract_ok": True, "backend": "claude", "model": "claude/a",
              "resolved": {"backend": "claude", "model": "claude/a"}},
-            {"index": 1, "success": True, "backend": "gemini", "model": "gemini/b",
+            {"index": 1, "success": True, "contract_ok": True, "backend": "gemini", "model": "gemini/b",
              "resolved": {"backend": "gemini", "model": "gemini/b"}},
         ]
         info = self.mod._independence_summary(
-            results, None, backend_tool_modes={"claude": "review", "gemini": "review"}
+            results, _TEST_IDENTITY_ROSTER, backend_tool_modes={"claude": "review", "gemini": "review"}
         )
         self.assertEqual(info["level"], "cross_family")
         self.assertEqual(info["non_independent_lanes"], [])
 
     def test_contaminated_lane_earns_no_independence_credit(self):
         results = [
-            {"index": 0, "success": True, "backend": "codex", "model": "codex/x",
+            {"index": 0, "success": True, "contract_ok": True, "backend": "codex", "model": "codex/x",
              "resolved": {"backend": "codex", "model": "codex/x"}},
-            {"index": 1, "success": True, "backend": "gemini", "model": "gemini/z",
+            {"index": 1, "success": True, "contract_ok": True, "backend": "gemini", "model": "gemini/z",
              "resolved": {"backend": "gemini", "model": "gemini/z"}},
         ]
         info = self.mod._independence_summary(
-            results, None, contaminated_indices={1}
+            results, _TEST_IDENTITY_ROSTER, contaminated_indices={1}
         )
         self.assertEqual(info["level"], "single_family")
         self.assertEqual(info["participating_families"], ["codex"])
@@ -368,14 +376,14 @@ class AgentsFileUnitTests(unittest.TestCase):
         # one. A requested-gemini lane recovered through OpenCode workspace is
         # a workspace lane.
         results = [
-            {"index": 0, "success": True, "backend": "codex", "model": "codex/x",
+            {"index": 0, "success": True, "contract_ok": True, "backend": "codex", "model": "codex/x",
              "resolved": {"backend": "codex", "model": "codex/x"}},
-            {"index": 1, "success": True, "backend": "gemini", "model": "gemini/z",
+            {"index": 1, "success": True, "contract_ok": True, "backend": "gemini", "model": "gemini/z",
              "resolved": {"backend": "opencode", "model": "prov/y"},
              "variant": "fallback", "fallback_reason": "timeout"},
         ]
         info = self.mod._independence_summary(
-            results, None, backend_tool_modes={"opencode": "workspace"}
+            results, _TEST_IDENTITY_ROSTER, backend_tool_modes={"opencode": "workspace"}
         )
         self.assertEqual(info["level"], "single_family")
         self.assertEqual(info["participating_families"], ["codex"])
@@ -391,13 +399,13 @@ class AgentsFileUnitTests(unittest.TestCase):
         # originally requested family (which is what substituting the
         # requested model would do).
         results = [
-            {"index": 0, "success": True, "backend": "codex", "model": "codex/x",
+            {"index": 0, "success": True, "contract_ok": True, "backend": "codex", "model": "codex/x",
              "resolved": {"backend": "codex", "model": "codex/x"}},
-            {"index": 1, "success": True, "backend": "gemini", "model": "gemini/original",
+            {"index": 1, "success": True, "contract_ok": True, "backend": "gemini", "model": "gemini/original",
              "resolved": {"backend": "opencode", "model": None},
              "variant": "fallback", "fallback_reason": "timeout"},
         ]
-        info = self.mod._independence_summary(results, None)
+        info = self.mod._independence_summary(results, _TEST_IDENTITY_ROSTER)
         self.assertEqual(info["level"], "single_family")
         self.assertEqual(info["participating_families"], ["codex"])
         lane = info["non_independent_lanes"][0]
@@ -441,7 +449,7 @@ class AgentsFileUnitTests(unittest.TestCase):
         )
         with unittest.mock.patch.object(self.mod, "_agents_runner_available", lambda runner: True):
             one = self.mod._independence_summary(
-                [{"success": True, "resolved": {"backend": "opencode", "model": "zed/glm-z"}}], roster
+                [{"success": True, "contract_ok": True, "resolved": {"backend": "opencode", "model": "zed/glm-z"}}], roster
             )
             none = self.mod._independence_summary(
                 [{"success": False, "resolved": {"backend": "opencode", "model": "zed/glm-z"}}], roster
@@ -453,25 +461,15 @@ class AgentsFileUnitTests(unittest.TestCase):
         self.assertEqual(none["participating_families"], [])
 
     def test_independence_without_roster_nulls_declaration_fields(self):
-        # The field set is identical on every path; without an agents file the
-        # declaration-relative fields are null ("nothing was declared"), never
-        # an empty list ("everything declared participated").
-        info = self.mod._independence_summary(
-            [{"success": True, "resolved": {"backend": "codex", "model": "codex/x"}}], None
-        )
-        self.assertEqual(
-            info,
-            {
-                "level": "single_family",
-                "participating_families": ["codex"],
-                "declared_available_families": None,
-                "absent_families": None,
-                "cross_family_minimum": None,
-                "below_minimum": None,
-                "when_below_minimum": None,
-                "non_independent_lanes": [],
-            },
-        )
+        results = [{"success": True, "contract_ok": True, "resolved": {"backend": "codex", "model": "codex/x"}}]
+        info = self.mod._independence_summary(results, None)
+        self.assertEqual(info["level"], "none")
+        self.assertEqual(info["participating_families"], [])
+        self.assertEqual(info["completed_eligible_count"], 0)
+        self.assertEqual(info["non_independent_lanes"][0]["reason"], "family_unknown")
+        for field in ("declared_available_families", "absent_families", "cross_family_minimum",
+                      "below_minimum", "machine_below_minimum", "when_below_minimum"):
+            self.assertIsNone(info[field])
 
     def test_find_agents_file_discovery_order(self):
         with tempfile.TemporaryDirectory() as td:
@@ -551,6 +549,7 @@ class AgentsFileEndToEndTests(unittest.TestCase):
             "--system", str(sys_prompt),
             "--prompt", str(user_prompt),
             "--models", models,
+            "--check-review-contract",
         ]
         for flag, path in runner_flags.items():
             argv.extend([flag, str(path)])
@@ -577,8 +576,8 @@ class AgentsFileEndToEndTests(unittest.TestCase):
             meta = self._read_meta(out_dir)
             self.assertEqual(meta["agents_file"], {"path": None, "source": "none"})
             info = meta["independence"]
-            self.assertEqual(info["level"], "single_family")
-            self.assertEqual(info["participating_families"], ["opencode"])
+            self.assertEqual(info["level"], "none")
+            self.assertEqual(info["participating_families"], [])
             for field in (
                 "declared_available_families",
                 "absent_families",
@@ -664,19 +663,19 @@ class AgentsFileEndToEndTests(unittest.TestCase):
             self.assertEqual(by_index[0]["family_spec"], "family:gpt:strong")
             self.assertEqual(by_index[1]["family_spec"], "family:glm")
             self.assertEqual(
-                Path(by_index[0]["out"]).read_text(encoding="utf-8").strip(),
+                json.loads(Path(by_index[0]["out"]).read_text(encoding="utf-8"))["summary"],
                 "MODEL=gpt-x-strong",
             )
             self.assertEqual(
-                Path(by_index[1]["out"]).read_text(encoding="utf-8").strip(),
+                json.loads(Path(by_index[1]["out"]).read_text(encoding="utf-8"))["summary"],
                 "MODEL=zed/glm-z",
             )
             self.assertEqual(
-                Path(by_index[2]["out"]).read_text(encoding="utf-8").strip(),
+                json.loads(Path(by_index[2]["out"]).read_text(encoding="utf-8"))["summary"],
                 "MODEL=kimi-alias",
             )
             self.assertEqual(
-                Path(by_index[3]["out"]).read_text(encoding="utf-8").strip(),
+                json.loads(Path(by_index[3]["out"]).read_text(encoding="utf-8"))["summary"],
                 "MODEL=claude-tier",
             )
 

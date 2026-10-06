@@ -623,7 +623,7 @@ export function appendValidityEvent(
     if (value.includes('/') || value.includes('\\')) {
       throw new Error(
         `${field} ${JSON.stringify(value)} is path-shaped; ledger events reference runs by bare id — `
-        + 'strip the run-root prefix (artifacts/runs/ or team/runs/)',
+        + 'strip the run-root prefix (artifacts/runs/)',
       );
     }
     if (value === '.' || value === '..') {
@@ -644,7 +644,7 @@ export function appendValidityEvent(
   }
   const ledgerPath = validityLedgerPath(projectRoot);
   // The lock file lives next to the ledger; on a project whose artifacts/runs
-  // does not exist yet (e.g. only team/runs so far), the O_EXCL create would
+  // does not exist yet, the O_EXCL create would
   // fail on the missing parent before any append could create it.
   fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
   ensureLedgerMergeAttributes(projectRoot);
@@ -849,7 +849,7 @@ export function resolveRunIdReference(
     return {
       kind: 'rejected',
       message: `${context.verb}: ${context.role} ${JSON.stringify(raw)} is neither a bare run id nor a `
-        + 'run-root path (artifacts/runs/<id> or team/runs/<id>)',
+        + 'run-root path (artifacts/runs/<id>)',
     };
   }
   const view = ledgerView ?? readValidityLedger(projectRoot);

@@ -47,29 +47,50 @@
     },
     "plan": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Ordered list of plan steps."
     },
     "risks": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Known risks and failure modes."
     },
     "budgets": {
       "type": "object",
       "properties": {
-        "max_network_calls": { "type": "integer", "minimum": 0 },
-        "max_runtime_minutes": { "type": "integer", "minimum": 0 },
-        "max_cpu_hours": { "type": "number", "minimum": 0 },
-        "max_gpu_hours": { "type": "number", "minimum": 0 },
-        "max_disk_gb": { "type": "number", "minimum": 0 }
+        "max_network_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_runtime_minutes": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_cpu_hours": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_gpu_hours": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_disk_gb": {
+          "type": "number",
+          "minimum": 0
+        }
       },
       "additionalProperties": false,
       "description": "Resource budget limits for this approval scope."
     },
     "outputs": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Expected output paths/artifacts."
     },
     "rollback": {
@@ -78,12 +99,16 @@
     },
     "commands": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Shell commands that will be executed upon approval."
     },
     "checklist": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Human-readable checklist items for the reviewer."
     },
     "requested_at": {
@@ -110,7 +135,9 @@
     },
     "plan_step_ids": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Plan step IDs covered by this approval."
     },
     "active_branch_id": {
@@ -122,10 +149,18 @@
       "items": {
         "type": "object",
         "properties": {
-          "gate_id": { "type": "string" },
-          "triggered_by": { "type": "string" },
-          "reason": { "type": "string" },
-          "timestamp_utc": { "type": "string" }
+          "gate_id": {
+            "type": "string"
+          },
+          "triggered_by": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "timestamp_utc": {
+            "type": "string"
+          }
         },
         "additionalProperties": false
       },
@@ -134,6 +169,25 @@
     "details_md": {
       "type": "string",
       "description": "Optional extended details in Markdown format."
+    },
+    "execution_binding": {
+      "type": "object",
+      "required": [
+        "sha256",
+        "content"
+      ],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "content": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false,
+      "description": "Content identity of the declared execution inputs covered by this approval. Revalidated by the execution consumer before dispatch."
     }
   },
   "additionalProperties": false

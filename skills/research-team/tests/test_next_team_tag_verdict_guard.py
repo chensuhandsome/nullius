@@ -31,7 +31,7 @@ def _write(path: Path, content: str) -> Path:
 
 def _run(out_dir: Path, tag: str, *extra: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(TOOL), "--tag", tag, "--out-dir", str(out_dir), *extra],
+        [sys.executable, str(TOOL), "--tag", tag, "--out-dir", str(out_dir / "artifacts"), *extra],
         capture_output=True,
         text=True,
         timeout=60,
@@ -46,7 +46,7 @@ def test_no_prior_rounds_yields_r1_without_warning(tmp_path: Path) -> None:
 
 
 def test_verdict_bearing_latest_round_advances_without_warning(tmp_path: Path) -> None:
-    _write(tmp_path / "runs" / f"{BASE}-r1" / f"{BASE}-r1_member_a.md", VERDICT_REPORT)
+    _write(tmp_path / "artifacts" / "runs" / f"{BASE}-r1" / "research_team" / f"{BASE}-r1_member_a.md", VERDICT_REPORT)
     proc = _run(tmp_path, BASE)
     assert proc.returncode == 0
     assert proc.stdout.strip() == f"{BASE}-r2"
@@ -54,8 +54,8 @@ def test_verdict_bearing_latest_round_advances_without_warning(tmp_path: Path) -
 
 
 def test_verdict_less_latest_round_warns_and_suggests_same_tag_resume(tmp_path: Path) -> None:
-    _write(tmp_path / "runs" / f"{BASE}-r1" / f"{BASE}-r1_member_a.md", GARBAGE_REPORT)
-    _write(tmp_path / "runs" / f"{BASE}-r1" / f"{BASE}-r1_member_b.md", GARBAGE_REPORT)
+    _write(tmp_path / "artifacts" / "runs" / f"{BASE}-r1" / "research_team" / f"{BASE}-r1_member_a.md", GARBAGE_REPORT)
+    _write(tmp_path / "artifacts" / "runs" / f"{BASE}-r1" / "research_team" / f"{BASE}-r1_member_b.md", GARBAGE_REPORT)
     proc = _run(tmp_path, BASE)
     assert proc.returncode == 0
     assert proc.stdout.strip() == f"{BASE}-r2"
@@ -65,7 +65,7 @@ def test_verdict_less_latest_round_warns_and_suggests_same_tag_resume(tmp_path: 
 
 
 def test_refuse_unverdicted_exits_3_and_emits_no_tag(tmp_path: Path) -> None:
-    _write(tmp_path / "runs" / f"{BASE}-r1" / f"{BASE}-r1_member_a.md", GARBAGE_REPORT)
+    _write(tmp_path / "artifacts" / "runs" / f"{BASE}-r1" / "research_team" / f"{BASE}-r1_member_a.md", GARBAGE_REPORT)
     proc = _run(tmp_path, BASE, "--refuse-unverdicted")
     assert proc.returncode == 3
     assert proc.stdout.strip() == ""
@@ -76,8 +76,8 @@ def test_one_verdict_bearing_member_suffices(tmp_path: Path) -> None:
     """A round where one seat returned a verdict and the other failed is a
     real (partial) round — resuming it is handled by health-aware resume;
     the guard only fires when NO seat produced a verdict."""
-    _write(tmp_path / "runs" / f"{BASE}-r1" / f"{BASE}-r1_member_a.md", GARBAGE_REPORT)
-    _write(tmp_path / "runs" / f"{BASE}-r1" / f"{BASE}-r1_member_b.md", VERDICT_REPORT)
+    _write(tmp_path / "artifacts" / "runs" / f"{BASE}-r1" / "research_team" / f"{BASE}-r1_member_a.md", GARBAGE_REPORT)
+    _write(tmp_path / "artifacts" / "runs" / f"{BASE}-r1" / "research_team" / f"{BASE}-r1_member_b.md", VERDICT_REPORT)
     proc = _run(tmp_path, BASE)
     assert proc.returncode == 0
     assert "WARNING" not in proc.stderr
@@ -87,13 +87,13 @@ def test_guard_looks_at_latest_round_only(tmp_path: Path) -> None:
     """A verdict-less OLD round does not warn once a later round carries a
     verdict; a verdict-less LATEST round warns even when earlier rounds were
     healthy."""
-    _write(tmp_path / "runs" / f"{BASE}-r1" / f"{BASE}-r1_member_a.md", GARBAGE_REPORT)
-    _write(tmp_path / "runs" / f"{BASE}-r2" / f"{BASE}-r2_member_a.md", VERDICT_REPORT)
+    _write(tmp_path / "artifacts" / "runs" / f"{BASE}-r1" / "research_team" / f"{BASE}-r1_member_a.md", GARBAGE_REPORT)
+    _write(tmp_path / "artifacts" / "runs" / f"{BASE}-r2" / "research_team" / f"{BASE}-r2_member_a.md", VERDICT_REPORT)
     proc = _run(tmp_path, BASE)
     assert proc.returncode == 0
     assert "WARNING" not in proc.stderr
 
-    _write(tmp_path / "runs" / f"{BASE}-r3" / f"{BASE}-r3_member_a.md", GARBAGE_REPORT)
+    _write(tmp_path / "artifacts" / "runs" / f"{BASE}-r3" / "research_team" / f"{BASE}-r3_member_a.md", GARBAGE_REPORT)
     proc = _run(tmp_path, BASE)
     assert proc.returncode == 0
     assert proc.stdout.strip() == f"{BASE}-r4"
@@ -101,12 +101,22 @@ def test_guard_looks_at_latest_round_only(tmp_path: Path) -> None:
     assert f"{BASE}-r3" in proc.stderr
 
 
-def test_out_dir_root_fallback_layout_is_scanned(tmp_path: Path) -> None:
-    """Older layouts keep reports at the out-dir root; the guard sees them."""
-    _write(tmp_path / f"{BASE}-r1_member_a.md", GARBAGE_REPORT)
+def test_flat_report_has_no_run_authority(tmp_path: Path) -> None:
+    _write(tmp_path / "artifacts" / f"{BASE}-r1_member_a.md", GARBAGE_REPORT)
     proc = _run(tmp_path, BASE)
     assert proc.returncode == 0
-    assert "WARNING" in proc.stderr
+    assert proc.stdout.strip() == f"{BASE}-r1"
+    assert "WARNING" not in proc.stderr
+
+
+def test_retired_payload_refuses_round_lookup(tmp_path: Path) -> None:
+    report = _write(tmp_path / "team/runs" / f"{BASE}-r1" / "report.md", VERDICT_REPORT)
+    before = report.read_bytes()
+    proc = _run(tmp_path, BASE)
+    assert proc.returncode == 1
+    assert "retired team/runs root contains 1 run directories" in proc.stderr
+    assert not proc.stdout.strip()
+    assert report.read_bytes() == before
 
 
 def test_unreadable_report_is_indeterminate_not_verdict_less(tmp_path: Path) -> None:
@@ -120,7 +130,7 @@ def test_unreadable_report_is_indeterminate_not_verdict_less(tmp_path: Path) -> 
     if os.geteuid() == 0:
         pytest.skip("root reads through permission bits; scenario unbuildable")
     report = _write(
-        tmp_path / "runs" / f"{BASE}-r1" / f"{BASE}-r1_member_a.md", VERDICT_REPORT
+        tmp_path / "artifacts" / "runs" / f"{BASE}-r1" / "research_team" / f"{BASE}-r1_member_a.md", VERDICT_REPORT
     )
     report.chmod(0)
     try:

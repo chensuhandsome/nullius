@@ -7,6 +7,9 @@ English | [中文](./docs/README_zh.md)
 
 Nullius is a domain-neutral, evidence-first research monorepo. Today it combines a generic lifecycle/control-plane package, local MCP provider packages, and checked-in workflow recipes that can be consumed through `nullius workflow-plan` or internal agent clients. The root is that domain-neutral substrate and control plane; HEP is the most mature provider family and strongest end-to-end workflow example built on it.
 
+
+Native computation binds an enabled A3 approval to the current manifest, scripts, declared input and dependency files, resolved executable bytes, production environment and approval policy. Missing packets, unbound historical approvals and changed inputs require fresh root approval before dispatch; a step-only A3 mismatch fails closed without creating a root request. A requested pause lets the current direct child return, preserves its step evidence and stops the run as paused, including after the last step. Native continuation in place is unsupported: same-run execution and `resume --force` refuse without changing the paused attempt; a new separately approved run is a distinct execution. `execution_status.json` persists one absolute deadline covering preflight, later direct children and local outcome publication; retries keep that deadline, and each child receives the smaller remaining or step limit. Hard CPU, memory and disk constraints are rejected during preparation. These limits do not supervise arbitrary descendants or remote jobs. Canonical state writes compare the caller's read snapshot under a short exclusive lock before appending combined events; stale snapshots refuse, and stale locks require quiescent manual repair. CLI and project transport share canonical external-root admission, including uncreated paths beneath existing symlink ancestors.
+
 ## 1. Surface Policy
 
 - `nullius` remains the stateful CLI front door for initialized external project roots. Use it for lifecycle state, bounded execution, `workflow-plan`, verification, higher-conclusion gating, main-report structural validation, proposal decisions, and the conversational decision ledger.
@@ -185,12 +188,12 @@ nullius init
 Then read the generated AGENTS.md and run:
 ./.nullius/bin/nullius status --json
 
-To pull newer managed scaffold doc (AGENTS.md) into an
-already-initialized project without touching your own notes, preview then apply:
+To restore a missing AGENTS.md while preserving existing project instructions,
+preview then apply:
 nullius init --refresh --dry-run
 nullius init --refresh
 
-Refresh does not migrate user-owned report files. For a project that predates
+Refresh preserves an existing AGENTS.md byte-for-byte when it differs from the current template. To update its guidance, render a current scaffold in a temporary external root and manually merge the desired changes. Refresh may synchronize existing machine-managed notebook and index blocks, while preserving user-owned content and not inserting missing blocks. It does not migrate user-owned report files. For a project that predates
 the main-report registry, checkpoint it, render a current scaffold in a separate
 temporary external root with `nullius init --project-root <temporary-root>`, copy
 only a missing reports/main_research_report_template.md, and manually merge the
@@ -281,6 +284,8 @@ If you want the current strongest end-to-end workflow family, continue with:
 1. `hep_render_latex`
 1. `hep_export_project`
 
+HEP projects and runs catalog domain inputs and artifacts; generic lifecycle and approval remain orchestrator-owned. Draft rendering preserves caller-supplied grounding metadata, with omitted flags unknown, and does not verify claims. Export requires BibTeX entries for every cited key.
+
 ## Documentation
 
 - [Feature Testing Guide](./docs/TESTING_GUIDE.md)
@@ -299,3 +304,9 @@ For front-door drift, start with:
 ## License
 
 MIT
+
+All newly generated managed project runs use `artifacts/runs/<run_id>/`; team and draft executor payloads live in `research_team/` beneath that run. Origin stamps bind the parent run. If retired `team/runs` contains run directories, dependent views report the count and `init --runtime-only` refuses before rebinding. An unreadable retired root is an error. Retain the prior runtime with its matching skills, or perform a separately reviewed migration before switching. The `inventory_run_relocation.py --fixture-root <anonymous-fixture> --source-manifest <hash-manifest>` helper only inventories pinned fixture bytes, references, collisions and unresolved bindings; it has no apply mode. Independent reviewer snapshots omit every run's executor payload and all workspace trees, retain production artifacts, and allow only each member's own declared output prefix. Historical reports/adjudications remain coordinator evidence. `team/LATEST*.md` and `artifacts/LATEST.md` are navigation pointers.
+
+The generic scaffold creates `project_index.md`; the team helper updates only executor-local latest pointers and requires `nullius init` when the root index is missing. Selected-result and derived-block writers share a short path lock, reread their inputs, and make at most three attempts when edits are detected while preserving human bytes, mode and EOL outside their marked region. Arbitrary writers that ignore the lock remain outside its guarantee. Generic run counts do not interpret execution round limits; the Python executor resolver and suffix gate own those settings.
+
+Existing `PROJECT_INDEX_AUTO` blocks are historical, unmaintained observations; the team helper neither parses nor updates them. Current `RUN_INDEX` navigation and curated result/report registries have separate owners. Do not silently rewrite or delete an old block.

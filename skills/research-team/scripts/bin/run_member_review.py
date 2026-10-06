@@ -21,6 +21,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
+from review_paths import is_forbidden_review_path
 from audit_interceptor import AuditInterceptor  # type: ignore
 from member_evidence import (  # type: ignore
     finalize_member_evidence,
@@ -126,16 +127,7 @@ def _resolve_under(root: Path, path_s: str) -> Path:
 
 
 def _is_forbidden_path(member_id: str, safe_tag: str, relpath: str) -> bool:
-    # Best-effort clean-room protection: prevent reading the other member's current-run workspace/artifacts.
-    other = "member_b" if member_id == "member_a" else "member_a"
-    bad_prefixes = [
-        f"team/runs/{safe_tag}/{other}",
-        f"team/runs/{safe_tag}/{other}_evidence.json",
-        f"team/runs/{safe_tag}/{safe_tag}_{other}",
-        f"artifacts/runs/{safe_tag}/research_team/{other}",
-    ]
-    rp = relpath.replace("\\", "/").lstrip("./")
-    return any(rp.startswith(x) for x in bad_prefixes)
+    return is_forbidden_review_path(member_id, safe_tag, relpath)
 
 
 def _allowed_output_prefixes(member_id: str, safe_tag: str) -> tuple[str, str]:
@@ -543,7 +535,7 @@ def main() -> int:
         "\n"
         f"Limits: files_read<=%d, commands_run<=%d, network_queries<=%d.\n"
         "Important constraints:\n"
-        "- Do not request anything from the other member's workspace/artifacts for this run.\n"
+        "- Do not request executor reports, adjudications, logs, scratch or workspaces from this or any prior run; only your declared output prefix is accessible.\n"
         f"- Prefer producing an independent reproduction script under artifacts/runs/{safe_tag}/research_team/{member_id}/independent/ and at least one output file,\n"
         "  and list those output paths in expected_outputs.\n"
         "\n"
@@ -759,6 +751,9 @@ def main() -> int:
                 response_lines.append(
                     f"- commands_run[{i}]: (denied) argument references run_dir outside workspace: {_abs_escape_arg!r}"
                 )
+                continue
+            if any(_is_forbidden_path(member_id, safe_tag, part) for part in [*cmd_parts, cwd_s]):
+                response_lines.append(f"- commands_run[{i}]: (denied) executor payload outside own output prefix")
                 continue
             try:
                 cwd_abs = _resolve_under(workspace_root, cwd_s)

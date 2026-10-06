@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from team_config import load_team_config  # type: ignore
+from review_paths import is_forbidden_review_path
 
 
 EXCERPT_START = "<!-- REVIEW_EXCERPT_START -->"
@@ -291,7 +292,6 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--figures", type=Path, nargs="*", default=[], help="Figure paths (optional).")
     p.add_argument("--tables", type=Path, nargs="*", default=[], help="Table/CSV paths (optional).")
     p.add_argument("--questions", type=str, nargs="*", default=[], help="Questions to stress-test (optional).")
-    p.add_argument("--adjudication", type=Path, default=None, help="Adjudication note path (optional).")
     p.add_argument(
         "--pointer-import-cmd",
         type=str,
@@ -782,20 +782,20 @@ def _git_changed_files(cwd: Path) -> list[str]:
 
         # Prefer staged+unstaged diff vs HEAD when possible.
         out = subprocess.check_output(
-            ["git", "diff", "--name-only", "HEAD"],
+            ["git", "diff", "--name-only", "-z", "HEAD"],
             cwd=str(cwd),
             stderr=subprocess.DEVNULL,
         ).decode("utf-8")
-        files = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        files = [name for name in out.split("\0") if name and not is_forbidden_review_path("", "", name)]
         if files:
             return files
         # Fall back to "status" for new/untracked info.
         out2 = subprocess.check_output(
-            ["git", "status", "--porcelain"],
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
             cwd=str(cwd),
             stderr=subprocess.DEVNULL,
         ).decode("utf-8")
-        files2 = [ln[3:] for ln in out2.splitlines() if ln.strip() and len(ln) > 3]
+        files2 = [name for name in out2.split("\0") if name and not is_forbidden_review_path("", "", name)]
         return sorted(set(files2))
     except Exception:
         return []
@@ -1124,23 +1124,11 @@ def main() -> int:
         if seeds:
             lines.extend(_format_idea_seed_section(seeds))
 
-    lines.append("## 0) Round & convergence gate")
+    lines.append("## 0) Reviewed subject and original inputs")
     lines.append("")
-    lines.append("- Round/tag: (fill; e.g. M2-r1, M2-r2)")
-    lines.append("- Previous team reports: (fill paths)")
-    adjudication_path: Path | None = None
-    if args.adjudication is not None:
-        if args.adjudication.is_file():
-            adjudication_path = args.adjudication
-        else:
-            print(f"[warn] adjudication note not found: {args.adjudication}", file=sys.stderr)
-    if adjudication_path is not None:
-        lines.append(f"- Adjudication/response note: {adjudication_path}")
-    else:
-        lines.append("- Adjudication/response note: (fill; required if you rejected/modified any reviewer recommendation)")
-    lines.append("- Resolved items since last round: (fill; reference prior Minimal Fix List items)")
-    lines.append("- Open disagreements: (fill; must be classified as SCOPE/MATCHING and accepted by both reviewers)")
-    lines.append("- Gate rule: if any mismatch/fail/needs revision, do not advance; apply fixes and re-run until convergence.")
+    lines.append(f"- Run/tag: {args.tag}")
+    lines.append("- Assess the supplied subject against the original inputs and stated requirements.")
+    lines.append("- Record your own findings before consulting coordinator decisions or historical reviews.")
     lines.append("")
 
     lines.append("## 1) What changed since last round?")

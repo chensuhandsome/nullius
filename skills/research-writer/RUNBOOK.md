@@ -266,7 +266,7 @@ hep_project_query_evidence_semantic({
 })
 ```
 
-Ground each claim-bearing sentence with `evidence_ids` (catalog items used), `recids` (INSPIRE ids), and `is_grounded: true`, structured as a SectionDraft:
+Read the source and check that it supports the sentence before declaring `is_grounded: true`. Record `evidence_ids` (catalog items used) and `recids` (INSPIRE ids). Omit the flag while support is unknown, or use `false` when unsupported. The following SectionDraft assumes that its sentence has already been checked; the flag itself does not perform verification:
 
 ```json
 {
@@ -290,7 +290,7 @@ Ground each claim-bearing sentence with `evidence_ids` (catalog items used), `re
 }
 ```
 
-**Step 4 — Render + export.** Render the structured draft to LaTeX with citations, then export the research pack:
+**Step 4 — Render + export.** Render the structured draft to LaTeX with citations, then export the research pack. Rendering does not check source support or enforce citation allowlists and produces no verification report. Export rejects missing BibTeX entries for cited keys:
 
 ```
 hep_render_latex({

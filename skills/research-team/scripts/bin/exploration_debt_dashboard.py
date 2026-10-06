@@ -4,7 +4,7 @@ Exploration debt dashboard (helper, non-gate).
 
 `run_team_cycle.sh` can downgrade selected preflight gates to warn-only when
 `project_stage=exploration`, recording failures as Markdown checklists:
-  team/runs/<tag>/<tag>_exploration_debt.md
+  artifacts/runs/<tag>/research_team/<tag>_exploration_debt.md
 
 This script helps you:
 - list open debt items (with file+line)

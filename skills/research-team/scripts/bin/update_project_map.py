@@ -5,11 +5,14 @@ import argparse
 import datetime as _dt
 import json
 import os
+import sys
+import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from run_paths import canonical_run_root
 
-AUTO_START = "<!-- PROJECT_INDEX_AUTO_START -->"
-AUTO_END = "<!-- PROJECT_INDEX_AUTO_END -->"
+
 
 
 def _utc_now() -> str:
@@ -22,7 +25,41 @@ def _read_text(path: Path) -> str:
 
 def _write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text.replace("\r\n", "\n").replace("\r", "\n"), encoding="utf-8")
+    # Replace our own pointer entry; never open a symlink/hardlink target for writing.
+    mode = path.stat().st_mode & 0o7777 if path.exists() else 0o600
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=f".{path.name}.", delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write(text.replace("\r\n", "\n").replace("\r", "\n"))
+            os.fchmod(handle.fileno(), mode)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
+def _assert_navigation_paths(project_root: Path, team_dir: Path, artifacts_dir: Path) -> None:
+    outputs = [team_dir / name for name in ("LATEST.md", "LATEST_TEAM.md", "LATEST_DRAFT.md")]
+    outputs.append(artifacts_dir / "LATEST.md")
+    # A root carrier pointing at one of our entries observes its replacement
+    # or removal just as it would an in-place write. Refuse before any output.
+    index = project_root / "project_index.md"
+    if index.is_symlink() or not index.is_file() or index.stat().st_nlink != 1:
+        raise ValueError(f"root index must be an unshared regular file: {index}")
+    for output in outputs:
+        try:
+            output.resolve().relative_to(project_root)
+        except ValueError:
+            raise ValueError(f"navigation output must stay within project root: {output}")
+        for component in (output, *output.parents):
+            if component == project_root:
+                break
+            if component.is_symlink():
+                raise ValueError(f"navigation output alias is unsupported: {component}")
+        if output.exists() and (not output.is_file() or output.stat().st_nlink != 1):
+            raise ValueError(f"navigation output must be an unshared regular file: {output}")
 
 
 def _find_project_root(seed: Path) -> Path:
@@ -40,11 +77,12 @@ def _find_project_root(seed: Path) -> Path:
 
 
 def _pick_latest_run_dir(team_dir: Path) -> Path | None:
-    runs = team_dir / "runs"
+    runs = team_dir.parent / "artifacts" / "runs"
     if not runs.is_dir():
         return None
     best: tuple[float, Path] | None = None
     for p in runs.iterdir():
+        p = p / "research_team"
         if not p.is_dir():
             continue
         try:
@@ -75,7 +113,7 @@ def _infer_latest_tag_and_status(
 
     latest_dir = _pick_latest_run_dir(team_dir)
     if latest_dir is not None and not tag:
-        tag = latest_dir.name
+        tag = latest_dir.parent.name
 
     if tag and not status:
         traj = team_dir / "trajectory_index.json"
@@ -107,59 +145,7 @@ def _detect_latest_artifacts_dir(project_root: Path, tag: str) -> Path | None:
     cand = project_root / "artifacts" / "runs" / tag
     if cand.is_dir():
         return cand
-    cand = project_root / "artifacts" / tag
-    if cand.is_dir():
-        return cand
     return None
-
-
-def _ensure_project_map_exists(project_root: Path) -> Path:
-    path = project_root / "project_index.md"
-    if path.is_file():
-        return path
-
-    title = project_root.name
-    lines: list[str] = []
-    lines.append(f"# {title} — project_index")
-    lines.append("")
-    lines.append(f"Last updated: {_utc_now()}")
-    lines.append("")
-    lines.append("## Read first (in order)")
-    lines.append("")
-    lines.append("1) [project_charter.md](project_charter.md)")
-    lines.append("2) [research_plan.md](research_plan.md)")
-    lines.append("3) [research_notebook.md](research_notebook.md)")
-    lines.append("4) [research_contract.md](research_contract.md)")
-    lines.append("5) [AGENTS.md](AGENTS.md)")
-    lines.append("")
-    lines.append("## Core working surfaces")
-    lines.append("")
-    lines.append("- Human primary file: [research_notebook.md](research_notebook.md)")
-    lines.append("- Machine contract: [research_contract.md](research_contract.md)")
-    lines.append("- Canonical artifact root: `artifacts/runs/<run_id>/`")
-    lines.append("- Run identity rule: use a safe, sortable, readable `run_id` such as `<YYYYMMDDTHHMMSSZ>-<milestone>-<short-topic>-rN`; do not use bare UUIDs or `run_<uuid>` as human-facing research run names.")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-    lines.append(AUTO_START)
-    lines.append("<!-- This block is auto-generated. Do not edit by hand. -->")
-    lines.append(AUTO_END)
-    lines.append("")
-    lines.append("## Notes (manual)")
-    lines.append("")
-    lines.append("-")
-    _write_text(path, "\n".join(lines) + "\n")
-    return path
-
-
-def _replace_auto_block(text: str, new_block: str) -> str:
-    if AUTO_START not in text or AUTO_END not in text:
-        # Append a block if missing.
-        sep = "" if text.endswith("\n") else "\n"
-        return text + sep + AUTO_START + "\n" + new_block.rstrip() + "\n" + AUTO_END + "\n"
-    a = text.index(AUTO_START) + len(AUTO_START)
-    b = text.index(AUTO_END)
-    return text[:a] + "\n" + new_block.rstrip() + "\n" + text[b:]
 
 
 def _draft_template_path() -> Path:
@@ -182,7 +168,7 @@ def _extract_pointer_field(text: str, prefix: str) -> str:
 def _detect_team_run_dir(team_dir: Path, tag: str) -> Path | None:
     if not _active_pointer_value(tag):
         return None
-    cand = team_dir / "runs" / tag
+    cand = team_dir.parent / "artifacts" / "runs" / tag / "research_team"
     if cand.is_dir():
         return cand
     return None
@@ -225,7 +211,7 @@ def _write_latest_team_cycle(team_dir: Path, tag: str, status: str, run_dir: Pat
         if not rel.startswith("."):
             rel = "./" + rel
         lines.append(f"- Run directory: [{rel}]({rel})")
-        prefix = run_dir.name
+        prefix = tag
         for name, label in (
             (f"{prefix}_member_a.md", "Member A report"),
             (f"{prefix}_member_b.md", "Member B report"),
@@ -258,7 +244,7 @@ def _write_latest_draft_cycle(team_dir: Path, tag: str, status: str, run_dir: Pa
         if not rel.startswith("."):
             rel = "./" + rel
         lines.append(f"- Run directory: [{rel}]({rel})")
-        prefix = run_dir.name
+        prefix = tag
         for name, label in (
             (f"{prefix}_draft_packet.md", "Draft packet"),
             (f"{prefix}_draft_preflight.md", "Draft preflight report"),
@@ -382,35 +368,6 @@ def _write_artifacts_latest(artifacts_dir: Path, tag: str, artifacts_run: Path |
     _write_text(artifacts_dir / "LATEST.md", "\n".join(lines) + "\n")
 
 
-def _parse_project_map_auto_state(text: str) -> dict[str, str]:
-    """
-    Best-effort parse of the auto block so we can update one side (team/draft)
-    without deleting the other.
-    """
-    out: dict[str, str] = {
-        "team_tag": "",
-        "team_status": "",
-        "draft_tag": "",
-        "draft_status": "",
-    }
-    if AUTO_START not in text or AUTO_END not in text:
-        return out
-    a = text.index(AUTO_START) + len(AUTO_START)
-    b = text.index(AUTO_END)
-    block = text[a:b]
-    for ln in block.splitlines():
-        s = ln.strip()
-        if s.lower().startswith("- team latest tag:"):
-            out["team_tag"] = s.split(":", 1)[1].strip()
-        elif s.lower().startswith("- team latest status:"):
-            out["team_status"] = s.split(":", 1)[1].strip()
-        elif s.lower().startswith("- draft latest tag:"):
-            out["draft_tag"] = s.split(":", 1)[1].strip()
-        elif s.lower().startswith("- draft latest status:"):
-            out["draft_status"] = s.split(":", 1)[1].strip()
-    return out
-
-
 def _active_pointer_value(value: str) -> bool:
     value = (value or "").strip()
     return bool(value) and value not in {
@@ -441,7 +398,7 @@ def _has_live_artifacts_pointer(artifacts_dir: Path) -> bool:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Update project_index.md + latest pointers deterministically.")
+    ap = argparse.ArgumentParser(description="Update executor-local latest navigation pointers.")
     ap.add_argument("--notes", type=Path, required=True, help="Path to research_contract.md (used to locate project root).")
     ap.add_argument("--team-dir", type=Path, default=Path("team"), help="Team output directory (default: team).")
     ap.add_argument("--latest-kind", choices=("team", "draft"), default="team", help="Which pointer to update (team or draft).")
@@ -455,16 +412,21 @@ def main() -> int:
         return 2
 
     project_root = _find_project_root(args.notes)
+    canonical_run_root(project_root)
+    if not (project_root / "project_index.md").is_file():
+        print("ERROR: project_index.md is missing; run nullius init first.")
+        return 2
     team_dir = args.team_dir if args.team_dir.is_absolute() else (project_root / args.team_dir)
     artifacts_dir = project_root / "artifacts"
+    try:
+        _assert_navigation_paths(project_root, team_dir, artifacts_dir)
+    except ValueError as error:
+        print(f"ERROR: {error}")
+        return 2
     team_dir.mkdir(parents=True, exist_ok=True)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    _ensure_project_map_exists(project_root)
-
-    map_path = project_root / "project_index.md"
-    text = _read_text(map_path) if map_path.is_file() else ""
-    state = _parse_project_map_auto_state(text)
+    state = {"team_tag": "", "team_status": "", "draft_tag": "", "draft_status": ""}
     existing_team_tag, existing_team_status, existing_team_active = _read_existing_team_state(team_dir)
     if existing_team_active:
         if not _active_pointer_value(state.get("team_tag", "")):
@@ -542,38 +504,11 @@ def main() -> int:
     else:
         _remove_default_artifacts_pointer(artifacts_dir)
 
-    auto_lines: list[str] = []
-    auto_lines.append(f"- Auto-updated at: {_utc_now()}")
-    auto_lines.append("- Latest pointers: [team/LATEST.md](team/LATEST.md)")
-    if team_pointer_active:
-        auto_lines.append(f"- Team latest tag: {state['team_tag']}")
-        auto_lines.append(f"- Team latest status: {state['team_status']}")
-        auto_lines.append("- Latest team: [team/LATEST_TEAM.md](team/LATEST_TEAM.md)")
     include_draft = _has_active_draft_state(team_dir, state)
-    if include_draft:
-        if not _active_pointer_value(state.get("draft_tag", "")):
-            state["draft_tag"] = existing_draft_tag
-        if not _active_pointer_value(state.get("draft_status", "")):
-            state["draft_status"] = existing_draft_status
-        auto_lines.append(f"- Draft latest tag: {state['draft_tag']}")
-        auto_lines.append(f"- Draft latest status: {state['draft_status']}")
-        auto_lines.append("- Latest draft: [team/LATEST_DRAFT.md](team/LATEST_DRAFT.md)")
     include_artifacts = artifacts_updated or _has_live_artifacts_pointer(artifacts_dir)
-    if include_artifacts:
-        auto_lines.append("- Latest artifacts: [artifacts/LATEST.md](artifacts/LATEST.md)")
 
-    new_text = _replace_auto_block(text, "\n".join(auto_lines))
-    # Keep/update a Last updated: line near the top if present.
-    lines = new_text.splitlines()
-    for i, ln in enumerate(lines[:15]):
-        if ln.strip().lower().startswith("last updated:"):
-            lines[i] = f"Last updated: {_utc_now()}"
-            break
-    new_text = "\n".join(lines) + "\n"
-    _write_text(map_path, new_text)
     _write_team_latest_index(team_dir, include_team=team_pointer_active, include_draft=include_draft)
 
-    print(f"[ok] updated: {map_path}")
     print(f"[ok] updated: {team_dir / 'LATEST.md'}")
     if kind == "team" and team_pointer_active:
         print(f"[ok] updated: {team_dir / 'LATEST_TEAM.md'}")

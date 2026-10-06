@@ -8,6 +8,7 @@ import {
   type ApprovalGateId,
 } from '@nullius/shared';
 import { StateManager } from '../state-manager.js';
+import { assertProjectRootAllowed } from '../project-policy.js';
 
 export type ApprovalGateFilter = ApprovalGateId | 'all';
 
@@ -31,7 +32,7 @@ export function expandTilde(rawPath: string): string {
 }
 
 export function resolveProjectRoot(rawProjectRoot: string): string {
-  return path.resolve(expandTilde(rawProjectRoot.trim()));
+  return assertProjectRootAllowed(path.resolve(expandTilde(rawProjectRoot.trim())));
 }
 
 export function pauseFilePath(projectRoot: string): string {

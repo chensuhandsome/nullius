@@ -35,7 +35,7 @@ function initRepoWithCommit(): void {
 describe('isForeignRunPath', () => {
   it('classifies run-root paths by ownership', () => {
     expect(isForeignRunPath('artifacts/runs/run-other/out.json', 'run-mine')).toBe(true);
-    expect(isForeignRunPath('team/runs/tag-other/log.md', 'run-mine')).toBe(true);
+    expect(isForeignRunPath('team/runs/tag-other/log.md', 'run-mine')).toBe(false);
     expect(isForeignRunPath('artifacts/runs/run-mine/computation/scripts/ok.py', 'run-mine')).toBe(false);
     expect(isForeignRunPath('team/runs/run-mine/notes.md', 'run-mine')).toBe(false);
     expect(isForeignRunPath('src/analysis.py', 'run-mine')).toBe(false);

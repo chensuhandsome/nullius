@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { explicitArtifactWriterMethod } from './explicitArtifactWriterMethod.js';
 
 import { compileExecutionPlan } from '../src/computation/execution-plan.js';
 import { executionPlanArtifactPath, materializeExecutionPlan } from '../src/computation/materialize-execution-plan.js';
@@ -22,7 +23,7 @@ export function createBridgeRun(runId: string, projectRoot: string) {
     },
   });
   writeJson(executionPlanArtifactPath(runDir), executionPlan);
-  const { manifestPath } = materializeExecutionPlan(runDir, executionPlan);
+  const { manifestPath } = materializeExecutionPlan(runDir, executionPlan, { methodSpec: explicitArtifactWriterMethod(executionPlan) });
   return { runDir, manifestPath };
 }
 

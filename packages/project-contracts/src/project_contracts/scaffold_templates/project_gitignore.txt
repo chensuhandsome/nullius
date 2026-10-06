@@ -23,7 +23,7 @@ artifacts/cache/
 .nullius/ledger.jsonl
 .nullius/backups/
 
-# Run evidence roots (artifacts/runs/, team/runs/, provider run records) and
+# Run evidence roots (artifacts/runs/, artifacts/runs/, provider run records) and
 # reference source snapshots are deliberately NOT listed here: whether to
 # track them is a project decision — declare it explicitly (and record it
 # with `nullius decision record`) rather than inheriting a default either way.

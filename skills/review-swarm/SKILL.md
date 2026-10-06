@@ -41,10 +41,9 @@ CLIs should be available in `PATH` according to the chosen backends.
 
 ## Host-aware execution (your own family runs native; quality first)
 
-`run_multi_task.py` shells out to CLIs — that is for CROSS-family reviewers: the families you list in
-`--models` should be families OTHER than the one you (the driving agent) run as, so every reviewer is
-genuinely independent of you. Your own family reviews natively in-host, not through its own CLI — never list
-your own family in `--models` just to aggregate. Host capabilities VARY; gate on what your host exposes:
+`run_multi_task.py` shells out to CLIs. Select reviewer models using identity evidence; a different
+route does not establish a different family or independent inputs. Same-family reviews normally run
+natively in-host. Host capabilities vary; gate on what your host exposes:
 
 - **Single-family review → keep it in-host, not via that family's CLI.** If you only need YOUR family's
   reviewer (no cross-family swarm aggregation), run it in-host: use a native child-agent/sub-agent
@@ -52,11 +51,11 @@ your own family in `--models` just to aggregate. Host capabilities VARY; gate on
   in your own loop — don't `claude exec` a model you are already running as (latency, separate
   auth/session, context loss). Plain Claude Desktop / the Gemini CLI may have no sub-agent primitive →
   inline.
-- **Cross-family swarm → all reviewers go through `run_multi_task.py` (honest caveat).** Its convergence
-  / contract aggregation is computed over the runner's OWN output files, so a natively-run same-family
-  reviewer would not be in the swarm. Getting one unified multi-backend verdict therefore means your own
-  family also goes through its CLI here — that hop is the price of in-process aggregation. Use the swarm
-  when you need cross-MODEL review; do single-family reviews natively.
+- **Aggregation includes only launcher-executed reviewers.** Its convergence and contract checks use
+  the launcher's own output files. Keep native reviewers' reports separate; do not inject their files
+  as completed launcher seats. If every intended seat must appear in one launcher report, execute those
+  seats through its configured CLI runners, including a same-family CLI seat when necessary. That seat
+  still needs exact identity evidence and supplies no additional family diversity.
 - **Reasoning effort scales with review difficulty — quality first, not token thrift.** High-stakes,
   cross-package, or security-sensitive reviews warrant maximum thinking (extended thinking / high–xhigh
   reasoning effort / a stronger model); trivial diffs do not. Never accept a missed defect to save tokens.
@@ -70,12 +69,13 @@ A machine may carry a third-party agents file (project level `.nullius/agents.js
 `~/.nullius/agents.json`; format and discovery order in the repository page docs/AGENTS_FILE.md)
 mapping model families to execution routes and model strings. When one is present,
 `run_multi_task.py` accepts `family:<name>` and `family:<name>:<tier>` model specs and resolves them
-through the file, and its `meta.json` gains an independence record: which families actually produced
-output, at which level (cross-family / single-family / none), which declared families were absent,
-and whether the machine sits below the file's cross-family minimum. A missing file changes nothing —
-explicit model specs keep working exactly as before.
+through the file. `meta.json` separates machine roster availability from completed eligible review
+participation. Only a successful, contract-checked, uncontaminated delivery with exact identity evidence
+counts toward the completed quorum; failed, partial, contract-invalid and unchecked deliveries do not.
+A missing file still permits explicit model specs, but leaves their family evidence unknown.
 
-The launcher only records; the degradation decision is yours (the agent driving this skill):
+The launcher records availability and participation separately; the degradation decision is yours
+(the agent driving this skill):
 
 - If the file declares fewer usable families than its cross-family minimum, or a `family:` request
   fails because that family is declared unavailable or its runner executable is absent, do NOT
@@ -85,14 +85,34 @@ The launcher only records; the degradation decision is yours (the agent driving 
 - Label the outcome honestly in whatever you hand back: state the independence level (single-family)
   and list the absent families, so a degraded round is never mistaken for a cross-family one.
   Single-model agreement is the floor; cross-family agreement is the ceiling.
-- A family served by a native runner (normally your own) always runs in-host, never through a CLI
+- A family configured with a native runner runs in-host and stays outside this launcher's aggregation
   (see Host-aware execution above).
+
+## Identity and completed quorum
+
+Each lane records the requested model spec, resolved dispatch route/model argument, separately reported
+CLI model identity (or `null`) and named `family_evidence`. A resolved alias is not a provider identity.
+Exact agents-file model mappings are declared evidence, not independent provider attestation. Unmatched
+identities and provider-prefix guesses remain `unknown`; a successful fallback replaces the resolved
+route/model and reported identity. Two different CLI routes never establish two model families.
+
+`independence.participating_families`, `completed_eligible_count` and `below_minimum` describe completed
+eligible participation. `declared_available_families` and `machine_below_minimum` describe roster/executable
+availability. Neither can supply missing completed seats. `diversity` uses named family evidence;
+`route_diversity` describes routes only. A useful terminal delivery can remain family-unknown.
+
+`independence_evidence` keeps model-family evidence, tool exposure, input framing and method independence
+separate. Unmarked input framing and method independence remain `not_machine_verified`; absence of a
+contamination flag is not proof of clean inputs. Capture artifacts live beneath the seat's output prefix
+in `OUT.attempts/run.*`; do not include them in a peer packet or workspace. Caller-owned workspace/read-path
+membranes must deny peer and prior review payloads. Read-only built-in tools alone are not an OS filesystem
+sandbox, so unrestricted browsing cannot attest isolation of private capture files.
 
 ## Quick start (single reviewer, one command — advisory)
 
-For one independent reviewer from another family, `review_one.py` assembles the
-whole packet for you (no hand-written prompt files). A single reviewer is one
-model family, so treat its verdict as **advisory only** for artifacts that
+For one reviewer, `review_one.py` assembles the whole packet for you (no
+hand-written prompt files). Its model family remains unknown until evidenced;
+treat its verdict as **advisory only** for artifacts that
 require cross-family review (the packet itself carries that caveat as its first
 line). **Which artifacts require cross-family review is a scoping decision, not
 a blanket rule**: cross-family panels are for result-bearing, public-surface,
@@ -115,12 +135,13 @@ python3 scripts/bin/review_one.py \
 
 See "Single-reviewer entry" below for the full flag set.
 
-## Quick start (cross-family review: families other than your own)
+## Quick start (reviewer selection and family evidence)
 
-The swarm exists to add reviewers from model families OTHER than the one you run as. List only the OTHER
-families in `--models`; run your own family natively in-host (see Host-aware execution above). Choose the
-list by your host — currently wired backends are `claude/...`, `codex/...`, `gemini/...`, `kimi/...`, and any OpenCode
-`provider/model` (e.g. `zhipuai-coding-plan/glm-5.2` for GLM):
+Select the intended models explicitly and map their exact model identifiers in an agents file when
+family attribution is required. Same-family native reviews stay separate unless deliberately executed
+as CLI seats for aggregation (see Host-aware execution above). Wired routes are `claude/...`,
+`codex/...`, `gemini/...`, `kimi/...`, and any OpenCode `provider/model`. The examples below suggest
+routes from each host; the route labels alone do not prove the executed families:
 
 - From a **Claude** host → `codex/...`, `gemini/...`, `zhipuai-coding-plan/glm-5.2` (not `claude/...`).
 - From a **Codex** host → `claude/...`, `gemini/...`, `zhipuai-coding-plan/glm-5.2` (not `codex/...`).
@@ -134,12 +155,12 @@ python3 scripts/bin/run_multi_task.py \
   --system /path/to/reviewer_system.md \
   --prompt /path/to/packet.md \
   --models codex/default,gemini/default,zhipuai-coding-plan/glm-5.2 \
+  --agents-file /path/to/agents.json \
   --check-review-contract
 ```
 
-Choosing the reviewer set: your own (host) family reviews natively in-host; every
-OTHER family you want goes through `--models`. There is no automatic rotation
-worth relying on — pick the families explicitly.
+Choose the intended reviewer models explicitly. Verify actual identity and input/method independence
+before crediting the review; there is no automatic family rotation to rely on.
 
 ## Single-reviewer entry (`review_one.py`)
 
@@ -285,12 +306,12 @@ Flags:
   the delegated run even when the caller's environment already sets it (the
   prior value is restored afterward), so the opt-in works under a suppressing
   environment too.
-- `--timeout-secs`, `--backend-tool-mode`, `--<backend>-runner` — forwarded to
-  the launcher unchanged.
+- `--timeout-secs`, `--claude-live-capture`, `--expected-secs`, `--inactivity-secs`,
+  `--inactivity-grace-secs`, `--backend-tool-mode`, `--<backend>-runner` — forwarded
+  to the launcher unchanged. No implicit hard deadline is added by this entry.
 
-The assembled packet's first line is the independence caveat (single-family
-review — one model family; whether cross-family review is additionally required
-follows the artifact's scoping above). When the reviewer returns,
+The assembled packet's first line is a single-reviewer advisory caveat. One route or alias does
+not establish a named model family; family and other independence evidence must be checked separately. When the reviewer returns,
 the launcher recomputes every manifest hash, writes `post_review_freshness.json`,
 records the status in `meta.json`, and prints `acceptance_status` with the model
 verdict, `contract_ok`, and the output/packet/meta/trace paths. A successful model
@@ -319,7 +340,23 @@ Notes:
 - Relative `--backend-output` paths are resolved under `--out-dir`.
 - `claude=none` for `--backend-system` is rejected (Claude runner requires a system prompt file).
 - For a single run, `--backend-output` does not allow one path for repeated same-backend agents (to avoid output clobbering).
-- `--timeout-secs` is one total deadline per review seat, starting at its first runner invocation. Both phases, empty-output retries, and outer fallback share the deadline. Default: `900` seconds. Use `0` to disable.
+- `--timeout-secs` retains its explicit hard-cap meaning: one total deadline per review seat,
+  starting at its first runner invocation and shared by both phases, retries and fallback. Default:
+  no hard budget (`0`). Advancing output never resets an explicit deadline.
+- `--expected-secs` is a soft estimate (default `1200`); exceeding it is recorded and does not kill
+  generation. `--claude-live-capture` opts into durable Claude stream events, stderr, partial text and a
+  separate terminal result. It is disabled at the runner seam unless requested. Without capture,
+  buffered output bytes retain their prior meaning and progress is unknown.
+- `--inactivity-secs` is disabled by default. With Claude live capture, it records an inactivity
+  diagnostic using event types, advancing counters, timestamps, capture health and process/provider
+  status. `--inactivity-grace-secs` (default `30`, positive) requires a further grace check. Only an
+  observable stream with earlier advancing content can terminate for confirmed configured inactivity;
+  silence before the first advancing event, or unknown/degraded capture, cannot. Repeated heartbeats and
+  identical events do not advance the counters. Private reasoning text stays out of progress metadata.
+  Activity describes generation, not semantic quality, correctness or billed usage.
+- User cancellation, terminal failure, explicit hard-budget exhaustion and confirmed configured
+  inactivity preserve durable evidence before process-group cleanup. Partial text cannot substitute for
+  a terminal CLI result or a valid review contract.
 - `--max-attempts` caps total runner subprocess invocations per seat, including both phases, empty-output retries, and outer fallback. Default: `3`; a complete two-phase review needs at least `2`. Exhausted seats are unavailable, never successful reviews. `meta.json` records the cap and consumed calls in each seat's `seat_budget`.
 - The launcher requests one inner attempt from Claude, Codex, Kimi, and OpenCode, and disables supported inner model fallback so the explicit outer fallback policy owns replacement. Gemini has no inner attempt flag: its approved transport routing is preserved, and the seat cap counts runner invocations rather than underlying HTTP requests.
 - `--backend-tool-mode` is explicit and backend-specific:
@@ -552,7 +589,8 @@ from real contamination events that voided otherwise-clean review rounds:
   else, and records in `meta.json` which surfaces the reviewer could see. Contamination is about
   receiving **conclusions**, not about reading **source**: a source-grounded review lane is required
   to read the real code, and read-only repository access never forfeits its independence credit.
-  Three lane classes do lose credit: lanes running a *writable* workspace tool mode
+  Failed, partial and contract-invalid deliveries cannot supply completed seats. Three additional lane
+  classes lose comparison credit: lanes running a *writable* workspace tool mode
   (discovery-grade — the reviewer read-only rule cannot be attested for them), lanes whose ambient
   context carried another workstream's conclusions, and fallback lanes with no recorded execution
   model (reason `model_unattributed`: a backend-default recovery leaves the executed family
@@ -594,8 +632,8 @@ from real contamination events that voided otherwise-clean review rounds:
 
 ## Model selection
 
-- `--models a,b,c`: explicit model specs — the recommended path (host family native,
-  every other family listed here explicitly).
+- `--models a,b,c`: explicit model specs for launcher-executed seats; exact identity mappings
+  are required before those seats supply family quorum.
 - `--agents N`: rotate through available OpenCode config models (legacy convenience;
   prefer explicit `--models` for reviewer runs).
 - `--model default`: one OpenCode agent, CLI default model.
@@ -680,10 +718,12 @@ python3 scripts/bin/run_multi_task.py \
   --prompt /path/to/task.md \
   --models codex/default,gemini/default,zhipuai-coding-plan/glm-5.2 \
   --check-convergence \
+  --check-review-contract \
+  --agents-file /path/to/agents.json \
   --convergence-threshold 0.8
 ```
 
-`--check-convergence` measures **lexical similarity** between reviewer outputs
+`--check-convergence` measures **lexical similarity** between completed eligible reviewer outputs
 (Jaccard). It is a signal that reviewers are talking about the same things —
 it is **not** the acceptance convergence defined in the gate-loop discipline
 below: two similar NOT_READY reviews sharing the same blockers score high
@@ -691,7 +731,10 @@ similarity while the artifact is not accepted at all. Acceptance convergence
 is always read from **contract-valid** verdicts (zero BLOCKING findings on the
 current artifact, dispositions complete), never from this similarity score; a
 malformed delivery joins the count only after its same-model normalization
-rerun (see the disposition rule under Contract checking).
+rerun (see the disposition rule under Contract checking). `convergence.converged` additionally requires
+at least two eligible outputs and the declared completed-family quorum. Unknown identities, unchecked
+contracts and unavailable roster entries cannot supply that quorum. `quorum_satisfied` records this
+condition separately from the similarity value.
 
 ### Re-review after every fix (gate-loop discipline)
 

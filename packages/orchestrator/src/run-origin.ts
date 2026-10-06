@@ -33,7 +33,7 @@ export const ATTEMPT_SNAPSHOT_REF_PREFIX = 'refs/nullius/attempts/';
  *  from untracked-noise counting so stamping does not demote later stamps
  *  self-referentially. NARROW by construction: only the exact ledger-family
  *  paths under artifacts/runs, and only run_origin.json mirrors that sit
- *  inside one of the two run roots — a research file that happens to share
+ *  inside the canonical run root — a research file that happens to share
  *  one of these names anywhere else still counts as untracked. */
 export function isTraceabilityArtifactPath(relativePath: string): boolean {
   const normalized = relativePath.split(path.sep).join('/');
@@ -45,7 +45,7 @@ export function isTraceabilityArtifactPath(relativePath: string): boolean {
     return true;
   }
   return path.posix.basename(normalized) === 'run_origin.json'
-    && (normalized.startsWith('artifacts/runs/') || normalized.startsWith('team/runs/'));
+    && normalized.startsWith('artifacts/runs/');
 }
 
 /** Control-plane bookkeeping under .nullius/ — run state, the decision
@@ -65,7 +65,7 @@ export function isControlPlanePath(relativePath: string): boolean {
   return normalized === '.nullius' || normalized.startsWith('.nullius/');
 }
 
-/** Paths inside ANOTHER run's directory under either run root. Counted
+/** Paths inside ANOTHER run's directory under the canonical run root. Counted
  *  SEPARATELY (dirty.foreign_run_untracked) so a reader can see how much
  *  of the untracked total is other runs' accumulation (measured: a 91-run
  *  exploratory chain where the untracked count was dominated by earlier
@@ -78,7 +78,7 @@ export function isControlPlanePath(relativePath: string): boolean {
  *  everything in the run's OWN directory are not foreign. */
 export function isForeignRunPath(relativePath: string, runId: string): boolean {
   const normalized = relativePath.split(path.sep).join('/');
-  for (const root of ['artifacts/runs/', 'team/runs/']) {
+  for (const root of ['artifacts/runs/']) {
     if (!normalized.startsWith(root)) continue;
     const remainder = normalized.slice(root.length);
     const firstSegment = remainder.split('/', 1)[0] ?? '';

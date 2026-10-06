@@ -20,7 +20,7 @@ def main() -> int:
     mode.add_argument(
         "--refresh",
         action="store_true",
-        help="Re-apply managed scaffold docs only (back up changed files); never write user seed files.",
+        help="Generate missing support guidance; preserve existing customized instructions and user seed files.",
     )
     ap.add_argument("--dry-run", action="store_true", help="With --refresh, report what would change without writing.")
     args = ap.parse_args()

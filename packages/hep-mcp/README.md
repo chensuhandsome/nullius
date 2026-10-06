@@ -6,6 +6,8 @@ Current most mature HEP domain pack and end-to-end workflow example. Local stdio
 
 Domain workflow pack. The strongest end-to-end example in the repo, but **not the root product identity** — generic lifecycle and contracts live in `@nullius/orchestrator` and `@nullius/shared`. See root [README.md](../../README.md) §3 Layer Model.
 
+Projects, run manifests, artifact URIs and local catalogs belong to this domain pack. They are artifact sessions, not generic lifecycle or approval authority. `hep_render_latex` renders structured drafts without verifying source support or enforcing citation allowlists: omitted `is_grounded` remains unknown, and explicit flags are caller assertions. `hep_export_project` rejects missing BibTeX entries for cited keys; this does not verify the claims themselves.
+
 ## Aggregated providers
 
 `hep-mcp` re-exposes a curated subset of the bounded provider MCP atoms (`arxiv-mcp`, `openalex-mcp`, `hepdata-mcp`, `pdg-mcp`, `zotero-mcp`) under `hep_*` namespaces. Zotero aggregation is gated by `HEP_ENABLE_ZOTERO` (set to `0` to hide `hep_import_from_zotero` and friends); the other providers are always included when present.

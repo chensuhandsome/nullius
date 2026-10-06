@@ -2,7 +2,7 @@
 """
 Evidence schema gate for full_access team-cycle runs.
 
-Validates per-member evidence JSON files produced under team/runs/<tag>/:
+Validates per-member evidence JSON files produced under artifacts/runs/<tag>/research_team/:
   - member_a_evidence.json
   - member_b_evidence.json
 

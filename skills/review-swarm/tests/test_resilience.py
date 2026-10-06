@@ -35,7 +35,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 cat >"${out}" <<'TXT'
-VERDICT: READY
+{"verdict":"PASS","blocking_issues":[],"summary":"done"}
 TXT
 """,
         encoding="utf-8",
@@ -51,6 +51,13 @@ exit {exit_code}
         encoding="utf-8",
     )
     path.chmod(0o755)
+
+
+def _write_identity_roster(path: Path) -> None:
+    path.write_text(json.dumps({"version": 1, "families": {
+        "one": {"runner": "codex", "models": {"default": "named-one"}},
+        "two": {"runner": "gemini", "models": {"default": "named-two"}},
+    }, "policy": {"cross_family_minimum": 2}}), encoding="utf-8")
 
 
 def _write_empty_output_runner(path: Path) -> None:
@@ -179,7 +186,8 @@ class DualReviewSummaryTests(unittest.TestCase):
         self.assertIsNotNone(summary)
         self.assertEqual(summary["reviewer_a"]["requested"]["backend"], "codex")
         self.assertEqual(summary["reviewer_b"]["requested"]["backend"], "gemini")
-        self.assertEqual(summary["diversity"], "ok")
+        self.assertEqual(summary["diversity"], "unknown")
+        self.assertEqual(summary["route_diversity"], "ok")
 
     def test_legacy_claude_gemini_pair_still_works(self):
         results = [
@@ -190,7 +198,8 @@ class DualReviewSummaryTests(unittest.TestCase):
         self.assertIsNotNone(summary)
         self.assertEqual(summary["reviewer_a"]["requested"]["backend"], "claude")
         self.assertEqual(summary["reviewer_b"]["requested"]["backend"], "gemini")
-        self.assertEqual(summary["diversity"], "ok")
+        self.assertEqual(summary["diversity"], "unknown")
+        self.assertEqual(summary["route_diversity"], "ok")
 
     def test_same_backend_only_yields_no_summary(self):
         results = [
@@ -224,7 +233,8 @@ class DualReviewSummaryTests(unittest.TestCase):
         ]
         summary = self.mod._dual_review_summary(results)
         self.assertIsNotNone(summary)
-        self.assertEqual(summary["diversity"], "degraded")
+        self.assertEqual(summary["diversity"], "unknown")
+        self.assertEqual(summary["route_diversity"], "degraded")
 
     def test_fewer_than_two_reviewers_yields_no_summary(self):
         self.assertIsNone(self.mod._dual_review_summary([]))
@@ -245,6 +255,9 @@ class DualReviewSummaryTests(unittest.TestCase):
             _write_valid_runner(gemini_runner)
             _write_valid_runner(opencode_runner)
 
+            agents = td_path / "agents.json"
+            _write_identity_roster(agents)
+
             argv = [
                 "run_multi_task.py",
                 "--out-dir", str(out_dir),
@@ -253,7 +266,10 @@ class DualReviewSummaryTests(unittest.TestCase):
                 "--gemini-runner", str(gemini_runner),
                 "--system", str(system),
                 "--prompt", str(prompt),
-                "--models", "codex/default,gemini/default",
+                "--models", "codex/named-one,gemini/named-two",
+                "--agents-file", str(agents),
+                "--check-review-contract",
+                "--check-convergence",
                 "--no-parallel",
             ]
             code = _run_main_with_argv(self.mod, argv)
@@ -262,6 +278,9 @@ class DualReviewSummaryTests(unittest.TestCase):
             self.assertEqual(meta["reviewer_a"]["requested"]["backend"], "codex")
             self.assertEqual(meta["reviewer_b"]["requested"]["backend"], "gemini")
             self.assertEqual(meta["diversity"], "ok")
+            self.assertEqual(meta["route_diversity"], "ok")
+            self.assertTrue(meta["convergence"]["quorum_satisfied"])
+            self.assertTrue(meta["convergence"]["converged"])
             self.assertIn("reviewer_a_output", meta["paths"])
             self.assertIn("reviewer_b_output", meta["paths"])
 
@@ -406,7 +425,7 @@ class RetryEmptyOutputTests(unittest.TestCase):
             self.assertTrue(agent["success"])
             self.assertEqual(agent["variant"], "canonical")
             self.assertIsNone(agent["fallback_reason"])
-            self.assertEqual(agent["resolved"], {"backend": "codex", "model": "codex/default"})
+            self.assertEqual(agent["resolved"], {"backend": "codex", "model": None})
             self.assertEqual(agent["empty_output_retries"], 1)
             self.assertEqual(meta["unavailable_backends"], [])
 
@@ -570,6 +589,8 @@ class NonIndependentCreditTests(unittest.TestCase):
         _write_valid_runner(codex_runner)
         _write_valid_runner(gemini_runner)
         _write_valid_runner(opencode_runner)
+        agents = td_path / "agents.json"
+        _write_identity_roster(agents)
         return [
             "run_multi_task.py",
             "--out-dir", str(out_dir),
@@ -578,7 +599,9 @@ class NonIndependentCreditTests(unittest.TestCase):
             "--gemini-runner", str(gemini_runner),
             "--system", str(system),
             "--prompt", str(prompt),
-            "--models", "codex/default,gemini/default",
+            "--models", "codex/named-one,gemini/named-two",
+            "--agents-file", str(agents),
+            "--check-review-contract",
             "--no-parallel",
             *extra,
         ]
@@ -591,7 +614,7 @@ class NonIndependentCreditTests(unittest.TestCase):
                 self.mod,
                 self._base_argv(
                     td_path, out_dir,
-                    "--contaminated", "gemini/default",
+                    "--contaminated", "gemini/named-two",
                     "--check-convergence",
                 ),
             )
@@ -599,7 +622,7 @@ class NonIndependentCreditTests(unittest.TestCase):
             meta = json.loads((out_dir / "meta.json").read_text(encoding="utf-8"))
             independence = meta["independence"]
             self.assertEqual(independence["level"], "single_family")
-            lanes = independence["non_independent_lanes"]
+            lanes = [r for r in independence["non_independent_lanes"] if r["reason"] == "AMBIENT_CONTEXT_CONTAMINATED"]
             self.assertEqual(len(lanes), 1)
             self.assertEqual(lanes[0]["index"], 1)
             self.assertEqual(lanes[0]["reason"], "AMBIENT_CONTEXT_CONTAMINATED")
@@ -609,8 +632,10 @@ class NonIndependentCreditTests(unittest.TestCase):
             self.assertNotIn("diversity", meta)
             convergence = meta["convergence"]
             self.assertEqual(
-                convergence["excluded_non_independent"], ["gemini/default"]
+                convergence["excluded_non_independent"], ["gemini/named-two"]
             )
+            self.assertFalse(convergence["quorum_satisfied"])
+            self.assertFalse(convergence["converged"])
             self.assertEqual(len(convergence["evaluated_outputs"]), 1)
             self.assertIn("codex", convergence["evaluated_outputs"][0])
             self.assertTrue(meta["agents"][1]["success"])

@@ -15,7 +15,7 @@ Core: Problem Interpretation Gate + P/D separation (Principle/Derivation) + Atom
 
 - Sync “0) Problem Interpretation Gate” into [research_preflight.md](../research_preflight.md) → `## Problem Framing Snapshot` (avoid definition drift).
 - Sync P/D separation and the sequential checklist into [research_plan.md](../research_plan.md) milestone DoD (acceptance must cite files/commands/thresholds).
-- If there is unresolved disagreement, write the outcome into `team/runs/<tag>/<tag>_adjudication.md` and include it in the next packet (otherwise disputes never close).
+- If there is unresolved disagreement, write the outcome into `artifacts/runs/<tag>/research_team/<tag>_adjudication.md` for coordinator follow-up. Independent reviewer packets contain the question and original inputs, without prior verdicts.
 
 Hard recommendations (avoid superficial acceptance):
 - Failure / kill criteria: write at least one explicit threshold/condition (e.g. include `if` or `<`, `>`, `!=`).

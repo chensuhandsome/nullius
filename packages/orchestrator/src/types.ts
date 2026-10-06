@@ -28,6 +28,7 @@ export interface PendingApproval {
   timeout_at: string | null;
   on_timeout: string; // 'block' | 'reject' | 'escalate' — Python writes arbitrary string
   packet_path: string;
+  packet_sha256?: string;
 }
 
 export interface ApprovalHistoryEntry {
@@ -36,6 +37,7 @@ export interface ApprovalHistoryEntry {
   category: string | null;
   decision: 'approved' | 'rejected' | 'timeout_rejected';
   note: string;
+  packet_sha256?: string;
 }
 
 export interface CheckpointInfo {

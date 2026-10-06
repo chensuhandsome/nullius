@@ -116,7 +116,7 @@ const ORCH_TOOL_SPEC_DEFINITIONS: OrchestratorToolSpecDefinition[] = [
     name: ORCH_RUN_PLAN_COMPUTATION,
     tier: 'advanced',
     exposure: 'full',
-    description: 'Compile staged idea artifacts from an existing run directory into execution_plan_v1.json and a run-local computation/manifest.json, preferring provider-backed materialization when the staged surface carries an explicit method bundle. Planning-only: returns dry_run validation (dry_run), an A3 approval request when compute_runs approval is enabled (requires_approval), or a staged ready-to-execute plan when A3 is opt-out (planned). Never executes — run the manifest via orch_run_execute_manifest.',
+    description: 'Compile staged idea artifacts from an existing run directory into execution_plan_v1.json and a run-local computation/manifest.json, requiring a supplied method_spec with files and run_card; missing methods are refused before executable artifacts are written. Planning-only: returns dry_run validation (dry_run), an A3 approval request when compute_runs approval is enabled (requires_approval), or a staged ready-to-execute plan when A3 is opt-out (planned). Never executes — run the manifest via orch_run_execute_manifest.',
     zodSchema: OrchRunPlanComputationSchema,
     handler: async params => handleOrchRunPlanComputation(params as z.output<typeof OrchRunPlanComputationSchema>),
   },

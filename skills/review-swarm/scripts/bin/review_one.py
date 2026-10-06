@@ -8,7 +8,7 @@ per-backend read-only tool modes, process-group timeouts, trace.jsonl/meta.json
 artifacts and contract checking are inherited from the one launcher — there is
 no second orchestration path.
 
-A single reviewer is one model family. Whether a final verdict additionally
+A single reviewer cannot supply cross-family quorum; its family evidence may be unknown. Whether a final verdict additionally
 requires cross-family review depends on the artifact's scoping (see SKILL.md):
 result-bearing / public-surface / irreversible artifacts do; internal
 implementation variants may close single-family, labeled as such.
@@ -64,7 +64,7 @@ _SOURCE_TEXT_ORIGINS = (
     "visually-verified-transcription",
 )
 
-ADVISORY_BANNER = "single-family review — one model family; whether a final verdict additionally requires cross-family review depends on the artifact's scoping (result-bearing / public-surface / irreversible artifacts do; internal implementation variants may close single-family, labeled as such)"
+ADVISORY_BANNER = "single-reviewer advisory — named model family is unknown until evidenced; whether a final verdict additionally requires cross-family review depends on the artifact's scoping (result-bearing / public-surface / irreversible artifacts do; internal implementation variants may close single-family, labeled as such)"
 STALE_ACCEPTANCE_EXIT_CODE = 86
 
 _PACKET_FRAMING = """\
@@ -1010,8 +1010,8 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     ap.add_argument("--out-dir", type=Path, default=None,
                     help="Output directory (default: ./review-one-<UTC timestamp>/).")
     ap.add_argument("--host-family", default=None, metavar="FAMILY",
-                    help="Your own (host) model family, e.g. claude. When --model resolves to it, "
-                         "the run is refused: review your own family in-host, not via its CLI.")
+                    help="User-declared host family label. A matching CLI route is conservatively refused; "
+                         "other routes do not establish a different model family.")
     ap.add_argument("--use-project-config", action="store_true",
                     help="Allow .nullius/review-swarm.json auto-discovery in the launcher: "
                          "REVIEW_SWARM_NO_AUTO_CONFIG is removed for the delegated run even "
@@ -1019,7 +1019,11 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                          "afterward). Default: disabled via REVIEW_SWARM_NO_AUTO_CONFIG=1 for "
                          "hermetic runs.")
     ap.add_argument("--timeout-secs", type=int, default=None,
-                    help="Per-backend timeout override, forwarded to the launcher.")
+                    help="Explicit hard budget across phases/retries/fallback; default: no hard budget.")
+    ap.add_argument("--claude-live-capture", action="store_true", help="Opt into durable Claude stream events and partial output.")
+    ap.add_argument("--expected-secs", type=float, default=None, help="Soft expected duration; never terminates generation.")
+    ap.add_argument("--inactivity-secs", type=float, default=None, help="Opt-in observable stream inactivity diagnostic; disabled by default.")
+    ap.add_argument("--inactivity-grace-secs", type=float, default=None, help="Further observable inactivity check before termination.")
     ap.add_argument("--backend-tool-mode", action="append", default=[], metavar="BACKEND=MODE",
                     help="Forwarded to the launcher (e.g. claude=review, gemini=review). Repeatable.")
     guard = ap.add_mutually_exclusive_group()
@@ -1040,10 +1044,10 @@ def _validate_model(args: argparse.Namespace) -> None:
     backend, _ = run_multi_task._classify_model(model)
     if str(args.host_family or "").strip().lower() == backend:
         raise ValueError(
-            f"--model {model} resolves to backend '{backend}', which is your own (host) family. "
+            f"--model {model} uses route '{backend}', matching your declared host label; this conservative route guard refuses it. "
             "Review your own family in-host — a native child-agent/sub-agent primitive if your "
             "host has one, else inline — never through its own CLI; for an independent reviewer "
-            "here, pick a --model from a different family (see SKILL.md, 'Host-aware execution')."
+            "here, provide independently evidenced family identity (see SKILL.md, 'Host-aware execution')."
         )
 
 
@@ -1056,6 +1060,12 @@ def _delegate(args: argparse.Namespace, *, out_dir: Path, system_path: Path, pac
             "--retry-empty-output", "1"]
     if args.timeout_secs is not None:
         argv += ["--timeout-secs", str(args.timeout_secs)]
+    if args.claude_live_capture:
+        argv.append("--claude-live-capture")
+    for name in ("expected_secs", "inactivity_secs", "inactivity_grace_secs"):
+        value = getattr(args, name, None)
+        if value is not None:
+            argv += ["--" + name.replace("_", "-"), str(value)]
     for entry in args.backend_tool_mode:
         argv += ["--backend-tool-mode", str(entry)]
     for backend in _RUNNER_BACKENDS:

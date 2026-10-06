@@ -485,7 +485,9 @@ class TestScaffoldContract(unittest.TestCase):
             "internal scaffolding diffs close on local tests plus a single reviewer", template
         )
         # The integrity row states where run evidence lands.
-        self.assertIn("land run evidence under `artifacts/runs/<run_id>/` or `team/runs/<run>/`", template)
+        self.assertIn("land run evidence under `artifacts/runs/<run_id>/`", template)
+        self.assertIn("with review payloads in its `research_team/` child", template)
+        self.assertNotIn("`team/runs/<run>/`", template)
         # Granularity and severity rules ship with the trigger table: the
         # reviewed unit is a stable candidate, findings are severity-graded
         # with explicit dispositions, confirmation rounds review the delta,
@@ -528,14 +530,16 @@ class TestScaffoldContract(unittest.TestCase):
         # The verification trigger table is mode-independent.
         self.assertIn("The verification triggers above apply identically in both modes.", template)
 
-    def test_templates_recognize_team_runs_as_first_class_evidence_root(self) -> None:
+    def test_templates_keep_team_payloads_inside_the_canonical_run(self) -> None:
         agents_template = (scaffold_template_dir() / "AGENTS.md").read_text(encoding="utf-8")
         contract_template = (scaffold_template_dir() / "research_contract.md").read_text(encoding="utf-8")
 
-        self.assertIn("first-class evidence roots", agents_template)
-        self.assertIn("`team/runs/<run>/`", agents_template)
-        self.assertIn("first-class evidence root alongside `artifacts/runs/<run_id>/`", contract_template)
-        self.assertIn("cite the path that actually holds", contract_template)
+        self.assertIn("milestone-executor review cycles use its `research_team/` child", agents_template)
+        self.assertIn("`artifacts/runs/<run_id>/research_team/` within the canonical run directory", contract_template)
+        self.assertIn("`run_origin.json` belongs to the parent run", contract_template)
+        self.assertIn("Cite the actual payload file", contract_template)
+        for template in (agents_template, contract_template):
+            self.assertNotIn("`team/runs/<run>/`", template)
         # The lifecycle artifact trio stays the canonical run record.
         self.assertIn("Store meaningful run outputs under `artifacts/runs/<run_id>/`", contract_template)
 
@@ -591,7 +595,7 @@ class TestScaffoldContract(unittest.TestCase):
             self.assertNotIn(token, rendered)
         self.assertNotIn("artifacts/runs/<TAG>", rendered)
         self.assertIn("artifacts/runs/<run_id>/", rendered)
-        self.assertIn("20260502T023000Z-m3-branch-scan-r1", rendered)
+        self.assertIn("<YYYYMMDDTHHMMSSZ>-<milestone>-<short-topic>-rN", rendered)
 
     def test_research_notebook_template_is_a_self_contained_memo(self) -> None:
         """The notebook is a paper-like research memo, not a change log.
@@ -650,22 +654,21 @@ class TestScaffoldRefresh(unittest.TestCase):
             project_policy="real_project",
         )
 
-    def test_refresh_overwrites_changed_managed_files_with_backup(self) -> None:
+    def test_refresh_preserves_custom_instructions_bytes_and_mode(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "proj"
             self._init(root)
-            (root / "AGENTS.md").write_text("HACKED AGENTS\n", encoding="utf-8")
-
+            agents = root / "AGENTS.md"
+            raw = b"# Owner instructions\r\n\r\nKeep customized scope.\r\n"
+            agents.write_bytes(raw)
+            agents.chmod(0o640)
             result = ensure_project_scaffold(repo_root=root, refresh=True, project_policy="real_project")
-
-            self.assertEqual(set(result["refreshed"]), {"AGENTS.md"})
-            self.assertEqual(set(result["backed_up"]), {"AGENTS.md"})
-            self.assertIsNotNone(result["backup_dir"])
-            agents_now = (root / "AGENTS.md").read_text(encoding="utf-8")
-            self.assertIn("This file anchors the workflow", agents_now)
-            self.assertNotIn("HACKED", agents_now)
-            backup_root = root / result["backup_dir"]
-            self.assertEqual((backup_root / "AGENTS.md").read_text(encoding="utf-8"), "HACKED AGENTS\n")
+            self.assertIn("AGENTS.md", result["preserved"])
+            self.assertEqual(result["refreshed"], [])
+            self.assertEqual(result["backed_up"], [])
+            self.assertIsNone(result["backup_dir"])
+            self.assertEqual(agents.read_bytes(), raw)
+            self.assertEqual(agents.stat().st_mode & 0o7777, 0o640)
 
     def test_refresh_leaves_unchanged_managed_files_untouched(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -720,49 +723,38 @@ class TestScaffoldRefresh(unittest.TestCase):
             (root / "AGENTS.md").write_text("HACKED AGENTS\n", encoding="utf-8")
             result = ensure_project_scaffold(repo_root=root, refresh=True, dry_run=True, project_policy="real_project")
             self.assertTrue(result["dry_run"])
-            self.assertIn("AGENTS.md", result["refreshed"])
+            self.assertIn("AGENTS.md", result["preserved"])
             self.assertIsNone(result["backup_dir"])
             self.assertEqual((root / "AGENTS.md").read_text(encoding="utf-8"), "HACKED AGENTS\n")
             self.assertFalse((root / ".nullius" / "backups").exists())
 
-    def test_refresh_is_non_transactional_but_recoverable(self) -> None:
+    def test_refresh_never_opens_custom_instructions_for_writing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "proj"
             self._init(root)
-            (root / "AGENTS.md").write_text("TAMPERED-AGENTS\n", encoding="utf-8")
+            agents = root / "AGENTS.md"
+            agents.write_text("OWNER\n", encoding="utf-8")
+            original_write = pathlib.Path.write_text
+            def refuse_owner_write(path, *args, **kwargs):
+                if path == agents:
+                    raise AssertionError("routine refresh opened owner instructions for writing")
+                return original_write(path, *args, **kwargs)
+            with mock.patch.object(pathlib.Path, "write_text", refuse_owner_write):
+                result = ensure_project_scaffold(repo_root=root, refresh=True, project_policy="real_project")
+            self.assertIn("AGENTS.md", result["preserved"])
+            self.assertEqual(agents.read_bytes(), b"OWNER\n")
 
-            target = root.resolve() / "AGENTS.md"
-            orig_write = pathlib.Path.write_text
-
-            def flaky_write(self, data, *args, **kwargs):
-                # Fail the OVERWRITE of the managed file (template content),
-                # but allow its backup write (which holds the TAMPERED- text).
-                if self == target and not data.startswith("TAMPERED-"):
-                    raise OSError("simulated write failure")
-                return orig_write(self, data, *args, **kwargs)
-
-            with mock.patch.object(pathlib.Path, "write_text", flaky_write):
-                with self.assertRaises(OSError):
-                    ensure_project_scaffold(repo_root=root, refresh=True, project_policy="real_project")
-
-            # The managed file's prior content remains recoverable from the backup.
-            backups = list((root / ".nullius" / "backups").glob("*/AGENTS.md"))
-            self.assertTrue(backups, "expected a backup of the managed file before the failure")
-            self.assertEqual(backups[0].read_text(encoding="utf-8"), "TAMPERED-AGENTS\n")
-
-    def test_refresh_backup_is_byte_exact_for_non_utf8_managed_file(self) -> None:
+    def test_refresh_preserves_non_utf8_support_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "proj"
             self._init(root)
             raw = b"\xff\xfe not valid utf-8 \x00 bytes\n"
-            (root / "AGENTS.md").write_bytes(raw)
-
+            agents = root / "AGENTS.md"
+            agents.write_bytes(raw)
             result = ensure_project_scaffold(repo_root=root, refresh=True, project_policy="real_project")
-
-            self.assertIn("AGENTS.md", result["backed_up"])
-            backup = root / result["backup_dir"] / "AGENTS.md"
-            self.assertEqual(backup.read_bytes(), raw)
-            self.assertIn("This file anchors the workflow", (root / "AGENTS.md").read_text(encoding="utf-8"))
+            self.assertIn("AGENTS.md", result["preserved"])
+            self.assertEqual(agents.read_bytes(), raw)
+            self.assertIsNone(result["backup_dir"])
 
     def test_managed_support_templates_have_no_render_placeholders(self) -> None:
         for rel in SCAFFOLD_SUPPORT_FILES:

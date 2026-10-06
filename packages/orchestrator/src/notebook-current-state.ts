@@ -7,6 +7,7 @@ import {
   encodeLinkTarget,
   escapeMarkdownCell,
   locateManagedBlock,
+  textOutsideManagedBlock,
   refreshManagedBlock,
   type ManagedBlockLocation,
   type ManagedBlockSpec,
@@ -190,6 +191,10 @@ const NOTEBOOK_BLOCK_SPEC: ManagedBlockSpec = {
   stateChangedReason: 'registry/validity state changed since the block was written',
 };
 
+export function textOutsideNotebookCurrentState(text: string): string | null {
+  return textOutsideManagedBlock(text, NOTEBOOK_BLOCK_SPEC);
+}
+
 /** Fence-aware, line-based marker location: an example QUOTING the markers
  *  inside a fenced block OR a four-space/tab indented code block
  *  (CommonMark's other code form) must neither count as a block nor trip
@@ -272,7 +277,7 @@ export function refreshNotebookCurrentState(
   // that window (the engine's optimistic guard only catches rivals that
   // touch the carrier AFTER our read). The supplied projection/ledgerView
   // seed only the returned projection on the render-free skip path, so a
-  // normal refresh computes exactly one projection.
+  // normal refresh computes a fresh projection, revalidated before commit.
   let latestProjection: CurrentStateProjection | null = null;
   const outcome = refreshManagedBlock(
     path.join(projectRoot, 'research_notebook.md'),

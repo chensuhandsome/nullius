@@ -888,7 +888,7 @@ class MultiTaskTests(unittest.TestCase):
             meta = json.loads((out_dir / "meta.json").read_text(encoding="utf-8"))
             self.assertEqual(meta["success_count"], 0)
             self.assertTrue(meta["agents"][0]["timed_out"])
-            self.assertEqual(meta["agents"][0]["failure_reason"], "timeout")
+            self.assertEqual(meta["agents"][0]["failure_reason"], "hard_budget_exhausted")
 
             events = _read_trace_events(out_dir / "trace.jsonl")
             end_event = next(e for e in events if e.get("event") == "agent_0_end")

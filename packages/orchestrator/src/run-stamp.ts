@@ -1,3 +1,5 @@
+import { assertNoRetiredRunRoot } from './run-directories.js';
+import { RUNS_ROOT_RELATIVE } from './run-paths.js';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -8,8 +10,8 @@ import { createHash } from 'node:crypto';
 import { appendValidityEvent, buildValidityEvent, readValidityLedger, type ValidityLedgerView } from './validity-ledger.js';
 import { captureRunOrigin, isControlPlanePath, isTraceabilityArtifactPath, readAttemptSnapshotRef, swapAttemptSnapshotRef } from './run-origin.js';
 import { validateResultRegistry } from './result-registry.js';
-import { refreshNotebookCurrentState } from './notebook-current-state.js';
-import { refreshRunIndexBlock } from './run-index.js';
+import { refreshNotebookCurrentState, textOutsideNotebookCurrentState } from './notebook-current-state.js';
+import { refreshRunIndexBlock, textOutsideRunIndex } from './run-index.js';
 
 /** The actor recorded on ledger events when the caller has no better name:
  *  the OS user, matching what the hand-invoked CLI has always written. */
@@ -24,7 +26,7 @@ export function defaultStampActor(): string {
 /** The full origin-stamp write flow, shared by every stamp entrance: the
  *  `nullius trace stamp` CLI verb and the computation front door's automatic
  *  launch stamp. One implementation so the containment rules (run-root
- *  membership, canonical-root preference, symlink refusal), the event-id
+ *  membership, canonical-root containment, symlink refusal), the event-id
  *  idempotency contract, and the mirror-rollback discipline cannot drift
  *  between the hand-invoked and machine-invoked paths.
  *
@@ -69,7 +71,7 @@ export function resolveStampTarget(projectRoot: string, target: string): string 
   return path.isAbsolute(target) ? target : path.resolve(projectRoot, target);
 }
 
-/** True when `runDir` sits DIRECTLY under one of the two stampable run
+/** True when `runDir` sits DIRECTLY under one of the canonical stampable run
  *  roots. Symlink-resolved on BOTH sides — every root-membership decision
  *  (the stamp containment below AND the front door's identity check) must
  *  share this one predicate: two callers answering "inside a run root?"
@@ -83,7 +85,7 @@ export function isInsideStampableRoot(projectRoot: string, runDir: string): bool
   } catch {
     return false;
   }
-  return ['artifacts/runs', 'team/runs'].some((relRoot) => {
+  return [RUNS_ROOT_RELATIVE].some((relRoot) => {
     const root = path.resolve(projectRoot, relRoot);
     if (!fs.existsSync(root)) return false;
     try {
@@ -114,14 +116,26 @@ export function sameResearchCode(projectRoot: string, commitA: string, commitB: 
   if (commitA === commitB) return true;
   const diff = execFileSync(
     'git',
-    ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', projectRoot, 'diff', '--name-only', commitA, commitB],
+    ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', projectRoot, 'diff', '--name-only', '-z', commitA, commitB],
     { encoding: 'utf-8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] },
   );
   return diff
-    .split('\n')
-    .map(line => line.trim())
+    .split('\0')
     .filter(line => line.length > 0)
-    .every(line => isControlPlanePath(line) || isTraceabilityArtifactPath(line));
+    .every(line => {
+      if (isControlPlanePath(line) || isTraceabilityArtifactPath(line)) return true;
+      const outside = line === 'project_index.md' ? textOutsideRunIndex
+        : line === 'research_notebook.md' ? textOutsideNotebookCurrentState : null;
+      if (!outside) return false;
+      const git = (args: string[]) => execFileSync('git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', projectRoot, ...args],
+        { encoding: 'utf-8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
+      const modeA = git(['ls-tree', commitA, '--', line]).split(' ')[0];
+      const modeB = git(['ls-tree', commitB, '--', line]).split(' ')[0];
+      if (!modeA || modeA !== modeB) return false;
+      const a = outside(git(['show', `${commitA}:${line}`]));
+      const b = outside(git(['show', `${commitB}:${line}`]));
+      return a !== null && b !== null && a === b;
+    });
 }
 
 /** What a stamp rollback may do to the mirror file: undo only what THIS
@@ -227,18 +241,19 @@ type ContainedRunDir =
   | { kind: 'ok'; runDir: string; runId: string }
   | { kind: 'rejected'; message: string };
 
-/** Shared containment for every verb that writes about a run directory:
- *  only the two run roots are addressable (a record about a run the read
- *  model can never show is a silent hole), symlinked run dirs are refused
- *  (the directory scan skips symlink entries — same hole through a side
- *  door), and the canonical-root rule (D9) sends writers to artifacts/runs
- *  when both roots carry the id. */
+/** Run writers use the canonical run root and refuse retired roots or aliases. */
 function resolveContainedRunDirectory(
   projectRoot: string,
   target: string,
   verb: string,
-  verbNoun: string,
 ): ContainedRunDir {
+  const targetRelative = path.relative(projectRoot, resolveStampTarget(projectRoot, target)).split(path.sep).join('/');
+  if (targetRelative === 'team/runs' || targetRelative.startsWith('team/runs/')) {
+    return { kind: 'rejected', message: `${verb}: team/runs is a retired run root; retain the matching prior runtime/skills or perform a separately reviewed migration.` };
+  }
+  try { assertNoRetiredRunRoot(projectRoot); } catch (error) {
+    return { kind: 'rejected', message: `${verb}: ${error instanceof Error ? error.message : String(error)}` };
+  }
   const runDir = resolveStampTarget(projectRoot, target);
   if (!fs.existsSync(runDir) || !fs.statSync(runDir).isDirectory()) {
     return { kind: 'rejected', message: `${verb}: run directory not found: ${runDir}` };
@@ -252,23 +267,11 @@ function resolveContainedRunDirectory(
   if (!isInsideStampableRoot(projectRoot, runDir)) {
     return {
       kind: 'rejected',
-      message: `${verb}: run directories live directly under artifacts/runs/ or team/runs/; `
-        + `${target} is outside both roots and would be invisible to the read model`,
+      message: `${verb}: run directories live directly under artifacts/runs/; `
+        + `${target} is outside the run root and would be invisible to the read model`,
     };
   }
   const runId = path.basename(runDir);
-  const canonicalDir = path.join(projectRoot, 'artifacts', 'runs', runId);
-  const mirrorDirOfCanonical = path.join(projectRoot, 'team', 'runs', runId);
-  if (
-    path.resolve(runDir) === path.resolve(mirrorDirOfCanonical)
-    && fs.existsSync(canonicalDir)
-  ) {
-    return {
-      kind: 'rejected',
-      message: `${verb}: ${runId} exists under artifacts/runs (canonical) and team/runs (review mirror); `
-        + `${verbNoun} the canonical directory: artifacts/runs/${runId}`,
-    };
-  }
   return { kind: 'ok', runDir, runId };
 }
 
@@ -277,6 +280,9 @@ function isRunnerWriteSurface(insideOwnRun: string, workspaceRels: string[]): bo
   // never deleted; counting it as "unknown code delta" would demote every
   // post-retry stamp for bookkeeping the machinery itself created.
   if (insideOwnRun.startsWith('attempts/') || insideOwnRun.startsWith('artifacts/')) return true;
+  // Executor payloads are run-produced evidence. This only narrows the re-entry
+  // code-delta signal; captureRunOrigin still counts all untracked bytes.
+  if (insideOwnRun.startsWith('research_team/')) return true;
   // The runner's own entries under WHATEVER directory the manifest made
   // the workspace ('computation' is the convention, not a guarantee).
   const roots = workspaceRels.length > 0 ? workspaceRels : ['computation'];
@@ -309,7 +315,7 @@ function countCodeBearingUntracked(projectRoot: string, runId: string): number {
     ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', projectRoot, 'ls-files', '--others', '--exclude-standard'],
     { encoding: 'utf-8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] },
   );
-  const ownRunPrefixes = ['artifacts/runs', 'team/runs'].map(root => `${root}/${runId}`);
+  const ownRunPrefixes = [RUNS_ROOT_RELATIVE].map(root => `${root}/${runId}`);
   const declaredOutputs = new Set<string>(
     ownRunPrefixes.flatMap(prefix => [...declaredOutputPaths(projectRoot, prefix)]),
   );
@@ -335,7 +341,7 @@ function countCodeBearingUntracked(projectRoot: string, runId: string): number {
       }
       // Inside a run root but another run's directory, or a stray file
       // directly on the root: not this run's code signal.
-      if (line.startsWith('artifacts/runs/') || line.startsWith('team/runs/')) return false;
+      if (line.startsWith('artifacts/runs/')) return false;
       return true;
     })
     .length;
@@ -346,7 +352,7 @@ export function stampRunDirectory(
   target: string,
   options: StampRunOptions,
 ): StampRunResult {
-  const contained = resolveContainedRunDirectory(projectRoot, target, 'trace stamp', 'stamp');
+  const contained = resolveContainedRunDirectory(projectRoot, target, 'trace stamp');
   if (contained.kind === 'rejected') return contained;
   const { runDir, runId } = contained;
   // One logical stamp = one ULID for life: with --event-id the retry
@@ -1109,7 +1115,7 @@ export function openRetryAttempt(
     deps?: Record<string, string>;
   } = {},
 ): OpenRetryResult {
-  const contained = resolveContainedRunDirectory(projectRoot, target, 'trace retry', 'retry');
+  const contained = resolveContainedRunDirectory(projectRoot, target, 'trace retry');
   if (contained.kind === 'rejected') return contained;
   const { runDir, runId } = contained;
   // Normalize BEFORE any side effect: the ledger schema requires a

@@ -2,12 +2,13 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { writeBytesAtomicDurable, writeJsonAtomicDurable } from '@nullius/shared';
-import { resolveLifecycleProjectRoot } from './cli-project-root.js';
+import { findLifecycleProjectRoot } from './cli-project-root.js';
 import { ensureNulliusHarnessSentinel } from './nullius-harness-sentinel.js';
 import { ensureProjectLocalNulliusLauncher, projectLocalNulliusRelativePath } from './project-local-nullius.js';
 import { ensureProjectScaffold, type ProjectScaffoldResult } from './project-scaffold.js';
 import { type CliIo } from './cli-lifecycle.js';
 import { StateManager } from './state-manager.js';
+import { assertNoRetiredRunRoot } from './run-directories.js';
 import type { ExecutionMode } from './types.js';
 import { assertProjectRootAllowed, resolveUserPath } from './project-policy.js';
 
@@ -164,9 +165,7 @@ export function rollbackBootstrapGitDir(repoRoot: string, gitDirExistedBefore: b
 }
 
 function findParentProjectRoot(start: string): string | null {
-  const resolved = path.resolve(start);
-  const candidate = resolveLifecycleProjectRoot(null, resolved);
-  return candidate === resolved ? null : candidate;
+  return findLifecycleProjectRoot(path.resolve(start));
 }
 
 function emitRefreshSummary(io: CliIo, scaffold: ProjectScaffoldResult, dryRun: boolean, repoRoot: string): void {
@@ -213,8 +212,7 @@ function emitRefreshSummary(io: CliIo, scaffold: ProjectScaffoldResult, dryRun: 
 
 export async function runInitCommand(projectRoot: string | null, cwd: string, args: string[], io: CliIo): Promise<void> {
   const options = parseInitArgs(args);
-  const repoRoot = projectRoot ? resolveUserPath(projectRoot, cwd) : path.resolve(cwd);
-  assertProjectRootAllowed(repoRoot);
+  const repoRoot = assertProjectRootAllowed(projectRoot ? resolveUserPath(projectRoot, cwd) : path.resolve(cwd));
   if (path.basename(repoRoot) === '.nullius') {
     throw new Error('refusing init inside .nullius/ (run init at the project root, or use --project-root)');
   }
@@ -222,6 +220,7 @@ export async function runInitCommand(projectRoot: string | null, cwd: string, ar
   if (parentRoot && parentRoot !== repoRoot && !options.allowNested) {
     throw new Error(`refusing init: a parent directory is already a project root (${parentRoot}); run init at the intended root, or pass --allow-nested`);
   }
+  assertNoRetiredRunRoot(repoRoot);
   const manager = new StateManager(repoRoot);
   const runtimeDir = path.dirname(manager.statePath);
   if (options.refresh && options.dryRun) {
@@ -246,12 +245,7 @@ export async function runInitCommand(projectRoot: string | null, cwd: string, ar
         io.stdout(`[ok] execution mode already declared: ${options.mode}\n`);
       } else {
         state.execution_mode = options.mode;
-        // Audit event before the state write: if the two cannot both land,
-        // a retry re-declares (worst case a duplicated audit line), whereas
-        // the reverse order would change the mode with no audit event and
-        // the retry would report "already declared" forever.
-        manager.appendLedger('execution_mode_declared', { details: { execution_mode: options.mode } });
-        manager.saveState(state);
+        manager.saveStateWithLedger(state, 'execution_mode_declared', { details: { execution_mode: options.mode } });
         io.stdout(`[ok] execution mode declared: ${options.mode}\n`);
       }
     }
@@ -266,18 +260,11 @@ export async function runInitCommand(projectRoot: string | null, cwd: string, ar
     if (options.mode !== null) {
       state.execution_mode = options.mode;
     }
-    if (stateExisted && options.mode !== null && priorMode !== options.mode) {
-      // A --force re-init that changes the declaration is still a declaration
-      // change; keep the dedicated audit event the non-force path writes, and
-      // write it before the state so a failure between the two is repaired by
-      // an idempotent retry instead of losing the audit trail.
-      manager.appendLedger('execution_mode_declared', { details: { execution_mode: options.mode } });
-    }
-    // Event before state here as well: if the ledger append fails, the state
-    // file is not created, so the retry is a clean fresh init instead of an
-    // "already initialized" root whose declaration audit never existed.
-    manager.appendLedger('initialized', options.mode !== null ? { details: { execution_mode: options.mode } } : {});
-    manager.saveState(state);
+    manager.saveStateWithLedger(state, 'initialized', {
+      details: options.mode !== null ? { execution_mode: options.mode } : {},
+      additional_events: stateExisted && options.mode !== null && priorMode !== options.mode
+        ? [{ event_type: 'execution_mode_declared', details: { execution_mode: options.mode } }] : [],
+    });
     io.stdout(`[ok] wrote: ${statePath}\n`);
     if (options.mode !== null) {
       io.stdout(`[ok] execution mode declared: ${options.mode}\n`);

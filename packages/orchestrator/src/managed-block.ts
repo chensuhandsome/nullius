@@ -1,5 +1,5 @@
 import * as fs from 'node:fs';
-import { writeBytesAtomicDurable } from '@nullius/shared';
+import { withLedgerLock, writeBytesAtomicDurable } from '@nullius/shared';
 
 /** Shared engine for MACHINE-OWNED markdown blocks (the notebook
  *  current-state block, the project-index run-index block): one set of
@@ -63,6 +63,15 @@ export type ManagedBlockLocation = {
 };
 
 export const normalizeEol = (value: string): string => value.replace(/\r\n/g, '\n');
+
+/** Keep every byte outside a single recognized machine projection. Ambiguous
+ * markers retain their provenance significance instead of hiding content. */
+export function textOutsideManagedBlock(text: string, spec: ManagedBlockSpec): string | null {
+  const location = locateManagedBlock(text, spec);
+  if (!location.markerLinesPresent) return text;
+  if (!location.bounds || location.duplicated || location.strayMarkerLines > 0) return null;
+  return text.slice(0, location.bounds.start) + text.slice(location.bounds.end);
+}
 
 /** A CommonMark fenced-code delimiter.  Closing fences must match the
  * opener's character and be at least as long; a different delimiter inside
@@ -253,8 +262,8 @@ export type ManagedBlockRefreshOutcome = {
   reason: string | null;
 };
 
-/** Refresh the block in place. `renderLatest` is invoked ONCE PER RETRY
- *  ATTEMPT: on a detected concurrent edit the loop must re-render from the
+/** Refresh the block in place. `renderLatest` is invoked for planning and again before commit
+ *  on each bounded retry: on a detected concurrent edit the loop must re-render from the
  *  now-current state, or a writer that lost the first race would replace
  *  the winner's NEWER block with its own stale bytes (real for any block
  *  whose projection moves on every write — the run index — and harmless
@@ -271,12 +280,26 @@ export function refreshManagedBlock(
     insertAt: (text: string, location: ManagedBlockLocation) => number;
   },
 ): ManagedBlockRefreshOutcome {
+  return withLedgerLock(filePath, 'Confirm carrier writers have stopped and inspect the carrier before repairing its lock.',
+    () => refreshManagedBlockLocked(filePath, renderLatest, spec, options));
+}
+
+function refreshManagedBlockLocked(
+  filePath: string,
+  renderLatest: () => string,
+  spec: ManagedBlockSpec,
+  options: { insertIfMissing: boolean; missingBlockReason: string; insertAt: (text: string, location: ManagedBlockLocation) => number },
+): ManagedBlockRefreshOutcome {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    let text: string;
+    let originalBytes: Buffer;
     try {
-      text = fs.readFileSync(filePath, 'utf-8');
+      originalBytes = fs.readFileSync(filePath);
     } catch {
       return { action: 'skipped', reason: `${spec.fileLabel} not found` };
+    }
+    const text = originalBytes.toString('utf-8');
+    if (!Buffer.from(text, 'utf-8').equals(originalBytes)) {
+      return { action: 'skipped', reason: `${spec.fileLabel} is not valid UTF-8 — repair by hand before sync` };
     }
     // Render AFTER the carrier read: a rival whose ledger write precedes
     // its carrier write is then either visible to this render (rival's
@@ -328,7 +351,10 @@ export function refreshManagedBlock(
       action = 'rewritten';
     } else {
       const onDisk = text.slice(bounds.start, bounds.end);
-      if (normalizeEol(onDisk) === rendered) return { action: 'unchanged', reason: null };
+      if (normalizeEol(onDisk) === rendered) {
+        if (renderLatest() !== rendered || !fs.readFileSync(filePath).equals(originalBytes)) continue;
+        return { action: 'unchanged', reason: null };
+      }
       updated = text.slice(0, bounds.start) + renderedForFile + text.slice(bounds.end);
       action = 'rewritten';
     }
@@ -340,13 +366,14 @@ export function refreshManagedBlock(
     }
     try {
       writeBytesAtomicDurable(filePath, Buffer.from(updated, 'utf-8'), mode, () => {
-        let latest: string;
+        const currentRendered = renderLatest();
+        let latest: Buffer;
         try {
-          latest = fs.readFileSync(filePath, 'utf-8');
+          latest = fs.readFileSync(filePath);
         } catch {
           throw new Error('carrier unreadable during refresh');
         }
-        if (latest !== text) {
+        if (!latest.equals(originalBytes) || (fs.statSync(filePath).mode & 0o7777) !== mode || currentRendered !== rendered) {
           throw new Error('concurrent carrier edit during refresh');
         }
       });

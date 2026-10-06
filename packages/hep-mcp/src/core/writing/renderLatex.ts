@@ -111,7 +111,7 @@ function renderSentence(params: {
     evidence_ids: s.evidence_ids ?? [],
     citations: citeTokens,
     type: sentenceTypeOrDefault(s.type),
-    is_grounded: s.is_grounded ?? true,
+    ...(s.is_grounded === undefined ? {} : { is_grounded: s.is_grounded }),
     sentence_latex: s.sentence_latex,
   };
 

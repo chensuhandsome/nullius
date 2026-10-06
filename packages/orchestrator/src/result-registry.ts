@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { writeBytesAtomicDurable } from '@nullius/shared';
-import { readValidityLedger, type RunValidity, type ValidityLedgerView } from './validity-ledger.js';
+import { withLedgerLock, writeBytesAtomicDurable } from '@nullius/shared';
+import { readValidityLedger, validityLedgerPath, type RunValidity, type ValidityLedgerView } from './validity-ledger.js';
 import { effectiveCodeIdentity } from './run-origin.js';
 import type { RunOriginV1 } from '@nullius/shared';
 
@@ -472,6 +472,23 @@ export function setCurrentResult(
   projectRoot: string,
   input: { resultId: string; runId: string; artifactRelPath: string; description?: string; supersedes?: string },
 ): { row: ResultRegistryRow } {
+  const indexPath = path.join(projectRoot, 'project_index.md');
+  if (!fs.existsSync(indexPath)) throw new Error('project_index.md not found; run nullius init first');
+  return withLedgerLock(indexPath, 'Confirm carrier writers have stopped and inspect the carrier before repairing its lock.', () => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try { return setCurrentResultLocked(projectRoot, input); }
+      catch (error) {
+        if (!(error instanceof Error) || error.message !== 'concurrent registry input edit') throw error;
+      }
+    }
+    throw new Error('concurrent registry input edits kept landing; no stale row was written, retry the command');
+  });
+}
+
+function setCurrentResultLocked(
+  projectRoot: string,
+  input: { resultId: string; runId: string; artifactRelPath: string; description?: string; supersedes?: string },
+): { row: ResultRegistryRow } {
   if (!SAFE_RESULT_ID.test(input.resultId)) {
     throw new Error(`result id ${JSON.stringify(input.resultId)} must match ${SAFE_RESULT_ID}`);
   }
@@ -491,7 +508,12 @@ export function setCurrentResult(
   }
   const indexPath = path.join(projectRoot, 'project_index.md');
   if (!fs.existsSync(indexPath)) throw new Error('project_index.md not found; run nullius init first');
-  const text = fs.readFileSync(indexPath, 'utf-8');
+  const originalBytes = fs.readFileSync(indexPath);
+  const text = originalBytes.toString('utf-8');
+  if (!Buffer.from(text, 'utf-8').equals(originalBytes)) {
+    throw new Error('project_index.md is not valid UTF-8; repair by hand before selecting a result');
+  }
+  const mode = fs.statSync(indexPath).mode & 0o7777;
   const bounds = blockBounds(text);
   if (!bounds) {
     throw new Error(
@@ -508,6 +530,7 @@ export function setCurrentResult(
     throw new Error(preflight.map(entry => entry.message).join('; ') || `artifact ${input.artifactRelPath} is not registrable`);
   }
   const digest = createHash('sha256').update(fs.readFileSync(artifactAbsolute)).digest('hex');
+  const ledgerBytes = fs.existsSync(validityLedgerPath(projectRoot)) ? fs.readFileSync(validityLedgerPath(projectRoot)) : Buffer.alloc(0);
   const ledger = readValidityLedger(projectRoot);
   const known = ledger.runs.get(input.runId);
   if (!known || !known.stamped) {
@@ -550,6 +573,12 @@ export function setCurrentResult(
   const runCell = `${input.runId} @ ${effective.slice(0, 12)}${snapshotMarker}${untrackedMarker}`;
 
   const state = parseResultRegistry(projectRoot);
+  if (state.duplicate_ids.size > 0) {
+    throw new Error(
+      `result registry has duplicate IDs: ${Array.from(state.duplicate_ids).sort().join(', ')}; `
+      + 'resolve the ambiguous rows by hand before registering a result; no row was written',
+    );
+  }
   const existing = state.rows.find(row => row.result_id === input.resultId);
   // Chain protection at the writer (the validator would catch all of these
   // later, but a one-command flow must not mint a defective row with exit 0):
@@ -646,31 +675,42 @@ export function setCurrentResult(
   }
 
   const block = text.slice(bounds.start, bounds.end);
-  const lines = block.split('\n');
+  const eol = block.includes('\r\n') ? '\r\n' : '\n';
+  // Keep each physical line's delimiter: mixed-EOL human content inside the
+  // block belongs to its author, even when a registry row needs updating.
+  const lines = block.match(/[^\n]*(?:\n|$)/g)?.filter(line => line.length > 0) ?? [];
   let replaced = false;
-  const updated = lines.map((line) => {
-    if (!line.trim().startsWith('|')) return line;
+  const updated = lines.map((physicalLine) => {
+    const ending = physicalLine.endsWith('\r\n') ? '\r\n' : physicalLine.endsWith('\n') ? '\n' : '';
+    const line = ending ? physicalLine.slice(0, -ending.length) : physicalLine;
+    if (!line.trim().startsWith('|')) return physicalLine;
     const cells = line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
-    if (cells.length !== RESULT_TABLE_COLUMNS) return line;
+    if (cells.length !== RESULT_TABLE_COLUMNS) return physicalLine;
     const rowId = cells[0]!.replace(/`/g, '');
     if (rowId === input.resultId) {
       replaced = true;
-      return newLine;
+      return newLine + ending;
     }
     if (rowId === supersedes && supersedes !== 'none') {
       cells[5] = `\`${input.resultId}\``;
-      return `| ${cells.join(' | ')} |`;
+      return `| ${cells.join(' | ')} |${ending}`;
     }
-    return line;
+    return physicalLine;
   });
-  let newBlock = updated.join('\n');
+  let newBlock = updated.join('');
   if (!replaced) {
-    newBlock = `${newBlock.replace(/\n$/, '')}\n${newLine}\n`;
+    newBlock = `${newBlock}${newBlock.endsWith('\n') ? '' : eol}${newLine}${eol}`;
   }
   // Atomic durable write: this file also carries the manuscript registry —
   // a crash mid-write must not truncate it, and the rename gives concurrent
   // readers a consistent before-or-after view.
-  writeBytesAtomicDurable(indexPath, text.slice(0, bounds.start) + newBlock + text.slice(bounds.end));
+  writeBytesAtomicDurable(indexPath, text.slice(0, bounds.start) + newBlock + text.slice(bounds.end), mode, () => {
+    const sameLedger = fs.readFileSync(validityLedgerPath(projectRoot)).equals(ledgerBytes);
+    const sameArtifact = createHash('sha256').update(fs.readFileSync(artifactAbsolute)).digest('hex') === digest;
+    if (!sameLedger || !sameArtifact || !fs.readFileSync(indexPath).equals(originalBytes) || (fs.statSync(indexPath).mode & 0o7777) !== mode) {
+      throw new Error('concurrent registry input edit');
+    }
+  });
   return {
     row: {
       result_id: input.resultId,

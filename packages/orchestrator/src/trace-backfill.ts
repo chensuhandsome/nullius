@@ -1,3 +1,4 @@
+import { runDirFor } from './run-paths.js';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -165,7 +166,7 @@ export function backfillRunOrigins(projectRoot: string): {
     // itself fails, the just-written mirror is REMOVED — an orphan mirror
     // with no ledger event behind it would look like a valid stamp to a
     // human browsing the run directory.
-    const mirrorPath = path.join(projectRoot, entry.canonical_root, entry.run_id, 'run_origin.json');
+    const mirrorPath = path.join(runDirFor(projectRoot, entry.run_id), 'run_origin.json');
     // A pre-existing (legacy, hand-made) mirror is preserved across failure:
     // rollback RESTORES it rather than deleting it — only a mirror this
     // invocation created from nothing is removed.

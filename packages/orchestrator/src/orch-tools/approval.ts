@@ -107,7 +107,8 @@ export async function handleOrchRunApprove(
     };
   }
 
-  manager.approveRun(state, params.approval_id, params.note);
+  if (pending.packet_sha256 && pending.packet_sha256 !== actualSha256) throw invalidParams('pending approval packet changed after request');
+  manager.approveRun(state, params.approval_id, params.note, { packet_sha256: actualSha256 });
   return {
     approved: true,
     approval_id: params.approval_id,

@@ -75,14 +75,11 @@ Artifact(s) checked:
 - {ready for next milestone / needs revision}
 - Blocking issues: [list or "none"]
 
-## 0) Round & convergence gate
+## 0) Reviewed subject and original inputs
 
-- Round/tag: (fill; e.g. M2-r1, M2-r2)
-- Previous team reports: (fill paths)
-- Adjudication/response note: (fill; required if you rejected/modified any member suggestion)
-- Resolved items since last round: (fill; reference prior Minimal Fix List items)
-- Open disagreements: (fill; must be classified as SCOPE/MATCHING and accepted by both members)
-- Gate rule: if any mismatch/fail/needs revision, do not advance; apply fixes and re-run until convergence.
+- Run/tag: (fill)
+- Assess the supplied subject against the original inputs and stated requirements.
+- Record your own findings before consulting coordinator decisions or historical reviews.
 
 ## 1) What changed since last round?
 

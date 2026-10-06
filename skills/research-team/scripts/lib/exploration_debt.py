@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from run_paths import canonical_run_root
 
 
 OPEN_RE = re.compile(r"^\s*-\s*\[\s*\]\s+")
@@ -51,10 +52,10 @@ def _extract_header_kv(text: str) -> tuple[str | None, str | None]:
 
 
 def iter_debt_files(team_dir: Path) -> list[Path]:
-    runs_dir = team_dir / "runs"
+    runs_dir = canonical_run_root(team_dir.absolute().parent)
     if not runs_dir.is_dir():
         return []
-    return sorted([p for p in runs_dir.rglob("*_exploration_debt.md") if p.is_file()])
+    return sorted([p for p in runs_dir.glob("*/research_team/*_exploration_debt.md") if p.is_file()])
 
 
 def scan_open_items(path: Path) -> list[OpenDebtItem]:
@@ -63,7 +64,7 @@ def scan_open_items(path: Path) -> list[OpenDebtItem]:
 
     inferred_tag: str | None = None
     try:
-        inferred_tag = path.parent.name.strip() or None
+        inferred_tag = path.parent.parent.name.strip() or None
     except Exception:
         inferred_tag = None
 

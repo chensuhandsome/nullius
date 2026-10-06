@@ -1,3 +1,5 @@
+import { listRunDirectories } from '../run-directories.js';
+import { RUNS_ROOT_RELATIVE } from '../run-paths.js';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
@@ -988,27 +990,11 @@ function latestIsoDate(values: Array<string | null>): string | null {
   return dates.length > 0 ? dates.sort().at(-1) ?? null : null;
 }
 
-// Evidence roots where dated run directories land. team/runs is where the
-// research-team workflow writes the bulk of real evidence, so freshness
-// checks that only watch artifacts/runs systematically under-report on
-// team-driven projects.
-const RUN_EVIDENCE_ROOTS = [
-  path.join('artifacts', 'runs'),
-  path.join('team', 'runs'),
-];
-
 function datedRunDirectories(projectRoot: string): Array<{ run_id: string; date: string; rel_dir: string }> {
-  const runs: Array<{ run_id: string; date: string; rel_dir: string }> = [];
-  for (const relRoot of RUN_EVIDENCE_ROOTS) {
-    const absRoot = path.join(projectRoot, relRoot);
-    if (!fs.existsSync(absRoot)) continue;
-    for (const entry of fs.readdirSync(absRoot, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const date = artifactRunDateFromId(entry.name);
-      if (!date) continue;
-      runs.push({ run_id: entry.name, date, rel_dir: path.join(relRoot, entry.name) });
-    }
-  }
+  const runs = listRunDirectories(projectRoot).flatMap(entry => {
+    const date = artifactRunDateFromId(entry.run_id);
+    return date ? [{ run_id: entry.run_id, date, rel_dir: path.join(RUNS_ROOT_RELATIVE, entry.run_id) }] : [];
+  });
   return runs.sort((a, b) => a.date === b.date ? a.run_id.localeCompare(b.run_id) : a.date.localeCompare(b.date));
 }
 
@@ -1147,8 +1133,7 @@ function executionModeUndeclaredIssue(projectRoot: string, state: RunState | nul
   if (!engineFrozen) return null;
   const runs = datedRunDirectories(projectRoot);
   if (runs.length === 0) return null;
-  const teamRunsPrefix = path.join('team', 'runs') + path.sep;
-  const teamRunCount = runs.filter(run => run.rel_dir.startsWith(teamRunsPrefix)).length;
+  const teamRunCount = runs.filter(run => fs.existsSync(path.join(projectRoot, run.rel_dir, 'research_team'))).length;
   const harnessSentinel = readNulliusHarnessSentinelHealth(projectRoot);
   // Control-dir aware: with NULLIUS_CONTROL_DIR set, .nullius/state.json
   // would name a file that does not exist.
@@ -1660,6 +1645,21 @@ function readDecisionLedgerView(projectRoot: string): {
   }
 }
 
+function readNativeExecutionView(projectRoot: string, state: RunState) {
+  const reference = state.artifacts?.native_execution_status;
+  if (!reference) return null;
+  try {
+    const execution = readJson(path.resolve(projectRoot, reference)) as Record<string, any>;
+    if (execution.run_id !== state.run_id) return { error: 'native execution identity mismatch' };
+    const paused = state.run_status === 'paused' || fs.existsSync(pauseFilePath(projectRoot));
+    return { status: execution.status, deadline_at: execution.deadline_at ?? null, active_child: execution.active_child ?? null,
+      continuation_supported: false,
+      message: paused && execution.active_child
+        ? 'Pause requested; last recorded step was executing. Current liveness is unverified.'
+        : execution.status === 'paused' ? 'Paused; native continuation in place is unsupported.' : null };
+  } catch (error) { return { error: error instanceof Error ? error.message : String(error) }; }
+}
+
 export function buildRunStatusView(
   projectRoot: string,
   state: RunState,
@@ -1737,6 +1737,7 @@ export function buildRunStatusView(
     notes: state.notes ?? '',
     uri: state.run_id ? `orch://runs/${state.run_id}` : null,
     is_paused: paused,
+    native_execution: readNativeExecutionView(projectRoot, state),
     plan_view: planView.plan_view,
     plan_view_warning: planView.plan_view_warning,
     final_conclusions: finalConclusions.final_conclusions,

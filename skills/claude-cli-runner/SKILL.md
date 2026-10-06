@@ -15,6 +15,7 @@ Use this skill when you need to call Claude from the command line (any task), in
 
 ## Preconditions
 
+- Python 3.10 or newer for cross-process monotonic deadlines and process supervision.
 - `claude` is installed: `command -v claude`
 - You are authenticated/configured for Claude Code CLI.
 
@@ -35,10 +36,51 @@ Notes:
 - Use `--tool-mode review` for the read-only review profile (`Read,Glob,Grep`).
 - `--tools ...` remains available as an explicit advanced override when you need a custom built-in tool list.
 - It enables `--strict-mcp-config` by default to avoid side effects and MCP schema loading issues (disable with `--no-strict-mcp-config`).
-- It retries on failures with exponential backoff (useful for transient 5xx/overload).
-- Deterministic failures (usage/auth/region-ineligibility errors, exit codes 2/126/127, and similar, detected from the exit code and stderr) fail immediately with the diagnostic instead of burning the retry backoff.
+- It retries on failures with exponential backoff (useful for transient 5xx/overload). All calls and
+  backoff share an explicit `--timeout-secs` hard budget when supplied; the default has no hard deadline.
+- `--max-retries` caps total CLI calls (default `6`), including retries. Incomplete/error terminal
+  results, confirmed inactivity, cancellation and budget exhaustion stop without an automatic retry.
+- Deterministic failures (usage/auth/region-ineligibility, quota/billing-cycle and permission errors,
+  exit codes 2/126/127, and similar, detected from the exit code and diagnostics) fail immediately with the diagnostic instead of burning the retry backoff.
 - It feeds the user prompt via stdin (`--input-format text` + `< --prompt-file`) to avoid macOS/Linux `ARG_MAX` limits (fixes `Argument list too long` with 1–5MB prompt packets).
 - For offline/CI validation, use `--dry-run` to print the planned invocation without calling Claude (prints only paths + size + sha256; never the full prompt).
+
+## Progress and durable evidence
+
+`--live-capture` explicitly opts into `--output-format stream-json --include-partial-messages --verbose`.
+Raw events and stderr are written from launch under the seat-local `OUT.attempts/run.*` directory
+(or `--trace-dir DIR`). Live capture does not mirror raw events into ambient legacy attempt-log
+locations. `OUT.partial` and each attempt's partial answer contain answer text only;
+private reasoning stays in the raw evidence. Progress JSON contains event kinds, growth counters,
+timestamps, capture health and process/provider status, never reasoning text. Replays with the same
+event identity and payload do not advance the counters; distinct event identities with repeated text
+do advance. Without event identity, exact payload replays are conservatively treated as duplicates.
+Heartbeats do not advance the counters. A separately saved terminal result plus exit 0 and nonblank
+result text is required before `OUT` is created. Partial text never completes a review contract.
+
+`--expected-secs` (default `1200`) is a soft estimate only. `--timeout-secs` defaults to `0` (no hard
+budget); any explicit positive value is a hard total cap across attempts and backoff, unaffected by
+output growth. `--inactivity-secs` defaults to `0` (disabled). An explicit threshold records a diagnostic
+with capture health, last advancing event and provider/process status, followed by
+`--inactivity-grace-secs` (default `30`, positive). Only a healthy observable stream with earlier advancing
+content can terminate after this grace. Silent reasoning before any advancing event and unknown/degraded
+capture cannot establish a stall. Activity establishes generation, not correctness or semantic quality.
+
+Without live capture, successful stdout+stderr output bytes are preserved and progress remains unknown.
+Buffered silence never enables an inactivity kill. Cancellation and hard-budget exhaustion stop local
+CLI process groups and preserve existing raw/partial evidence; they do not attest remote-job cancellation.
+Deterministic failure classification reads stderr and typed stream error messages, never answer or
+thinking text. Cancellation also interrupts retry backoff without waiting for the delay to finish.
+Capture directories must be excluded from peer packets/workspaces by the caller's existing read-path
+membrane. Read-only tool access alone cannot enforce filesystem isolation.
+
+Example:
+
+```bash
+bash /path/to/claude-cli-runner/scripts/run_claude.sh \
+  --system-prompt-file /path/to/system.txt --prompt-file /path/to/prompt.txt \
+  --out /path/to/review.txt --live-capture --expected-secs 1200 --timeout-secs 5400
+```
 
 ## Session continuation (OPT-IN; the default stays a clean-room one-shot)
 

@@ -14,7 +14,12 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from run_paths import canonical_output_runs
+
 
 
 ROUND_SUFFIX_RE = re.compile(r"(?:-r\d+)+$")
@@ -25,17 +30,14 @@ def canonical_base(tag: str) -> str:
 
 
 def find_max_round(base: str, out_dir: Path) -> int:
+    runs = canonical_output_runs(out_dir)
     if not out_dir.is_dir():
         return 0
     max_n = 0
     pat = re.compile(rf"^{re.escape(base)}-r(\d+)_draft_member_(a|b|c_leader)\.md$")
-    scan_dirs: list[Path] = []
-    runs = out_dir / "runs"
-    if runs.is_dir():
-        for d in runs.iterdir():
-            if d.is_dir():
-                scan_dirs.append(d)
-    scan_dirs.append(out_dir)
+    scan_dirs = [d / "research_team" for d in sorted(runs.iterdir())
+                 if d.is_dir() and not d.is_symlink() and (d / "research_team").is_dir()
+                 and not (d / "research_team").is_symlink()] if runs.is_dir() else []
 
     for d in scan_dirs:
         for p in d.iterdir():
@@ -53,7 +55,7 @@ def find_max_round(base: str, out_dir: Path) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--tag", required=True, help="Current tag, e.g. D0 or D0-r1 or D0-r1-r1.")
-    ap.add_argument("--out-dir", type=Path, required=True, help="Draft reviews output directory to scan (e.g. team/).")
+    ap.add_argument("--out-dir", type=Path, required=True, help="Draft reviews output directory to scan (the project artifacts directory).")
     args = ap.parse_args()
 
     base = canonical_base(args.tag.strip())

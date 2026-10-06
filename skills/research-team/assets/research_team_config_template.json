@@ -7,7 +7,7 @@
   "profile": "<PROFILE>",
   "project_stage": "development",
   "_project_stage_options": ["exploration", "development", "publication"],
-  "_note_project_stage": "Stage controls strictness of some contracts. In exploration, the Capsule gate supports a minimal mode (see capsule.exploration_minimal) and selected preflight gates are downgraded to warn-only with debt recorded under team/runs/<tag>/<tag>_exploration_debt.md. Development remains fail-fast.",
+  "_note_project_stage": "Stage controls strictness of some contracts. In exploration, the Capsule gate supports a minimal mode (see capsule.exploration_minimal) and selected preflight gates are downgraded to warn-only with debt recorded under artifacts/runs/<tag>/research_team/<tag>_exploration_debt.md. Development remains fail-fast.",
   "scaffold_variant": "full",
   "_scaffold_variant_options": ["full", "minimal"],
   "_note_scaffold_variant": "Project scaffold size policy: minimal is now the canonical default surface; full adds optional wrappers/prompts/KB/references/team scaffolds when you intentionally want the research-team host-local bundle.",

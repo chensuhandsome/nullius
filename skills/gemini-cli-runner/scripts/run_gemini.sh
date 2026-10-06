@@ -306,6 +306,14 @@ classify_deterministic_failure() {
         'location is not supported' \
         'unauthorized' \
         'forbidden' \
+        'quota exhausted' \
+        'quota exceeded' \
+        'insufficient quota' \
+        'usage limit reached' \
+        "reached your usage limit for this billing cycle" \
+        'out of usage' \
+        'auto-rejecting' \
+        'permission denied' \
         'invalid api key'; do
         if grep -qiF -- "${pat}" "${f}" 2>/dev/null; then
           reason="diagnostic output matched '${pat}'"

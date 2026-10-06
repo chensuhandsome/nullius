@@ -1,6 +1,7 @@
 """Generic subprocess witnesses; no provider, credentials, or research inputs."""
 from __future__ import annotations
 
+import ast
 import json
 import os
 import signal
@@ -162,8 +163,23 @@ def test_cancel_stops_descendants(tmp_path, provider):
             proc.communicate()
 
 
-def test_each_installed_skill_has_the_same_supervision_contract():
-    assert (SKILLS/'kimi-cli-runner/scripts/process_budget.py').read_bytes() == (SKILLS/'opencode-cli-runner/scripts/process_budget.py').read_bytes()
+def test_helpers_share_supervision_logic_with_declared_timeout_defaults():
+    normalized = []
+    for provider, default_timeout in [("kimi", 0), ("opencode", 900)]:
+        tree = ast.parse((SKILLS / f'{provider}-cli-runner' / 'scripts/process_budget.py').read_text())
+        options = [node for node in ast.walk(tree)
+                   if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                   and node.func.attr == 'add_argument' and node.args
+                   and isinstance(node.args[0], ast.Constant)
+                   and node.args[0].value == '--timeout-secs']
+        assert len(options) == 1
+        defaults = [kw for kw in options[0].keywords if kw.arg == 'default']
+        assert len(defaults) == 1 and isinstance(defaults[0].value, ast.Constant)
+        assert defaults[0].value.value == default_timeout
+        # Provider policy differs; all remaining supervision code must agree.
+        defaults[0].value = ast.Constant(value=None)
+        normalized.append(ast.dump(tree, include_attributes=False))
+    assert normalized[0] == normalized[1]
 
 
 @pytest.mark.parametrize("provider", ["kimi", "opencode"])

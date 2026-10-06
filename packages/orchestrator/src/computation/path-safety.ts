@@ -63,6 +63,33 @@ export function assertNoSymlinkComponents(
   }
 }
 
+/** Normalize aliases above the admitted project boundary, while refusing symlinks below it. */
+export function resolveProjectContainedPath(rootPath: string, targetPath: string, label: string): string {
+  const root = fs.realpathSync.native(rootPath);
+  const identity = fs.statSync(root);
+  const target = path.resolve(targetPath);
+  let boundary: string | null = null;
+  for (let cursor = target; ; cursor = path.dirname(cursor)) {
+    if (fs.existsSync(cursor)) {
+      const actual = fs.statSync(cursor);
+      if (actual.dev === identity.dev && actual.ino === identity.ino) boundary = cursor;
+    }
+    if (path.dirname(cursor) === cursor) break;
+  }
+  if (boundary === null) throw unsafeFs(`${label} must stay within ${root}`, { label, target_path: target });
+  const relative = path.relative(boundary, target);
+  let cursor = boundary;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    cursor = path.join(cursor, segment);
+    try {
+      if (fs.lstatSync(cursor).isSymbolicLink()) throw unsafeFs(`${label} must not traverse a symbolic link`, { label, symlink_path: cursor });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  return path.join(root, relative);
+}
+
 export function sanitizeRelativePath(relativePath: string, label: string): string {
   const normalized = relativePath.trim();
   if (!normalized) {

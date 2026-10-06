@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for prune_team_workspaces.py.
 
-Builds synthetic team/runs/<tag>/ fixtures, exercises find_plans() under each
+Builds synthetic artifacts/runs/<tag>/research_team/ fixtures, exercises find_plans() under each
 combination of status / keep_last / keep_failed / min_age_hours, and verifies
 both the deletion plan and the actual --apply behavior, including the case
 where a workspace has been chmod'd a-rwx by run_team_cycle.sh isolation logic.
@@ -36,7 +36,7 @@ def _make_run(
     workspace_kb: int = 1,
     chmod_locked: bool = False,
 ) -> Path:
-    run_dir = project_root / "team" / "runs" / tag
+    run_dir = project_root / "artifacts" / "runs" / tag / "research_team"
     ws_dir = run_dir / "workspaces" / "member_a_aaa"
     ws_dir.mkdir(parents=True)
     payload = bytes(workspace_kb * 1024)
@@ -133,15 +133,15 @@ def test_keep_last_preserves_most_recent(project_root: Path) -> None:
 
 def test_apply_actually_deletes_workspace(project_root: Path) -> None:
     _make_run(project_root, "tagX", status="completed", updated_at="2026-01-01T00:00:00Z")
-    ws_root = project_root / "team" / "runs" / "tagX" / "workspaces"
+    ws_root = project_root / "artifacts" / "runs" / "tagX" / "research_team" / "workspaces"
     assert ws_root.is_dir()
     plans = find_plans(project_root, keep_last=0, keep_failed=False, min_age_hours=1.0)
     assert plans[0].action == "delete"
     _rmtree_force(Path(plans[0].workspaces_dir))
     assert not ws_root.exists()
     # Forensic data is untouched.
-    assert (project_root / "team" / "runs" / "tagX" / "cycle_state.json").is_file()
-    assert (project_root / "team" / "runs" / "tagX" / "member_a_evidence.json").is_file()
+    assert (project_root / "artifacts" / "runs" / "tagX" / "research_team" / "cycle_state.json").is_file()
+    assert (project_root / "artifacts" / "runs" / "tagX" / "research_team" / "member_a_evidence.json").is_file()
 
 
 def test_apply_handles_chmod_locked_workspace(project_root: Path) -> None:
@@ -226,12 +226,12 @@ def test_only_status_empty_means_no_restriction(project_root: Path) -> None:
 
 
 def test_symlinked_workspaces_is_excluded(project_root: Path, tmp_path_factory) -> None:
-    # An attacker (or a broken project) could symlink team/runs/<tag>/workspaces
-    # to a directory outside team/runs/. The prune tool must refuse to plan a
+    # An attacker (or a broken project) could symlink artifacts/runs/<tag>/research_team/workspaces
+    # to a directory outside artifacts/runs/. The prune tool must refuse to plan a
     # deletion for such targets — never escape the runs root via realpath.
     external = tmp_path_factory.mktemp("outside-runs")
     (external / "decoy.txt").write_text("must not be deleted")
-    tag_dir = project_root / "team" / "runs" / "tag-symlink"
+    tag_dir = project_root / "artifacts" / "runs" / "tag-symlink" / "research_team"
     tag_dir.mkdir(parents=True)
     os.symlink(external, tag_dir / "workspaces", target_is_directory=True)
     plans = find_plans(project_root, keep_last=0, keep_failed=False, min_age_hours=1.0)

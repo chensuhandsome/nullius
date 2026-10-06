@@ -35,17 +35,16 @@ SKILL_DIR="${SKILL_DIR:-$(for r in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${CODE
 bash "${SKILL_DIR}/scripts/bin/run_team_cycle.sh" \
   --tag 20260502T023000Z-m0-topic \
   --notes research_contract.md \
-  --out-dir team \
+  --out-dir artifacts \
   --member-a-system prompts/_system_member_a.txt \
   --member-b-system prompts/_system_member_b.txt \
   --auto-tag
 ```
 
-The resolved `<base>-rN` tag can be used as the project-local `run_id` for the
-reviewed cycle. Canonical lifecycle-run artifacts live under
-`artifacts/runs/<run_id>/`; `team/runs/<tag>/` is the reviewer packet/log
-surface and a first-class evidence root — contract claims may cite its paths
-directly.
+The resolved `<base>-rN` tag is the parent project-local `run_id`. New team
+and draft payloads use `artifacts/runs/<tag>/research_team/`; origin stamps
+belong to `artifacts/runs/<tag>/`. `--out-dir` is the project artifacts
+folder. Executor evidence and navigation pointers do not grant scientific acceptance.
 
 Note: the scaffolded `research_team_config.json` defaults to `review_access_mode=full_access` (reviewers request file reads/commands/network via a proxy with evidence logs). To force offline/packet-only review, set `review_access_mode=packet_only`.
 Optional: configure non-blocking sidecar reviewers via `sidecar_review` (single) or `sidecar_reviews` (list) in `research_team_config.json`; scaffolded configs keep them disabled unless you opt in explicitly.
@@ -77,3 +76,7 @@ See:
 - `scripts/validation/`: deterministic full-contract harness
 - `assets/`: templates copied into projects
 - `references/`: supporting docs
+
+All newly generated managed project runs use `artifacts/runs/<run_id>/`; team and draft executor payloads live in `research_team/` beneath that run. Origin stamps bind the parent run. If retired `team/runs` contains run directories, dependent views report the count and `init --runtime-only` refuses before rebinding. An unreadable retired root is an error. Retain the prior runtime with its matching skills, or perform a separately reviewed migration before switching. The `inventory_run_relocation.py --fixture-root <anonymous-fixture> --source-manifest <hash-manifest>` helper only inventories pinned fixture bytes, references, collisions and unresolved bindings; it has no apply mode. Independent reviewer snapshots omit every run's executor payload and all workspace trees, retain production artifacts, and allow only each member's own declared output prefix. Historical reports/adjudications remain coordinator evidence. `team/LATEST*.md` and `artifacts/LATEST.md` are navigation pointers.
+
+The generic scaffold creates `project_index.md`; the team helper updates only executor-local latest pointers and requires `nullius init` when the root index is missing. Selected-result and derived-block writers share a short path lock, reread their inputs, and make at most three attempts when edits are detected while preserving human bytes, mode and EOL outside their marked region. Arbitrary writers that ignore the lock remain outside its guarantee. Generic run counts do not interpret execution round limits; the Python executor resolver and suffix gate own those settings.

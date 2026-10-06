@@ -68,12 +68,16 @@ function buildPlanSummary(prepared: PreparedManifest): {
 export async function bridgeStagedIdeaToComputation(
   input: ComputeBridgeInput,
 ): Promise<ComputeBridgeResult> {
+  const current = new StateManager(input.projectRoot).readState();
+  if (current.run_status === 'paused' && current.artifacts.native_execution_status) {
+    throw new Error('paused native computation: continuation in place is unsupported');
+  }
   const executionPlan = compileExecutionPlan(input.runId, input.stagedIdea);
-  const planPath = executionPlanArtifactPath(input.runDir);
-  writeJsonAtomic(planPath, executionPlan);
   const { manifestPath } = materializeExecutionPlan(input.runDir, executionPlan, {
     methodSpec: input.stagedIdea.hints?.method_spec ?? null,
   });
+  const planPath = executionPlanArtifactPath(input.runDir);
+  writeJsonAtomic(planPath, executionPlan);
   const prepared = prepareManifest({
     dryRun: input.dryRun,
     manifestPath,

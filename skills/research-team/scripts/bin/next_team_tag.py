@@ -27,6 +27,10 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from run_paths import canonical_output_runs
+
+
 
 ROUND_SUFFIX_RE = re.compile(r"(?:-r\d+)+$")
 ROUND_ONE_RE = re.compile(r"-r(\d+)$")
@@ -40,18 +44,16 @@ def canonical_base(tag: str) -> str:
 
 
 def _scan_dirs(out_dir: Path) -> list[Path]:
-    scan_dirs: list[Path] = []
-    runs = out_dir / "runs"
-    if runs.is_dir():
-        for d in runs.iterdir():
-            if d.is_dir():
-                scan_dirs.append(d)
-    # Fallback: also scan the out_dir root (older layouts / mixed projects).
-    scan_dirs.append(out_dir)
-    return scan_dirs
+    runs = canonical_output_runs(out_dir)
+    if not runs.is_dir():
+        return []
+    return [d / "research_team" for d in sorted(runs.iterdir())
+            if d.is_dir() and not d.is_symlink() and (d / "research_team").is_dir()
+            and not (d / "research_team").is_symlink()]
 
 
 def find_max_round(base: str, out_dir: Path) -> int:
+    canonical_output_runs(out_dir)
     if not out_dir.is_dir():
         return 0
     max_n = 0
@@ -79,6 +81,7 @@ def round_verdict_status(base: str, round_n: int, out_dir: Path) -> str:
                       completed report unreadable — that is not evidence of
                       a verdict-less round);
     'absent'        — no report file of that round found."""
+    canonical_output_runs(out_dir)
     if not out_dir.is_dir():
         return "absent"
     found = False

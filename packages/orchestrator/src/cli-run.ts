@@ -5,6 +5,7 @@ import { writeJsonAtomic } from './computation/io.js';
 import type { CliIo } from './cli-lifecycle.js';
 import { resolveLifecycleProjectRoot } from './cli-project-root.js';
 import { resolveUserPath } from './project-policy.js';
+import { resolveProjectContainedPath } from './computation/path-safety.js';
 import { runDirFor } from './run-paths.js';
 import { createToolAttemptIdentity, RunManifestManager } from './run-manifest.js';
 import { StateManager } from './state-manager.js';
@@ -214,11 +215,6 @@ function projectWorkflowTerminalStep(params: {
   return recovery;
 }
 
-function isWithinPath(basePath: string, candidatePath: string): boolean {
-  const relative = path.relative(path.resolve(basePath), path.resolve(candidatePath));
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
-
 function normalizeRunId(raw: string | null): string {
   const runId = (raw ?? '').trim();
   if (!runId) {
@@ -262,13 +258,10 @@ function resolveRunInput(input: RunCommandInput, io: CliIo): AnyResolvedRunInput
   // the ONE definition shared with every lifecycle reader (verification,
   // final-conclusions, team summary, proposal genesis).
   const runDir = input.runDir
-    ? resolveUserPath(input.runDir, io.cwd)
+    ? resolveProjectContainedPath(projectRoot, resolveUserPath(input.runDir, io.cwd), 'run dir')
     : runDirFor(projectRoot, runId);
-  if (!isWithinPath(projectRoot, runDir)) {
-    throw new Error(`run dir must stay within project root: ${runDir}`);
-  }
   const manifestPath = input.manifestPath
-    ? resolveUserPath(input.manifestPath, io.cwd)
+    ? resolveProjectContainedPath(projectRoot, resolveUserPath(input.manifestPath, io.cwd), 'manifest path')
     : path.join(runDir, 'computation', 'manifest.json');
   return {
     kind: 'computation',

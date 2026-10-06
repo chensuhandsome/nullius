@@ -214,11 +214,11 @@ export function planComputationFollowupBridges(runDir: string, input: BridgeAuth
   return { bridgePlans, writingSeed: { nodes, edges, task: writingTask, ...(writingHandoff ? { handoff: writingHandoff } : {}), ...(reviewTask ? { reviewTask } : {}) } };
 }
 
-export function writeComputationFollowupBridgeArtifacts(runId: string, runDir: string, plans: PlannedBridgeArtifact[]): ArtifactRefV1[] {
+export function writeComputationFollowupBridgeArtifacts(runId: string, runDir: string, plans: PlannedBridgeArtifact[], publication?: {writeJson:(file:string,payload:unknown)=>void;fileRef:(file:string,kind:string)=>ArtifactRefV1}): ArtifactRefV1[] {
   return plans.map(plan => {
     const artifactPath = path.join(runDir, 'artifacts', plan.artifactName);
-    writeJsonAtomic(artifactPath, plan.payload);
-    return createRunArtifactRef(runId, runDir, artifactPath, 'writing_review_bridge');
+    (publication?.writeJson ?? writeJsonAtomic)(artifactPath, plan.payload);
+    return publication ? publication.fileRef(artifactPath,'writing_review_bridge') : createRunArtifactRef(runId, runDir, artifactPath, 'writing_review_bridge');
   });
 }
 

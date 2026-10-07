@@ -11,6 +11,9 @@ import type { PaperSummary } from '@nullius/shared';
 
 export type OutputFormat = 'json' | 'markdown';
 
+/** Upper bound on author names printed per paper; anything beyond is counted in an explicit "+N more" marker. */
+export const MAX_AUTHORS_DISPLAYED = 10;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Paper Formatting
 // ─────────────────────────────────────────────────────────────────────────────
@@ -26,13 +29,32 @@ export function formatPaperMarkdown(paper: PaperSummary, index?: number): string
   const title = paper.title || 'Untitled';
   lines.push(`${prefix}**${title}**`);
 
-  // Authors
-  if (paper.authors?.length) {
-    const totalAuthorCount = paper.author_count ?? paper.authors.length;
-    const authorStr = totalAuthorCount > 5
-      ? `${paper.authors.slice(0, 5).join(', ')} et al.`
-      : paper.authors.join(', ');
+  // Authors. Never truncate silently: the record's author_count may exceed
+  // the names carried here (payload projections keep only the first few), and
+  // a reader who sees a bare list assumes it is complete. Any gap is spelled
+  // out as an explicit "+N more" marker so it cannot be filled from memory.
+  const carried = paper.authors?.length ?? 0;
+  // A compact projection records the names it dropped in `authors_omitted`;
+  // that count survives here so an understated author_count cannot hide them.
+  const upstreamOmitted = (paper as { authors_omitted?: number }).authors_omitted ?? 0;
+  const totalAuthorCount = Math.max(paper.author_count ?? carried, carried + upstreamOmitted);
+  if (carried > 0) {
+    // Display at most MAX_AUTHORS_DISPLAYED names; the marker counts every
+    // name not printed, whether dropped upstream or capped here.
+    const displayed = paper.authors!.slice(0, MAX_AUTHORS_DISPLAYED);
+    const omitted = Math.max(0, totalAuthorCount - displayed.length);
+    const authorStr = omitted > 0
+      ? `${displayed.join(', ')} et al. (+${omitted} more)`
+      : displayed.join(', ');
     lines.push(`   *${authorStr}*`);
+  } else if (totalAuthorCount > 0 || paper.collaborations?.length) {
+    // No names at all but a count or a collaboration exists (large
+    // collaborations often arrive this way): say so instead of printing nothing.
+    const who = paper.collaborations?.length ? `${paper.collaborations.join(', ')} ` : '';
+    const gap = totalAuthorCount > 0
+      ? `(${totalAuthorCount} authors; names not carried in this view)`
+      : '(author names not carried in this view)';
+    lines.push(`   *${who}${gap}*`);
   }
 
   // Publication info

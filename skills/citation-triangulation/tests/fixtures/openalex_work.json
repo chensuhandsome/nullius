@@ -1,0 +1,61 @@
+{
+ "id": "https://openalex.org/W1000000001",
+ "doi": "https://doi.org/10.1000/example.12.012345",
+ "title": "Direct Proof of the Example Relation in a Model Theory",
+ "display_name": "Direct Proof of the Example Relation in a Model Theory",
+ "publication_year": 2001,
+ "publication_date": "2001-05-10",
+ "type": "article",
+ "ids": {
+  "openalex": "https://openalex.org/W1000000001",
+  "doi": "https://doi.org/10.1000/example.12.012345"
+ },
+ "biblio": {
+  "volume": "12",
+  "issue": "18",
+  "first_page": "012345",
+  "last_page": "012345"
+ },
+ "is_retracted": false,
+ "authorships": [
+  {
+   "author_position": "first",
+   "raw_author_name": "Alice Example",
+   "author": {
+    "id": "https://openalex.org/A100000000",
+    "display_name": "Alice Example"
+   }
+  },
+  {
+   "author_position": "middle",
+   "raw_author_name": "Bob Sample",
+   "author": {
+    "id": "https://openalex.org/A100000001",
+    "display_name": "Bob Sample"
+   }
+  },
+  {
+   "author_position": "middle",
+   "raw_author_name": "Carol Test",
+   "author": {
+    "id": "https://openalex.org/A100000002",
+    "display_name": "Carol Test"
+   }
+  },
+  {
+   "author_position": "last",
+   "raw_author_name": "Dan Fixture",
+   "author": {
+    "id": "https://openalex.org/A100000003",
+    "display_name": "Dan Fixture"
+   }
+  }
+ ],
+ "primary_location": {
+  "source": {
+   "id": "https://openalex.org/S10000001",
+   "display_name": "Example Review Letters",
+   "type": "journal"
+  }
+ }
+}

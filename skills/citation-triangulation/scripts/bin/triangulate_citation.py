@@ -27,7 +27,10 @@ provider does not supply MUST be an explicit null (never an absent key):
 
 Comparison (key fields: title, authors, year, doi):
   - title: case folding plus common LaTeX <-> Unicode symbol folding
-    (accents, greek letters, dashes, math wrappers); the comparison is
+    (accents, greek letters, dashes, math wrappers, spacing commands);
+    relation symbols fold to distinct tokens, and a negated relation folds
+    to one "not <base>" form whether written precomposed, as the base
+    symbol plus combining U+0338, or with LaTeX \\not; the comparison is
     whitespace-insensitive (token boundaries differ between LaTeX markup
     and Unicode spellings, e.g. superscripts), so the normalized form is
     the concatenated token stream.
@@ -51,7 +54,8 @@ supplied a comparable value). Verdict:
 
 Exit codes (fail-closed for pipeline use):
   0 consistent, 1 conflicted, 2 insufficient_sources, 3 invalid input/usage,
-  4 report write failure (at least one report was not persisted).
+  4 report write failure (at least one report was not persisted),
+  5 unexpected internal failure (a crash; never a verdict).
 
 Outputs: a JSON report and a Markdown report (both written atomically via
 temp-file + rename), plus a one-line verdict on stdout.
@@ -82,6 +86,7 @@ EXIT_CONFLICTED = 1
 EXIT_INSUFFICIENT = 2
 EXIT_INVALID_INPUT = 3
 EXIT_WRITE_FAILURE = 4
+EXIT_UNEXPECTED_FAILURE = 5  # a crash inside the comparator: distinct from every verdict code
 
 VERDICT_EXIT_CODES = {
     "consistent": EXIT_CONSISTENT,
@@ -139,14 +144,60 @@ _UNICODE_TOKEN_MAP.update(
         "ħ": "hbar",
         "∞": "infty",
         "°": "deg",
+        # Relation symbols are meaning-bearing in a title ("A = B" versus
+        # "A ≠ B"); they fold to distinct tokens instead of vanishing.
+        "=": "eq",
+        "<": "lt",
+        ">": "gt",
+        "≤": "leq",
+        "≥": "geq",
+        "≈": "approx",
+        "≡": "equiv",
+        "∝": "propto",
+        "≪": "ll",
+        "≫": "gg",
+        "∼": "sim",
+        "≃": "simeq",
+        "∈": "in",
+        # Precomposed negated relations (≠ ≮ ≯ ≰ ≱ ≉ ≢ ≁ ≄ ∉) need no entries:
+        # fold_text decomposes the text first (NFD), so each arrives here as its
+        # base symbol plus U+0338, which the overlay pass folds to "not <base>".
     }
 )
+_COMBINING_NEGATION = "\u0338"  # COMBINING LONG SOLIDUS OVERLAY
 
 # LaTeX command name -> token (matched as \name with a word boundary)
 _LATEX_TOKEN_MAP: Dict[str, str] = {name: name for name in _GREEK_NAMES}
 _LATEX_TOKEN_MAP.update({name.capitalize(): name for name in _GREEK_NAMES})
 _LATEX_TOKEN_MAP.update(
     {
+        "lt": "lt",
+        "gt": "gt",
+        "in": "in",
+        "notin": "not in",
+        "neq": "not eq",
+        "ne": "not eq",
+        "leq": "leq",
+        "le": "leq",
+        "geq": "geq",
+        "ge": "geq",
+        "approx": "approx",
+        "simeq": "simeq",
+        "equiv": "equiv",
+        "nless": "not lt",
+        "ngtr": "not gt",
+        "nleq": "not leq",
+        "nle": "not leq",
+        "ngeq": "not geq",
+        "nge": "not geq",
+        "napprox": "not approx",
+        "nsim": "not sim",
+        "nsimeq": "not simeq",
+        "nequiv": "not equiv",
+        "propto": "propto",
+        "ll": "ll",
+        "gg": "gg",
+        "sim": "sim",
         "varepsilon": "epsilon",
         "vartheta": "theta",
         "varphi": "phi",
@@ -226,7 +277,7 @@ _RE_ACCENT_LETTER_SPACED = re.compile(r"\\([uvHckbdrt])\s+([a-zA-Z])(?![a-zA-Z])
 # TeX consumes whitespace after a control word, so `\o ller` reads "øller";
 # the trailing \s* mirrors that. Letter-map replacements glue to the next
 # character; token replacements re-add their own separating spaces.
-_RE_LATEX_COMMAND = re.compile(r"\\([a-zA-Z]+)\*?\s*")
+_RE_LATEX_COMMAND = re.compile(r"\\([a-zA-Z]+)\*?(\u0338*)\s*")
 _RE_TOKENIZE = re.compile(r"[a-z0-9]+")
 
 
@@ -235,10 +286,36 @@ def _strip_combining(value: str) -> str:
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
 
 
+_RE_LATEX_NOT = re.compile(r"\\not(?![a-zA-Z])\s*(?:(=|<|>)|\\([a-zA-Z]+)|(\S))(\u0338*)")
+# LaTeX spacing commands (thin/medium/thick/negative space and the control
+# space). An even run of backslashes before the character is escaped
+# backslashes (a line break), not a spacing command, and is left alone.
+_RE_LATEX_SPACING = re.compile(r"(?<!\\)((?:\\\\)*)\\[,;:!> ]")
+
+
+def _replace_latex_not(match: "re.Match[str]") -> str:
+    """\\not followed by a relation becomes "not <base token>"; an unknown target keeps its own name.
+
+    Overlays attached to the relation (after decomposition a precomposed negation
+    is base + U+0338) are consumed here too, each adding one more "not", so the
+    same negated spelling folds identically whether written with \\not, with a
+    dedicated LaTeX command, or as a symbol.
+    """
+    symbol, command, other, overlays = match.group(1), match.group(2), match.group(3), match.group(4) or ""
+    if symbol is not None:
+        base = _UNICODE_TOKEN_MAP[symbol]
+    elif command is not None:
+        base = _LATEX_TOKEN_MAP.get(command, command.lower())
+    else:
+        base = _UNICODE_TOKEN_MAP.get(other, other)
+    return " " + "not " * (1 + len(overlays)) + base + " "
+
+
 def _replace_named_latex_command(match: "re.Match[str]") -> str:
     name = match.group(1)
+    overlays = match.group(2) or ""  # U+0338 overlays right after a named relation negate it
     if name in _LATEX_TOKEN_MAP:
-        return " " + _LATEX_TOKEN_MAP[name] + " "
+        return " " + "not " * len(overlays) + _LATEX_TOKEN_MAP[name] + " "
     if name in _LATEX_LETTER_MAP:
         return _LATEX_LETTER_MAP[name]
     if name in _LATEX_DROP_COMMANDS:
@@ -256,17 +333,51 @@ def fold_text(value: str) -> str:
     punctuation are all folded; the result is a space-joined sequence of
     lowercase alphanumeric tokens.
     """
-    text = value
+    # Canonical decomposition first: a precomposed negated relation ("\u2260")
+    # becomes its base symbol plus U+0338 COMBINING LONG SOLIDUS OVERLAY, which
+    # the symbol pass below folds to "not <base>", and an accented Greek letter
+    # becomes the bare letter (mapped) plus a combining accent (stripped later).
+    # Composing instead would hide accented Greek from the letter mapping.
+    text = unicodedata.normalize("NFD", value)
 
-    # Unicode symbol characters -> shared canonical tokens.
+    # LaTeX \\not before a relation: parsed here, before generic command removal
+    # would drop it, and folded to the same "not <base>" tokens as the symbols.
+    text = _RE_LATEX_NOT.sub(_replace_latex_not, text)
+
+    # LaTeX spacing commands are whitespace. Folded before the symbol pass so
+    # that the medium space "\\>" is never read as the relation ">".
+    text = _RE_LATEX_SPACING.sub(lambda match: match.group(1) + " ", text)
+
+    # Unicode symbol characters -> shared canonical tokens. A U+0338 overlay
+    # negates the symbol token just emitted (this is how every negated
+    # relation arrives after decomposition) instead of being stripped later
+    # as a combining mark.
     out_chars: List[str] = []
-    for ch in text:
+    is_symbol_token: List[bool] = []  # parallel to out_chars: True where a mapped symbol token was emitted
+    for index, ch in enumerate(text):
         mapped = _UNICODE_TOKEN_MAP.get(ch)
-        if mapped is not None:
+        # A backslash-prefixed "=" is the LaTeX macron accent (\\=o), handled
+        # below -- unless that backslash is itself escaped (a line break "\\\\").
+        # Count the run of backslashes before "=": an odd run leaves a macron
+        # command, an even run is escaped backslashes followed by a relation.
+        run = 0
+        while ch == "=" and index - 1 - run >= 0 and text[index - 1 - run] == "\\":
+            run += 1
+        macron = ch == "=" and run % 2 == 1
+        if ch == _COMBINING_NEGATION and is_symbol_token and is_symbol_token[-1]:
+            out_chars[-1] = " not" + out_chars[-1]
+        elif mapped is not None and not macron:
             out_chars.append(" " + mapped + " ")
+            is_symbol_token.append(True)
         else:
             out_chars.append(ch)
+            is_symbol_token.append(False)
     text = "".join(out_chars)
+
+    # A LaTeX line break (an escaped backslash pair) is whitespace; folding it
+    # here, after the macron decision above, keeps the letters that follow it
+    # from being read as a command name.
+    text = text.replace("\\\\", " ")
 
     # Math delimiters.
     text = text.replace("\\(", " ").replace("\\)", " ")
@@ -433,9 +544,24 @@ def normalize_doi(value: str) -> str:
 # Input parsing and validation
 # ---------------------------------------------------------------------------
 
+def _require_encodable(value: Any, origin: str, field: str) -> None:
+    """JSON may carry escaped unpaired surrogates that no UTF-8 report can hold; refuse them as input."""
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise InputError(f"{origin}: {field!r} contains a code point that cannot be written as UTF-8: {exc}") from exc
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _require_encodable(item, origin, f"{field}[{index}]")
+
+
 def _validate_block(block: Any, origin: str) -> Dict[str, Any]:
     if not isinstance(block, dict):
         raise InputError(f"{origin}: provider block must be a JSON object")
+    for key, value in block.items():
+        _require_encodable(key, origin, "key")
+        _require_encodable(value, origin, str(key))
 
     unknown = sorted(set(block.keys()) - set(BLOCK_KEYS))
     if unknown:
@@ -531,6 +657,7 @@ def _blocks_from_document(document: Any, origin: str) -> Tuple[List[Dict[str, An
         if raw_key is not None:
             if not isinstance(raw_key, str) or not raw_key.strip():
                 raise InputError(f"{origin}: 'citation_key' must be a non-empty string or null")
+            _require_encodable(raw_key, origin, "citation_key")
             citation_key = raw_key.strip()
         raw_blocks = document["providers"]
         if not isinstance(raw_blocks, list) or not raw_blocks:
@@ -564,6 +691,8 @@ def load_provider_blocks(
                 document = json.load(handle)
         except OSError as exc:
             raise InputError(f"{path}: cannot read input file: {exc}") from exc
+        except UnicodeDecodeError as exc:
+            raise InputError(f"{path}: input is not valid UTF-8: {exc}") from exc
         except json.JSONDecodeError as exc:
             raise InputError(f"{path}: invalid JSON: {exc}") from exc
         file_blocks, file_key = _blocks_from_document(document, path)
@@ -577,6 +706,8 @@ def load_provider_blocks(
             f"conflicting citation_key values across input files: {distinct_keys} "
             "(each run must triangulate exactly one citation)"
         )
+    if cli_citation_key is not None:
+        _require_encodable(cli_citation_key, "--citation-key", "citation_key")
     citation_key = cli_citation_key or (distinct_keys[0] if distinct_keys else None)
 
     seen: Dict[str, str] = {}
@@ -722,9 +853,12 @@ def _markdown_cell(value: Any) -> str:
         text = "; ".join(str(item) for item in value)
     else:
         text = str(value)
-    text = text.replace("|", "\\|").replace("\n", " ")
+    text = text.replace("|", "\\|").replace("\r", " ").replace("\n", " ")
     if len(text) > 80:
-        text = text[:77] + "..."
+        cut = 77
+        while cut > 0 and text[cut - 1] == "\\":
+            cut -= 1  # never split the inserted "\\|" escape (or leave a dangling backslash) before the ellipsis
+        text = text[:cut] + "..."
     return text
 
 
@@ -790,7 +924,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Reads per-provider JSON blocks, compares normalized key fields "
             "(title, authors, year, doi), and emits a JSON + Markdown report. "
             "Exit codes: 0 consistent, 1 conflicted, 2 insufficient_sources, "
-            "3 invalid input, 4 report write failure."
+            "3 invalid input, 4 report write failure, 5 unexpected internal failure."
         ),
     )
     parser.add_argument(
@@ -825,18 +959,85 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = _build_parser()
-    try:
-        args = parser.parse_args(argv)
-    except SystemExit as exc:
-        # argparse exits 2 on usage errors; fold into the invalid-input code
-        # (0 for --help passes through).
-        return EXIT_INVALID_INPUT if exc.code else 0
+_CASE_INSENSITIVE_CACHE: Dict[str, bool] = {}
 
+
+def _directory_is_case_insensitive(directory: str) -> bool:
+    """Probe the nearest existing ancestor of a directory with a throwaway file.
+
+    Unknown or unprobeable filesystems are treated as case-insensitive, which
+    errs toward refusing a pair of outputs rather than overwriting one.
+    """
+    probe_dir = os.path.abspath(directory) or os.sep
+    while not os.path.isdir(probe_dir) and os.path.dirname(probe_dir) != probe_dir:
+        probe_dir = os.path.dirname(probe_dir)
+    if probe_dir in _CASE_INSENSITIVE_CACHE:
+        return _CASE_INSENSITIVE_CACHE[probe_dir]
     try:
+        descriptor, probe_path = tempfile.mkstemp(dir=probe_dir, prefix=".CaseProbe-")
+        os.close(descriptor)
+        try:
+            swapped = os.path.join(probe_dir, os.path.basename(probe_path).swapcase())  # ancestors keep their spelling
+            insensitive = os.path.exists(swapped) if swapped != probe_path else True
+        finally:
+            os.unlink(probe_path)
+    except OSError:
+        insensitive = True
+    _CASE_INSENSITIVE_CACHE[probe_dir] = insensitive
+    return insensitive
+
+
+def resolve_file_path(path: str) -> str:
+    """Resolve a CLI file path the way the filesystem will: the parent directory in
+    filesystem order (symlinks followed before ".." is applied), the final name kept.
+    Every read, alias check and write uses this one result, so a symlink before ".."
+    cannot make validation and writing refer to different files."""
+    spelled = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+    parent, name = os.path.split(spelled)
+    if name in ("", ".", ".."):
+        return os.path.realpath(spelled)
+    return os.path.join(os.path.realpath(parent), name)
+
+
+def _same_path(a: str, b: str) -> bool:
+    """True when two paths name one file: the same resolved path, the same inode when both exist,
+    or spellings differing only in case on a filesystem that does not distinguish case."""
+    real_a, real_b = resolve_file_path(a), resolve_file_path(b)
+    if real_a == real_b:
+        return True
+    try:
+        if os.path.exists(a) and os.path.exists(b) and os.path.samefile(a, b):
+            return True
+    except OSError:
+        pass
+    if real_a.casefold() == real_b.casefold():
+        return _directory_is_case_insensitive(os.path.dirname(real_a))
+    return False
+
+
+def _reject_aliased_paths(inputs: Sequence[str], out_json: Optional[str], out_md: Optional[str]) -> None:
+    """An output must not alias the other output or any input: writing would destroy a requested
+    artifact or the evidence just loaded, while still returning an ordinary verdict."""
+    outputs = [p for p in (out_json, out_md) if p]
+    if out_json and out_md and _same_path(out_json, out_md):
+        raise InputError("--out-json and --out-md name the same file; the Markdown would overwrite the JSON report")
+    for out in outputs:
+        for inp in inputs:
+            if _same_path(out, inp):
+                raise InputError(f"output {out!r} would overwrite the input file {inp!r}; choose a different report path")
+
+
+def _run_cli(args: argparse.Namespace) -> int:
+    """Everything after argument parsing; main() turns any escape from here into exit 5."""
+    # Resolve every path once, in filesystem order; the resolved spellings are the
+    # ones read, compared and written below.
+    inputs = [resolve_file_path(p) for p in args.inputs]
+    out_json = resolve_file_path(args.out_json) if args.out_json else None
+    out_md = resolve_file_path(args.out_md) if args.out_md else None
+    try:
+        _reject_aliased_paths(inputs, out_json, out_md)
         blocks, citation_key = load_provider_blocks(
-            args.inputs, cli_citation_key=args.citation_key
+            inputs, cli_citation_key=args.citation_key
         )
     except InputError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -845,29 +1046,50 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     report = build_report(blocks, citation_key)
 
     try:
-        if args.out_json:
+        if out_json:
             write_atomic(
-                args.out_json,
-                json.dumps(report, ensure_ascii=False, indent=2, sort_keys=False)
+                out_json,
+                json.dumps(report, ensure_ascii=False, indent=2, sort_keys=False, allow_nan=False)
                 + "\n",
             )
-        if args.out_md:
-            write_atomic(args.out_md, render_markdown(report))
-    except OSError as exc:
+        if out_md:
+            write_atomic(out_md, render_markdown(report))
+    except (OSError, UnicodeError) as exc:
         # A report that cannot be persisted must not surface a verdict exit
         # code: automation would misread rc=1 as "conflicted".
         print(f"error: cannot write report: {exc}", file=sys.stderr)
         return EXIT_WRITE_FAILURE
 
-    if not args.quiet:
-        for field in KEY_FIELDS:
-            entry = report["fields"][field]
-            print(f"{field}: {entry['status']}")
-        for reason in report["verdict_reasons"]:
-            print(f"reason: {reason}")
-    label = f" [{citation_key}]" if citation_key else ""
-    print(f"verdict{label}: {report['verdict']}")
+    try:
+        if not args.quiet:
+            for field in KEY_FIELDS:
+                entry = report["fields"][field]
+                print(f"{field}: {entry['status']}")
+            for reason in report["verdict_reasons"]:
+                print(f"reason: {reason}")
+        label = f" [{citation_key}]" if citation_key else ""
+        print(f"verdict{label}: {report['verdict']}")
+    except UnicodeError as exc:
+        # The terminal cannot encode the summary (a non-ASCII citation key on an
+        # ASCII stdout). Every requested report is already written, so the
+        # verdict code stands; the condition is noted on stderr in ASCII.
+        print(f"note: stdout could not encode the summary ({exc.__class__.__name__}); any requested reports were written", file=sys.stderr)
     return report["exit_code"]
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = _build_parser()
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        # argparse exits 2 on usage errors; fold into the invalid-input code
+        # (0 for --help passes through).
+        return EXIT_INVALID_INPUT if exc.code else 0
+    try:
+        return _run_cli(args)
+    except Exception as exc:  # noqa: BLE001 - a crash must never read as a verdict (Python's default exit 1 is "conflicted")
+        print(f"error: unexpected failure: {exc.__class__.__name__}: {exc}", file=sys.stderr)
+        return EXIT_UNEXPECTED_FAILURE
 
 
 if __name__ == "__main__":

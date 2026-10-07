@@ -1,0 +1,8 @@
+{
+ "key": "/authors/OL1000001A",
+ "name": "Alice Example",
+ "personal_name": "Alice Example",
+ "type": {
+  "key": "/type/author"
+ }
+}

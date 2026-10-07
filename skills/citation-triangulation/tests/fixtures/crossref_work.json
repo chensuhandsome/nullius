@@ -1,0 +1,63 @@
+{
+ "status": "ok",
+ "message-type": "work",
+ "message": {
+  "DOI": "10.1000/example.12.012345",
+  "URL": "https://doi.org/10.1000/example.12.012345",
+  "title": [
+   "Direct Proof of the Example Relation in a Model Theory"
+  ],
+  "subtitle": [],
+  "author": [
+   {
+    "given": "Alice",
+    "family": "Example",
+    "sequence": "first"
+   },
+   {
+    "given": "Bob",
+    "family": "Sample",
+    "sequence": "additional"
+   },
+   {
+    "given": "Carol",
+    "family": "Test",
+    "sequence": "additional"
+   },
+   {
+    "given": "Dan",
+    "family": "Fixture",
+    "sequence": "additional"
+   }
+  ],
+  "issued": {
+   "date-parts": [
+    [
+     2001,
+     5,
+     10
+    ]
+   ]
+  },
+  "published-online": {
+   "date-parts": [
+    [
+     2001,
+     5,
+     10
+    ]
+   ]
+  },
+  "container-title": [
+   "Example Review Letters"
+  ],
+  "short-container-title": [
+   "Ex. Rev. Lett."
+  ],
+  "type": "journal-article",
+  "volume": "12",
+  "issue": "18",
+  "article-number": "012345",
+  "publisher": "Example Physical Society"
+ }
+}

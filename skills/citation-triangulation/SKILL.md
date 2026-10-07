@@ -169,12 +169,14 @@ so in the run notes.
    text supports the prose claim. Reusing one canonical identifier under two
    different displayed titles is a conflict, not two acceptable aliases.
 
-7. **Cite the report when you claim the check was done.** A sentence in the
-   deliverable asserting that references were verified must name the report
-   artifact(s) it rests on — the `report.md` / `summary.md` written here, or
-   the `claim_grounding_report_v1` — by path. A bare "all references
-   verified" with no report behind it is itself an unverified claim and an
-   M2 failure in its own right (`research-integrity`).
+7. **Bind verification claims to the reports.** In internal records or the
+   final conversation, name the `report.md` / `summary.md` written here, or
+   the `claim_grounding_report_v1`, when reporting that a check was performed.
+   A bare "all references verified" with no report behind it is itself an
+   unverified claim and an M2 failure (`research-integrity`). Keep internal
+   paths and verification-process claims out of ordinary deliverables. If the
+   recipient explicitly requests verification material, cite only report
+   filenames or links they can access in that material.
 
 ## Running the check as one command
 

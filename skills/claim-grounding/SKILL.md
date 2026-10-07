@@ -419,9 +419,11 @@ family (`review-swarm`: `review_one.py` with the deliverable as `--artifact`, or
 `run_multi_task.py` with non-host `--models`). The reviewer re-fetches a sample of
 entries and re-reads each attribution sentence against the cited source. Record
 its verdict next to the triangulation and grounding reports, and resolve its
-findings before the deliverable is called verified. Any sentence in the
-deliverable stating that references or claims were verified cites these artifacts
-by path (`research-integrity` M2).
+findings before reporting verification. Verification claims in internal records
+or the final conversation cite the reports (`research-integrity` M2). Keep
+internal paths and verification-process claims out of ordinary deliverables;
+include verification material only when the recipient explicitly requests it,
+and refer to report filenames or links they can access.
 
 ## What this skill is NOT
 

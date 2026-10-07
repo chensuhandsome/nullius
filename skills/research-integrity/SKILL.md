@@ -252,8 +252,11 @@ canonical metadata record per cited paper, one deterministic displayed-entry
 identity comparison per human-facing citation, and at least one content-verify
 call per cited *claim* (not per paper — a single paper can support many claims,
 but each claim's textual ground must be opened). A load-bearing citation passes
-only when both identity and content support pass. Any prose stating that the
-references were verified names the report artifact(s) by path. For a
+only when both identity and content support pass. Verification claims in
+internal records or the final conversation name the report artifact(s). Keep
+internal paths and verification-process claims out of ordinary deliverables.
+If the recipient explicitly requests verification material, cite only report
+filenames or links they can access. For a
 deliverable whose substance is a reference list or a citation-driven
 narrative, the final evidence is an independent blind audit — a reviewer
 given only the files, preferably from another model family (see

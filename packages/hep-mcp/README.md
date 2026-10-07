@@ -14,6 +14,11 @@ Projects, run manifests, artifact URIs and local catalogs belong to this domain 
 
 The live tool inventory is code-owned and mode-filtered by `HEP_TOOL_MODE` (`standard`, `full`). Exact counts live in the generated category and status docs, not in this README — see the drift lock below.
 
+Compact paper summaries keep up to three author names and carry `authors_omitted`
+when names are omitted, including omissions from earlier projections. Markdown
+paper views show up to ten names with an explicit `et al. (+N more)` marker when
+the list is incomplete. Use the source record for the complete author list.
+
 The [personal plugin](../skills-market/docs/PERSONAL_PLUGIN.md) composes this server
 with [`project-mcp`](../project-mcp/README.md) and `idea-mcp`, plus the existing
 research skills. It does not register the atomic providers again. Portable manifests launch it through `nullius runtime mcp hep-mcp` using host-private

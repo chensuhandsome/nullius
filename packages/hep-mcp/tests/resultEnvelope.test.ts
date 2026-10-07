@@ -95,6 +95,16 @@ describe('L1: compactPaperSummary', () => {
     expect(compact).not.toHaveProperty('authors_omitted');
   });
 
+  it('preserves omitted authors through repeated result compaction with an understated count', () => {
+    const original = { papers: [{ ...fullPaper, author_count: 2 }] };
+    const once = compactPapersInResult(original) as { papers: CompactPaperSummary[] };
+    const twice = compactPapersInResult(once) as { papers: CompactPaperSummary[] };
+
+    expect(twice.papers[0].authors_omitted).toBe(2);
+    expect(twice).toEqual(once);
+    expect(original.papers[0].authors).toHaveLength(5);
+  });
+
   it('drops URLs and classification arrays', () => {
     const compact = compactPaperSummary(fullPaper) as Record<string, unknown>;
     // These should NOT be present in compact

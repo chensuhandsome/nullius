@@ -12,7 +12,7 @@ export interface CompactPaperSummary {
   title: string;
   authors?: string[];
   author_count?: number;
-  /** Names not carried in `authors`: max(author_count, names received) minus authors.length; present only when > 0 */
+  /** Names not carried in `authors`, including omissions from earlier projections; present only when > 0. */
   authors_omitted?: number;
   collaborations?: string[];
   year?: number;
@@ -27,11 +27,13 @@ export function compactPaperSummary(p: PaperSummary): CompactPaperSummary {
   const carried = p.authors?.length ?? 0;
   const authors = p.authors?.slice(0, 3);
   const authorCount = p.author_count ?? p.authors?.length;
+  const upstreamOmitted = (p as Partial<CompactPaperSummary>).authors_omitted ?? 0;
   // Make the truncation explicit in the JSON itself: a consumer that reads only
   // `authors` must still see that names were dropped and how many. Count from
   // the larger of the declared count and the names actually carried, so an
-  // understated author_count cannot hide a projection drop.
-  const authorsOmitted = Math.max(0, Math.max(authorCount ?? 0, carried) - (authors?.length ?? 0));
+  // understated author_count cannot hide a projection drop. The dispatcher
+  // may compact again during auto-summarization, so retain earlier omissions.
+  const authorsOmitted = Math.max(0, Math.max(authorCount ?? 0, carried + upstreamOmitted) - (authors?.length ?? 0));
   return {
     recid: p.recid,
     arxiv_id: p.arxiv_id,

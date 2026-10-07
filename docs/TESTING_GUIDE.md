@@ -617,6 +617,8 @@ pnpm --filter @nullius/orchestrator exec vitest run tests/notebook-result-links.
 python3 -m pytest -q skills/research-team/tests/test_convergence_registration_gate.py
 ```
 
-These include adopted results with only an automatic table, hidden/example links,
-and headline convergence without a human rewrite. They test structural evidence
+These include adopted results with only an automatic table, unclosed comments,
+raw HTML inside quotes/lists, visible links at paragraph/heading boundaries,
+literal artifact filenames containing `%` or `?`, wrong-file URI matches, and
+headline convergence without a human rewrite. They test structural evidence
 links, not scientific completeness of the prose.

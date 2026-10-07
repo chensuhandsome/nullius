@@ -42,14 +42,38 @@ describe('human notebook links to adopted artifacts', () => {
     '```md\n[evidence](docs/estimate.md)\n```',
     '`[evidence](docs/estimate.md)`',
     '<!--\n[evidence](docs/estimate.md)\n-->',
+    '<!-- removed evidence\n[evidence](docs/estimate.md)',
+    '<!-- removed evidence\n\n## Hidden section\n[evidence](docs/estimate.md)',
     '    [evidence](docs/estimate.md)',
     '- Example\n\n      [evidence](docs/estimate.md)',
     String.raw`\[evidence](docs/estimate.md)`,
     '![image](docs/estimate.md)',
+    '![label [evidence](docs/estimate.md)](docs/image.png)',
+    '![label [evidence](docs/estimate.md)](docs/image.png)\n\n[evidence]\n\n[evidence]: docs/estimate.md',
     '![image][ref]\n\n[ref]: docs/estimate.md',
     '![image][]\n\n[image]: docs/estimate.md',
     '<pre>\n[evidence](docs/estimate.md)\n</pre>',
     '<pre>\n[evidence](docs/estimate.md)',
+    '<div>\n[evidence](docs/estimate.md)\n</div>',
+    '> <div>\n> [evidence](docs/estimate.md)\n> </div>',
+    '- <div>\n  [evidence](docs/estimate.md)\n  </div>',
+    '<span title="[evidence](docs/estimate.md)">Label</span>',
+    '<span title="[fake](docs/estimate.md)">Label</span>\n[evidence]\n\n[evidence]: docs/estimate.md',
+    'A note <textarea>[evidence](docs/estimate.md)</textarea>.',
+    'A note <script>[evidence](docs/estimate.md)</script>.',
+    'A note <code>[evidence](docs/estimate.md)</code>.',
+    '<div><textarea>\n\n[evidence](docs/estimate.md)\n\n</textarea></div>',
+    '<div>\n```md\n[evidence](docs/estimate.md)\n```\n[evidence](docs/estimate.md)\n</div>',
+    '<custom-element>\n[evidence](docs/estimate.md)\n</custom-element>',
+    '---\n<span>\n[evidence](docs/estimate.md)\n</span>',
+    '* * *\n<span>\n[evidence](docs/estimate.md)\n</span>',
+    'A heading\n===\n<span>\n[evidence](docs/estimate.md)\n</span>',
+    '    Example code\n<span>\n[evidence](docs/estimate.md)\n</span>',
+    '<!--\n```\n-->\n\n```md\n[evidence](docs/estimate.md)\n```',
+    '<?instruction\n[evidence](docs/estimate.md)',
+    '<!DECLARATION\n[evidence](docs/estimate.md)',
+    '<![CDATA[\n[evidence](docs/estimate.md)',
+    '<div>\n[hidden]: docs/estimate.md\n</div>\n\n[evidence][hidden]',
     '[unused]: docs/estimate.md',
     '[run](artifacts/runs/20261001-estimate-r1/)',
     '[different](docs/other.md)',
@@ -67,9 +91,54 @@ describe('human notebook links to adopted artifacts', () => {
     const report = check('## Estimate\nSee [derivation][ref].\n\n## References\n[ref]: docs/estimate.md\n');
     expect(report.results[0]!.sections).toEqual(['Estimate']);
   });
+  it('binds links to real heading lines when Unicode whitespace only looks like a heading', () => {
+    expect(check('##\u00a0Ghost\n\n## Estimate\n[evidence](docs/estimate.md)').results[0]!.sections).toEqual(['Estimate']);
+    expect(check('##\u00a0Ghost\n[evidence](docs/estimate.md)\n\n## Estimate\nNo evidence here.').status).toBe('missing_links');
+  });
+  it('honors an HTML container opened in a human section heading', () => {
+    expect(check('## Estimate <textarea>\n\n[evidence](docs/estimate.md)').status).toBe('missing_links');
+    expect(check('## Estimate <textarea>\n\nExample\n\n</textarea>\n\n[evidence](docs/estimate.md)').status).toBe('linked');
+  });
+  it('recognizes a raw-text closing tag inside comment-looking text', () => {
+    expect(check('## Estimate\n\nA note <textarea><!-- </textarea> --> [evidence](docs/estimate.md)').status).toBe('linked');
+    expect(check('## Estimate\n\nA note <textarea><!-- example --> [evidence](docs/estimate.md)').status).toBe('missing_links');
+  });
   it('ignores comment syntax inside examples and accepts document-scoped references', () => {
     const report = check('[ref]: docs/estimate.md\n\n```html\n<!--\n```\n\n## Estimate\nSee [evidence][ref].');
     expect(report.results[0]!.sections).toEqual(['Estimate']);
+  });
+  it.each([
+    '<!-- hidden -->\n[evidence](docs/estimate.md)',
+    '<div>\n\n[evidence](docs/estimate.md)\n\n</div>',
+    'An inline <span>[evidence](docs/estimate.md)</span>.',
+    'A paragraph\n<span>\n[evidence](docs/estimate.md)\n</span>',
+    '=\n<span>\n[evidence](docs/estimate.md)\n</span>',
+    '--\n<span>\n[evidence](docs/estimate.md)\n</span>',
+    '> [evidence](docs/estimate.md)',
+    '- [evidence](docs/estimate.md)',
+    'A note <textarea>example</textarea> then [evidence](docs/estimate.md).',
+    '<!-- <textarea> -->\n[evidence](docs/estimate.md)',
+  ])('preserves visible Markdown after or alongside HTML: %s', body => {
+    expect(check(`## Estimate\n\n${body}\n`).status).toBe('linked');
+  });
+  it.each([
+    ['docs/rate%.md', 'docs/rate%25.md'],
+    ['docs/rate%25.md', 'docs/rate%2525.md'],
+    ['docs/rate?1.md', 'docs/rate%3F1.md'],
+  ])('matches literal artifact %s with its URI-encoded destination', (artifact, href) => {
+    write(`## Estimate\n[evidence](${href}#limits)`);
+    const report = checkNotebookResultLinks(root, { ...projection,
+      current_rows: [{ ...projection.current_rows[0]!, artifact }] });
+    expect(report.status).toBe('linked');
+    write(`## Estimate\n[evidence][ref]\n\n[ref]: ${href}`);
+    expect(checkNotebookResultLinks(root, { ...projection,
+      current_rows: [{ ...projection.current_rows[0]!, artifact }] }).status).toBe('linked');
+  });
+  it('does not decode a literal registry filename into another artifact', () => {
+    write('## Estimate\n[evidence](docs/rate%25.md)');
+    const report = checkNotebookResultLinks(root, { ...projection,
+      current_rows: [{ ...projection.current_rows[0]!, artifact: 'docs/rate%25.md' }] });
+    expect(report.status).toBe('missing_links');
   });
   it('does not let one artifact stand for a different result from the same run', () => {
     write('## Estimate\nSee [evidence](docs/estimate.md).');

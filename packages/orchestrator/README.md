@@ -99,6 +99,9 @@ is `unavailable`. Inline and explicit reference links are recognized; recursive
 notes, HTML, shortcut references and indented link lines are not scanned. Automatic tables, comments
 and code examples cannot supply the link. `linked` establishes navigation only,
 not explanation quality, derivation completeness or scientific correctness.
+CommonMark parsing excludes raw HTML and code even inside quotes or lists.
+Markdown destinations are decoded as URIs; registered artifact filenames remain
+literal paths, including any `%` or `?` characters.
 
 At a scientific result fold, rewrite the relevant sections with assumptions,
 reasoning, interpretation and limitations, and cite the registered artifact.

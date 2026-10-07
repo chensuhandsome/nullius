@@ -1,8 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { fromMarkdown } from 'mdast-util-from-markdown';
+import type { Nodes } from 'mdast';
 import { splitNotebookSections } from './notebook-staleness.js';
 import { stripCurrentStateBlock } from './notebook-current-state.js';
-import { advanceMarkdownFence, type MarkdownFence } from './managed-block.js';
 import type { ValidityLedgerView, ValidityState } from './validity-ledger.js';
 
 /** Link-derived run citations, append-drift signals, and dead-citation
@@ -319,51 +320,93 @@ function extractRunIds(sanitizedBlockText: string, definitions: ReadonlyMap<stri
   return ids;
 }
 
-/** Visible evidence links by human notebook section. Shares the notebook's
- * bounded Markdown dialect: inline and explicit reference links, not shortcut
- * references, HTML links or recursive document traversal. A link is only a
- * navigation witness, never evidence of scientific completeness. */
+/** Visible evidence links by human notebook section. The CommonMark tree
+ * distinguishes links, images, raw HTML and reference syntax at their own
+ * source positions; no destination-set intersection can promote hidden text.
+ * Shortcut references and indented link lines remain outside the bounded
+ * dialect. Navigation never establishes scientific completeness. */
 export function notebookSectionLinkTargets(text: string): Array<{ heading: string; targets: string[] }> {
-  // Strip fenced examples before interpreting comments/HTML inside them.
-  let fence: MarkdownFence | null = null;
-  const unfenced = stripCurrentStateBlock(text).split('\n').map(line => {
-    const prior = fence;
-    fence = advanceMarkdownFence(fence, line.replace(/\r$/, ''));
-    return prior !== fence || fence !== null ? '' : line;
-  }).join('\n');
-  const visible = stripLineInitialComments(unfenced)
-    .replace(/<(pre|code|script|style|textarea)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, '');
-  // Retain front-matter definitions but never count front matter as an
-  // explanatory section. Markdown reference definitions have document scope.
-  const sections = splitNotebookSections(`## __front_matter__\n${visible}`)
-    .map(section => ({
-      heading: section.heading,
-      // Conservative bounded dialect: indented link lines may be nested code.
-      // Require evidence on an unindented line rather than claim it is prose.
-      blocks: segmentCitationBlocks(section.body.filter(line => !INDENTED_CODE_LINE.test(line)))
-        .map(sanitizeProse).map(block => block.replace(/\\[\\[\]!()]/g, ' ')),
-    }));
+  const source = stripCurrentStateBlock(text);
+  const lines = source.split('\n');
+  const tree = fromMarkdown(source);
   const definitions = new Map<string, string>();
-  for (const section of sections) {
-    for (const line of section.blocks.join('\n').split('\n')) {
-      const match = REFERENCE_DEFINITION_PATTERN.exec(line);
-      if (match && !definitions.has(match[1]!.trim().toLowerCase())) {
-        definitions.set(match[1]!.trim().toLowerCase(), match[2]!);
+  function walk(node: Nodes, visit: (node: Nodes) => void): void {
+    visit(node);
+    if ('children' in node) for (const child of node.children) walk(child, visit);
+  }
+  walk(tree, node => {
+    if (node.type === 'definition' && !definitions.has(node.identifier)) {
+      definitions.set(node.identifier, node.url);
+    }
+  });
+  const sections: Array<{ heading: string; targets: Set<string> }> = [];
+  let current: Set<string> | null = null;
+  const excludedHtml = new Set(['pre', 'code', 'script', 'style', 'textarea', 'title', 'xmp',
+    'iframe', 'noembed', 'noframes', 'noscript', 'plaintext', 'template']);
+  const rawTextHtml = new Set(['script', 'style', 'textarea', 'title', 'xmp', 'iframe',
+    'noembed', 'noframes', 'noscript', 'plaintext']);
+  let enclosingHtml: string | null = null;
+  let enclosingDepth = 0;
+  function scanHtml(value: string): void {
+    // Outside raw-text containers, attributes and comments are opaque. Inside
+    // them, the container's closing tag is meaningful even in comment-looking
+    // text. Preserve this context across sibling nodes and block boundaries.
+    const tags = /<!--[\s\S]*?(?:-->|$)|<(\/?)([a-z][a-z\d-]*)(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi;
+    let cursor = 0;
+    while (cursor < value.length) {
+      if (enclosingHtml !== null && rawTextHtml.has(enclosingHtml)) {
+        if (enclosingHtml === 'plaintext') return;
+        const closing = new RegExp(`</${enclosingHtml}[\\t\\n\\f\\r ]*>`, 'gi');
+        closing.lastIndex = cursor;
+        const match = closing.exec(value);
+        if (!match) return;
+        cursor = closing.lastIndex;
+        enclosingHtml = null; enclosingDepth = 0;
+        continue;
+      }
+      tags.lastIndex = cursor;
+      const match = tags.exec(value);
+      if (!match) return;
+      cursor = tags.lastIndex;
+      if (!match[2]) continue;
+      const tag = match[2].toLowerCase();
+      if (enclosingHtml !== null) {
+        if (tag !== enclosingHtml || tag === 'plaintext') continue;
+        if (match[1] && --enclosingDepth === 0) enclosingHtml = null;
+        else if (!match[1] && !rawTextHtml.has(tag)) enclosingDepth++;
+      } else if (!match[1] && excludedHtml.has(tag)) {
+        enclosingHtml = tag; enclosingDepth = 1;
       }
     }
   }
-  return sections.slice(1).map(section => {
-    const body = section.blocks.join('\n').split('\n')
-      .filter(line => !REFERENCE_DEFINITION_PATTERN.test(line)).join('\n');
-    const targets = [...body.matchAll(/(?<!!)\[[^\]\n]*\]\(\s*(<[^<>]*>|[^()\s]+)(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g)].map(match => match[1]!);
-    for (const pattern of [/(?<!!)\[[^\]]*\]\[([^\]]+)\]/g, /(?<!!)\[([^\]]+)\]\[\]/g]) {
-      for (const match of body.matchAll(pattern)) {
-        const target = definitions.get(match[1]!.trim().toLowerCase());
-        if (target !== undefined) targets.push(target);
-      }
+  function collect(node: Nodes): void {
+    // Image alt content, raw HTML and code have no visible Markdown links.
+    if (node.type === 'html') { scanHtml(node.value); return; }
+    if (node.type === 'image' || node.type === 'imageReference'
+      || node.type === 'code' || node.type === 'inlineCode') return;
+    if (node.type === 'link' || node.type === 'linkReference') {
+      const line = node.position?.start.line;
+      if (line === undefined || INDENTED_CODE_LINE.test(lines[line - 1] ?? '')) return;
+      const target = node.type === 'link' ? node.url
+        : node.referenceType === 'shortcut' ? undefined : definitions.get(node.identifier);
+      if (target !== undefined && enclosingHtml === null) current?.add(target);
+      if ('children' in node) for (const child of node.children) collect(child);
+      return;
     }
-    return { heading: section.heading, targets: [...new Set(targets)] };
-  });
+    if ('children' in node) for (const child of node.children) collect(child);
+  }
+  for (const node of tree.children) {
+    const line = node.position?.start.line;
+    const rawHeading = line === undefined ? '' : lines[line - 1] ?? '';
+    if (node.type === 'heading' && node.depth === 2 && /^##[ \t]+/.test(rawHeading) && enclosingHtml === null) {
+      current = new Set<string>();
+      sections.push({ heading: rawHeading.replace(/^##[ \t]+/, '').trim(), targets: current });
+      // Heading links are not body evidence, but their HTML can change the
+      // rendering context of the body that follows.
+      walk(node, child => { if (child.type === 'html') scanHtml(child.value); });
+    } else collect(node);
+  }
+  return sections.map(section => ({ heading: section.heading, targets: [...section.targets] }));
 }
 
 /** Word-bounded token matching: `void` must not match inside `avoid`, and

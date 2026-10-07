@@ -19,6 +19,10 @@ function localTarget(raw: string): string | null {
   let target: string;
   try { target = decodeURIComponent(unwrapped.split(/[?#]/, 1)[0]!); }
   catch { return null; }
+  return localPath(target);
+}
+
+function localPath(target: string): string | null {
   if (!target || /^[a-z][a-z\d+.-]*:/i.test(target) || path.posix.isAbsolute(target)
     || target.includes('\\')) return null;
   const normalized = path.posix.normalize(target);
@@ -49,7 +53,10 @@ export function checkNotebookResultLinks(
   const sections = notebookSectionLinkTargets(text)
     .map(section => ({ ...section, targets: new Set(section.targets.map(localTarget).filter(Boolean)) }));
   report.results = projection.current_rows.map(row => {
-    const target = row.artifact === null ? null : localTarget(row.artifact);
+    // Registry artifacts are literal filesystem paths, not URI destinations.
+    // Match the registry resolver's fragment rule without decoding '%' or
+    // treating a literal '?' in the filename as a URL query delimiter.
+    const target = row.artifact === null ? null : localPath(row.artifact.split('#', 1)[0]!);
     return {
       result_id: row.result_id, artifact: row.artifact,
       sections: target === null ? [] : sections.filter(section => section.targets.has(target)).map(section => section.heading),

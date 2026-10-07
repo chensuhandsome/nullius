@@ -18,6 +18,7 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "devDependencies": {
+    "@types/mdast": "4.0.4",
     "@types/node": "^22.0.0",
     "typescript": "^5.4.0",
     "vitest": "^3.0.0"
@@ -27,6 +28,7 @@
     "@nullius/literature-workflows": "workspace:^",
     "@nullius/shared": "workspace:^",
     "ajv": "^8.18.0",
+    "mdast-util-from-markdown": "2.0.3",
     "zod": "^4.3.5"
   }
 }

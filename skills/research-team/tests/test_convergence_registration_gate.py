@@ -70,6 +70,11 @@ DEFAULT_VIEW = {
         "no_authoritative_identity": [],
     },
     "notebook": {
+        "result_links": {
+            "status": "linked",
+            "results": [{"result_id": "binding-energy", "sections": ["Spectrum results"]}],
+            "missing_result_ids": [],
+        },
         "found": True,
         "sections": [
             {"heading": "Spectrum results", "class": "current", "cause": "stamp matches HEAD"},
@@ -344,6 +349,7 @@ def test_backtick_wrapped_heading_containing_a_double_quote_passes(tmp_path: Pat
     view["notebook"]["sections"].append(
         {"heading": 'The "exact" spectrum', "class": "current", "cause": "stamp matches HEAD"}
     )
+    view["notebook"]["result_links"]["results"][0]["sections"] = ['The "exact" spectrum']
     body = GOOD_DECLARATION.replace(
         '- Rewritten sections: "Spectrum results"',
         '- Rewritten sections: `The "exact" spectrum`',
@@ -372,6 +378,7 @@ def test_headline_issue_match_is_word_bounded_not_substring(tmp_path: Path) -> N
     view["results"]["issues"] = [
         {"code": "row_defect", "message": "registry row for m01-fit cites a voided run"},
     ]
+    view["notebook"]["result_links"]["results"].append({"result_id": "m0", "sections": ["Spectrum results"]})
     body = GOOD_DECLARATION.replace(
         "- Headline result: binding-energy @ 20260808-m2-r010-final",
         "- Headline result: m0 @ 20260808-m2-r010-final",
@@ -495,3 +502,36 @@ def test_unacknowledged_dead_citation_outside_declared_sections_stays_advisory(t
         _project_root(tmp_path, view),
     )
     assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_headline_without_human_rewrite_refuses(tmp_path: Path) -> None:
+    body = GOOD_DECLARATION.replace('- Rewritten sections: "Spectrum results"', '- Rewritten sections: none')
+    result = _run_gate(_convergence_json(tmp_path), _adjudication(tmp_path, body), _project_root(tmp_path))
+    assert result.returncode == 1
+    assert "needs its artifact linked" in result.stderr
+
+
+def test_automatic_table_cannot_satisfy_human_result_links(tmp_path: Path) -> None:
+    view = json.loads(json.dumps(DEFAULT_VIEW))
+    view["notebook"]["current_state_block"] = {"block_found": True, "in_sync": True}
+    view["notebook"]["result_links"]["status"] = "missing_links"
+    view["notebook"]["result_links"]["results"][0]["sections"] = []
+    result = _run_gate(_convergence_json(tmp_path), _adjudication(tmp_path, GOOD_DECLARATION), _project_root(tmp_path, view))
+    assert result.returncode == 1
+    assert "needs its artifact linked" in result.stderr
+
+
+def test_missing_link_read_model_is_not_approval(tmp_path: Path) -> None:
+    view = json.loads(json.dumps(DEFAULT_VIEW))
+    del view["notebook"]["result_links"]
+    result = _run_gate(_convergence_json(tmp_path), _adjudication(tmp_path, GOOD_DECLARATION), _project_root(tmp_path, view))
+    assert result.returncode == 1
+    assert "check unavailable" in result.stderr
+
+
+def test_unrelated_missing_link_does_not_block_declared_result(tmp_path: Path) -> None:
+    view = json.loads(json.dumps(DEFAULT_VIEW))
+    view["notebook"]["result_links"]["status"] = "missing_links"
+    view["notebook"]["result_links"]["missing_result_ids"] = ["other-result"]
+    result = _run_gate(_convergence_json(tmp_path), _adjudication(tmp_path, GOOD_DECLARATION), _project_root(tmp_path, view))
+    assert result.returncode == 0, result.stderr

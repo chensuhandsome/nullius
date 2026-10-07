@@ -85,6 +85,10 @@ export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<n
     return runCurrentCommand(projectRoot, parsed.json, io);
   }
   if (parsed.command === 'notebook') {
+    if (parsed.action === 'check') {
+      const { runNotebookCheck } = await import('./notebook-result-links.js');
+      return runNotebookCheck(projectRoot, parsed.resultId, parsed.json, io);
+    }
     const { refreshNotebookCurrentState, checkCurrentStateBlock } = await import('./notebook-current-state.js');
     try {
       // The post-write check compares against the projection the refresh
@@ -186,6 +190,7 @@ export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<n
       } catch {
         // surfaced as out-of-sync on the next status/current read
       }
+      io.stdout(`Human notebook integration is separate: rewrite the affected sections, then run nullius notebook check --result ${row.result_id} before closeout.\n`);
       return 0;
     } catch (error) {
       io.stderr(`result set-current: ${error instanceof Error ? error.message : String(error)}\n`);

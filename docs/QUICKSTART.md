@@ -206,3 +206,14 @@ nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-
 Existing `PROJECT_INDEX_AUTO` blocks are historical, unmaintained observations; the team helper neither parses nor updates them. Current `RUN_INDEX` navigation and curated result/report registries have separate owners. Do not silently rewrite or delete an old block.
 
 Existing `team/runs/<run_id>/` evidence remains readable in place. New execution uses a distinct ID under `artifacts/runs/`. Export a historical run with `nullius export --run-id <id>`; for a duplicate ID, select `--run-root team/runs`. Runtime-only reconnect preserves historical evidence.
+
+### Keep the human notebook current
+
+When adopting a scientific result, rewrite the affected `research_notebook.md`
+sections with its assumptions, derivation, interpretation and limits. Link its
+registered artifact directly from the relevant human `##` section. Check
+`nullius current` for missing human-body links, including when working in file
+mode. At result closeout, run `nullius notebook check --result <result-id>`;
+missing links return nonzero. The automatic results table and `nullius notebook sync` cannot perform
+this writing. Link presence is a necessary navigation check, not scientific
+acceptance; see [the notebook check's scope](../packages/orchestrator/README.md#human-notebook-integration).

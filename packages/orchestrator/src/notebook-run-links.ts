@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { splitNotebookSections } from './notebook-staleness.js';
 import { stripCurrentStateBlock } from './notebook-current-state.js';
+import { advanceMarkdownFence, type MarkdownFence } from './managed-block.js';
 import type { ValidityLedgerView, ValidityState } from './validity-ledger.js';
 
 /** Link-derived run citations, append-drift signals, and dead-citation
@@ -316,6 +317,53 @@ function extractRunIds(sanitizedBlockText: string, definitions: ReadonlyMap<stri
     push(definitions.get(match[1]!.trim().toLowerCase()) ?? null);
   }
   return ids;
+}
+
+/** Visible evidence links by human notebook section. Shares the notebook's
+ * bounded Markdown dialect: inline and explicit reference links, not shortcut
+ * references, HTML links or recursive document traversal. A link is only a
+ * navigation witness, never evidence of scientific completeness. */
+export function notebookSectionLinkTargets(text: string): Array<{ heading: string; targets: string[] }> {
+  // Strip fenced examples before interpreting comments/HTML inside them.
+  let fence: MarkdownFence | null = null;
+  const unfenced = stripCurrentStateBlock(text).split('\n').map(line => {
+    const prior = fence;
+    fence = advanceMarkdownFence(fence, line.replace(/\r$/, ''));
+    return prior !== fence || fence !== null ? '' : line;
+  }).join('\n');
+  const visible = stripLineInitialComments(unfenced)
+    .replace(/<(pre|code|script|style|textarea)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, '');
+  // Retain front-matter definitions but never count front matter as an
+  // explanatory section. Markdown reference definitions have document scope.
+  const sections = splitNotebookSections(`## __front_matter__\n${visible}`)
+    .map(section => ({
+      heading: section.heading,
+      // Conservative bounded dialect: indented link lines may be nested code.
+      // Require evidence on an unindented line rather than claim it is prose.
+      blocks: segmentCitationBlocks(section.body.filter(line => !INDENTED_CODE_LINE.test(line)))
+        .map(sanitizeProse).map(block => block.replace(/\\[\\[\]!()]/g, ' ')),
+    }));
+  const definitions = new Map<string, string>();
+  for (const section of sections) {
+    for (const line of section.blocks.join('\n').split('\n')) {
+      const match = REFERENCE_DEFINITION_PATTERN.exec(line);
+      if (match && !definitions.has(match[1]!.trim().toLowerCase())) {
+        definitions.set(match[1]!.trim().toLowerCase(), match[2]!);
+      }
+    }
+  }
+  return sections.slice(1).map(section => {
+    const body = section.blocks.join('\n').split('\n')
+      .filter(line => !REFERENCE_DEFINITION_PATTERN.test(line)).join('\n');
+    const targets = [...body.matchAll(/(?<!!)\[[^\]\n]*\]\(\s*(<[^<>]*>|[^()\s]+)(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g)].map(match => match[1]!);
+    for (const pattern of [/(?<!!)\[[^\]]*\]\[([^\]]+)\]/g, /(?<!!)\[([^\]]+)\]\[\]/g]) {
+      for (const match of body.matchAll(pattern)) {
+        const target = definitions.get(match[1]!.trim().toLowerCase());
+        if (target !== undefined) targets.push(target);
+      }
+    }
+    return { heading: section.heading, targets: [...new Set(targets)] };
+  });
 }
 
 /** Word-bounded token matching: `void` must not match inside `avoid`, and

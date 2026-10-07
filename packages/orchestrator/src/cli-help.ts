@@ -263,6 +263,7 @@ unanswerability instead of silent or false precision. --json emits the same
 read model that \`nullius status --json\` carries as its traceability block.
 `,
   notebook: `nullius notebook sync [--json]
+nullius notebook check [--result <id>] [--json]
 
 Insert (first run) or refresh the machine-maintained current-state block at
 the top of research_notebook.md. The block is rendered from the results
@@ -274,6 +275,16 @@ project and for repair after a hand edit. Never edit between the block's
 markers: a present block that no longer matches its canonical render is
 reported OUT OF SYNC by \`nullius status --json\` / \`nullius current\` and
 refuses milestone convergence until refreshed.
+
+This command does not write or verify the human derivations or explanations.
+Inspect \`nullius current --json\` notebook.result_links for current artifacts
+absent from human sections. Rewrite those sections; links present are not a
+scientific-completeness verdict.
+
+Use \`notebook check\` at file-mode result closeout, optionally scoped to the
+result being folded. It is read-only: exit 0 means links present or no current
+results, exit 1 means missing human-body links, exit 2 means unavailable input
+or registry defects. Unknown result ids refuse; this is not a science gate.
 `,
   index: `nullius index sync [--json]
 

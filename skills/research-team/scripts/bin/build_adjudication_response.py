@@ -199,6 +199,7 @@ def main() -> int:
     lines.append("- Headline result: (fill)")
     lines.append("- Supersedes: (fill)")
     lines.append("- Rewritten sections: (fill)")
+    lines.append("A declared headline needs its artifact linked in a rewritten human section; the automatic table does not count. Review the reasoning itself separately.")
     lines.append("")
 
     lines.append("## 7) How to use this file")

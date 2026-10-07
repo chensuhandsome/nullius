@@ -104,7 +104,7 @@ The check is also skipped for:
 5. Read and align the durable project surfaces:
    - `research_plan.md`, especially `# Current Status`
    - `research_contract.md`
-   - `research_notebook.md` when it contains substantive project notes
+   - `research_notebook.md`: read the human sections as well as the automatic table; inspect `traceability.notebook.result_links` for current artifacts missing from the body
    - the relevant `artifacts/runs/<run_id>/` and `artifacts/runs/` directories
    - the current main research report linked from
      `project_index.md#Main research report`, when one is promoted
@@ -415,7 +415,7 @@ If `hep-mcp` or a needed provider is unavailable, state that limitation explicit
 
 ## Fold Results Back
 
-`research-team` payloads live under `artifacts/runs/<run_id>/research_team/`. Durable conclusions belong in the project contract, plan and immutable reports with evidence pointers. Executor status and navigation pointers do not supply scientific acceptance.
+`research-team` payloads live under `artifacts/runs/<run_id>/research_team/`. Durable conclusions belong in the human notebook, project contract, plan and immutable reports with evidence pointers. Executor status and navigation pointers do not supply scientific acceptance.
 
 Keep three artifact classes separate at this boundary. A checkpoint, status,
 or closeout summary coordinates state and may stay concise. A main research
@@ -436,7 +436,10 @@ After a milestone or run produces a stable result, gate each result by its type 
 - A speedup or performance claim passes its reproducible benchmark gate ([`julia-perf`](../julia-perf/SKILL.md) for Julia code; an equivalent gate for other languages).
 - Walk the [`research-integrity`](../research-integrity/SKILL.md) M1-M7 checklist immediately before the fold itself.
 
-Then land the folded result:
+Then land the folded result (the same obligations apply in engine and file mode):
+
+- Rewrite the affected `research_notebook.md` sections into a coherent scientific account: assumptions and conventions, starting relations, non-obvious derivation steps, results and interpretation, validity limits and unresolved questions. Keep already verified intermediate understanding current; do not wait for whole-project acceptance. Label unverified reasoning explicitly rather than silently treating it as established. Topic notes may carry extended detail, but links or result tables alone do not replace the notebook's load-bearing reasoning.
+- Link each adopted result's registered artifact directly from the relevant human `##` section, outside the automatic block, comments and code examples. After rewriting, record the section's `written-against` commit. Run `nullius notebook check --result <result-id>` for the result being folded (read-only; exit 1 means missing links, 2 means unavailable), and read `nullius current --json`: `notebook.result_links` must identify the affected result in that section. The check recognizes direct inline and explicit reference links, not recursive documents, HTML, shortcut references or indented link lines. Missing links or unavailable checks for the result being folded leave notebook integration incomplete; unrelated older gaps remain visible follow-up work. A `linked` result is only a navigation witness: review the actual explanation and mathematics before claiming the section complete.
 
 - Summarize the durable conclusion in `research_contract.md`.
 - Update `research_plan.md#Current Status` with the current state, next step, blockers, and evidence pointers.
@@ -446,7 +449,9 @@ Then land the folded result:
 
 ## Closeout
 
-Before handing off or claiming completion, run the narrowest applicable closeout command:
+Before handing off or claiming completion, finish the human-notebook rewrite and result-link check described in **Fold Results Back**, including in file mode. `nullius notebook sync` refreshes only the automatic table; neither an in-sync table nor a fresh version stamp establishes that the human account was updated. If the task changes no scientific understanding, no notebook rewrite is owed. Record unresolved content gaps in the plan rather than declaring the scientific stage complete.
+
+Run the narrowest applicable closeout command:
 
 ```bash
 nullius verify

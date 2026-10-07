@@ -48,6 +48,17 @@ Three disciplines keep it that way:
    `artifacts/runs/<run_id>/`, referenced by link where relevant. If a section can be deleted
    without losing understanding, delete it.
 
+At each scientific result fold, including file mode, rewrite the affected sections
+without waiting for whole-project acceptance. Link each current result's registered
+artifact directly from its human `##` section. `nullius current --json` exposes
+`notebook.result_links`: it checks direct inline and explicit reference links,
+not recursive documents, HTML, shortcut references or indented link lines. Automatic tables, comments
+and code examples do not count. Missing links identify unfinished integration;
+links present do not establish complete derivations or scientific correctness.
+`nullius notebook check --result <result-id>` is the read-only check at result
+closeout; a missing link returns nonzero. `nullius notebook sync` only refreshes
+the automatic table.
+
 Suggested skeleton — rename, merge, and grow sections to fit the actual
 problem; headings with real meaning beat generic labels:
 

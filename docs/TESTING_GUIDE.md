@@ -609,3 +609,14 @@ nullius workflow-plan \
 Carrier ownership checks must cover direct and reverse pointer aliases before any navigation write. Existing `PROJECT_INDEX_AUTO` blocks are unmaintained historical observations; test that helper execution preserves their exact bytes. Live `init --help` must match preserve-existing refresh behavior.
 
 Historical run admission is covered by `packages/orchestrator/tests/run-history-reading.test.ts`: original paths and bytes, origin/validity/result selection, both run export/list surfaces, runtime-only reconnect, scoped unavailable paths, duplicate IDs, and refusal of historical execution writes. Python research-team tests cover historical round discovery and canonical write admission.
+
+Notebook integration regression checks:
+
+```bash
+pnpm --filter @nullius/orchestrator exec vitest run tests/notebook-result-links.test.ts tests/notebook-run-links.test.ts tests/notebook-current-state.test.ts
+python3 -m pytest -q skills/research-team/tests/test_convergence_registration_gate.py
+```
+
+These include adopted results with only an automatic table, hidden/example links,
+and headline convergence without a human rewrite. They test structural evidence
+links, not scientific completeness of the prose.

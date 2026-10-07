@@ -11,6 +11,7 @@ import { checkCurrentStateBlock, projectionFromRegistryState, type CurrentStateB
 import { listRunDirectories as listRunDirectoriesShared, readRunDirectoryInventory, slugFamilyOf, type RunDirectoryIssue, type RunDirEntry as SharedRunDirEntry } from './run-directories.js';
 import { checkRunIndexBlock, computeRunIndexProjection, type RunIndexBlockStatus } from './run-index.js';
 import { canonicalJson } from './validity-ledger.js';
+import { checkNotebookResultLinks, type NotebookResultLinks } from './notebook-result-links.js';
 
 /** ONE read model behind both consumers of the acceptance sentence:
  *  `nullius status --json` embeds this object as its `traceability` block
@@ -190,6 +191,8 @@ export type TraceabilityView = {
      *  only state that CLAIMS currency (out-of-sync is a fold refusal);
      *  a missing block claims nothing and only warns. */
     current_state_block: CurrentStateBlockStatus;
+    /** Necessary human-body evidence links; never a content-quality verdict. */
+    result_links: NotebookResultLinks;
     /** Link-derived rewrite-discipline signals. Advisory everywhere; the
      *  fold gate consumes only the sections a packet declares rewritten. */
     run_links: {
@@ -549,6 +552,7 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
   const currentStateBlock = checkCurrentStateBlock(
     projectRoot, projectionFromRegistryState(resultRegistry),
   );
+  const notebookResultLinks = checkNotebookResultLinks(projectRoot, projectionFromRegistryState(resultRegistry));
 
   // Mirror-vs-ledger divergence (stage-1 acceptance hook): the ledger is the
   // authority; a run-directory mirror that no longer matches it — the narrow
@@ -676,6 +680,13 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
       clause: 'notebook sections current vs stale',
       reason: `none of the ${notebook.sections.length} sections carries a written-against stamp yet `
         + '(add `<!-- written-against: <commit-sha> -->` when rewriting a section)',
+    });
+  }
+
+  if (notebookResultLinks.status === 'missing_links' || notebookResultLinks.status === 'unavailable') {
+    unanswerable.push({
+      clause: 'current results explained in the human notebook',
+      reason: notebookResultLinks.reason ?? `current result artifacts absent from human sections: ${notebookResultLinks.missing_result_ids.join(', ')}; rewrite the affected sections with reasoning, scope and evidence links; notebook sync only updates the machine block`,
     });
   }
 
@@ -826,6 +837,7 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
       incomparable: notebook.sections.filter(section => section.class === 'incomparable')
         .map(section => ({ heading: section.heading, cause: section.cause })),
       current_state_block: currentStateBlock,
+      result_links: notebookResultLinks,
       run_links: {
         sections: runLinks.sections,
         drifted_sections: runLinks.drifted_sections,
@@ -974,6 +986,12 @@ export function renderTraceabilityProse(view: TraceabilityView): string {
     }
   }
   const block = view.notebook.current_state_block;
+  const resultLinks = view.notebook.result_links;
+  if (resultLinks.status === 'missing_links' || resultLinks.status === 'unavailable') {
+    lines.push(`- HUMAN NOTEBOOK NEEDS ATTENTION: ${resultLinks.reason ?? `no body link to current result(s): ${resultLinks.missing_result_ids.join(', ')}`}. Rewrite the affected sections with reasoning, scope and evidence; notebook sync cannot do this.`);
+  } else if (resultLinks.status === 'linked') {
+    lines.push('- Human notebook links current result artifacts; scientific explanation and derivation completeness still require review.');
+  }
   if (block.notebook_found) {
     if (block.duplicated_markers) {
       lines.push(`- CURRENT-STATE BLOCK: ${block.reason}`);

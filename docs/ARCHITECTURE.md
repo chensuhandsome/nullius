@@ -214,3 +214,10 @@ All newly generated managed project runs use `artifacts/runs/<run_id>/`; team an
 The generic scaffold creates `project_index.md`; the team helper updates only executor-local latest pointers and requires `nullius init` when the root index is missing. Selected-result and derived-block writers share a short path lock, reread their inputs, and make at most three attempts when edits are detected while preserving human bytes, mode and EOL outside their marked region. Arbitrary writers that ignore the lock remain outside its guarantee. Generic run counts do not interpret execution round limits; the Python executor resolver and suffix gate own those settings.
 
 Existing `PROJECT_INDEX_AUTO` blocks are historical, unmaintained observations; the team helper neither parses nor updates them. Current `RUN_INDEX` navigation and curated result/report registries have separate owners. Do not silently rewrite or delete an old block.
+
+The shared traceability read model also exposes `notebook.result_links`, a
+necessary link check between adopted result artifacts and human notebook
+sections. `notebook check` provides a read-only, optionally result-scoped
+closeout check for external-agent/file-mode execution. It does not infer
+scientific completeness. Team convergence consumes the same links for its
+declared headline and rewritten sections; automatic tables never count.

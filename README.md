@@ -310,3 +310,9 @@ All newly generated managed project runs use `artifacts/runs/<run_id>/`; team an
 The generic scaffold creates `project_index.md`; the team helper updates only executor-local latest pointers and requires `nullius init` when the root index is missing. Selected-result and derived-block writers share a short path lock, reread their inputs, and make at most three attempts when edits are detected while preserving human bytes, mode and EOL outside their marked region. Arbitrary writers that ignore the lock remain outside its guarantee. Generic run counts do not interpret execution round limits; the Python executor resolver and suffix gate own those settings.
 
 Existing `PROJECT_INDEX_AUTO` blocks are historical, unmaintained observations; the team helper neither parses nor updates them. Current `RUN_INDEX` navigation and curated result/report registries have separate owners. Do not silently rewrite or delete an old block.
+
+At scientific result closeout, external agents also update the human notebook
+and run `nullius notebook check --result <result-id>`. Automatic results tables
+cannot replace the derivations or explanations. See
+[human notebook integration](packages/orchestrator/README.md#human-notebook-integration)
+for the structural check's scope and limits.

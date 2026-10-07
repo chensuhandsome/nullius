@@ -67,7 +67,7 @@ export type ParsedCliArgs =
     deps: Record<string, string>;
   }
   | { command: 'current'; projectRoot: string | null; json: boolean }
-  | { command: 'notebook'; projectRoot: string | null; action: 'sync'; json: boolean }
+  | { command: 'notebook'; projectRoot: string | null; action: 'sync' | 'check'; json: boolean; resultId?: string }
   | { command: 'index'; projectRoot: string | null; action: 'sync'; json: boolean }
   | {
     command: 'result';
@@ -221,20 +221,25 @@ function parseStatusArgs(args: string[]): { json: boolean } {
   return { json };
 }
 
-function parseNotebookArgs(args: string[]): { action: 'sync'; json: boolean } {
-  if (args.length === 0 || args[0] !== 'sync') {
-    throw new Error('notebook: expected `nullius notebook sync [--json]` '
-      + '(inserts the machine-maintained current-state block if missing, refreshes it otherwise)');
+function parseNotebookArgs(args: string[]): { action: 'sync' | 'check'; json: boolean; resultId?: string } {
+  const action = args[0];
+  if (action !== 'sync' && action !== 'check') {
+    throw new Error('notebook: expected `nullius notebook sync [--json]` or `nullius notebook check [--result <id>] [--json]`');
   }
   let json = false;
-  for (const arg of args.slice(1)) {
-    if (arg === '--json') {
-      json = true;
+  let resultId: string | undefined;
+  for (let i = 1; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (arg === '--json') { json = true; continue; }
+    if (arg === '--result' && action === 'check' && resultId === undefined) {
+      const value = args[++i];
+      if (!value || value.startsWith('-')) throw new Error('--result requires a result id');
+      resultId = value;
       continue;
     }
-    throw new Error(`unknown notebook sync argument: ${arg}`);
+    throw new Error(`unknown notebook ${action} argument: ${arg}`);
   }
-  return { action: 'sync', json };
+  return { action, json, ...(resultId === undefined ? {} : { resultId }) };
 }
 
 function parseIndexArgs(args: string[]): { action: 'sync'; json: boolean } {

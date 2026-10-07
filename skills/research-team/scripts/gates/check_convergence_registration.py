@@ -31,6 +31,9 @@ undeclared objects belong to `nullius current`, not to this fold):
   - a declared headline result must be a current, non-defective row of the
     results registry bound to the declared run (`nullius result set-current`
     at adjudication time is what puts it there);
+  - the declared headline artifact must be linked from a declared rewritten
+    human notebook section (`notebook.result_links`); missing read-model support
+    is unavailable, not a pass. This checks navigation, not scientific content;
   - "none" for the headline requires a stated reason (a milestone that bears
     no headline result is legitimate, but say so deliberately);
   - every declared supersession must already be recorded on the validity
@@ -244,6 +247,14 @@ def verify_against_view(decl: Declaration, view: dict) -> list[str]:
             failures.append(f"declared headline run {run_id!r} carries conflicting origin stamps")
         if run_id in no_identity:
             failures.append(f"declared headline run {run_id!r} has no authoritative identity (ledger defect)")
+        # A fresh automatic table or stamp cannot substitute for the human
+        # explanation. This is a necessary link check; review owns content.
+        links = notebook.get("result_links") or {}
+        linked = next((r for r in links.get("results", []) if r.get("result_id") == result_id), None)
+        if links.get("status") not in ("linked", "missing_links") or linked is None:
+            failures.append(f"human notebook result-link check unavailable for {result_id!r}; refresh the runtime and inspect `nullius current --json`")
+        elif not set(linked.get("sections") or []).intersection(decl.rewritten):
+            failures.append(f"declared headline result {result_id!r} needs its artifact linked in a declared rewritten notebook section; an automatic table or `Rewritten sections: none` is insufficient")
 
     recorded = {(row.get("run_id"), row.get("by")) for row in superseded_rows}
     for old, new in decl.supersedes:

@@ -312,3 +312,5 @@ MIT
 既有的 `PROJECT_INDEX_AUTO` 块是历史记录，不再维护；team helper 不解析也不更新它。当前 `RUN_INDEX` 导航和人工选择的结果／报告登记区由各自的写入者维护。不要静默改写或删除旧块。
 
 历史 `team/runs/<run_id>/` 仍可读取、索引、引用和导出，保留原路径与有效性记录；新运行只写 `artifacts/runs/<run_id>/`。历史编号不能用于新执行。同名目录报告歧义，导出可用 `--run-root team/runs` 指定原位置。不可读历史目录报告为不可用，不阻断无关的可读记录。
+
+科研结果采用时，engine 与 file 模式都须重写 notebook 中受影响的正文，保留假设、推导步骤、解释和局限，并直接链接已登记的结果文件。`nullius current` 与 `status --json` 的 `notebook.result_links` 会报告正文缺失的结果链接；自动结果表不计入。链接存在仅证明可导航，不能证明推导完整或正确。`notebook check --result <result-id>` 为外部 agent 提供只读收尾检查，缺失链接时返回非零；`notebook sync` 只刷新自动表。详见[笔记检查范围](../packages/orchestrator/README.md#human-notebook-integration)。

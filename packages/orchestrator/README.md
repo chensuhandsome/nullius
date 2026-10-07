@@ -89,3 +89,25 @@ All newly generated managed project runs use `artifacts/runs/<run_id>/`; team an
 The generic scaffold creates `project_index.md`; the team helper updates only executor-local latest pointers and requires `nullius init` when the root index is missing. Selected-result and derived-block writers share a short path lock, reread their inputs, and make at most three attempts when edits are detected while preserving human bytes, mode and EOL outside their marked region. Arbitrary writers that ignore the lock remain outside its guarantee. Generic run counts do not interpret execution round limits; the Python executor resolver and suffix gate own those settings.
 
 Existing `PROJECT_INDEX_AUTO` blocks are historical, unmaintained observations; the team helper neither parses nor updates them. Current `RUN_INDEX` navigation and curated result/report registries have separate owners. Do not silently rewrite or delete an old block.
+
+### Human notebook integration
+
+`nullius current` and `nullius status --json` expose `notebook.result_links`
+(under `traceability` in status): current result artifacts without a direct link
+in a human `##` section are reported as `missing_links`; an unreadable notebook
+is `unavailable`. Inline and explicit reference links are recognized; recursive
+notes, HTML, shortcut references and indented link lines are not scanned. Automatic tables, comments
+and code examples cannot supply the link. `linked` establishes navigation only,
+not explanation quality, derivation completeness or scientific correctness.
+
+At a scientific result fold, rewrite the relevant sections with assumptions,
+reasoning, interpretation and limitations, and cite the registered artifact.
+This applies in file mode as well as engine mode. The team convergence gate
+requires the declared headline in a declared rewritten section; other historical
+gaps stay advisory. `nullius notebook sync` only refreshes the automatic table.
+
+External agents close a result fold with
+`nullius notebook check --result <result-id>` (omit the selector to check all
+current results). Exit 0 means links present or no adopted results, 1 means
+missing links, and 2 means unavailable notebook/registry input or an unknown
+result id. `--json` returns the structural report. The command is read-only.

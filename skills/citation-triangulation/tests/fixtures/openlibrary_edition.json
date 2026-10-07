@@ -1,0 +1,38 @@
+{
+ "key": "/books/OL1000001M",
+ "title": "The Example Theory of Fields, Volume 1",
+ "subtitle": "Foundations",
+ "authors": [
+  {
+   "key": "/authors/OL1000001A"
+  }
+ ],
+ "publishers": [
+  "Example University Press"
+ ],
+ "publish_date": "May 9, 2001",
+ "series": [
+  "Example Theory of Fields (1)"
+ ],
+ "number_of_pages": 609,
+ "isbn_10": [
+  "0000000000"
+ ],
+ "isbn_13": [
+  "9780000000002"
+ ],
+ "languages": [
+  {
+   "key": "/languages/eng"
+  }
+ ],
+ "works": [
+  {
+   "key": "/works/OL1000001W"
+  }
+ ],
+ "physical_format": "Paperback",
+ "type": {
+  "key": "/type/edition"
+ }
+}

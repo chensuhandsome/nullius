@@ -1,6 +1,6 @@
 ---
 name: claim-grounding
-description: Active statement-support grounding for cited claims. For each claim that leans on a citation, fetch the cited source and verify its CONTENT actually substantiates the claim — recording a span-backed verdict in a claim_grounding_report_v1 artifact. Generic across domains; routes HEP claims through INSPIRE and everything else through arXiv/OpenAlex. Run right after writing citation-backed prose (an introduction, related-work, or discussion section), before folding cited claims into durable artifacts, and before final conclusions.
+description: Active statement-support grounding for cited claims. For each claim that leans on a citation, fetch the cited source and verify its CONTENT actually substantiates the claim — recording a span-backed verdict in a claim_grounding_report_v1 artifact. Generic across domains; routes HEP claims through INSPIRE and everything else through arXiv/OpenAlex. Run at write time for any durable text that carries citations or attribution sentences (manuscripts, notes, lecture material, reading lists, notebooks, overviews), before folding cited claims into durable artifacts, and before final conclusions; attribution and priority claims (who proposed, proved, or first introduced what) are a claim type of their own, and citation-heavy deliverables end with an independent blind audit.
 ---
 
 # Claim Grounding (statement-support verification)
@@ -29,6 +29,11 @@ active replacement for the static `folklore_risk_score` presence-heuristic.
 
 Run a grounding pass before any of:
 
+- Writing a citation-backed or attribution sentence into any durable text — a
+  manuscript section, a research note, lecture material, a reading list, a
+  notebook entry, an overview. The trigger is the sentence, not the document
+  type or a project lifecycle event; teaching and overview material is read and
+  followed exactly like a manuscript.
 - Promoting an idea card / folding claims into `research_contract.md` or `research_plan.md`.
 - Requesting `nullius final-conclusions` (A5) on a run.
 - Handing a claim set to `research-writer` / `referee-review`.
@@ -43,6 +48,32 @@ Ground claims whose support rests on a citation:
 - `support_type` ∈ {`literature`, `data`, `expert_consensus`} **with** `evidence_uris` → in scope.
 - `calculation` → not here; numerical reproduction is the `research-harness` / numerical-grounding path.
 - `llm_inference`, `assumption` → not a citation; these need their `verification_plan` executed, not a source fetched.
+
+**Attribution and priority claims are a claim type of their own.** A sentence of
+the form "X proposed / introduced / first derived / proved / showed / observed Y"
+asserts who did what, beyond the content of Y, and is in scope whenever it names a
+source (even implicitly, through a reference list). Ground it with the span rule and
+these additions:
+
+- The quoted span must support the **verb**. A paper that proves a relation its
+  own abstract says was deduced earlier has not *proposed* it; one that applies or
+  reviews a method has not *introduced* it. Record the verb class the span supports
+  (proposed / derived / proved / applied / reviewed / observed) in `notes`; when the
+  prose verb is stronger than the span, the verdict is `partial` at best.
+- "First", "originally", "pioneering", and similar priority words require a check
+  for earlier sources **before** the verdict: read the cited work's own introduction
+  and reference list (`inspire_literature` mode `get_references`,
+  `openalex_references`, or the Crossref reference list) and name in `notes` which
+  earlier works were examined. An unexamined priority claim is `not_substantiated`.
+- A result credited to one paper is checked against **that** paper, not against the
+  same authors' companion or follow-up papers; a `citation_identities` match on the
+  cited paper does not transfer to a sibling.
+- A description of what a paper *is about* — its setting, system, regime, or method
+  — is grounded against that paper's own abstract and introduction as written, not
+  against the author's recollection of the group's work.
+
+These stay `method: "text_entailment"`; the attribution-specific evidence lives in
+`supporting_spans` and `notes`.
 
 For literature-graph artifacts, treat the following as claim-like objects when they carry
 interpretive content:
@@ -72,7 +103,11 @@ than inferring support from graph proximity.
    field names a different work, record `mismatch` with the exact diagnostic.
    When one work has several provider identifiers or URLs, record those exact
    alternatives in canonical `locator_aliases`; shared code deliberately does
-   not guess provider-specific equivalence.
+   not guess provider-specific equivalence. When provider records disagree on
+   author order or title, settle the identity by the authority order in
+   `citation-triangulation` (the work's own title page or full text, then the
+   publisher's deposited record, then landing pages and secondary indexes); a
+   deposit or landing page may list a presenting author first.
 3. **Confirm existence.** Resolve each `evidence_uri`. If a source cannot be resolved, the
    verdict for that claim is `source_unavailable` — stop, do not guess.
 4. **Fetch the relevant source content** (not just the abstract when the claim is specific):
@@ -370,6 +405,23 @@ combined uncertainty, sigma distance, the tolerance applied, the machine-readabl
 `decision_path`, and a `reason`); the parser rejects a recorded verdict or decision path
 that the recorded input does not reproduce. All numeric scalars stored in the report must
 be finite — NaN/Infinity do not survive JSON and are rejected at validation.
+
+## Final step for citation-heavy deliverables: an independent blind audit
+
+Metadata checks cannot see a wrong verb, a result credited to the wrong paper by
+the same authors, or a misdescribed setting, and the author's own re-read tends to
+confirm the author. For a deliverable whose substance is a reference list or a
+citation-driven narrative — a reading list, lecture material, an overview, a
+review's reference section — finish with an audit
+by a reviewer who receives **only the files**, never the author's verification
+claims, reports, or conclusions, and who preferably runs on a different model
+family (`review-swarm`: `review_one.py` with the deliverable as `--artifact`, or
+`run_multi_task.py` with non-host `--models`). The reviewer re-fetches a sample of
+entries and re-reads each attribution sentence against the cited source. Record
+its verdict next to the triangulation and grounding reports, and resolve its
+findings before the deliverable is called verified. Any sentence in the
+deliverable stating that references or claims were verified cites these artifacts
+by path (`research-integrity` M2).
 
 ## What this skill is NOT
 

@@ -1,0 +1,68 @@
+{
+ "hits": {
+  "total": 1,
+  "hits": [
+   {
+    "id": "1000001",
+    "metadata": {
+     "control_number": 1000001,
+     "titles": [
+      {
+       "title": "Direct proof of example relation in a model theory"
+      },
+      {
+       "title": "EXAMPLE LEVEL"
+      },
+      {
+       "title": "Direct Proof Of Example Relation In A Model Theory",
+       "source": "arXiv"
+      }
+     ],
+     "authors": [
+      {
+       "full_name": "Example, Alice"
+      },
+      {
+       "full_name": "Sample, Bob"
+      },
+      {
+       "full_name": "Test, Carol"
+      },
+      {
+       "full_name": "Fixture, Dan"
+      }
+     ],
+     "author_count": 4,
+     "dois": [
+      {
+       "value": "10.1000/Example.12.012345"
+      }
+     ],
+     "arxiv_eprints": [
+      {
+       "value": "example-ph/0001001",
+       "categories": [
+        "example-ph"
+       ]
+      }
+     ],
+     "earliest_date": "2001-01",
+     "publication_info": [
+      {
+       "journal_volume": "12",
+       "artid": "012345",
+       "year": 2001,
+       "journal_title": "Ex.Rev.Lett."
+      }
+     ],
+     "document_type": [
+      "article"
+     ],
+     "texkeys": [
+      "Example:2001ab"
+     ]
+    }
+   }
+  ]
+ }
+}

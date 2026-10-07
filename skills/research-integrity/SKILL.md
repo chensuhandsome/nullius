@@ -1,6 +1,6 @@
 ---
 name: research-integrity
-description: AI failure-mode checklist (M1-M8) for research agents. Generic across domains. Walk M1-M7 at the moments work becomes durable — you just finished a derivation or computation and are about to write conclusions, fold a number or claim into the plan or contract, check off a task-board item, make a milestone closeout commit, hand off, assemble submission material, or claim a result is final — and, in projects using the engine's approval flow, before requesting an A1-A5 approval gate. Walk M8 before starting each heavy or production computation or hand-building a reusable computational method.
+description: AI failure-mode checklist (M1-M8) for research agents. Generic across domains. Walk M1-M7 at the moments work becomes durable — you just finished a derivation or computation and are about to write conclusions, fold a number or claim into the plan or contract, check off a task-board item, make a milestone closeout commit, hand off, assemble submission material, or claim a result is final — and, in projects using the engine's approval flow, before requesting an A1-A5 approval gate. Walk M8 before starting each heavy or production computation or hand-building a reusable computational method. M2 (hallucinated_citation) also fires at write time for any durable text that carries a citation or an attribution sentence — notes, lecture material, reading lists, notebooks, overviews — not only at project lifecycle events.
 ---
 
 # Research Integrity (M1-M8)
@@ -130,7 +130,16 @@ is a signal worth flagging in the response.
 
 **Definition.** A citation made without verifying that the paper
 exists with the cited identifier, by the cited authors, in the cited
-venue, in the cited year, with the cited claim.
+venue, in the cited year, with the cited claim — including a citation
+field completed from memory, and a statement that references were
+verified with no report behind it.
+
+**Trigger.** M2 applies at write time to any durable text that carries a
+citation or an attribution sentence — a manuscript, a research plan, a
+note, lecture material, a reading list, a notebook entry, an overview —
+not only at the lifecycle boundaries listed under "When to use". "It is
+only teaching material / only a reading list" is not an exemption: a
+reader follows those references too.
 
 **Signs.**
 - Citation key looks like a templated `{Authors}{Year}{Topic}` slug
@@ -143,6 +152,27 @@ venue, in the cited year, with the cited claim.
 - A BibTeX entry like `Vaswani2017Attention` or `Smith:2023abc` is
   accepted as proof the paper exists, with no DOI, arXiv ID, or
   provider-graph resolution actually performed.
+- A reference field completed from memory: an author list finished
+  behind an "et al." or a tool's truncated display, or a volume, page,
+  edition, series number, chapter pointer, or translation detail that
+  the fetched record did not supply. The field must be dropped or
+  fetched in full; completing it is a hallucination even when the
+  completion happens to be right.
+- A verification claim without its artifact: prose asserting that
+  references were "checked", "verified", or "confirmed" with no pointer
+  to the report it rests on (a `citation-triangulation` report or
+  summary, a `claim_grounding_report_v1`). The statement about
+  verification is itself a claim; unbacked, it is an M2 failure of its
+  own, separate from whatever the references turn out to be.
+- A verification skill loaded but not executed: the triangulation or
+  grounding procedure was read, yet no provider blocks, comparator run,
+  or displayed-entry identity binding exists; search-result summaries
+  were read instead, and "a hit with a similar title exists" was taken
+  as verified.
+- An attribution verb stronger than the source: "X proposed / first
+  introduced Y" where the cited paper proved, applied, or reviewed Y, or
+  where an earlier source exists (see `claim-grounding`, attribution and
+  priority claims).
 
 **Minimum disconfirming check.** Route by the **discipline of the
 cited work**, not by tool name:
@@ -173,7 +203,11 @@ title/author/identifier/URL mismatch as a hard M2 failure. In particular, one
 canonical identifier cannot pass under two different displayed titles. If
 neither archived canonical metadata nor an authoritative retrieval is
 available, a load-bearing citation remains unverified; network availability is
-not required when the archived record is present.
+not required when the archived record is present. When sources disagree on
+author order or title, authority runs: the work's own title page or full
+text, then the publisher's deposited record, then landing pages and secondary
+indexes; a deposit or landing page may list a presenting author first.
+Index-to-index agreement cannot see this — open the work.
 
 2. **Verify the cited claim against the paper itself**, not its
    abstract or third-party summary.
@@ -218,7 +252,12 @@ canonical metadata record per cited paper, one deterministic displayed-entry
 identity comparison per human-facing citation, and at least one content-verify
 call per cited *claim* (not per paper — a single paper can support many claims,
 but each claim's textual ground must be opened). A load-bearing citation passes
-only when both identity and content support pass.
+only when both identity and content support pass. Any prose stating that the
+references were verified names the report artifact(s) by path. For a
+deliverable whose substance is a reference list or a citation-driven
+narrative, the final evidence is an independent blind audit — a reviewer
+given only the files, preferably from another model family (see
+`claim-grounding`).
 
 **INSPIRE Texkey is INSPIRE-specific.** An entry like `Smith:2023abc`
 is the canonical citekey convention inside INSPIRE-HEP. BibTeX entries
@@ -986,7 +1025,10 @@ recording an unrelated decision leaves the pending entry open.
   downgraded. It also carries the transcription-fidelity
   dimension (does the note's quote / value / locator match the fetched
   source span, not merely "is the claim true") used by the
-  Extraction / transcription fidelity check above. It stays a generic skill
+  Extraction / transcription fidelity check above, owns attribution and
+  priority claims (proposed versus proved; "first" needs an earlier-source
+  check), and closes citation-heavy deliverables with an independent blind
+  audit. It stays a generic skill
   plus a `@nullius/shared` contract — not a `hep-mcp` tool — consistent
   with the criterion below.
 

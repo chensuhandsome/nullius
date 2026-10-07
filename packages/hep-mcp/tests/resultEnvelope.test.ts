@@ -72,6 +72,29 @@ describe('L1: compactPaperSummary', () => {
     expect(compact.authors!.length).toBe(3);
   });
 
+  it('records how many authors the projection omitted', () => {
+    const compact = compactPaperSummary(fullPaper);
+    expect(compact.authors_omitted).toBe(2);
+  });
+
+  it('counts omissions from the carried names when author_count is understated', () => {
+    const compact = compactPaperSummary({ ...fullPaper, author_count: 2 });
+    expect(compact.authors).toEqual(['Author A', 'Author B', 'Author C']);
+    expect(compact.authors_omitted).toBe(2);
+  });
+
+  it('reports every author as omitted when a count exists but no names are carried', () => {
+    const { authors: _names, ...countOnly } = fullPaper;
+    const compact = compactPaperSummary({ ...countOnly, author_count: 2900 } as any);
+    expect(compact.authors).toBeUndefined();
+    expect(compact.authors_omitted).toBe(2900);
+  });
+
+  it('omits authors_omitted when nothing was dropped', () => {
+    const compact = compactPaperSummary({ ...fullPaper, authors: ['Author A', 'Author B'], author_count: 2 });
+    expect(compact).not.toHaveProperty('authors_omitted');
+  });
+
   it('drops URLs and classification arrays', () => {
     const compact = compactPaperSummary(fullPaper) as Record<string, unknown>;
     // These should NOT be present in compact
@@ -121,6 +144,8 @@ describe('L1: compactPapersInResult', () => {
     const papers = compacted.papers as CompactPaperSummary[];
     expect(papers[0].title).toBe('Paper A');
     expect(papers[0].authors).toEqual(['A1', 'A2', 'A3']);
+    expect(papers[0].authors_omitted).toBe(1);
+    expect(papers[1]).not.toHaveProperty('authors_omitted');
     // URL fields should be dropped
     expect((papers[0] as Record<string, unknown>)).not.toHaveProperty('inspire_url');
     expect((papers[1] as Record<string, unknown>)).not.toHaveProperty('doi_url');

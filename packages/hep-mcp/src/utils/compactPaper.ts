@@ -12,6 +12,8 @@ export interface CompactPaperSummary {
   title: string;
   authors?: string[];
   author_count?: number;
+  /** Names not carried in `authors`: max(author_count, names received) minus authors.length; present only when > 0 */
+  authors_omitted?: number;
   collaborations?: string[];
   year?: number;
   citation_count?: number;
@@ -22,12 +24,21 @@ export interface CompactPaperSummary {
 
 /** Project a full PaperSummary to the compact LLM-decision subset. */
 export function compactPaperSummary(p: PaperSummary): CompactPaperSummary {
+  const carried = p.authors?.length ?? 0;
+  const authors = p.authors?.slice(0, 3);
+  const authorCount = p.author_count ?? p.authors?.length;
+  // Make the truncation explicit in the JSON itself: a consumer that reads only
+  // `authors` must still see that names were dropped and how many. Count from
+  // the larger of the declared count and the names actually carried, so an
+  // understated author_count cannot hide a projection drop.
+  const authorsOmitted = Math.max(0, Math.max(authorCount ?? 0, carried) - (authors?.length ?? 0));
   return {
     recid: p.recid,
     arxiv_id: p.arxiv_id,
     title: p.title,
-    authors: p.authors?.slice(0, 3),
-    author_count: p.author_count ?? p.authors?.length,
+    authors,
+    author_count: authorCount,
+    ...(authorsOmitted > 0 ? { authors_omitted: authorsOmitted } : {}),
     collaborations: p.collaborations,
     year: p.year,
     citation_count: p.citation_count,

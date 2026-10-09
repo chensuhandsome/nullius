@@ -289,6 +289,37 @@ describe('Nullius-owned validation-chain binding at the A5 boundary', () => {
     expect(request.output_targets.map((target: { path: string }) => target.path)).toEqual(canonicalPaths);
   });
 
+  it('accepts absolute paths spelled through an alias of the project root while still refusing escapes and symlinks below the run dir', async () => {
+    const fixture = await prepareCompletedRun();
+    writeChecker(fixture);
+    // An explicit alias, so this holds whether or not the platform temp
+    // directory is itself reached through a symlink.
+    const aliasParent = fs.mkdtempSync(path.join(os.tmpdir(), 'nullius-validation-chain-alias-'));
+    const aliasRoot = path.join(aliasParent, 'project');
+    fs.symlinkSync(fixture.projectRoot, aliasRoot, 'dir');
+    const viaAlias = (filePath: string) => path.join(aliasRoot, path.relative(fixture.projectRoot, filePath));
+    const aliased = { ...fixture, projectRoot: aliasRoot, checkerPath: viaAlias(fixture.checkerPath) };
+
+    await expect(record(aliased, {
+      evidenceOrder: evidencePaths(fixture).map(relativePath => viaAlias(path.join(fixture.runDir, relativePath))),
+    })).resolves.toMatchObject({ status: 'passed' });
+    const receipt = readJson<Record<string, any>>(path.join(fixture.runDir, 'artifacts', 'validation_chain_binding_v1.json'));
+    expect(receipt.checker_ref.uri).toBe(`rep://runs/${fixture.runId}/artifact/${encodeURIComponent('verification/decisive_checker.py')}`);
+    expect(receipt.checker_ref.sha256).toBe(sha256File(fixture.checkerPath));
+
+    const outsideChecker = path.join(fixture.projectRoot, 'outside_checker.py');
+    fs.copyFileSync(fixture.checkerPath, outsideChecker);
+    await expect(record({ ...aliased, checkerPath: viaAlias(outsideChecker) }))
+      .rejects.toThrow(/checker_path must stay within the run directory/);
+    await expect(record({ ...aliased, checkerPath: '../../../outside_checker.py' }))
+      .rejects.toThrow(/checker_path must stay within the run directory/);
+
+    const linkedChecker = path.join(path.dirname(fixture.checkerPath), 'linked_checker.py');
+    fs.symlinkSync(fixture.checkerPath, linkedChecker);
+    await expect(record({ ...aliased, checkerPath: viaAlias(linkedChecker) }))
+      .rejects.toThrow(/checker_path must not traverse a symbolic link/);
+  });
+
   it('rejects a checker verdict whose self-reported output observations do not match held hashes', async () => {
     const fixture = await prepareCompletedRun();
     writeChecker(fixture, { ignoreOutputs: true });
@@ -309,9 +340,11 @@ describe('Nullius-owned validation-chain binding at the A5 boundary', () => {
     const receipt = readJson<Record<string, any>>(path.join(fixture.runDir, 'artifacts', 'validation_chain_binding_v1.json'));
     expect(receipt.checker_helper_refs).toHaveLength(1);
     expect(receipt.checker_helper_refs[0].sha256).toBe(sha256File(helperPath));
+    // The checker runs from the admitted project root, which is the
+    // symlink-resolved one (the temp directory itself may be an alias).
     expect(receipt.checker_environment.variables).toMatchObject({
       PYTHONSAFEPATH: '1',
-      PYTHONPATH: path.dirname(fixture.checkerPath),
+      PYTHONPATH: path.dirname(fs.realpathSync.native(fixture.checkerPath)),
     });
   });
 

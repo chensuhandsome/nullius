@@ -703,12 +703,12 @@ async function runWorkflowCommand(
         let rejectedApprovalError: Error | null = null;
         runtimeResult = await executeWorkflowRuntimeRequest(runtimeRequest, {
           ...deps,
-          dispatchTool: async (caller, request) => {
+          aroundDispatch: async (dispatch, request) => {
             const boundaryState = manager.readState();
             haltedStatus = workflowControlStatus(manager, boundaryState);
             if (haltedStatus) throw new Error(`workflow dispatch halted: ${haltedStatus}`);
             journal.markToolIntentsDispatched(resolved.runId, [attempt]);
-            const response = await caller.callTool(request.tool, request.params);
+            const response = await dispatch();
             try {
               const approval = parseRunGateApprovalRequest(request.tool, response, resolveToolExecutionPolicy(request.tool));
               if (approval) {
@@ -727,7 +727,7 @@ async function runWorkflowCommand(
                   approval_packet_sha256: approval.approvalPacketSha256,
                 });
                 returnedApproval = approval;
-                return response;
+                return;
               }
             } catch (error) {
               // Preserve the rejected envelope as committed evidence, then
@@ -739,7 +739,6 @@ async function runWorkflowCommand(
             // Commit before normalization, artifacts, and plan projection. A
             // response can replay after any crash in those later operations.
             journal.commitToolAttempt(resolved.runId, attempt, response);
-            return response;
           },
         });
         if (rejectedApprovalError) throw rejectedApprovalError;

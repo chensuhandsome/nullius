@@ -5,8 +5,10 @@ import { handleOrchFleetWorkerUnregister } from '../src/orch-tools/fleet-worker-
 import { readFleetWorkers } from '../src/orch-tools/fleet-worker-store.js';
 import { OrchFleetWorkerUnregisterSchema } from '../src/orch-tools/schemas.js';
 import {
+  admittedRoot,
   buildLeaseClaim,
   cleanupTmpDirs,
+  makeAliasedTmpDir,
   makeTmpDir,
   writeQueue,
   writeWorkers,
@@ -100,7 +102,7 @@ describe('orch_fleet_worker_unregister', () => {
   });
 
   it('fails closed for unknown workers, open claim acceptance, active claims, or invalid registries', async () => {
-    const missingWorkerProjectRoot = makeTmpDir();
+    const missingWorkerProjectRoot = makeAliasedTmpDir();
     writeInitializedProject(missingWorkerProjectRoot);
     writeWorkers(missingWorkerProjectRoot, {
       schema_version: 1,
@@ -111,7 +113,7 @@ describe('orch_fleet_worker_unregister', () => {
       unregisterPayload(missingWorkerProjectRoot, { worker_id: 'worker-missing' }),
     ))).rejects.toMatchObject({
       code: 'INVALID_PARAMS',
-      data: { worker_id: 'worker-missing', project_root: missingWorkerProjectRoot },
+      data: { worker_id: 'worker-missing', project_root: admittedRoot(missingWorkerProjectRoot) },
     });
 
     const acceptingProjectRoot = makeTmpDir();
@@ -156,17 +158,17 @@ describe('orch_fleet_worker_unregister', () => {
       data: { worker_id: 'worker-1', active_claim_count: 1 },
     });
 
-    const invalidRegistryProjectRoot = makeTmpDir();
+    const invalidRegistryProjectRoot = makeAliasedTmpDir();
     writeInitializedProject(invalidRegistryProjectRoot);
     writeWorkers(invalidRegistryProjectRoot, '{not-valid-json\n');
     await expect(handleOrchFleetWorkerUnregister(OrchFleetWorkerUnregisterSchema.parse(
       unregisterPayload(invalidRegistryProjectRoot),
     ))).rejects.toMatchObject({
       code: 'INVALID_PARAMS',
-      data: { fleet_workers_path: path.join(invalidRegistryProjectRoot, '.nullius', 'fleet_workers.json') },
+      data: { fleet_workers_path: path.join(admittedRoot(invalidRegistryProjectRoot), '.nullius', 'fleet_workers.json') },
     });
 
-    const invalidQueueProjectRoot = makeTmpDir();
+    const invalidQueueProjectRoot = makeAliasedTmpDir();
     writeInitializedProject(invalidQueueProjectRoot);
     writeQueue(invalidQueueProjectRoot, '{not-valid-json\n');
     writeWorkers(invalidQueueProjectRoot, {
@@ -178,7 +180,7 @@ describe('orch_fleet_worker_unregister', () => {
       unregisterPayload(invalidQueueProjectRoot),
     ))).rejects.toMatchObject({
       code: 'INVALID_PARAMS',
-      data: { fleet_queue_path: path.join(invalidQueueProjectRoot, '.nullius', 'fleet_queue.json') },
+      data: { fleet_queue_path: path.join(admittedRoot(invalidQueueProjectRoot), '.nullius', 'fleet_queue.json') },
     });
   });
 });

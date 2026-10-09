@@ -4,8 +4,10 @@ import { handleOrchFleetReassignClaim } from '../src/orch-tools/fleet-claim-reas
 import { readFleetQueue } from '../src/orch-tools/fleet-queue-store.js';
 import { OrchFleetReassignClaimSchema } from '../src/orch-tools/schemas.js';
 import {
+  admittedRoot,
   buildLeaseClaim,
   cleanupTmpDirs,
+  makeAliasedTmpDir,
   makeTmpDir,
   writeQueue,
   writeWorkers,
@@ -166,7 +168,7 @@ describe('orch_fleet_reassign_claim fail-closed target validation', () => {
       data: { target_worker_id: 'worker-2', active_claim_count: 1, max_concurrent_claims: 1 },
     });
 
-    const invalidWorkersRoot = makeTmpDir();
+    const invalidWorkersRoot = makeAliasedTmpDir();
     writeInitializedProject(invalidWorkersRoot);
     writeQueue(invalidWorkersRoot, JSON.parse(JSON.stringify(readFleetQueue(unavailableRoot).queue)));
     writeWorkers(invalidWorkersRoot, '{not-valid-json\n');
@@ -174,7 +176,7 @@ describe('orch_fleet_reassign_claim fail-closed target validation', () => {
       note: 'registry is broken',
     }))).rejects.toMatchObject({
       code: 'INVALID_PARAMS',
-      data: { fleet_workers_path: path.join(invalidWorkersRoot, '.nullius', 'fleet_workers.json') },
+      data: { fleet_workers_path: path.join(admittedRoot(invalidWorkersRoot), '.nullius', 'fleet_workers.json') },
     });
   });
 });

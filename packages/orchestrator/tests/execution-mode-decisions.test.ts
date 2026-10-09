@@ -19,6 +19,15 @@ function makeTempProjectRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'nullius-mode-decisions-'));
 }
 
+/** A project root reached through a symlinked alias, so guidance naming the
+ *  admitted (symlink-resolved) root is distinguishable on every platform. */
+function makeAliasedProjectRoot(): string {
+  const real = makeTempProjectRoot();
+  const alias = `${real}-alias`;
+  fs.symlinkSync(real, alias, 'dir');
+  return alias;
+}
+
 function makeIo(cwd: string) {
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -1794,15 +1803,18 @@ describe('decision ledger', () => {
 
   it('shell-quotes the project root in lock guidance and escapes control characters in rendering', async () => {
     const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), "nullius d'ir-"));
-    const projectRoot = path.join(parentDir, 'project root');
-    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.mkdirSync(path.join(parentDir, 'project root'), { recursive: true });
+    const aliasParent = `${parentDir}-alias`;
+    fs.symlinkSync(parentDir, aliasParent, 'dir');
+    const projectRoot = path.join(aliasParent, 'project root');
     await initRuntimeOnly(projectRoot);
 
     // Lock guidance must stay copy-pasteable for a root with a space and an
     // apostrophe.
     const lockPath = `${ledgerFilePath(projectRoot)}.lock`;
     fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999999, ts: '2026-07-10T00:00:00Z' }), 'utf-8');
-    const expectedQuoted = `'${projectRoot.replaceAll("'", "'\\''")}'`;
+    // Guidance names the admitted, symlink-resolved root.
+    const expectedQuoted = `'${fs.realpathSync.native(projectRoot).replaceAll("'", "'\\''")}'`;
     await expect(
       runCli([`--project-root=${projectRoot}`, 'decision', 'record', 'blocked'], makeIo(projectRoot).io),
     ).rejects.toThrow(`decision list --project-root ${expectedQuoted}`);
@@ -2305,7 +2317,7 @@ describe('decision ledger', () => {
   });
 
   it('reports truncation explicitly when more than ten items are open', async () => {
-    const projectRoot = makeTempProjectRoot();
+    const projectRoot = makeAliasedProjectRoot();
     await initRuntimeOnly(projectRoot);
     for (let index = 1; index <= 12; index += 1) {
       expect(await runCli([`--project-root=${projectRoot}`, 'decision', 'pending', `Open question number ${index}`], makeIo(projectRoot).io)).toBe(0);
@@ -2321,7 +2333,7 @@ describe('decision ledger', () => {
     expect(await runCli([`--project-root=${projectRoot}`, 'status'], io)).toBe(0);
     const text = stdout.join('');
     expect(text).toContain('decisions: 0 decided, 12 open');
-    expect(text).toContain(`... and 2 more open (run: nullius decision list --project-root '${projectRoot}')`);
+    expect(text).toContain(`... and 2 more open (run: nullius decision list --project-root '${fs.realpathSync.native(projectRoot)}')`);
   }, 20000);
 
   it('keeps the decision recorded when the ledger mirror append fails', async () => {
@@ -2390,7 +2402,7 @@ describe('decision ledger', () => {
   });
 
   it('renders mode and open decisions in the human status text', async () => {
-    const projectRoot = makeTempProjectRoot();
+    const projectRoot = makeAliasedProjectRoot();
     await initRuntimeOnly(projectRoot, ['--mode=file']);
     const question = await recordDecision(projectRoot, 'pending', 'Adopt the refit or keep the published couplings?');
 
@@ -2402,7 +2414,7 @@ describe('decision ledger', () => {
     expect(text).toContain(`[open] ${question}`);
     expect(text).toContain(
       `decisions_unlanded: 1 (provisional branch ids in .nullius/decisions.jsonl; `
-      + `run nullius decision land --project-root '${projectRoot}' on the trunk before citing them)`,
+      + `run nullius decision land --project-root '${fs.realpathSync.native(projectRoot)}' on the trunk before citing them)`,
     );
     expect(text).toContain(`    - ${question}`);
 

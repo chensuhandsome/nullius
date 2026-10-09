@@ -104,7 +104,12 @@ export type WorkflowRuntimeResult =
 
 export type WorkflowRuntimeDeps = {
   workflowToolCaller?: ToolCaller;
-  dispatchTool?: (caller: ToolCaller, request: WorkflowRuntimeRequest) => Promise<McpToolResult>;
+  /** Observes the single gateway call. It sees copies of the request and,
+   *  through `dispatch`, of the transport response, and may journal or halt
+   *  by throwing. If it returns, it must have called `dispatch` exactly once;
+   *  the gateway then uses its own copy of the response, and `dispatch`
+   *  refuses to run once the observer has settled. */
+  aroundDispatch?: (dispatch: () => Promise<McpToolResult>, request: WorkflowRuntimeRequest) => Promise<void>;
 };
 
 type WorkflowToolServerConfig = {
@@ -462,10 +467,44 @@ async function withWorkflowToolCaller<T>(
   }
 }
 
-export async function executeWorkflowRuntimeRequest(
+/** The one transport call for `request`, optionally observed by a wrapper. */
+async function dispatchCompiledRequest(
+  toolCaller: ToolCaller,
   request: WorkflowRuntimeRequest,
+  aroundDispatch: WorkflowRuntimeDeps['aroundDispatch'],
+): Promise<McpToolResult> {
+  let open = true;
+  let response = null as Promise<McpToolResult> | null;
+  const transport = (): Promise<McpToolResult> => {
+    if (!open) return Promise.reject(new Error(`workflow tool request ${request.tool} can no longer be dispatched`));
+    if (response) return Promise.reject(new Error(`workflow tool request ${request.tool} was already dispatched once`));
+    response = toolCaller.callTool(request.tool, structuredClone(request.params));
+    return response;
+  };
+  if (!aroundDispatch) return transport();
+  const dispatch = (): Promise<McpToolResult> => {
+    const observed = transport().then(result => structuredClone(result));
+    // A rejection still reaches the observer if it awaits; one it left
+    // unawaited must not surface later as an unhandled rejection.
+    observed.catch(() => undefined);
+    return observed;
+  };
+  try {
+    await aroundDispatch(dispatch, structuredClone(request));
+  } finally {
+    open = false;
+  }
+  if (response === null) throw new Error(`workflow dispatch observer returned without dispatching ${request.tool}`);
+  return response;
+}
+
+export async function executeWorkflowRuntimeRequest(
+  compiledRequest: WorkflowRuntimeRequest,
   deps: WorkflowRuntimeDeps = {},
 ): Promise<WorkflowRuntimeResult> {
+  // A private snapshot: nothing the caller or a dispatch wrapper later does to
+  // its own copy can change what is checked, dispatched, or normalized here.
+  const request = structuredClone(compiledRequest);
   if (isConnectionScanWithoutRecids(request)) {
     const skipped = skippedConnectionScanArtifact(request);
     return {
@@ -495,9 +534,7 @@ export async function executeWorkflowRuntimeRequest(
     const toolResult = await withWorkflowToolCaller(
       deps,
       request.project_root,
-      toolCaller => deps.dispatchTool
-        ? deps.dispatchTool(toolCaller, request)
-        : toolCaller.callTool(request.tool, request.params),
+      toolCaller => dispatchCompiledRequest(toolCaller, request, deps.aroundDispatch),
     );
     return normalizeWorkflowRuntimeResult(request, toolResult);
   } catch (error) {

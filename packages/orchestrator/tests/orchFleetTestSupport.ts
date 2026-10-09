@@ -15,6 +15,22 @@ export function makeTmpDir(prefix = 'orch-fleet-', parent = os.tmpdir()): string
   return dir;
 }
 
+/** A fresh project root reached through a symlinked alias, so that path
+ *  canonicalization is observable on every platform, not only where the temp
+ *  directory itself is an alias (for example /var -> /private/var on macOS). */
+export function makeAliasedTmpDir(prefix = 'orch-fleet-'): string {
+  const real = makeTmpDir(prefix);
+  const alias = `${real}-alias`;
+  fs.symlinkSync(real, alias, 'dir');
+  tmpDirs.push(alias);
+  return alias;
+}
+
+/** Handlers report paths under the admitted, symlink-resolved project root. */
+export function admittedRoot(projectRoot: string): string {
+  return fs.realpathSync.native(projectRoot);
+}
+
 export function cleanupTmpDirs(): void {
   for (const dir of tmpDirs) {
     fs.rmSync(dir, { recursive: true, force: true });

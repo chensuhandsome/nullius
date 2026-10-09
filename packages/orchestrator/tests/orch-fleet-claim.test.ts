@@ -5,9 +5,11 @@ import { readFleetQueue } from '../src/orch-tools/fleet-queue-store.js';
 import { handleOrchFleetClaim, handleOrchFleetRelease } from '../src/orch-tools/fleet-queue-tools.js';
 import { OrchFleetClaimSchema, OrchFleetReleaseSchema } from '../src/orch-tools/schemas.js';
 import {
+  admittedRoot,
   baseState,
   buildLeaseClaim,
   cleanupTmpDirs,
+  makeAliasedTmpDir,
   makeTmpDir,
   writeLedger,
   writeQueue,
@@ -66,7 +68,7 @@ describe('orch_fleet_claim and orch_fleet_release', () => {
   });
 
   it('supports specific-run claims and returns a deterministic non-error when nothing is queued', async () => {
-    const projectRoot = makeTmpDir();
+    const projectRoot = makeAliasedTmpDir();
     writeProject(projectRoot);
     writeQueue(projectRoot, {
       schema_version: 1,
@@ -91,7 +93,7 @@ describe('orch_fleet_claim and orch_fleet_release', () => {
     })) as { claimed: boolean; reason: string; diagnostic: string; queue_item: null };
     expect(missing).toEqual({
       claimed: false,
-      project_root: projectRoot,
+      project_root: admittedRoot(projectRoot),
       reason: 'RUN_NOT_QUEUED',
       diagnostic: "run_id 'run-3' does not currently have a queued fleet item",
       queue_item: null,

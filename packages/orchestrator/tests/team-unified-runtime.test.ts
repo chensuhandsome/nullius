@@ -18,6 +18,7 @@ import {
   markA3Satisfied,
 } from './executeManifestTestUtils.js';
 import { createBridgeRun } from './computeLoopWritingReviewBridgeTestSupport.js';
+import { withExplicitSurfaceMethod } from './explicitArtifactWriterMethod.js';
 import {
   assignmentNeedsApprovalAttention,
   summarizeRuntimeProjectionForOperator,
@@ -926,15 +927,16 @@ describe('team unified runtime control paths', () => {
     try {
       const runDir = ensureRunDir(projectRoot, 'run-approval');
       const sourceHandoffUri = 'hep://runs/source-run/artifact/idea_handoff_c2_v1.json';
-      fs.writeFileSync(path.join(runDir, 'artifacts', 'outline_seed_v1.json'), JSON.stringify({
-        thesis: 'Exercise the canonical delegated approval boundary.',
-        claims: [{ claim_text: 'The producer must observe root approval before continuing.' }],
-        hypotheses: ['Canonical approval and delegated replay remain coupled.'],
-        source_handoff_uri: sourceHandoffUri,
-      }, null, 2) + '\n');
-      fs.writeFileSync(path.join(runDir, 'artifacts', 'idea_handoff_hints_v1.json'), JSON.stringify({
-        version: 1,
-        source_handoff_uri: sourceHandoffUri,
+      // Planning refuses to materialize executable computation without an
+      // explicit method, so the staged hints carry one.
+      const surface = withExplicitSurfaceMethod({
+        outline_seed_path: 'artifacts/outline_seed_v1.json',
+        outline: {
+          thesis: 'Exercise the canonical delegated approval boundary.',
+          claims: [{ claim_text: 'The producer must observe root approval before continuing.' }],
+          hypotheses: ['Canonical approval and delegated replay remain coupled.'],
+          source_handoff_uri: sourceHandoffUri,
+        },
         hints: {
           required_observables: ['approval_boundary'],
           minimal_compute_plan: [{
@@ -943,6 +945,12 @@ describe('team unified runtime control paths', () => {
             estimated_difficulty: 'moderate',
           }],
         },
+      });
+      fs.writeFileSync(path.join(runDir, 'artifacts', 'outline_seed_v1.json'), JSON.stringify(surface.outline, null, 2) + '\n');
+      fs.writeFileSync(path.join(runDir, 'artifacts', 'idea_handoff_hints_v1.json'), JSON.stringify({
+        version: 1,
+        source_handoff_uri: sourceHandoffUri,
+        hints: surface.hints,
       }, null, 2) + '\n');
       const rootStateManager = initRunState(projectRoot, 'run-approval');
       fs.writeFileSync(

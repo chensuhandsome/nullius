@@ -63,11 +63,9 @@ export function assertNoSymlinkComponents(
   }
 }
 
-/** Normalize aliases above the admitted project boundary, while refusing symlinks below it. */
-export function resolveProjectContainedPath(rootPath: string, targetPath: string, label: string): string {
-  const root = fs.realpathSync.native(rootPath);
+/** Highest existing ancestor of `target` that is the same directory as `root`, or null. */
+function rootAliasAncestor(root: string, target: string): string | null {
   const identity = fs.statSync(root);
-  const target = path.resolve(targetPath);
   let boundary: string | null = null;
   for (let cursor = target; ; cursor = path.dirname(cursor)) {
     if (fs.existsSync(cursor)) {
@@ -76,6 +74,29 @@ export function resolveProjectContainedPath(rootPath: string, targetPath: string
     }
     if (path.dirname(cursor) === cursor) break;
   }
+  return boundary;
+}
+
+/**
+ * Re-spell an absolute path that reaches `rootPath` through an alias above it
+ * (a symlinked ancestor, or another spelling of the same directory) under
+ * `rootPath` itself; null when no ancestor of the path is that directory.
+ * Components below the root are kept verbatim, so the caller's own symlink
+ * check still sees every one of them.
+ */
+export function respellUnderRoot(rootPath: string, targetPath: string): string | null {
+  const root = path.resolve(rootPath);
+  if (!fs.existsSync(root)) return null;
+  const target = path.resolve(targetPath);
+  const boundary = rootAliasAncestor(root, target);
+  return boundary === null ? null : path.join(root, path.relative(boundary, target));
+}
+
+/** Normalize aliases above the admitted project boundary, while refusing symlinks below it. */
+export function resolveProjectContainedPath(rootPath: string, targetPath: string, label: string): string {
+  const root = fs.realpathSync.native(rootPath);
+  const target = path.resolve(targetPath);
+  const boundary = rootAliasAncestor(root, target);
   if (boundary === null) throw unsafeFs(`${label} must stay within ${root}`, { label, target_path: target });
   const relative = path.relative(boundary, target);
   let cursor = boundary;

@@ -8,8 +8,10 @@ import {
   OrchFleetWorkerUnregisterSchema,
 } from '../src/orch-tools/schemas.js';
 import {
+  admittedRoot,
   baseState,
   cleanupTmpDirs,
+  makeAliasedTmpDir,
   makeTmpDir,
   writeLedger,
   writeState,
@@ -158,7 +160,7 @@ describe('orch_fleet_worker_heartbeat', () => {
   });
 
   it('fails closed on invalid worker registry payloads', async () => {
-    const projectRoot = makeTmpDir();
+    const projectRoot = makeAliasedTmpDir();
     writeWorkers(projectRoot, '{not-valid-json\n');
 
     await expect(handleOrchFleetWorkerHeartbeat(OrchFleetWorkerHeartbeatSchema.parse({
@@ -166,7 +168,7 @@ describe('orch_fleet_worker_heartbeat', () => {
       worker_id: 'worker-1',
     }))).rejects.toMatchObject({
       code: 'INVALID_PARAMS',
-      data: { fleet_workers_path: path.join(projectRoot, '.nullius', 'fleet_workers.json') },
+      data: { fleet_workers_path: path.join(admittedRoot(projectRoot), '.nullius', 'fleet_workers.json') },
     });
   });
 });

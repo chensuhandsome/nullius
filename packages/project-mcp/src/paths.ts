@@ -1,14 +1,10 @@
-import { assertWritableRunId } from '@nullius/orchestrator';
+import { assertWritableRunId, resolveUnderRoot } from '@nullius/orchestrator';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { invalidParams, McpError, assertExternalProjectRoot } from '@nullius/shared';
 
 const workspace = fs.realpathSync(fileURLToPath(new URL('../../..', import.meta.url)));
-export function within(parent: string, child: string): boolean {
-  const relative = path.relative(parent, child);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
-}
 export function projectRoot(value: string | undefined): string {
   if (process.env.NULLIUS_CONTROL_DIR) throw invalidParams('Remove NULLIUS_CONTROL_DIR before starting project-mcp; the bound project owns its control directory.');
   if (!value || !path.isAbsolute(value)) throw invalidParams('NULLIUS_PROJECT_ROOT must name one absolute external project directory.');
@@ -34,8 +30,10 @@ export function assertProjectIdentity(root: string, expected: ProjectIdentity): 
 /** Parameter/file boundary only. Executed local scripts are trusted code, not sandboxed. */
 export function boundPath(root: string, value: string, base = root): string {
   if (!value || value.includes('\0') || value.includes('\\') || value.split('/').includes('..')) throw invalidParams('Unsafe project path.');
-  const target = path.resolve(base, value);
-  if (!within(root, target)) throw new McpError('UNSAFE_FS', 'Path is outside the bound project.');
+  // The bound root is canonical; an absolute value may spell it through the
+  // alias the caller knows the project by, and is respelled under it.
+  const target = resolveUnderRoot(root, path.resolve(base, value));
+  if (target === null) throw new McpError('UNSAFE_FS', 'Path is outside the bound project.');
   // lstat, rather than existsSync, also rejects dangling symlinks.
   let current = root;
   for (const part of path.relative(root, target).split(path.sep).filter(Boolean)) {

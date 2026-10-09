@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { runCli } from '@nullius/orchestrator';
 import { ProjectAdapter } from '../src/adapter.js';
 import { attempt, journal, requestPath, readRequest, readDelivery, commitDelivery, type DeliveryRequest } from '../src/delivery.js';
-import { projectIdentity } from '../src/paths.js';
+import { boundPath, projectIdentity } from '../src/paths.js';
+import { coreArguments } from '../src/policy.js';
 import { acquireExecution, releaseExecution } from '../src/execution-lock.js';
 import { execute } from '../src/execute.js';
 
@@ -31,6 +32,33 @@ describe('single-project transport boundaries', () => {
     fs.writeFileSync(path.join(root, 'pnpm-workspace.yaml'), 'packages: [packages/*]\n');
     expect(() => new ProjectAdapter(root)).toThrow('outside the nullius dev repo');
     expect(fs.existsSync(path.join(root, '.nullius'))).toBe(false);
+  });
+  it('accepts absolute paths spelled through an alias of the bound project and still refuses escapes and symlinks below it', async () => {
+    const { root, adapter } = fixture();
+    // An explicit alias, so this holds whether or not the platform temp
+    // directory is itself reached through a symlink.
+    const alias = `${root}-alias`;
+    fs.symlinkSync(root, alias, 'dir');
+    roots.push(alias);
+    fs.mkdirSync(path.join(root, 'inputs'));
+    fs.writeFileSync(path.join(root, 'inputs', 'a.txt'), 'abc');
+    expect(boundPath(root, path.join(alias, 'inputs', 'a.txt'))).toBe(path.join(root, 'inputs', 'a.txt'));
+    const chunk = body(await adapter.call('project_file_read', { path: path.join(alias, 'inputs', 'a.txt'), max_bytes: 3 }));
+    expect(Buffer.from(chunk.data, 'base64').toString()).toBe('abc');
+    const args = coreArguments(root, 'orch_run_execute_manifest', {
+      project_root: alias, run_id: 'r1', run_dir: path.join(alias, 'artifacts/runs/r1'),
+      manifest_path: path.join(alias, 'artifacts/runs/r1/computation/manifest.json'), _confirm: true,
+    });
+    expect(args).toMatchObject({
+      project_root: root, run_dir: path.join(root, 'artifacts/runs/r1'),
+      manifest_path: path.join(root, 'artifacts/runs/r1/computation/manifest.json'),
+    });
+    const outside = `${root}-outside`;
+    fs.mkdirSync(outside);
+    roots.push(outside);
+    expect(() => boundPath(root, path.join(outside, 'a.txt'))).toThrow('Path is outside the bound project.');
+    fs.symlinkSync(path.join(root, 'inputs'), path.join(root, 'linked'), 'dir');
+    expect(() => boundPath(root, path.join(alias, 'linked', 'a.txt'))).toThrow('Symlinks are not accepted');
   });
   it('requires create-only or matching hashes and returns bounded source bytes', async () => {
     const { adapter } = fixture();

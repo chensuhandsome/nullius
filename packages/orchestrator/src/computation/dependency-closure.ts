@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import type { ComputationManifestV1 } from '@nullius/shared';
 import { invalidParams } from '@nullius/shared';
 
-import { assertNoSymlinkComponents, resolveWithinRoot, sanitizeRelativePath } from './path-safety.js';
+import { assertNoSymlinkComponents, escapesBase, resolveWithinRoot, sanitizeRelativePath } from './path-safety.js';
 import type { ExternalDependencySnapshotEntry, WorkspaceFileSnapshotEntry } from './types.js';
 import type { NativeRuntimeIdentity } from './runtime-identity.js';
 import type { ProcessEnvironmentV1 } from './types.js';
@@ -186,8 +186,7 @@ export function assertStepPathArgumentsDeclared(params: {
       const candidate = path.isAbsolute(arg) ? path.resolve(arg) : path.resolve(params.workspaceDir, arg);
       if (!fs.existsSync(candidate) || !fs.lstatSync(candidate).isFile()) continue;
       const canonical = fs.realpathSync.native(candidate);
-      const relative = path.relative(canonicalWorkspaceDir, canonical);
-      const insideWorkspace = relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+      const insideWorkspace = !escapesBase(path.relative(canonicalWorkspaceDir, canonical));
       if (insideWorkspace) {
         assertNoSymlinkComponents(canonicalWorkspaceDir, canonical, `step '${step.id}' file argument`);
       }

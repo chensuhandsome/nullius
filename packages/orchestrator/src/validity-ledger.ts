@@ -7,6 +7,7 @@ import type { RunOriginV1 } from '@nullius/shared';
 import validityEventSchema from '../../../meta/schemas/validity_event_v1.schema.json' with { type: 'json' };
 import runOriginSchema from '../../../meta/schemas/run_origin_v1.schema.json' with { type: 'json' };
 import { RUN_ROOTS } from './run-directories.js';
+import { resolveProjectContainedPath, resolveUnderRoot } from './computation/path-safety.js';
 
 /** Project validity ledger: the append-only record separating result VALIDITY
  *  ("does this run's result still count") from execution status ("did it
@@ -642,7 +643,11 @@ export function appendValidityEvent(
       + 'refusing to append a line every reader would only quarantine',
     );
   }
-  const ledgerPath = validityLedgerPath(projectRoot);
+  // The ledger belongs to this project: a symlink below the project root (a
+  // symlinked artifacts/ or artifacts/runs/) would carry every verdict to a
+  // place no reader of this project looks, and the run inventory refuses
+  // such a run root for the same reason.
+  const ledgerPath = resolveProjectContainedPath(projectRoot, validityLedgerPath(projectRoot), 'validity ledger');
   // The lock file lives next to the ledger; on a project whose artifacts/runs
   // does not exist yet, the O_EXCL create would
   // fail on the missing parent before any append could create it.
@@ -715,9 +720,11 @@ export function appendValidityEvent(
  *  because lines are self-contained, id-deduplicated by the reader, and
  *  order-independent (effective order is re-derived from ts_utc, event_id). */
 export function ensureLedgerMergeAttributes(projectRoot: string): void {
-  const attributesPath = path.join(projectRoot, 'artifacts', 'runs', '.gitattributes');
   const line = 'validity_ledger.jsonl merge=union';
   try {
+    // Appending follows a symlink, and the attributes file belongs to this
+    // project like the ledger beside it.
+    const attributesPath = resolveProjectContainedPath(projectRoot, path.join(projectRoot, 'artifacts', 'runs', '.gitattributes'), 'ledger merge attributes');
     if (fs.existsSync(attributesPath)) {
       const text = fs.readFileSync(attributesPath, 'utf-8');
       if (text.split('\n').some(existing => existing.trim().startsWith('validity_ledger.jsonl'))) return;
@@ -835,14 +842,16 @@ export function resolveRunIdReference(
 ): RunIdReferenceResolution {
   let value = raw.trim();
   if (path.isAbsolute(value)) {
-    const relative = path.relative(projectRoot, value);
-    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    // The project root is admitted in canonical form; the caller may spell
+    // the path through the alias it used for the root.
+    const contained = resolveUnderRoot(projectRoot, value);
+    if (contained === null) {
       return {
         kind: 'rejected',
         message: `${context.verb}: ${context.role} ${JSON.stringify(raw)} is an absolute path outside the project root`,
       };
     }
-    value = relative;
+    value = path.relative(path.resolve(projectRoot), contained);
   }
   const bare = stripRunRootPrefix(value);
   if (bare === null || bare.length === 0) {

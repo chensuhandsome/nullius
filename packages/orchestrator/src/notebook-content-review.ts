@@ -533,6 +533,15 @@ function capturedFiles(root: string): string[] {
 
 /** There is no user-supplied PASS/import path. The public command executes
  * review-swarm and registers its hashed output as canonical verification. */
+/** The receipt ref of the reviewer's report file the launcher names, which
+ *  must lie inside the run and not be reached through a symlink below it;
+ *  null when that file does not exist. */
+export function reviewerReportRef(runId: string, runDir: string, output: string): ArtifactRefV1 | null {
+  const filename = resolveWithinRoot(runDir, output, 'reviewer output');
+  assertNoSymlinkComponents(runDir, filename, 'reviewer output', { allowMissingLeaf: true });
+  return fs.existsSync(filename) ? createRunArtifactRef(runId, runDir, filename, 'notebook_reviewer_report') : null;
+}
+
 export async function runNotebookReview(projectRoot: string, options: { model: string; dependencies: string[]; timeoutSecs: number; json: boolean },
   io: { stdout: (text: string) => void; stderr: (text: string) => void }): Promise<number> {
   const runId = `${new Date().toISOString().replace(/[-:]/g, '').replace(/\..*$/, '')}-notebook-review-${randomUUID().slice(0, 8)}`;
@@ -605,10 +614,8 @@ export async function runNotebookReview(projectRoot: string, options: { model: s
         const meta = loadVerifiedRunJson<any>(runDir, runId, receipt.meta_ref, 'review metadata');
         const output = meta.agents?.[0]?.out;
         if (typeof output === 'string') {
-          const filename = resolveWithinRoot(runDir, output, 'reviewer output');
-          if (fs.existsSync(filename)) {
-            receipt.report_ref = createRunArtifactRef(runId, runDir, filename, 'notebook_reviewer_report');
-          }
+          const reportRef = reviewerReportRef(runId, runDir, output);
+          if (reportRef) receipt.report_ref = reportRef;
         }
       } catch { /* shared assessment records invalid delivery below */ }
     }

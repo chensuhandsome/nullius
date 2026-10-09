@@ -23,6 +23,7 @@ import { pauseFilePath, readJson, type ApprovalGateFilter } from './common.js';
 import { TeamExecutionStateManager } from '../team-execution-storage.js';
 import { buildTeamLiveStatusView } from '../team-execution-view.js';
 import { buildTraceabilityView } from '../traceability-view.js';
+import { escapesBase } from '../computation/path-safety.js';
 
 export type VisibleRunStatusFilter =
   | 'idle'
@@ -1146,7 +1147,7 @@ function executionModeUndeclaredIssue(projectRoot: string, state: RunState | nul
   // would name a file that does not exist.
   const absoluteStatePath = new StateManager(projectRoot).statePath;
   const relativeStatePath = path.relative(projectRoot, absoluteStatePath);
-  const statePathDisplay = relativeStatePath.startsWith('..') || path.isAbsolute(relativeStatePath)
+  const statePathDisplay = escapesBase(relativeStatePath)
     ? absoluteStatePath
     : relativeStatePath.split(path.sep).join('/');
   return {

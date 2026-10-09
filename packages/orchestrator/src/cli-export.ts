@@ -5,7 +5,8 @@ import * as path from 'node:path';
 import { type CliIo } from './cli-lifecycle.js';
 import { StateManager } from './state-manager.js';
 import { resolveUserPath } from './project-policy.js';
-import { readRunDirFor } from './run-directories.js';
+import { readRunDirFor, resolveEvidencePath } from './run-directories.js';
+import { escapesBase, realLocationWithin } from './computation/path-safety.js';
 
 type ExportOptions = { includeKbProfile: boolean; out: string | null; runId: string | null; runRoot: string | null };
 
@@ -39,8 +40,10 @@ function safeKbFile(projectRoot: string, candidatePath: string): string {
   if (normalized.split('/').includes('..')) throw new Error(`path traversal is not allowed: ${normalized}`);
   const resolved = path.resolve(projectRoot, normalized);
   const kbRoot = path.resolve(projectRoot, 'knowledge_base');
-  const relative = path.relative(kbRoot, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error(`path is outside knowledge_base/: ${normalized}`);
+  if (escapesBase(path.relative(kbRoot, resolved))) throw new Error(`path is outside knowledge_base/: ${normalized}`);
+  // zip stores what a symlink points at, so none may stand between the
+  // project root and the file.
+  resolveEvidencePath(projectRoot, resolved);
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) throw new Error(`missing file: ${normalized}`);
   return resolved;
 }
@@ -56,8 +59,9 @@ export async function runExportCommand(projectRoot: string, cwd: string, args: s
 
   const baseDir = readRunDirFor(projectRoot, runId, options.runRoot ?? undefined);
   assertOutsideHistoricalRuns(outPath);
-  const relativeOutput = path.relative(baseDir, outPath);
-  if (relativeOutput === '' || (!relativeOutput.startsWith(`..${path.sep}`) && relativeOutput !== '..' && !path.isAbsolute(relativeOutput))) {
+  // --out is spelled by the caller (possibly through the alias it used for
+  // the project root), while baseDir derives from the canonical root.
+  if (realLocationWithin(baseDir, outPath)) {
     throw new Error('EXPORT_DESTINATION_OVERLAP: archive must be outside the selected evidence directory');
   }
   const files = new Set<string>();

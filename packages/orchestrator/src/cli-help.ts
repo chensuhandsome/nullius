@@ -263,7 +263,8 @@ unanswerability instead of silent or false precision. --json emits the same
 read model that \`nullius status --json\` carries as its traceability block.
 `,
   notebook: `nullius notebook sync [--json]
-nullius notebook check [--result <id>] [--json]
+nullius notebook check [--result <id>] [--structure-only] [--json]
+nullius notebook review --model <spec> [--dependency <path>] [--timeout-secs <n>] [--json]
 
 Insert (first run) or refresh the machine-maintained current-state block at
 the top of research_notebook.md. The block is rendered from the results
@@ -276,15 +277,39 @@ markers: a present block that no longer matches its canonical render is
 reported OUT OF SYNC by \`nullius status --json\` / \`nullius current\` and
 refuses milestone convergence until refreshed.
 
-This command does not write or verify the human derivations or explanations.
+Sync does not write or verify the human derivations or explanations.
 Inspect \`nullius current --json\` notebook.result_links for current artifacts
 absent from human sections. Rewrite those sections; links present are not a
 scientific-completeness verdict.
 
-Use \`notebook check\` at file-mode result closeout, optionally scoped to the
-result being folded. It is read-only: exit 0 means links present or no current
-results, exit 1 means missing human-body links, exit 2 means unavailable input
-or registry defects. Unknown result ids refuse; this is not a science gate.
+Review executes the existing review-swarm launcher on the full UTF-8 notebook
+and frozen necessary dependencies. It requires a real source-anchored report
+covering every section, including intermediate reasoning, logic, notation,
+definitions, assumptions and conventions. Links, automatic tables, formulas,
+self-evaluations and checkboxes cannot replace explanatory prose. Local linked
+text files are included recursively for Markdown; declare further dependencies
+with repeatable --dependency. Linked binary/oversized files are frozen hash-only
+locators, never reported as read; a required unread locator prevents acceptance.
+Supply independently checked readable text for necessary source content. The
+text packet limit is 1 MiB; all source snapshots together are limited to 64 MiB.
+Remote or directory links alone do not provide their contents. No truncation.
+Reviewed text requires LF or CRLF line endings. Bare CR is refused.
+UTF-8 byte-order marks are preserved. python3 is required; accepted reviewer
+execution must report tool mode none. A route using another mode is unavailable.
+Default hard budget: 1200 seconds, one execution, no automatic retry.
+
+Check is read-only and reports structure and content_review independently.
+Default exit 0 requires structural links and an accepted whole-notebook review
+of current bytes; 1 means incomplete, missing, stale or rejected; 2 means
+unavailable inputs. --result narrows structure only; its success is
+diagnostic_passed (exit 0) and content is always full notebook. --structure-only can pass
+navigation but cannot authorize scientific
+closeout. File and engine closeout require the same default structural and
+whole-notebook content check. Any
+notebook/dependency byte change, including uncommitted changes or automatic
+blocks, invalidates old acceptance while preserving its historical evidence.
+Status/current never launch reviewers or block ordinary history reads. A review
+supports its stated scope; it does not prove scientific truth.
 `,
   index: `nullius index sync [--json]
 

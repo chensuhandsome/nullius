@@ -86,7 +86,7 @@ preview then apply:
 nullius init --refresh --dry-run
 nullius init --refresh
 
-Refresh preserves an existing AGENTS.md byte-for-byte when it differs from the current template. To update its guidance, render a current scaffold in a temporary external root and manually merge the desired changes. Refresh may synchronize existing machine-managed notebook and index blocks, while preserving user-owned content and not inserting missing blocks. It does not migrate user-owned report files. For a project that predates
+Refresh preserves an existing AGENTS.md byte-for-byte when it differs from the current template. Template changes do not automatically update existing projects. To update guidance, render a current scaffold in an anonymous temporary external root and manually merge the desired changes, including notebook review instructions, into the existing user-owned files. Refresh may synchronize existing machine-managed notebook and index blocks, while preserving user-owned content and not inserting missing blocks. It does not migrate user-owned report files. For a project that predates
 the main-report registry, checkpoint it, render a current scaffold in a separate
 temporary external root with `nullius init --project-root <temporary-root>`, copy
 only a missing reports/main_research_report_template.md, and manually merge the
@@ -210,10 +210,48 @@ Existing `team/runs/<run_id>/` evidence remains readable in place. New execution
 ### Keep the human notebook current
 
 When adopting a scientific result, rewrite the affected `research_notebook.md`
-sections with its assumptions, derivation, interpretation and limits. Link its
-registered artifact directly from the relevant human `##` section. Check
-`nullius current` for missing human-body links, including when working in file
-mode. At result closeout, run `nullius notebook check --result <result-id>`;
-missing links return nonzero. The automatic results table and `nullius notebook sync` cannot perform
-this writing. Link presence is a necessary navigation check, not scientific
-acceptance; see [the notebook check's scope](../packages/orchestrator/README.md#human-notebook-integration).
+sections with its assumptions, definitions, conventions, derivation, interpretation
+and limits. Link its registered artifact directly from the relevant human `##`
+section, then refresh the automatic block and review the finished notebook:
+
+```bash
+nullius notebook sync
+nullius notebook review --model claude/opus --dependency <project-relative-path>
+nullius notebook check --json
+```
+
+Repeat `--dependency` for every required supporting file; omit it only when the
+notebook needs no such dependency. Review executes once with a default hard
+1200-second timeout (`--timeout-secs <N>` changes it), freezing SHA-256 for the
+entire UTF-8 notebook, automatic block included, and declared dependency bytes,
+including uncommitted edits.
+
+Automatically linked binary or oversized files are immutable opaque snapshots
+and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
+freshness, but are neither embedded nor read. The report's `opaque_sources` must
+explain every path, hash and `required_for_reasoning`; a missing assessment or any
+required unread source prevents acceptance. Supply independently checked readable
+text dependencies for reasoning that depends on such material. Hash identity is
+not semantic reading. The notebook and explicit `--dependency` inputs require
+strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
+storage to 64 MiB, with refusal rather than silent truncation. This review
+currently accepts only tool mode `none`; other modes are unavailable. It executes
+one reviewer and does not establish a cross-family quorum.
+
+The reviewer must read every section and give
+source-anchored reasons about the reasoning, derivations, notation and assumptions.
+
+The read-only check reports `structure` and `content_review` separately and
+succeeds only with structural success and an accepted current full-text review.
+`--result` scopes links alone; `--structure-only` establishes navigation alone.
+Missing, partial, failed, unavailable, invalid or stale review is not acceptance.
+A later edit requires a new review; the old report remains readable. File and
+engine closeout use this same requirement. Automatic tables, formula counts,
+checklists and the writer's self-assessment cannot supply a content verdict.
+Semantic acceptance does not prove scientific truth or replace claim-specific
+validation; see [the notebook check's scope](../packages/orchestrator/README.md#human-notebook-integration).
+
+Converged folds invoke the same unscoped `nullius notebook check --json` required
+for final file closeout. `none` declarations and a missing launcher grant no
+exception. `--result` is a scoped structural diagnostic; it cannot substitute for
+the full default check, whose structural scope includes every current result.

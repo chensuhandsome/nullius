@@ -264,10 +264,69 @@ In projects scaffolded by `research-team`, use the navigation front door instead
 - Rerun:
   - Preflight-only command.
 
+### Scientific notebook closeout (current full-text review)
+
+- Structural navigation and content acceptance are separate. Deterministic
+  rendering checks, result links, automatic tables, formula counts, completed
+  checklists, and the writer's assessment cannot supply a content verdict.
+- After rewriting the affected sections into a coherent whole, finish the
+  notebook and refresh its automatic block. From the external project root:
+
+  ```bash
+  nullius notebook sync
+  nullius notebook review --model claude/opus --dependency <project-relative-path>
+  nullius notebook check --json
+  ```
+
+- Repeat `--dependency` for every required supporting file; omit it only when
+  no such dependency is needed. The review executes a real reviewer once via
+  review-swarm, with a default hard 1200-second timeout and no automatic retry.
+  `--timeout-secs <N>` sets a different hard limit.
+- Review identity binds SHA-256 of the complete UTF-8 notebook, including the
+  automatic block, and required dependency bytes, including uncommitted edits.
+  Commit and section version stamps do not replace those hashes. Changed bytes
+  make earlier acceptance stale; preserve historical reports and their input
+  identities rather than rewriting them.
+
+
+  Automatically linked binary or oversized files are immutable opaque snapshots
+  and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
+  freshness, but are neither embedded nor read. The report's `opaque_sources` must
+  explain every path, hash and `required_for_reasoning`; a missing assessment or any
+  required unread source prevents acceptance. Supply independently checked readable
+  text dependencies for reasoning that depends on such material. Hash identity is
+  not semantic reading. The notebook and explicit `--dependency` inputs require
+  strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
+  storage to 64 MiB, with refusal rather than silent truncation. This review
+  currently accepts only tool mode `none`; other modes are unavailable. It executes
+  one reviewer and does not establish a cross-family quorum.
+- The report needs full-text coverage of every section and readable dependency, plus assessment of opaque sources,
+  with source-anchored reasons on derivation completeness, logic, symbols,
+  definitions, assumptions and conventions. An excerpt-only or delta-only review
+  cannot satisfy it. Give the reviewer the materials and question without an
+  expected verdict or the writer's initial judgment.
+- Default `notebook check` reports `structure` and `content_review` separately.
+  Closeout requires structural success and an accepted current full-text review,
+  identically in file and engine mode. `--result` narrows links alone;
+  `--structure-only` establishes navigation alone. Missing, partial, failed,
+  unavailable, invalid or stale review does not pass. If the reviewer cannot
+  complete the reading, record the missing coverage and leave closeout incomplete.
+- `status` and `current` read reports without launching a reviewer or preventing
+  ordinary state or historical reads. Review evidence is a supporting semantic
+  check using the existing verification contracts, not decisive computation
+  validation or proof of scientific truth. Retain claim-specific checks and
+  state single-reviewer limits on model, method and input independence.
+
+Converged folds invoke the same unscoped `nullius notebook check --json` required
+for final file closeout. `none` declarations and a missing launcher grant no
+exception. `--result` is a scoped structural diagnostic; it cannot substitute for
+the full default check, whose structural scope includes every current result.
+
 ### Notebook integrity gate (rendering safety)
 
 - Gate: [check_notebook_integrity.py](scripts/gates/check_notebook_integrity.py)
 - Symptom: `notebook integrity check failed`
+- Scope: rendering and marker safety only; passing this preflight check does not establish scientific notebook content acceptance. Use the full-text closeout check above.
 - Fix:
   - Marker blocks: keep exactly one of each marker block (capsule / audit slices / review excerpt).
   - Review excerpt: must not be empty template text.
@@ -469,6 +528,10 @@ In projects scaffolded by `research-team`, use the navigation front door instead
   - **Full cycle** with `--auto-tag` (do not reuse tags; trajectory is an
     upsert index): first round of a milestone candidate, changed baseline, or
     any escalation trigger above.
+  - The delta confirmation above applies to the selected member-cycle candidate;
+    it cannot satisfy `notebook.content_review`. Any edit to the notebook or a
+    required dependency requires a new review of the entire current notebook,
+    including its automatic block, before scientific notebook closeout.
   - Either way the confirmation round is mandatory after every fix batch —
     convergence is declared by the reviewers on the current artifact, never
     by the leader after applying fixes.
@@ -503,4 +566,8 @@ diff -u "$BACKUP_DIR/_system_member_a.txt" prompts/_system_member_a.txt | head -
 Review the diff for project-authored customizations before the next cycle;
 re-apply any on top of the refreshed prompts. The same recopy-with-backup
 applies to any other copied asset the project wants to bring forward —
-scaffolding never rewrites existing project files on its own.
+scaffolding never rewrites existing project files on its own. Updated scientific
+notebook closeout guidance also requires an explicit merge: render the current
+scaffold in an anonymous temporary external root, then manually merge the
+relevant instructions into the existing user-owned project files. Do not assume
+refreshing an installed skill has rewritten those project files.

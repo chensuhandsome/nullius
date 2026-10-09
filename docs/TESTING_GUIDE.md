@@ -620,5 +620,46 @@ python3 -m pytest -q skills/research-team/tests/test_convergence_registration_ga
 These include adopted results with only an automatic table, unclosed comments,
 raw HTML inside quotes/lists, visible links at paragraph/heading boundaries,
 literal artifact filenames containing `%` or `?`, wrong-file URI matches, and
-headline convergence without a human rewrite. They test structural evidence
-links, not scientific completeness of the prose.
+headline convergence without a human rewrite. These link tests establish
+structural navigation only.
+
+Content-review acceptance checks must additionally cover real reviewer dispatch,
+one execution with a hard timeout and no automatic retry, full UTF-8 notebook
+snapshot identity including the automatic block, declared dependency hashes,
+and edits not represented by a commit. A report needs complete per-section
+coverage and source-anchored reasons on derivations, logic, notation, definitions,
+assumptions and conventions. Include missing, partial, failed, unavailable,
+invalid and stale reports as negative controls; changing either the notebook
+or a dependency must invalidate current acceptance while keeping history readable.
+
+Default `notebook check` must report `structure` and `content_review` separately
+and fail unless both pass for the current version. `--result` may only narrow
+links, never full-text coverage; `--structure-only` may succeed for navigation
+without granting closeout. File/engine convergence must consume the same current
+review. Status/current reads must not launch a reviewer or fail merely because
+content acceptance is absent. Fixtures and mocked dispatch test these contracts;
+they do not establish scientific correctness or substitute for executing a real
+reviewer on a research notebook.
+
+Automatically linked binary or oversized files are immutable opaque snapshots
+and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
+freshness, but are neither embedded nor read. The report's `opaque_sources` must
+explain every path, hash and `required_for_reasoning`; a missing assessment or any
+required unread source prevents acceptance. Supply independently checked readable
+text dependencies for reasoning that depends on such material. Hash identity is
+not semantic reading. The notebook and explicit `--dependency` inputs require
+strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
+storage to 64 MiB, with refusal rather than silent truncation. This review
+currently accepts only tool mode `none`; other modes are unavailable. It executes
+one reviewer and does not establish a cross-family quorum.
+
+Converged folds invoke the same unscoped `nullius notebook check --json` required
+for final file closeout. `none` declarations and a missing launcher grant no
+exception. `--result` is a scoped structural diagnostic; it cannot substitute for
+the full default check, whose structural scope includes every current result.
+
+Negative controls must cover a converged fold with `none` declarations, a missing
+launcher, and an otherwise linked selected result with an unlinked current result
+outside the selector. Opaque-source controls must cover missing assessments,
+path/hash mismatches, required unread sources, manifest staleness and both size
+limits; pinned binary bytes alone must never count as semantic coverage.

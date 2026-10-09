@@ -55,7 +55,7 @@
         },
         {
           "command": "notebook",
-          "usage": "nullius notebook sync [--json] | nullius notebook check [--result <id>] [--json]"
+          "usage": "nullius notebook sync [--json] | nullius notebook check [--result <id>] [--structure-only] [--json] | nullius notebook review --model <spec> [--dependency <path>] [--timeout-secs <n>] [--json]"
         },
         {
           "command": "index",

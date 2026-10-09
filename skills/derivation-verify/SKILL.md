@@ -59,6 +59,43 @@ deriver) and report in a fixed canonical format.
   §J capsule, which test the disconfirming residual **at the production scale/config**. derivation-verify
   certifies the abstract identity; it does **not** certify the realization.
 
+## Whole-notebook review is a separate requirement
+
+`nullius notebook review --model claude/opus` reviews the entire current human notebook:
+derivation completeness, logic, notation, definitions, assumptions and conventions,
+with source-anchored reasons and full coverage of every section. It freezes the
+complete UTF-8 notebook (including its automatic block) and required declared
+dependencies by actual-byte SHA-256, including uncommitted edits. Changed bytes
+make the review stale. Its supporting semantic verdict is not a blind
+re-derivation or decisive computation validation and does not prove scientific
+truth; a single reviewer leaves explicit limits on independence.
+
+A passing derivation matrix does not establish that the whole notebook explains
+its assumptions or every load-bearing step. Conversely, an accepted prose review
+does not replace this skill's independent re-derivations. Links, automatic tables,
+formula counts, checklists and author self-assessment establish neither requirement.
+`nullius notebook check` requires structural navigation and current accepted
+full-text review in file and engine mode; `--result` scopes only links and
+`--structure-only` establishes navigation alone. Missing, partial, failed,
+unavailable, invalid or stale content review never passes; history stays readable.
+
+Automatically linked binary or oversized files are immutable opaque snapshots
+and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
+freshness, but are neither embedded nor read. The report's `opaque_sources` must
+explain every path, hash and `required_for_reasoning`; a missing assessment or any
+required unread source prevents acceptance. Supply independently checked readable
+text dependencies for reasoning that depends on such material. Hash identity is
+not semantic reading. The notebook and explicit `--dependency` inputs require
+strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
+storage to 64 MiB, with refusal rather than silent truncation. This review
+currently accepts only tool mode `none`; other modes are unavailable. It executes
+one reviewer and does not establish a cross-family quorum.
+
+Converged folds invoke the same unscoped `nullius notebook check --json` required
+for final file closeout. `none` declarations and a missing launcher grant no
+exception. `--result` is a scoped structural diagnostic; it cannot substitute for
+the full default check, whose structural scope includes every current result.
+
 ## The contract (backend-agnostic)
 
 Independent of the executor. Inputs:

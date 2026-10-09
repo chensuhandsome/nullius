@@ -67,7 +67,7 @@ export type ParsedCliArgs =
     deps: Record<string, string>;
   }
   | { command: 'current'; projectRoot: string | null; json: boolean }
-  | { command: 'notebook'; projectRoot: string | null; action: 'sync' | 'check'; json: boolean; resultId?: string }
+  | { command: 'notebook'; projectRoot: string | null; action: 'sync' | 'check' | 'review'; json: boolean; resultId?: string; structureOnly?: boolean; model?: string; dependencies?: string[]; timeoutSecs?: number }
   | { command: 'index'; projectRoot: string | null; action: 'sync'; json: boolean }
   | {
     command: 'result';
@@ -221,13 +221,14 @@ function parseStatusArgs(args: string[]): { json: boolean } {
   return { json };
 }
 
-function parseNotebookArgs(args: string[]): { action: 'sync' | 'check'; json: boolean; resultId?: string } {
+function parseNotebookArgs(args: string[]): { action: 'sync' | 'check' | 'review'; json: boolean; resultId?: string; structureOnly?: boolean; model?: string; dependencies?: string[]; timeoutSecs?: number } {
   const action = args[0];
-  if (action !== 'sync' && action !== 'check') {
-    throw new Error('notebook: expected `nullius notebook sync [--json]` or `nullius notebook check [--result <id>] [--json]`');
+  if (action !== 'sync' && action !== 'check' && action !== 'review') {
+    throw new Error('notebook: expected sync, check [--result <id>] [--structure-only], or review --model <spec> [--dependency <path>] [--timeout-secs <n>]');
   }
   let json = false;
   let resultId: string | undefined;
+  let structureOnly = false; let model: string | undefined; const dependencies: string[] = []; let timeoutSecs = 1200;
   for (let i = 1; i < args.length; i += 1) {
     const arg = args[i]!;
     if (arg === '--json') { json = true; continue; }
@@ -237,9 +238,23 @@ function parseNotebookArgs(args: string[]): { action: 'sync' | 'check'; json: bo
       resultId = value;
       continue;
     }
+    if (arg === '--structure-only' && action === 'check' && !structureOnly) { structureOnly = true; continue; }
+    if (arg === '--model' && action === 'review' && model === undefined) {
+      const value = args[++i]; if (!value || value.startsWith('-') || value.includes(',')) throw new Error('--model requires one reviewer model spec');
+      model = value; continue;
+    }
+    if (arg === '--dependency' && action === 'review') {
+      const value = args[++i]; if (!value || value.startsWith('-')) throw new Error('--dependency requires a path'); dependencies.push(value); continue;
+    }
+    if (arg === '--timeout-secs' && action === 'review') {
+      const value = args[++i]; if (!value || !/^\d+$/.test(value) || Number(value) <= 0 || Number(value) > 86400) throw new Error('--timeout-secs requires a positive hard budget up to 86400 seconds');
+      timeoutSecs = Number(value); continue;
+    }
     throw new Error(`unknown notebook ${action} argument: ${arg}`);
   }
-  return { action, json, ...(resultId === undefined ? {} : { resultId }) };
+  if (action === 'review' && model === undefined) throw new Error('notebook review requires --model <spec>');
+  return { action, json, ...(resultId === undefined ? {} : { resultId }),
+    ...(action === 'check' ? { structureOnly } : {}), ...(action === 'review' ? { model, dependencies, timeoutSecs } : {}) };
 }
 
 function parseIndexArgs(args: string[]): { action: 'sync'; json: boolean } {

@@ -1241,6 +1241,10 @@ class ReviewOneTests(unittest.TestCase):
     def test_all_role_templates_carry_contract_format(self):
         for role in self.mod._ROLES:
             template = (_SKILL_ROOT / "templates" / f"{role}.md").read_text(encoding="utf-8")
+            if role == "notebook":
+                for required in ("scope_sha256", "coverage_status", "dependency_closure", "cross_section_reasoning", "source anchors", "exactly one JSON object"):
+                    self.assertIn(required, template)
+                continue
             for required in (
                 "VERDICT: READY",
                 "VERDICT: NOT_READY",
@@ -1487,6 +1491,25 @@ class ReviewOneTests(unittest.TestCase):
             # git never ran: no option-injected file, no delegation, no meta.
             self.assertFalse(injected.exists())
             self.assertFalse((out_dir / "meta.json").exists())
+
+    def test_notebook_empty_output_is_not_retried(self):
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            artifact = td_path / "notebook.md"
+            artifact.write_text("# Notebook\n\nA bounded question.\n", encoding="utf-8")
+            scope = td_path / "scope.json"
+            scope.write_text(json.dumps({"review_kind": "notebook"}), encoding="utf-8")
+            state_dir = td_path / "runner-state"
+            _write_empty_then_valid_runner(td_path / "run_codex.sh", state_dir)
+            out_dir = td_path / "review"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = self.mod.main(self._basic_argv(td_path, out_dir, artifact,
+                    "--role", "notebook", "--context", str(scope), "--max-attempts", "1"))
+            self.assertEqual(rc, 2)
+            self.assertEqual((state_dir / "count").read_text().strip(), "1")
+            events = _read_trace_events(out_dir / "trace.jsonl")
+            self.assertFalse(any(event.get("event") == "empty_output_retry" for event in events))
+            self.assertFalse(json.loads((out_dir / "meta.json").read_text())["agents"][0]["success"])
 
     def test_empty_output_retried_once_via_delegated_launcher(self):
         # review_one passes --retry-empty-output 1 explicitly (the launcher

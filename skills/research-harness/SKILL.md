@@ -1,6 +1,6 @@
 ---
 name: research-harness
-description: Use when working inside an external research project that has or may need nullius state, research_plan.md, research_contract.md, artifacts/runs, Codex/Claude Code continuation, recovery, verification, approval, export, handoff, compute environment/tool readiness validation (import + seeded witness + agent-follows-doc), surviving long-running / kill-prone compute jobs (checkpoint + heartbeat + deadline + resume), an opt-in independent reproduction check (fresh-checkout rerun compared against declared expected values), or a production launch authorization preflight (frozen plan hash + hash-bound review verdicts + exact environment fingerprint before a large production run may start).
+description: Use when working inside an external research project that has or may need nullius state, research_plan.md, research_contract.md, artifacts/runs, Codex/Claude Code continuation, recovery, verification, current full-text notebook content review, approval, export, handoff, compute environment/tool readiness validation (import + seeded witness + agent-follows-doc), surviving long-running / kill-prone compute jobs (checkpoint + heartbeat + deadline + resume), an opt-in independent reproduction check (fresh-checkout rerun compared against declared expected values), or a production launch authorization preflight (frozen plan hash + hash-bound review verdicts + exact environment fingerprint before a large production run may start).
 ---
 
 # Research Harness
@@ -104,14 +104,14 @@ The check is also skipped for:
 5. Read and align the durable project surfaces:
    - `research_plan.md`, especially `# Current Status`
    - `research_contract.md`
-   - `research_notebook.md`: read the human sections as well as the automatic table; inspect `traceability.notebook.result_links` for current artifacts missing from the body
+   - `research_notebook.md`: read the human sections as well as the automatic table; inspect `traceability.notebook.result_links` for navigation gaps and `traceability.notebook.content_review` for full-text review identity, coverage and current acceptance; missing acceptance does not prevent ordinary recovery reads
    - the relevant `artifacts/runs/<run_id>/` and `artifacts/runs/` directories
    - the current main research report linked from
      `project_index.md#Main research report`, when one is promoted
 
 **Anchor on the final adopted version — never build on a superseded one.** A long project accumulates earlier fits, methods, grids, and exploratory scripts; a *newer* adopted result (a better minimum, a more robust method, a finer grid) can silently coexist in the repo with the deprecated ones it replaced. Where the project has a nullius launcher, the machine-readable answer comes first: `nullius current` renders the results registry (which result rows are current, produced by which run at which commit) and the validity ledger (which runs are still active, which are superseded or voided and why) — consult it before any manual archaeology, and keep it authoritative by recording supersessions there when you replace a run. Where that surface is absent or silent on the question, resolve from the durable record (`research_plan.md#Current Status`, `research_contract.md`, the latest dated `artifacts/runs/<run_id>/`, and any explicit `superseded` / `voided` markers) **which** parameters, method, and configuration are the *current adopted* version — not the first script you happen to open or the most-cited earlier draft. Then **regression-anchor**: run that adopted reference configuration and assert it reproduces its known result (the published χ²/value/pole) *before* trusting any variation built on it. This is the project-state half of the [`numerical-reliability-gate`](../numerical-reliability-gate/SKILL.md) G4 anchor; skipping it is how work silently gets rebuilt on a stale fit or a retired method.
 
-Use `nullius init --refresh` to generate missing `AGENTS.md` support guidance (preview with `--dry-run`). Scaffold refresh preserves differing instructions and user-owned seed content (`research_plan.md`, `research_notebook.md`, `research_contract.md`, `project_charter.md`, `project_index.md`, `reports/main_research_report_template.md`, `.gitignore`). The CLI may still synchronize existing machine-managed blocks in the notebook and project index; it does not insert missing blocks during refresh. For updated guidance, render a scaffold in a temporary external root and merge the desired changes explicitly.
+Use `nullius init --refresh` to generate missing `AGENTS.md` support guidance (preview with `--dry-run`). Scaffold refresh preserves differing instructions and user-owned seed content (`research_plan.md`, `research_notebook.md`, `research_contract.md`, `project_charter.md`, `project_index.md`, `reports/main_research_report_template.md`, `.gitignore`). The CLI may still synchronize existing machine-managed blocks in the notebook and project index; it does not insert missing blocks during refresh. Template changes do not automatically update existing projects. For updated guidance, render a scaffold in an anonymous temporary external root and manually merge the desired changes, including notebook review instructions, into existing user-owned files.
 
 For an existing project that predates the main-report registry, checkpoint the
 project before migration. Render the current scaffold in a separate temporary
@@ -439,7 +439,27 @@ After a milestone or run produces a stable result, gate each result by its type 
 Then land the folded result (the same obligations apply in engine and file mode):
 
 - Rewrite the affected `research_notebook.md` sections into a coherent scientific account: assumptions and conventions, starting relations, non-obvious derivation steps, results and interpretation, validity limits and unresolved questions. Keep already verified intermediate understanding current; do not wait for whole-project acceptance. Label unverified reasoning explicitly rather than silently treating it as established. Topic notes may carry extended detail, but links or result tables alone do not replace the notebook's load-bearing reasoning.
-- Link each adopted result's registered artifact directly from the relevant human `##` section, outside the automatic block, comments and code examples. After rewriting, record the section's `written-against` commit. Run `nullius notebook check --result <result-id>` for the result being folded (read-only; exit 1 means missing links, 2 means unavailable), and read `nullius current --json`: `notebook.result_links` must identify the affected result in that section. The check recognizes direct inline and explicit reference links, not recursive documents, HTML, shortcut references or indented link lines. Missing links or unavailable checks for the result being folded leave notebook integration incomplete; unrelated older gaps remain visible follow-up work. A `linked` result is only a navigation witness: review the actual explanation and mathematics before claiming the section complete.
+- Link each adopted result's registered artifact directly from the relevant human `##` section, outside the automatic block, comments and code examples. After rewriting, record the section's `written-against` commit. `notebook.result_links` recognizes direct inline and explicit reference links, not recursive documents, HTML, shortcut references or indented link lines. A `linked` result is a navigation witness only.
+- Finish the whole notebook and refresh its automatic block before running `nullius notebook review --model claude/opus` with repeated `--dependency <project-relative-path>` for every required supporting file. This actually executes the existing review-swarm launcher once; the default hard timeout is 1200 seconds (`--timeout-secs <N>` overrides it), with no automatic reviewer retry. Freeze the complete UTF-8 notebook, including its automatic block, and declared dependency SHA-256 from actual bytes, including uncommitted edits. A commit or section stamp alone is insufficient. Any changed input bytes make prior acceptance stale; preserve the original review and input identity as readable history.
+- Require a reviewer report covering every notebook section, with source anchors and reasons addressing complete derivation steps, logical consistency, notation, definitions, assumptions and conventions. Do not give the reviewer an expected verdict or the writer's initial judgment. Links, automatic tables, formula counts, completed checklists and writing self-assessment cannot supply a content verdict. Semantic review does not prove scientific truth, and a single reviewer leaves limits on model, method and input independence; result-specific verification remains required.
+- Run `nullius notebook check --json` without a result selector for final closeout and inspect `nullius current --json`. The read-only check reports `structure` and `content_review` separately; exit 0 requires structural success and an accepted current full-text review, exit 1 means incomplete acceptance (including invalid review evidence), and exit 2 means invalid command/setup input or unavailable execution/runtime. `--result` scopes only the link check; content coverage always remains full-text. `--structure-only` success establishes navigation alone. Missing, partial, failed, unavailable, invalid or stale review leaves closeout incomplete in both file and engine mode; retired historical records remain readable, while every current result participates in the final unscoped structural check.
+
+Automatically linked binary or oversized files are immutable opaque snapshots
+and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
+freshness, but are neither embedded nor read. The report's `opaque_sources` must
+explain every path, hash and `required_for_reasoning`; a missing assessment or any
+required unread source prevents acceptance. Supply independently checked readable
+text dependencies for reasoning that depends on such material. Hash identity is
+not semantic reading. The notebook and explicit `--dependency` inputs require
+strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
+storage to 64 MiB, with refusal rather than silent truncation. This review
+currently accepts only tool mode `none`; other modes are unavailable. It executes
+one reviewer and does not establish a cross-family quorum.
+
+Converged folds invoke the same unscoped `nullius notebook check --json` required
+for final file closeout. `none` declarations and a missing launcher grant no
+exception. `--result` is a scoped structural diagnostic; it cannot substitute for
+the full default check, whose structural scope includes every current result.
 
 - Summarize the durable conclusion in `research_contract.md`.
 - Update `research_plan.md#Current Status` with the current state, next step, blockers, and evidence pointers.
@@ -449,7 +469,7 @@ Then land the folded result (the same obligations apply in engine and file mode)
 
 ## Closeout
 
-Before handing off or claiming completion, finish the human-notebook rewrite and result-link check described in **Fold Results Back**, including in file mode. `nullius notebook sync` refreshes only the automatic table; neither an in-sync table nor a fresh version stamp establishes that the human account was updated. If the task changes no scientific understanding, no notebook rewrite is owed. Record unresolved content gaps in the plan rather than declaring the scientific stage complete.
+Before handing off or claiming completion, finish the human-notebook rewrite, result-link check and accepted current full-text review described in **Fold Results Back**, identically in file and engine mode. `nullius notebook sync` refreshes only the automatic table; neither an in-sync table nor a fresh version stamp establishes that the human account was updated. If the task changes no scientific understanding, no notebook rewrite is owed. Record unresolved content gaps in the plan rather than declaring the scientific stage complete.
 
 Run the narrowest applicable closeout command:
 

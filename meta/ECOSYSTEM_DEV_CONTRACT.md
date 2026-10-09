@@ -561,6 +561,28 @@ pnpm --filter @nullius/hep-mcp test -- tests/contracts/payloadBackpressure.test.
 
 **规则**: 质量关键步骤（写作流水线 submit_*）在消费 artifact 前必须验证 `ArtifactRefV1.sha256` + `size_bytes`。
 
+研究笔记正文审查复用 verification subject/check-run/verdict/coverage 与
+`ArtifactRef`，作为 supporting semantic check，不得冒充计算的 decisive validation。
+审查输入须冻结完整 UTF-8 notebook（含自动块）及必要声明依赖的实际字节
+SHA-256，包括未提交编辑；commit 或章节版本戳不能替代此身份绑定。任何字节
+变化使既有审查 stale；历史报告保留原输入身份并保持可读。真实 reviewer 须记录
+逐节全文覆盖及源锚定理由，检查推导完整性、逻辑、符号、定义、假设和约定；
+缺失、部分、失败、unavailable、invalid 或 stale 不得作为当前通过。链接、自动表、
+公式数量、勾选项与作者自评均非正文判定证据。file 与 engine closeout 使用同一
+当前版本契约；结构导航与语义审查分别报告，语义 accepted 不证明科学真理，
+reviewer 的模型、方法与输入独立性局限必须保留。
+
+
+收敛 fold 与最终 file closeout 均调用无 scope 的 `nullius notebook check --json`；
+`none` 声明及 launcher 缺失不豁免检查。`--result` 仅是结构范围诊断，不能替代
+覆盖全部当前结果的最终默认检查。自动链接的 binary 或过大文件记录为
+`opaque_links` 的不可变快照与 SHA-256 定位符，参与 manifest 新鲜度校验但不嵌入、
+不读取。报告 `opaque_sources` 须逐项说明 path/hash/`required_for_reasoning`；
+任何必要未读来源或缺少评估都阻断接受，应使用独立核对的可读文本依赖。
+哈希身份不是语义阅读。notebook 与显式 `--dependency` 仍须严格 UTF-8；文本闭包
+不超过 1 MiB，快照总存储不超过 64 MiB，禁止静默截断。当前仅接受 tool mode
+`none`，其他模式为 unavailable；单 reviewer 不授予跨家族 quorum。
+
 **CI 验证**:
 ```bash
 # 契约测试: 篡改 artifact 内容 → 验证 submit 拒绝

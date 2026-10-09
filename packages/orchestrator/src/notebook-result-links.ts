@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { projectionFromRegistryState, textOutsideNotebookCurrentState, type CurrentStateProjection } from './notebook-current-state.js';
 import { validateResultRegistry } from './result-registry.js';
 import { notebookSectionLinkTargets } from './notebook-run-links.js';
+import { checkNotebookContentReview } from './notebook-content-review.js';
 
 export type NotebookResultLinks = {
   status: 'not_applicable' | 'unavailable' | 'missing_links' | 'linked';
@@ -30,8 +31,8 @@ function localPath(target: string): string | null {
 }
 
 /** Necessary traceability check, NOT a prose or derivation quality verdict.
- * Status/current expose missing links even in file mode. Fold consumers may
- * require the declared result in a rewritten section, not global cleanliness.
+ * Status/current expose missing links even in file mode. Scoped checks are
+ * diagnostics; closeout requires the unscoped check and a valid result registry.
  * Automatic state tables, comments and code examples cannot satisfy it. */
 export function checkNotebookResultLinks(
   projectRoot: string, projection: CurrentStateProjection,
@@ -67,12 +68,7 @@ export function checkNotebookResultLinks(
   return report;
 }
 
-/** Read-only closeout check for external-agent/file-mode work. Result-scoped
- * checks do not turn unrelated historical notebook gaps into blockers. */
-export function runNotebookCheck(
-  projectRoot: string, resultId: string | undefined, json: boolean,
-  io: { stdout: (text: string) => void; stderr: (text: string) => void },
-): number {
+export function checkNotebookStructure(projectRoot: string, resultId?: string): NotebookResultLinks {
   try {
     const registry = validateResultRegistry(projectRoot);
     const projection = projectionFromRegistryState(registry);
@@ -87,14 +83,38 @@ export function runNotebookCheck(
       if (projection.current_rows.length === 0) throw new Error(`no current registered result: ${resultId}`);
       if (registry.defective_result_ids.has(resultId)) throw new Error(`defective current result: ${resultId}`);
     }
-    const report = checkNotebookResultLinks(projectRoot, projection);
-    if (json) io.stdout(`${JSON.stringify(report, null, 2)}\n`);
-    else io.stdout(`Human notebook result links: ${report.status}. ${report.reason ?? report.missing_result_ids.join(', ')}\n${report.scope}\n`);
-    return report.status === 'unavailable' ? 2 : report.status === 'missing_links' ? 1 : 0;
+    return checkNotebookResultLinks(projectRoot, projection);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    if (json) io.stdout(`${JSON.stringify({ status: 'unavailable', reason })}\n`);
-    else io.stderr(`notebook check: ${reason}\n`);
-    return 2;
+    return { status: 'unavailable', reason, results: [], missing_result_ids: [], scope: 'Result-link structure unavailable; content review is evaluated separately.' };
   }
+}
+
+/** Both engine A5 and file closeout require the same current structure and
+ * whole-notebook semantic review. Selecting a result only scopes structure. */
+export function notebookCloseoutGate(projectRoot: string): { decision: 'pass' | 'hold' | 'unavailable'; summary: string } {
+  const structure = checkNotebookStructure(projectRoot);
+  const content = checkNotebookContentReview(projectRoot);
+  const ready = (structure.status === 'linked' || structure.status === 'not_applicable') && content.status === 'accepted';
+  return { decision: ready ? 'pass' : structure.status === 'unavailable' || content.status === 'unavailable' ? 'unavailable' : 'hold',
+    summary: `Notebook structure: ${structure.status}. ${structure.reason ?? structure.missing_result_ids.join(', ')} Whole-notebook content review: ${content.status}. ${content.reason}` };
+}
+
+/** Read-only closeout check for external-agent/file-mode work. Result-scoped
+ * checks do not turn unrelated historical structural gaps into blockers. */
+export function runNotebookCheck(
+  projectRoot: string, resultId: string | undefined, json: boolean,
+  io: { stdout: (text: string) => void; stderr: (text: string) => void },
+  structureOnly = false,
+): number {
+  const content_review = checkNotebookContentReview(projectRoot);
+  const report = checkNotebookStructure(projectRoot, resultId);
+  const structurePassed = report.status === 'linked' || report.status === 'not_applicable';
+  const accepted = structurePassed && (structureOnly || content_review.status === 'accepted');
+  const unavailable = report.status === 'unavailable' || (!structureOnly && content_review.status === 'unavailable');
+  const output = { status: accepted ? (structureOnly ? 'structure_passed' : resultId === undefined ? 'accepted' : 'diagnostic_passed') : unavailable ? 'unavailable' : 'incomplete', structure: report, content_review,
+    acceptance_scope: structureOnly ? 'Structure only; no scientific closeout acceptance.' : 'Result-scoped structure when selected, always whole-notebook current-version content review.' };
+  if (json) io.stdout(`${JSON.stringify(output, null, 2)}\n`);
+  else io.stdout(`Human notebook result links: ${report.status}. ${report.reason ?? report.missing_result_ids.join(', ')}\nNotebook content review: ${content_review.status}. ${content_review.reason}\n${output.acceptance_scope}\n`);
+  return accepted ? 0 : unavailable ? 2 : 1;
 }

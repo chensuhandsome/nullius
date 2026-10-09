@@ -13,6 +13,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+import pytest
 
 GATES = Path(__file__).resolve().parent.parent / "scripts" / "gates"
 GATE = GATES / "check_convergence_registration.py"
@@ -70,6 +71,8 @@ DEFAULT_VIEW = {
         "no_authoritative_identity": [],
     },
     "notebook": {
+        # Controlled read-model fixture, not a real semantic reviewer receipt.
+        "content_review": {"status": "accepted"},
         "result_links": {
             "status": "linked",
             "results": [{"result_id": "binding-energy", "sections": ["Spectrum results"]}],
@@ -92,9 +95,19 @@ def _project_root(tmp_path: Path, view: dict | None = None, *, launcher: bool = 
     if launcher:
         view_path = root / ".nullius" / "view.json"
         view_path.write_text(json.dumps(view if view is not None else DEFAULT_VIEW), encoding="utf-8")
+        controlled = view if view is not None else DEFAULT_VIEW
+        content = controlled["notebook"].get("content_review", {})
+        structure = controlled["notebook"].get("result_links", {})
+        accepted = content.get("status") == "accepted" and structure.get("status") in ("linked", "not_applicable")
+        check_path = root / ".nullius" / "notebook-check.json"
+        check_path.write_text(json.dumps({"status": "accepted" if accepted else "incomplete", "content_review": content, "structure": structure}), encoding="utf-8")
         stub = bin_dir / "nullius"
         stub.write_text(
             "#!/usr/bin/env bash\n"
+            'if [[ "$*" == *"notebook check"* ]]; then\n'
+            f'  cat "{check_path}"\n'
+            f'  exit {0 if accepted else 1}\n'
+            'fi\n'
             f'cat "{view_path}"\n',
             encoding="utf-8",
         )
@@ -148,6 +161,33 @@ def test_matching_declaration_passes(tmp_path: Path) -> None:
     payload = json.loads(result.stdout.strip().splitlines()[-1])
     assert payload["status"] == "pass"
     assert payload["headline"] == {"result_id": "binding-energy", "run_id": "20260808-m2-r010-final"}
+
+
+@pytest.mark.parametrize("status", ["missing", "stale", "rejected", "unavailable", "incomplete"])
+def test_navigation_cannot_replace_current_whole_notebook_review(tmp_path: Path, status: str) -> None:
+    view = json.loads(json.dumps(DEFAULT_VIEW))
+    view["notebook"]["content_review"] = {"status": status}
+    result = _run_gate(_convergence_json(tmp_path), _adjudication(tmp_path, GOOD_DECLARATION), _project_root(tmp_path, view))
+    assert result.returncode == 1
+    assert "whole-notebook" in result.stderr.lower()
+
+
+def test_absent_content_review_contract_does_not_inherit_linked_acceptance(tmp_path: Path) -> None:
+    view = json.loads(json.dumps(DEFAULT_VIEW))
+    del view["notebook"]["content_review"]
+    result = _run_gate(_convergence_json(tmp_path), _adjudication(tmp_path, GOOD_DECLARATION), _project_root(tmp_path, view))
+    assert result.returncode == 1
+    assert "whole-notebook" in result.stderr.lower()
+
+
+@pytest.mark.parametrize("status", ["missing", "stale", "rejected", "unavailable", "incomplete"])
+def test_none_declarations_cannot_exempt_a_converged_fold(tmp_path: Path, status: str) -> None:
+    view = json.loads(json.dumps(DEFAULT_VIEW))
+    view["notebook"]["content_review"] = {"status": status}
+    body = "## Result registration\n\n- Headline result: none — no named result\n- Supersedes: none\n- Rewritten sections: none\n"
+    result = _run_gate(_convergence_json(tmp_path), _adjudication(tmp_path, body), _project_root(tmp_path, view))
+    assert result.returncode == 1
+    assert "whole-notebook" in result.stderr.lower()
 
 
 def test_supersession_with_trailing_note_parses_full_run_ids(tmp_path: Path) -> None:
@@ -292,15 +332,15 @@ def test_non_converged_cycle_skips(tmp_path: Path) -> None:
     assert payload["status"] == "skip"
 
 
-def test_project_without_launcher_skips(tmp_path: Path) -> None:
+def test_project_without_launcher_cannot_accept_a_converged_fold(tmp_path: Path) -> None:
     result = _run_gate(
         _convergence_json(tmp_path),
         _adjudication(tmp_path, GOOD_DECLARATION),
         _project_root(tmp_path, launcher=False),
     )
-    assert result.returncode == 0
+    assert result.returncode == 2
     payload = json.loads(result.stdout.strip().splitlines()[-1])
-    assert payload["status"] == "skip"
+    assert payload["status"] == "error"
     assert "launcher" in payload["reason"]
 
 
@@ -529,9 +569,19 @@ def test_missing_link_read_model_is_not_approval(tmp_path: Path) -> None:
     assert "check unavailable" in result.stderr
 
 
-def test_unrelated_missing_link_does_not_block_declared_result(tmp_path: Path) -> None:
+def test_result_scoped_navigation_does_not_exempt_the_whole_closeout_check(tmp_path: Path) -> None:
     view = json.loads(json.dumps(DEFAULT_VIEW))
     view["notebook"]["result_links"]["status"] = "missing_links"
     view["notebook"]["result_links"]["missing_result_ids"] = ["other-result"]
     result = _run_gate(_convergence_json(tmp_path), _adjudication(tmp_path, GOOD_DECLARATION), _project_root(tmp_path, view))
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1
+    assert "whole-notebook closeout" in result.stderr
+
+
+def test_none_declaration_cannot_exempt_missing_adopted_result_navigation(tmp_path: Path) -> None:
+    view = json.loads(json.dumps(DEFAULT_VIEW))
+    view["notebook"]["result_links"]["status"] = "missing_links"
+    body = "## Result registration\n\n- Headline result: none — no named result\n- Supersedes: none\n- Rewritten sections: none\n"
+    result = _run_gate(_convergence_json(tmp_path), _adjudication(tmp_path, body), _project_root(tmp_path, view))
+    assert result.returncode == 1
+    assert "structure=missing_links" in result.stderr

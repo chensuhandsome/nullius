@@ -193,7 +193,7 @@ preview then apply:
 nullius init --refresh --dry-run
 nullius init --refresh
 
-Refresh preserves an existing AGENTS.md byte-for-byte when it differs from the current template. To update its guidance, render a current scaffold in a temporary external root and manually merge the desired changes. Refresh may synchronize existing machine-managed notebook and index blocks, while preserving user-owned content and not inserting missing blocks. It does not migrate user-owned report files. For a project that predates
+Refresh preserves an existing AGENTS.md byte-for-byte when it differs from the current template. Template changes do not automatically update existing projects. To update guidance, render a current scaffold in an anonymous temporary external root and manually merge the desired changes, including notebook review instructions, into the existing user-owned files. Refresh may synchronize existing machine-managed notebook and index blocks, while preserving user-owned content and not inserting missing blocks. It does not migrate user-owned report files. For a project that predates
 the main-report registry, checkpoint it, render a current scaffold in a separate
 temporary external root with `nullius init --project-root <temporary-root>`, copy
 only a missing reports/main_research_report_template.md, and manually merge the
@@ -313,4 +313,12 @@ MIT
 
 历史 `team/runs/<run_id>/` 仍可读取、索引、引用和导出，保留原路径与有效性记录；新运行只写 `artifacts/runs/<run_id>/`。历史编号不能用于新执行。同名目录报告歧义，导出可用 `--run-root team/runs` 指定原位置。不可读历史目录报告为不可用，不阻断无关的可读记录。
 
-科研结果采用时，engine 与 file 模式都须重写 notebook 中受影响的正文，保留假设、推导步骤、解释和局限，并直接链接已登记的结果文件。`nullius current` 与 `status --json` 的 `notebook.result_links` 会报告正文缺失的结果链接；自动结果表不计入。链接存在仅证明可导航，不能证明推导完整或正确。`notebook check --result <result-id>` 为外部 agent 提供只读收尾检查，缺失链接时返回非零；`notebook sync` 只刷新自动表。详见[笔记检查范围](../packages/orchestrator/README.md#human-notebook-integration)。
+科研结果采用时，engine 与 file 模式都须重写 notebook 中受影响的正文，保留假设、推导步骤、解释和局限，并直接链接已登记的结果文件。完成编辑并刷新自动块后，运行 `nullius notebook review --model claude/opus`，以重复的 `--dependency <project-relative-path>` 声明必要依赖，再运行 `nullius notebook check --json`。检查分别报告 `structure`（`result_links`）与 `content_review`；只有结构通过且当前全篇正文审查 accepted 才成功。`--result` 只缩小链接范围，正文始终审查全文；`--structure-only` 的成功只证明导航。
+
+正文审查实际调用 reviewer，默认硬超时 1200 秒、一次执行、不自动重试。输入冻结完整 UTF-8 notebook（包括自动块）与依赖的实际字节 SHA-256，涵盖未提交编辑；字节变化使旧报告 stale，历史报告仍可读取。逐节全文覆盖与源锚定理由须检查推导完整性、逻辑、符号、定义、假设和约定。缺失、部分、失败、unavailable、invalid 或 stale 均不能通过。链接、自动表、公式数量、勾选项和作者自评不能替代正文判定。`current` 与 `status` 的 `notebook.content_review` 只读报告，不自动启动 reviewer，也不妨碍普通状态和历史读取。语义审查不证明科学真理，单 reviewer 的独立性局限须明确保留；具体结论仍须对应的推导、数值或文献验证。详见[笔记检查范围](../packages/orchestrator/README.md#human-notebook-integration)。
+
+收敛 fold 与最终 file closeout 都必须调用无 `--result` 的 `nullius notebook check --json`；`none` 声明或 launcher 缺失不构成例外。`--result` 仅用于缩小结构诊断范围，不能替代覆盖所有当前结果的最终默认检查。
+
+默认结构检查要求结果注册表存在且有效，并检查全部登记行，包括已被替代的行；只有当前结果须在人工正文中有直接链接。closeout 检查失败时，普通状态和历史读取仍可使用。
+
+自动链接的二进制或过大文件进入 `opaque_links`，仅作为不可变快照及 SHA-256 定位符，参与 review-swarm manifest 新鲜度校验，不嵌入正文包、也未被读取。报告的 `opaque_sources` 必须逐项说明 path、hash 和 `required_for_reasoning`；缺少评估或存在推理必需但未读的来源都不能通过。应提供经独立核对的可读文本依赖；哈希身份不等于语义阅读。notebook 与显式 `--dependency` 仍须严格 UTF-8，文本闭包最多 1 MiB、快照总存储最多 64 MiB，超限拒绝而非静默截断。目前仅接受 reviewer tool mode `none`，其他模式如实标为 unavailable；单 reviewer 不构成跨模型家族 quorum。

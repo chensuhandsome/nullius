@@ -6,6 +6,20 @@ It also does not elevate optional project-root support files into URI authority.
 
 [`project-mcp`](../packages/project-mcp/README.md) and the [personal plugin](../packages/skills-market/docs/PERSONAL_PLUGIN.md) add no URI scheme or MCP resource surface. `nullius runtime path` and host-private runtime configuration resolve local installation paths only; they add no URI authority. `project_file_read` reads permitted real files under `NULLIUS_PROJECT_ROOT` in bounded chunks; it is not a resolver for the schemes below. Provider caches outside the bound project are not exposed through that file API. A delivery ID identifies a transport response in the existing run-manifest machinery, not a new research artifact namespace.
 
+Notebook content-review evidence uses existing `ArtifactRef` references for its
+verification subject, check-run, verdict and coverage records; it introduces no
+URI scheme. The reviewed complete UTF-8 notebook (automatic block included) and
+required declared dependencies are pinned by SHA-256 of their actual bytes,
+including uncommitted edits. A URI or commit alone cannot establish current
+content acceptance. See [human notebook integration](../packages/orchestrator/README.md#human-notebook-integration)
+for the full-text review contract.
+
+Automatically linked binary or oversized sources appear as immutable
+`opaque_links` snapshots and SHA-256 locators, included in manifest freshness
+without embedding or reading their content. `opaque_sources` assesses each
+path/hash/`required_for_reasoning`; missing assessments and necessary unread
+sources cannot grant content acceptance. A hash locator proves identity only.
+
 ## Covered Schemes
 
 The current emitted/resolved URI schemes covered by this registry are `hep://`, `pdg://`, `orch://`, `rep://`, `hepdata://`, `openalex://`, `zotero://`, `file://`, and `project://`.

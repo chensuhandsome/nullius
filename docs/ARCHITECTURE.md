@@ -28,7 +28,7 @@ Moving or copying the runtime does not make a Nullius development checkout eligi
 - Shared gate-result contracts express the gate's real lifecycle: convergence gates use `convergence_gate_result_v1`, while the domain-neutral pre-dispatch delegation-budget quality gate uses `delegation_budget_gate_result_v1` with `pass | fail | input_error`; preflight validation is not modeled as convergence.
 - `nullius` remains the stateful CLI front door. `orch_*` remains the MCP/operator counterpart of that same control plane. Main-report structure is owned by `packages/project-contracts`; `nullius report-validate` is a thin CLI consumer.
 - `research-harness` is the agent-client skill entrypoint for Codex / Claude Code / OpenCode project continuation. It does not own state or execution; it restores `.nullius/` plus durable project files, routes milestone work to `research-team`, routes Markdown note cleanup to `markdown-hygiene`, routes HEP evidence work to `hep-mcp`, and folds results back into `research_contract.md`, `research_plan.md#Current Status`, and `artifacts/runs/<run_id>/`.
-- `nullius init` writes `.nullius/HARNESS` as the machine-readable project handshake. Agents should treat its presence as a mandatory `nullius status --json` receipt trigger before new work, milestone execution, closeout, or handoff. `nullius init --refresh` creates missing support guidance but the scaffold preserves differing existing `AGENTS.md` instructions and user-owned seed content. The CLI may synchronize existing machine-managed notebook and index blocks, without inserting missing blocks. Update existing guidance by rendering a scaffold in a temporary external root and merging the desired changes explicitly.
+- `nullius init` writes `.nullius/HARNESS` as the machine-readable project handshake. Agents should treat its presence as a mandatory `nullius status --json` receipt trigger before new work, milestone execution, closeout, or handoff. `nullius init --refresh` creates missing support guidance but the scaffold preserves differing existing `AGENTS.md` instructions and user-owned seed content. The CLI may synchronize existing machine-managed notebook and index blocks, without inserting missing blocks. Template changes do not automatically update existing projects. Update guidance by rendering a scaffold in an anonymous temporary external root and manually merging desired changes, including notebook review instructions, into existing user-owned files.
 - Projects declare where their truth lives with `nullius init --mode=<engine|file>` (works on fresh and already-initialized roots): `engine` means the run/approve lifecycle drives the work; `file` means work is executed by hand or external runners, durable truth lives in the project files and dated run directories, and an idle `run_status` is normal (declared file-mode also drops the plan-focus reconnect warning). The declaration is descriptive, never enforcing — no command is disabled in either mode, and it can be re-declared at any time the same way. Human decisions made in conversation are recorded via `nullius decision record` / `nullius decision pending` into `.nullius/decisions.jsonl` (read back with `nullius decision list`); the status receipt carries `execution_mode`, the decision ledger, and a diagnostic-only hint when an undeclared project looks file-mode in practice. Decision identity has two phases because branch-time allocation and durable citation have different requirements: recording mints a six-character random Crockford-base32 handle with no timestamp, suitable for uncoordinated branch-local relations. The raw draw carries 30 unbiased random bits ($32^6 = 2^{30}$); candidates that also spell durable `D<n>` ids or collide with local identities are redrawn, so the exact pair-collision probability is context-dependent. With no local reservations it is $1/(2^{30}-90{,}000)\approx 9.314\times 10^{-10}$, slightly above $2^{-30}$: probabilistic, not structural, with merged collisions detected fail-closed. `--resolves` closes only an earlier open `pending` entry; `--relates` records non-closing context to an earlier readable `decided` or `pending` entry. On replay, an unrecognized persisted relation is ignored and reported under `decision_ledger.unrecognized_relations` while its containing record remains counted and addressable. A legacy or unknown non-empty string `kind` is normalized conservatively to current `decided` semantics, with the original value retained as `source_kind` and reported under `normalized_kinds`; only the exact persisted `pending` kind creates an open item, while an otherwise valid `resolves` on a normalized entry still closes its pending target. After branch tails are integrated on the authoritative trunk, `nullius decision land` atomically assigns the next permanent `D<n>` ids in trunk file order, rewrites handle-valued relations, and retains each mapping as `provisional_id`. Existing `D<n>` ledgers are valid with zero migration: their entries remain readable, counted, and resolvable by already-cited ids. Presentation order comes from the millisecond-precision `ts`, not from provisional identity. Local minting avoids current ids and retained mappings. Duplicate detection remains form-agnostic and fail-closed: `decision list` exits non-zero and names the lines for duplicate current ids or a provisional id that is not one-to-one, the receipt exposes `decision_ledger.duplicate_ids` and `decision_ledger.ambiguous_provisional_ids`, new relation writes refuse an ambiguous target, and `decision land` changes no bytes until the collision is repaired. Provisional entries are otherwise valid and remain in all status counts; `decision_ledger.unlanded_count` makes the trunk-side landing obligation explicit. A non-no-op landing refuses a ledger with no write permission bit. Its last-moment source check detects edits made while the replacement is prepared, but POSIX supplies no portable compare-and-swap rename against a non-cooperating writer. If rename succeeds but parent-directory durability cannot be confirmed, the CLI reports commit status uncertain; inspect with `decision list` using the same project root and rerun `decision land` there. A canonical no-op retry fsyncs the parent directory to confirm the visible entry durably.
 - Provider MCP surfaces stay MCP-first. We do not mass-convert provider MCP into CLI because those surfaces are bounded atoms, not stateful workflow shells.
 - `idea-mcp` remains experimental and must not reclaim root workflow authority; the idea-engine has been restarted into a probability-managed idea portfolio, and the idea-engine search/eval runtime is archived rather than a default capability-expansion lane, with contracts + store retained and scoring consuming an external belief-graph posterior (pinned tool, current pin gaia-lang==0.5.0a4).
@@ -215,9 +215,45 @@ The generic scaffold creates `project_index.md`; the team helper updates only ex
 
 Existing `PROJECT_INDEX_AUTO` blocks are historical, unmaintained observations; the team helper neither parses nor updates them. Current `RUN_INDEX` navigation and curated result/report registries have separate owners. Do not silently rewrite or delete an old block.
 
-The shared traceability read model also exposes `notebook.result_links`, a
-necessary link check between adopted result artifacts and human notebook
-sections. `notebook check` provides a read-only, optionally result-scoped
-closeout check for external-agent/file-mode execution. It does not infer
-scientific completeness. Team convergence consumes the same links for its
-declared headline and rewritten sections; automatic tables never count.
+The shared traceability read model exposes `notebook.result_links` for structural
+navigation and `notebook.content_review` for current full-text semantic review.
+`notebook review --model <SPEC>` executes the existing review-swarm launcher once,
+with a default hard 1200-second timeout and no automatic reviewer retry. It
+freezes the complete UTF-8 notebook, including the automatic block, and declared
+required dependencies by SHA-256 of their actual bytes, including uncommitted
+edits. Review reports retain that identity and per-section full-text coverage,
+with source-anchored reasons for derivation completeness, logic, notation,
+definitions, assumptions, and conventions. Changed bytes make prior acceptance
+stale; historical reports stay readable.
+
+`notebook check` returns `structure` and `content_review` separately and succeeds
+only when structural navigation passes and the current full-text review is
+accepted. `--result` narrows only the structural scope; `--structure-only`
+establishes navigation alone. Missing, partial, failed, unavailable, invalid, or
+stale reviews never satisfy closeout. File and engine convergence consume the
+same current-version contract. Status/current read the reports without executing
+a reviewer or blocking ordinary state or historical reads.
+
+Review evidence reuses verification subject/check-run/verdict/coverage and
+`ArtifactRef` contracts as a supporting semantic check, never as decisive
+computation validation. Links, automatic tables, formula counts, checklists and
+author self-assessment cannot determine the content verdict. Semantic acceptance
+is bounded by the reviewer's coverage and independence and does not prove
+scientific truth or replace result-specific verification.
+
+Automatically linked binary or oversized files are immutable opaque snapshots
+and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
+freshness, but are neither embedded nor read. The report's `opaque_sources` must
+explain every path, hash and `required_for_reasoning`; a missing assessment or any
+required unread source prevents acceptance. Supply independently checked readable
+text dependencies for reasoning that depends on such material. Hash identity is
+not semantic reading. The notebook and explicit `--dependency` inputs require
+strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
+storage to 64 MiB, with refusal rather than silent truncation. This review
+currently accepts only tool mode `none`; other modes are unavailable. It executes
+one reviewer and does not establish a cross-family quorum.
+
+Converged folds invoke the same unscoped `nullius notebook check --json` required
+for final file closeout. `none` declarations and a missing launcher grant no
+exception. `--result` is a scoped structural diagnostic; it cannot substitute for
+the full default check, whose structural scope includes every current result.

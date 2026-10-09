@@ -35,6 +35,7 @@ import { recordFinalConclusionsToMemoryGraph } from '../computation/memory-graph
 import { createStateManager, requireState } from './common.js';
 import { OrchRunRequestFinalConclusionsSchema } from './schemas.js';
 import type { RunState } from '../types.js';
+import { notebookCloseoutGate } from '../notebook-result-links.js';
 import {
   assertBoundVerificationCheckRunValid,
   assertVerificationCheckRunValid,
@@ -267,7 +268,8 @@ function evaluateFinalConclusionsGate(projectRoot: string, runId: string): {
       verdict,
       coverage,
     });
-    return { gate, computationResult, computationResultPath, runDir };
+    return { gate: gate.decision === 'pass' ? notebookCloseoutGate(projectRoot) : gate,
+      computationResult, computationResultPath, runDir };
   } catch (error) {
     return {
       gate: {
@@ -782,6 +784,11 @@ export async function handleOrchRunRequestFinalConclusions(
 
   const satisfiedA5 = typeof state.gate_satisfied.A5 === 'string' ? state.gate_satisfied.A5 : null;
   if (satisfiedA5) {
+    const notebookGate = notebookCloseoutGate(projectRoot);
+    if (notebookGate.decision !== 'pass') return { status: 'not_ready', ready_for_final_conclusions: false,
+      gate_id: 'A5', gate_decision: notebookGate.decision, gate_summary: notebookGate.summary,
+      run_id: params.run_id, approval_id: satisfiedA5,
+      message: 'Historical A5 approval remains readable; current notebook acceptance is not satisfied.' };
     return {
       status: 'already_approved',
       ready_for_final_conclusions: true,

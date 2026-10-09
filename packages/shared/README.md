@@ -33,6 +33,27 @@ quality gate uses `delegation_budget_gate_result_v1` with
 `pass | fail | input_error`. Do not add non-convergence gate ids to the
 convergence envelope.
 
+Notebook content-review evidence reuses `verification_subject_v1`,
+`verification_check_run_v1`, `verification_subject_verdict_v1`,
+`verification_coverage_v1`, and `ArtifactRef` rather than defining another
+verification authority. It binds the complete UTF-8 notebook and required
+declared dependencies by SHA-256 of their actual bytes, including automatic
+blocks and uncommitted edits. The semantic check is supporting evidence;
+accepted prose review is neither decisive computation validation nor proof of
+scientific truth. Coverage and reviewer independence remain explicit limits.
+
+Automatically linked binary or oversized files are immutable opaque snapshots
+and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
+freshness, but are neither embedded nor read. The report's `opaque_sources` must
+explain every path, hash and `required_for_reasoning`; a missing assessment or any
+required unread source prevents acceptance. Supply independently checked readable
+text dependencies for reasoning that depends on such material. Hash identity is
+not semantic reading. The notebook and explicit `--dependency` inputs require
+strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
+storage to 64 MiB, with refusal rather than silent truncation. This review
+currently accepts only tool mode `none`; other modes are unavailable. It executes
+one reviewer and does not establish a cross-family quorum.
+
 ## Build & test
 
 ```bash

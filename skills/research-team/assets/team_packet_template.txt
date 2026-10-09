@@ -75,6 +75,42 @@ Artifact(s) checked:
 - {ready for next milestone / needs revision}
 - Blocking issues: [list or "none"]
 
+Scientific notebook closeout boundary:
+- This packet's excerpt, reproduction-summary table, and selected-claim verdict
+  cannot satisfy whole-notebook content acceptance.
+- Before closeout, in file or engine mode, the coordinator must execute
+  `nullius notebook review --model claude/opus` with necessary dependencies, then
+  run unscoped `nullius notebook check --json`. Structural navigation and `content_review` are
+  separate requirements. `--result` scopes links alone; `--structure-only`
+  establishes navigation alone.
+- Require accepted current full-text review bound to actual-byte SHA-256 of the
+  complete UTF-8 notebook, including the automatic block and uncommitted edits,
+  and necessary dependency bytes. Coverage must include every section and
+  source-anchored reasons on derivation completeness, logic, symbols, definitions,
+  assumptions and conventions. An excerpt-only or delta-only reading cannot pass.
+- Links, automatic tables, formula counts, checklists and writer self-assessment
+  cannot supply the verdict. Missing, partial, failed, unavailable, invalid or
+  stale review leaves closeout incomplete. Changed bytes require a new review;
+  preserve older reports as history. Semantic acceptance remains supporting
+  evidence, not decisive computation validation or proof of scientific truth.
+
+Automatically linked binary or oversized files are immutable opaque snapshots
+and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
+freshness, but are neither embedded nor read. The report's `opaque_sources` must
+explain every path, hash and `required_for_reasoning`; a missing assessment or any
+required unread source prevents acceptance. Supply independently checked readable
+text dependencies for reasoning that depends on such material. Hash identity is
+not semantic reading. The notebook and explicit `--dependency` inputs require
+strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
+storage to 64 MiB, with refusal rather than silent truncation. This review
+currently accepts only tool mode `none`; other modes are unavailable. It executes
+one reviewer and does not establish a cross-family quorum.
+
+Converged folds invoke the same unscoped `nullius notebook check --json` required
+for final file closeout. `none` declarations and a missing launcher grant no
+exception. `--result` is a scoped structural diagnostic; it cannot substitute for
+the full default check, whose structural scope includes every current result.
+
 ## 0) Reviewed subject and original inputs
 
 - Run/tag: (fill)
@@ -168,7 +204,10 @@ For each quantity: definition + code pointer + artifact pointer + uncertainty me
 - Q2:
 - Q3:
 
-## 5) Excerpt to review (keep it short)
+## 5) Excerpt to review (selected claims only)
+
+This excerpt supports the selected member cross-checks. It does not replace the
+full-text, current-byte notebook review required for scientific closeout.
 
 --- Notes excerpt (Markdown) ---
 <paste here>

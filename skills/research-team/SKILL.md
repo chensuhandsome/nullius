@@ -70,7 +70,27 @@ Use `research-team` when you want a project workflow with:
     is named as advisory by `nullius status --json` until adopted.
 - **Notebook split**: `research_notebook.md` is the human entry; `research_contract.md` is the machine-stable gate surface.
 - **Memo discipline (mandatory)**: `research_notebook.md` is a self-contained research memo organized like a paper — connected prose with complete derivations, computations, and analysis — not a change log. Its quality bar: a colleague in the field could read it alone (no runs, no plan) and come away with the project's full current understanding, able to re-derive every load-bearing result. It updates by **rewriting the affected sections into a self-consistent whole**, never by appending stage fragments ("this milestone changed X"); dated progress belongs to `research_plan.md` and `artifacts/runs/<run_id>/`, revision history to git. A milestone does not converge while the memo still describes the pre-milestone understanding: rewriting the affected memo sections is part of the milestone's deliverable, checked in the convergence review like any other artifact.
-- **Result-to-memo check**: a declared headline result must link its registered artifact from a declared rewritten human `##` section. The fold gate reads `notebook.result_links` from `nullius current --json`; `Rewritten sections: none`, an automatic results table, comments, or code examples cannot satisfy this. Direct inline and explicit reference links are supported; use a direct artifact link even when a topic note gives extended detail. This necessary navigation check does not establish scientific completeness: the convergence reviewer still reads the assumptions, derivation steps, interpretation and limitations. Historical gaps outside the declared result stay advisory.
+- **Result-to-memo structure**: a declared headline result must link its registered artifact from a declared rewritten human `##` section. The fold gate reads `notebook.result_links` from `nullius current --json`; `Rewritten sections: none`, an automatic results table, comments, or code examples cannot satisfy this. Direct inline and explicit reference links are supported; use a direct artifact link even when a topic note gives extended detail. This is navigation only; retired historical records remain readable, and every current result participates in the final unscoped structural check.
+- **Whole-notebook content review**: finish the notebook and refresh its automatic block, then execute `nullius notebook review --model claude/opus` with repeated `--dependency <project-relative-path>` for required supporting files. The existing review-swarm launcher executes once with a default hard 1200-second timeout (`--timeout-secs <N>` overrides it) and no automatic reviewer retry. Freeze SHA-256 of the complete UTF-8 notebook, automatic block included, and declared dependency bytes, including uncommitted edits. Commit and section stamps cannot replace byte identity. Require source-anchored reasons on derivation completeness, logic, notation, definitions, assumptions and conventions plus coverage of every section; neither an author assessment nor links, tables, formula counts or checklists supply a verdict. The reviewer receives the material and question without an expected verdict or the writer's initial judgment. A delta-only review cannot satisfy whole-notebook coverage.
+- **Current content acceptance at fold**: require `notebook.content_review` to be accepted for the current full notebook and dependencies, identically in file and engine mode. `nullius notebook check --json` reports `structure` and `content_review` separately; `--result` scopes links alone, while `--structure-only` success cannot grant closeout. Missing, partial, failed, unavailable, invalid or stale review is not acceptance. Any changed input bytes require a new full-text review; old reports remain readable. This supporting semantic evidence reuses verification subject/check-run/verdict/coverage and `ArtifactRef`, not decisive computation validation. It does not prove scientific truth; record single-reviewer limits on model, method and input independence and retain all claim-specific checks.
+
+Automatically linked binary or oversized files are immutable opaque snapshots
+and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
+freshness, but are neither embedded nor read. The report's `opaque_sources` must
+explain every path, hash and `required_for_reasoning`; a missing assessment or any
+required unread source prevents acceptance. Supply independently checked readable
+text dependencies for reasoning that depends on such material. Hash identity is
+not semantic reading. The notebook and explicit `--dependency` inputs require
+strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
+storage to 64 MiB, with refusal rather than silent truncation. This review
+currently accepts only tool mode `none`; other modes are unavailable. It executes
+one reviewer and does not establish a cross-family quorum.
+
+Converged folds invoke the same unscoped `nullius notebook check --json` required
+for final file closeout. `none` declarations and a missing launcher grant no
+exception. `--result` is a scoped structural diagnostic; it cannot substitute for
+the full default check, whose structural scope includes every current result.
+
 - **Reproducibility Capsule (mandatory)**: `research_contract.md` must include a filled capsule block (between `<!-- REPRO_CAPSULE_START -->` and `<!-- REPRO_CAPSULE_END -->`).
 - **Sweep semantics (mandatory)**: capsule must include `### G) Sweep semantics / parameter dependence (MANDATORY)` (even if “no sweep”: declare baseline + held-fixed constants).
 - **Branch semantics (mandatory when applicable)**: capsule must include `### H) Branch Semantics / Multi-root Contract (MANDATORY)`; if multi-root quantities exist (multiple solutions/branches), you must declare branches/assignment/outputs/invariants/diagnostics.
@@ -126,6 +146,11 @@ Work toward a candidate moves through three phases:
 1. **Bounded development.** The implementer iterates freely inside the delegation's time box: diagnostic runs, targeted tests, and build fixes are legitimate development work, not budgeted "attempts" (an attempt is a deliberate re-entry into the delivered task — see the `research-harness` attempt semantics). Contracting development down to zero diagnostic invocations or a single measured test execution applies frozen-acceptance discipline to the wrong phase; the acceptance-time single measured run belongs to the frozen candidate, not to the implementation work that produced it.
 2. **Stabilization.** Merge every known blocking fix into one candidate, run the full local test surface once, and freeze the candidate's identity (input and code hashes). One stabilization pass per batch of findings — not one per finding.
 3. **Acceptance.** The frozen candidate gets its review pair — the member cycle, plus the fresh-checkout independent reproduction check where the project has opted into one. Opt-in status covers only that fresh-checkout rerun: the production-scale falsifiers, method-precondition residuals, and independent recomputation that the non-negotiable contracts above require for load-bearing claims remain mandatory regardless. Findings are severity-graded per the strict-convergence contract above; the fix batch re-enters at stabilization and the confirmation round reviews the exact delta from the reviewed baseline unless an escalation trigger fires (changed formulas or assumptions, changed data model or global invariants, changed origin-traceability roots, or a reviewer requests the full artifact).
+
+Whole-notebook content acceptance is an exception to delta-only confirmation:
+`nullius notebook review` always covers the full current notebook and dependencies,
+including when only one section changed. Its supporting semantic verdict does
+not replace the milestone's independent derivation or numerical verification.
 
 Placement rules complete the picture:
 

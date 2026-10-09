@@ -164,14 +164,60 @@ before crediting the review; there is no automatic family rotation to rely on.
 
 ## Single-reviewer entry (`review_one.py`)
 
+### Full research-notebook review
+
+Use the public `nullius notebook review --model <spec>` command for a
+version-bound review of the whole research notebook. Its `notebook` role uses
+this same `review_one.py` and `run_multi_task.py` execution path, records the
+same `inputs/review_input_manifest.json`, and checks freshness before launch,
+after execution, and again at current-version acceptance. The public command
+defaults to a hard 1200-second budget and one runner invocation. Declare
+additional necessary files with repeated `--dependency <path>`; local linked
+Markdown text dependencies are also discovered. It refuses unsupported text,
+missing local files and oversized packets without truncation. Directory and
+remote links are locators; the reviewer must reject a necessary dependency
+whose contents were not provided.
+
+The coverage inventory partitions every line of the full UTF-8 notebook at
+all top-level Markdown heading depths, including Setext and front matter.
+No extraction removes comments, code or automatic blocks from the byte
+binding. Automatic blocks remain navigation, not a derivation. The real
+reviewer must read every section and supplied dependency, quote concrete
+source anchors and explain the reasoning it examined: definitions,
+assumptions, conventions, non-obvious intermediate steps, cross-section
+logic, notation and validity limits. A selected-result review, links,
+formula counts, self-evaluation, checklists or a hand-authored PASS cannot
+substitute. Cross-file derivations cannot stand for necessary reasoning
+inside the notebook. Notebook confirmation always covers the full current
+notebook and dependencies; the generic delta-only option below is not a
+whole-notebook acceptance route.
+
+Evidence uses canonical verification subject/check-run/verdict/coverage and
+ArtifactRef records. A notebook check-run is supporting semantic review,
+never a placeholder decisive computation binding. `nullius notebook check`
+reports structure and `content_review` separately and requires current
+accepted full coverage by default. `--result` only scopes structure;
+`--structure-only` only checks navigation. Missing, unavailable, failed,
+partial, truncated, malformed or stale review evidence supplies no closeout
+acceptance in either file or engine mode. Previous reports and original
+verdicts remain readable. Record model family, method and input independence
+separately; a single reviewer and fresh hashes do not establish scientific
+truth or complete semantic independence.
+
+The input manifest and execution records are content-bound evidence, not
+cryptographic signatures against an owner who deliberately rewrites the
+entire record and every hash. Preserve their hashes in a separately trusted
+closeout record when that threat is in scope.
+
 `scripts/bin/review_one.py` is the one-command way to get a single independent
 reviewer with zero hand-written files. It builds the system prompt from a role
 template, embeds your artifacts (or a git diff) into an auto-assembled packet,
 then delegates to `run_multi_task.py` (same directory), inheriting runner
 discovery, per-backend read-only tool modes, the process-group timeout,
 `trace.jsonl`/`meta.json` artifacts and contract checking. Its delegated run
-also opts in to one orchestrator-level empty-output retry
-(`--retry-empty-output 1`; the launcher default is `0`).
+also opts in to one orchestrator-level empty-output retry except for the notebook
+role, which always uses zero retries (`--retry-empty-output 0`). The launcher
+default is `0`; other review_one roles use `1`.
 
 ```bash
 python3 scripts/bin/review_one.py \
@@ -288,6 +334,12 @@ Flags:
   every file is embedded and recorded in command-line order. Duplicate paths are
   rejected instead of being silently collapsed, and a context path identical to
   an `--artifact` target is rejected for every reviewer role.
+- `--locator PATH` — notebook-only raw-byte source locator. Its bytes and hash
+  enter the same review input manifest and pre/post/final freshness checks,
+  without embedding or claiming to read its binary/oversized content. The scope
+  inventory must list it under `opaque_links`; its necessity assessment belongs
+  in `opaque_sources`. Missing assessments or required unread sources refuse
+  notebook acceptance. Supply checked readable text dependencies when needed.
 - `--out-dir DIR` — defaults to `./review-one-<UTC timestamp>/`; the assembled
   inputs are persisted under `<out-dir>/inputs/` for audit. Every run also writes
   `inputs/review_input_manifest.json`, which records the SHA-256 of each target,

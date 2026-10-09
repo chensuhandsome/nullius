@@ -193,7 +193,7 @@ preview then apply:
 nullius init --refresh --dry-run
 nullius init --refresh
 
-Refresh preserves an existing AGENTS.md byte-for-byte when it differs from the current template. To update its guidance, render a current scaffold in a temporary external root and manually merge the desired changes. Refresh may synchronize existing machine-managed notebook and index blocks, while preserving user-owned content and not inserting missing blocks. It does not migrate user-owned report files. For a project that predates
+Refresh preserves an existing AGENTS.md byte-for-byte when it differs from the current template. Template changes do not automatically update existing projects. To update guidance, render a current scaffold in an anonymous temporary external root and manually merge the desired changes, including notebook review instructions, into the existing user-owned files. Refresh may synchronize existing machine-managed notebook and index blocks, while preserving user-owned content and not inserting missing blocks. It does not migrate user-owned report files. For a project that predates
 the main-report registry, checkpoint it, render a current scaffold in a separate
 temporary external root with `nullius init --project-root <temporary-root>`, copy
 only a missing reports/main_research_report_template.md, and manually merge the
@@ -311,8 +311,29 @@ The generic scaffold creates `project_index.md`; the team helper updates only ex
 
 Existing `PROJECT_INDEX_AUTO` blocks are historical, unmaintained observations; the team helper neither parses nor updates them. Current `RUN_INDEX` navigation and curated result/report registries have separate owners. Do not silently rewrite or delete an old block.
 
-At scientific result closeout, external agents also update the human notebook
-and run `nullius notebook check --result <result-id>`. Automatic results tables
-cannot replace the derivations or explanations. See
+At scientific result closeout, update the human notebook, run
+`nullius notebook review --model claude/opus` with its required dependencies, then
+`nullius notebook check --json`. The check reports structural
+links and current full-text content review separately; `--result` scopes only
+the links. File and engine mode require the same accepted current review.
+Automatic tables, links, formula counts, checklists, and writing self-assessment
+cannot supply that verdict. `--structure-only` establishes navigation alone;
+semantic acceptance does not prove scientific truth. See
 [human notebook integration](packages/orchestrator/README.md#human-notebook-integration)
-for the structural check's scope and limits.
+for frozen-input, coverage, execution, and independence requirements.
+
+Converged folds invoke the same unscoped `nullius notebook check --json` required
+for final file closeout. `none` declarations and a missing launcher grant no
+exception. `--result` is a scoped structural diagnostic; it cannot substitute for
+the full default check, whose structural scope includes every current result.
+The default structural check requires a present, valid result registry and
+validates every registered row, including superseded rows. Only current results
+create human-section link obligations. Ordinary status and history reads remain
+available when the closeout check fails.
+
+Automatically linked binary or oversized sources are hash-pinned `opaque_links` locators,
+not read evidence. Each needs an `opaque_sources` assessment of its path, hash and
+`required_for_reasoning`; a required unread source blocks acceptance. Use independently checked readable text dependencies.
+The text closure is limited to 1 MiB and snapshots to 64 MiB without truncation;
+notebook and explicit dependencies require strict UTF-8. Only reviewer tool mode
+`none` is accepted; other modes are unavailable, and no cross-family quorum is claimed.

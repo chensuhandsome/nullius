@@ -48,16 +48,36 @@ Three disciplines keep it that way:
    `artifacts/runs/<run_id>/`, referenced by link where relevant. If a section can be deleted
    without losing understanding, delete it.
 
-At each scientific result fold, including file mode, rewrite the affected sections
-without waiting for whole-project acceptance. Link each current result's registered
-artifact directly from its human `##` section. `nullius current --json` exposes
-`notebook.result_links`: it checks direct inline and explicit reference links,
-not recursive documents, HTML, shortcut references or indented link lines. Automatic tables, comments
-and code examples do not count. Missing links identify unfinished integration;
-links present do not establish complete derivations or scientific correctness.
-`nullius notebook check --result <result-id>` is the read-only check at result
-closeout; a missing link returns nonzero. `nullius notebook sync` only refreshes
-the automatic table.
+At each scientific result fold, in file or engine mode, rewrite the affected
+sections without waiting for whole-project acceptance. Link each current result's
+registered artifact directly from its human `##` section. `nullius current --json`
+exposes `notebook.result_links` for direct inline and explicit reference links,
+not recursive documents, HTML, shortcut references or indented link lines.
+Automatic tables, comments and code examples do not count. These links establish
+navigation only.
+
+After completing the whole notebook and refreshing its automatic block, run
+`nullius notebook review --model <SPEC>` with repeated
+`--dependency <project-relative-path>` for required supporting files, then
+`nullius notebook check --json` without a result selector. Review executes once with a
+default hard 1200-second timeout (`--timeout-secs <N>` changes it) and no automatic
+retry. It freezes the complete UTF-8 notebook, automatic block included, and
+declared dependency SHA-256 from actual bytes, including uncommitted edits.
+
+The reviewer must read every section and give source-anchored reasons addressing
+derivation completeness, logical consistency, symbols, definitions, assumptions
+and conventions. The reviewer receives the material and question without an
+expected verdict or the writer's initial judgment. Links, automatic tables,
+formula counts, checklists and writing self-assessment cannot supply that verdict.
+The read-only check reports `structure` and `content_review` separately and
+requires structural success plus accepted current full-text review. `--result`
+scopes links alone and is only a diagnostic; final closeout uses the default
+unscoped check for every current result. `none` declarations and a missing
+launcher grant no exception. `--structure-only` success establishes navigation alone.
+Missing, partial, failed, unavailable, invalid or stale review does not pass.
+Any changed notebook or dependency bytes require a new review; history remains
+readable. Semantic acceptance does not prove scientific truth or replace
+claim-specific checks, and a single reviewer's independence limits remain explicit.
 
 Suggested skeleton — rename, merge, and grow sections to fit the actual
 problem; headings with real meaning beat generic labels:

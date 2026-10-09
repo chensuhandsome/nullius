@@ -101,6 +101,20 @@ def check_json_review_contract_text(text: str) -> list[str]:
         errs.append(f"bad verdict: {verdict!r} (expected PASS or FAIL)")
     if "blocking_issues" in obj and not isinstance(obj["blocking_issues"], list):
         errs.append("blocking_issues must be an array")
+    if obj.get("review_kind") == "notebook":
+        for field in ("scope_sha256", "cross_section_reasoning"):
+            if not isinstance(obj.get(field), str) or not obj[field].strip():
+                errs.append(f"notebook review requires non-empty {field}")
+        for field in ("sections", "dependencies", "missing_dependencies"):
+            if not isinstance(obj.get(field), list):
+                errs.append(f"notebook review requires {field} array")
+        for field in ("coverage_status", "dependency_closure"):
+            if obj.get(field) not in ("complete", "incomplete"):
+                errs.append(f"notebook review requires explicit {field}")
+        if obj.get("schema_version") != 1:
+            errs.append("notebook review schema_version must equal 1")
+        if verdict == "PASS" and obj.get("blocking_issues"):
+            errs.append("notebook PASS cannot carry blocking issues")
     return errs
 
 

@@ -45,6 +45,7 @@ _SKILL_ROOT = _SCRIPT_DIR.parents[1]
 _TEMPLATES_DIR = _SKILL_ROOT / "templates"
 _ROLES = (
     "generic",
+    "notebook",
     "correctness",
     "execution-adversary",
     "source-extraction",
@@ -73,8 +74,8 @@ _PACKET_FRAMING = """\
 Review the material embedded below against your system-prompt role. Everything
 you are expected to judge is embedded in this packet; ground every finding in
 the embedded text (quote the exact line or name the exact location). Produce
-exactly the output format your system prompt requires: the verdict first line,
-then all required section headers.
+exactly the output format your system prompt requires, without adding a
+different verdict line or section format.
 """
 
 
@@ -913,6 +914,11 @@ def _review_input_manifest(
         add("neutral_extraction_request", [extraction_request])
     add("additional_context", contexts)
     add("persisted_review_input", persisted_review_inputs)
+    for raw in getattr(args, "locator", []) or []:
+        locator = Path(raw).expanduser().resolve()
+        data = locator.read_bytes()
+        file_inputs.append({"kind": "opaque_locator", "path": str(locator),
+                            "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)})
 
     target_diff = None
     if diff_text is not None:
@@ -1007,6 +1013,9 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     ap.add_argument("--context", action="append", default=[], metavar="PATH",
                     help="Optional context file appended to the packet. Repeatable; all files are "
                          "embedded in command-line order.")
+    ap.add_argument("--locator", action="append", default=[], metavar="PATH",
+                    help="Notebook-only opaque source: hash its raw bytes for freshness, do not embed content. "
+                         "The coverage inventory must describe it as unread locator evidence.")
     ap.add_argument("--out-dir", type=Path, default=None,
                     help="Output directory (default: ./review-one-<UTC timestamp>/).")
     ap.add_argument("--host-family", default=None, metavar="FAMILY",
@@ -1020,6 +1029,8 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                          "hermetic runs.")
     ap.add_argument("--timeout-secs", type=int, default=None,
                     help="Explicit hard budget across phases/retries/fallback; default: no hard budget.")
+    ap.add_argument("--max-attempts", type=int, default=None,
+                    help="Maximum launcher subprocess invocations per seat, including retries.")
     ap.add_argument("--claude-live-capture", action="store_true", help="Opt into durable Claude stream events and partial output.")
     ap.add_argument("--expected-secs", type=float, default=None, help="Soft expected duration; never terminates generation.")
     ap.add_argument("--inactivity-secs", type=float, default=None, help="Opt-in observable stream inactivity diagnostic; disabled by default.")
@@ -1054,12 +1065,13 @@ def _validate_model(args: argparse.Namespace) -> None:
 def _delegate(args: argparse.Namespace, *, out_dir: Path, system_path: Path, packet_path: Path) -> int:
     argv = ["run_multi_task.py", "--out-dir", str(out_dir), "--system", str(system_path),
             "--prompt", str(packet_path), "--models", str(args.model).strip(), "--check-review-contract",
-            # The launcher default is 0 (strictly additive for its other
-            # path-pinned consumers); this entry opts in to one orchestrator-level
-            # rerun when the runner exits 0 but writes an empty output file.
-            "--retry-empty-output", "1"]
+            # Notebook closeout has one execution and no automatic retry.
+            # Other roles retain the existing empty-output recovery policy.
+            "--retry-empty-output", "0" if args.role == "notebook" else "1"]
     if args.timeout_secs is not None:
         argv += ["--timeout-secs", str(args.timeout_secs)]
+    if args.max_attempts is not None:
+        argv += ["--max-attempts", str(args.max_attempts)]
     if args.claude_live_capture:
         argv.append("--claude-live-capture")
     for name in ("expected_secs", "inactivity_secs", "inactivity_grace_secs"):
@@ -1126,6 +1138,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         _validate_model(args)
         _validate_source_review_inputs(args)
+        if args.locator and args.role != "notebook":
+            raise ValueError("--locator is only valid for notebook review with a frozen coverage inventory")
+        if args.role == "notebook":
+            if args.diff or len(args.artifact or []) != 1 or not args.context:
+                raise ValueError("notebook review requires one full notebook artifact and its frozen coverage inventory as context; diff-only review is refused")
+            for raw in [*(args.artifact or []), *(args.context or [])]:
+                _require_strict_utf8_comparison_target(Path(raw).expanduser().resolve(), flag="notebook input")
         template_path = _TEMPLATES_DIR / f"{args.role}.md"
         if not template_path.is_file():
             raise ValueError(f"role template not found: {template_path}")
@@ -1253,6 +1272,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
+    # Freeze-and-read is not enough: inputs can change while the packet is
+    # assembled. Check the same manifest immediately before launch as well.
+    pre, manifest_path = verify_review_freshness.verify_review_dir(out_dir)
+    pre["manifest_path"] = str(manifest_path)
+    run_multi_task._atomic_write_text(out_dir / "pre_review_freshness.json", json.dumps(pre, indent=2, sort_keys=True) + "\n")
+    if pre["status"] != "FRESH":
+        _print_summary(out_dir=out_dir, packet_path=packet_path, acceptance_status="STALE")
+        return STALE_ACCEPTANCE_EXIT_CODE
     rc = _delegate(args, out_dir=out_dir, system_path=system_path, packet_path=packet_path)
     try:
         freshness = _record_post_review_freshness(out_dir=out_dir)

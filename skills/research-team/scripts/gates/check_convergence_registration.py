@@ -26,8 +26,10 @@ Declaration grammar (the adjudication builder emits the fillable template):
     - Rewritten sections: "<heading>"; "<heading>"
     - Rewritten sections: none
 
-Checks (fail-closed, scoped to the DECLARED objects — historical defects on
-undeclared objects belong to `nullius current`, not to this fold):
+Checks (fail-closed; whole-notebook semantic acceptance is unconditional,
+while traceability declarations are scoped to their declared objects):
+  - current whole-notebook content_review must be accepted even if no named
+    result or rewritten section is declared;
   - a declared headline result must be a current, non-defective row of the
     results registry bound to the declared run (`nullius result set-current`
     at adjudication time is what puts it there);
@@ -50,14 +52,17 @@ undeclared objects belong to `nullius current`, not to this fold):
     list item, a link to the replacement run anywhere in the section, or a
     declared log-role section).
 
+The mandatory unscoped notebook check validates the complete result registry,
+including superseded rows; only current rows create human-section link duties.
+
 Scope limits (deliberate): this gate does not audit undeclared runs, does
-not enforce global ledger cleanliness, and does not re-check the cycle
+not enforce unrelated ledger cleanliness, and does not re-check the cycle
 run's own stamp — the run-creation entrances stamp automatically and the
 read model reports gaps.
 
-SKIP (exit 0) when: the cycle is not converged (upstream forbids folding
-anyway), or the project has no nullius launcher (the registration contract
-is mandatory only where the project has one).
+SKIP (exit 0) only when the cycle is not converged (upstream forbids folding
+anyway). A missing launcher makes current acceptance unavailable and refuses
+the fold; it never grants an exemption.
 
 Exit codes:
   0  PASS (or SKIP)
@@ -217,6 +222,13 @@ def verify_against_view(decl: Declaration, view: dict) -> list[str]:
     conflicting = set(runs.get("conflicting_stamps") or [])
     no_identity = set(runs.get("no_authoritative_identity") or [])
     notebook = view.get("notebook") or {}
+    content = notebook.get("content_review") or {}
+    if content.get("status") != "accepted":
+        failures.append(
+            "whole-notebook current-version content review is "
+            f"{content.get('status', 'missing')!r}: {content.get('reason', 'no executed full-text review')}; "
+            "execute `nullius notebook review --model <spec>` and recheck before scientific closeout"
+        )
     sections_by_heading: dict[str, list[dict]] = {}
     for entry in notebook.get("sections") or []:
         sections_by_heading.setdefault(entry.get("heading"), []).append(entry)
@@ -324,7 +336,7 @@ def verify_against_view(decl: Declaration, view: dict) -> list[str]:
 
 
 def load_view(project_root: Path) -> dict | None | str:
-    """Returns the parsed view, None when no launcher exists (SKIP), or an
+    """Returns the parsed view, None when no launcher exists, or an
     error string."""
     launcher = project_root / ".nullius" / "bin" / "nullius"
     if not launcher.is_file():
@@ -349,6 +361,35 @@ def load_view(project_root: Path) -> dict | None | str:
     if not isinstance(view, dict):
         return "`nullius current --json` produced a non-object"
     return view
+
+
+def current_notebook_acceptance(project_root: Path) -> str | None:
+    """Consume the same full closeout command as file-mode work, without a
+    declaration-based scope exemption or a duplicate freshness evaluator."""
+    launcher = project_root / ".nullius" / "bin" / "nullius"
+    try:
+        proc = subprocess.run(
+            [str(launcher), "--project-root", str(project_root), "notebook", "check", "--json"],
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return f"whole-notebook closeout check unavailable: {error}"
+    try:
+        result = json.loads(proc.stdout)
+    except ValueError:
+        return "whole-notebook closeout check returned invalid JSON"
+    if not isinstance(result, dict):
+        return "whole-notebook closeout check returned a non-object"
+    if proc.returncode != 0 or result.get("status") != "accepted" \
+            or (result.get("content_review") or {}).get("status") != "accepted" \
+            or (result.get("structure") or {}).get("status") not in ("linked", "not_applicable"):
+        return (
+            "whole-notebook closeout check refused: "
+            f"exit={proc.returncode}, structure={(result.get('structure') or {}).get('status', 'unavailable')}, "
+            f"content={(result.get('content_review') or {}).get('status', 'unavailable')}; "
+            "`nullius notebook check` must accept current structure and full-text review"
+        )
+    return None
 
 
 def main() -> int:
@@ -397,9 +438,9 @@ def main() -> int:
         return _input_error(f"project root not found: {args.project_root}")
     view = load_view(args.project_root)
     if view is None:
-        return _skip(
-            "no nullius launcher at .nullius/bin/nullius; the registration contract is mandatory "
-            "only where the project has one"
+        return _input_error(
+            "no nullius launcher at .nullius/bin/nullius; current whole-notebook acceptance "
+            "is unavailable. Reconnect the external project with `nullius init --runtime-only`"
         )
     if isinstance(view, str):
         return _input_error(view)
@@ -419,6 +460,9 @@ def main() -> int:
     failures = verify_against_view(decl, view)
     if failures:
         return _fail(failures)
+    notebook_failure = current_notebook_acceptance(args.project_root)
+    if notebook_failure is not None:
+        return _fail([notebook_failure])
     print(json.dumps({
         "status": "pass",
         "headline": (

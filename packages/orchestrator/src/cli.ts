@@ -87,7 +87,11 @@ export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<n
   if (parsed.command === 'notebook') {
     if (parsed.action === 'check') {
       const { runNotebookCheck } = await import('./notebook-result-links.js');
-      return runNotebookCheck(projectRoot, parsed.resultId, parsed.json, io);
+      return runNotebookCheck(projectRoot, parsed.resultId, parsed.json, io, parsed.structureOnly);
+    }
+    if (parsed.action === 'review') {
+      const { runNotebookReview } = await import('./notebook-content-review.js');
+      return runNotebookReview(projectRoot, { model: parsed.model!, dependencies: parsed.dependencies ?? [], timeoutSecs: parsed.timeoutSecs ?? 1200, json: parsed.json }, io);
     }
     const { refreshNotebookCurrentState, checkCurrentStateBlock } = await import('./notebook-current-state.js');
     try {
@@ -190,7 +194,7 @@ export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<n
       } catch {
         // surfaced as out-of-sync on the next status/current read
       }
-      io.stdout(`Human notebook integration is separate: rewrite the affected sections, then run nullius notebook check --result ${row.result_id} before closeout.\n`);
+      io.stdout('Human notebook integration is separate: rewrite the affected sections, execute a whole-notebook review, then run nullius notebook check --json before closeout.\n');
       return 0;
     } catch (error) {
       io.stderr(`result set-current: ${error instanceof Error ? error.message : String(error)}\n`);

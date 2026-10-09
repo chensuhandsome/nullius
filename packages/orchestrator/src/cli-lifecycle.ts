@@ -340,6 +340,9 @@ function writeStatusText(io: CliIo, payload: Record<string, unknown>, statusProj
   if (traceability?.runs) {
     io.stdout(`${renderRunDirectoryCounts(traceability.runs)}\n`);
   }
+  if (traceability?.notebook) {
+    io.stdout(`notebook_structure: ${traceability.notebook.result_links.status}\nnotebook_content_review: ${traceability.notebook.content_review.status} — ${traceability.notebook.content_review.reason}\n`);
+  }
   const digestError = payload.project_recent_digest_error;
   if (digestError && typeof digestError === 'object') {
     io.stdout(`project_recent_digest_error: ${JSON.stringify(digestError)}\n`);

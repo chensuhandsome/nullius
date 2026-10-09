@@ -106,11 +106,91 @@ literal paths, including any `%` or `?` characters.
 At a scientific result fold, rewrite the relevant sections with assumptions,
 reasoning, interpretation and limitations, and cite the registered artifact.
 This applies in file mode as well as engine mode. The team convergence gate
-requires the declared headline in a declared rewritten section; other historical
-gaps stay advisory. `nullius notebook sync` only refreshes the automatic table.
+requires the declared headline in a declared rewritten section. Retired history
+remains readable; all current results participate in the final unscoped check. `nullius notebook sync` only refreshes the automatic table.
 
-External agents close a result fold with
-`nullius notebook check --result <result-id>` (omit the selector to check all
-current results). Exit 0 means links present or no adopted results, 1 means
-missing links, and 2 means unavailable notebook/registry input or an unknown
-result id. `--json` returns the structural report. The command is read-only.
+Notebook closeout has two separate requirements: structural navigation and a
+current full-text content review. Run the review after finishing the notebook
+and refreshing its automatic block:
+
+```bash
+nullius notebook review --model <SPEC> [--dependency <project-relative-path> ...] [--timeout-secs <N>] [--json]
+nullius notebook check [--result <id>] [--structure-only] [--json]
+```
+
+`notebook review` executes a real reviewer through the existing `review-swarm`
+launcher. Its default hard timeout is 1200 seconds; it makes one execution and
+does not retry the reviewer automatically. The reviewed input freezes the
+complete UTF-8 notebook, including its automatic block, and required declared
+dependencies with SHA-256 digests of their actual bytes. Uncommitted edits are
+included; a commit or section version stamp alone cannot establish identity.
+
+Automatically linked binary or oversized files are immutable opaque snapshots
+and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
+freshness, but are neither embedded nor read. The report's `opaque_sources` must
+explain every path, hash and `required_for_reasoning`; a missing assessment or any
+required unread source prevents acceptance. Supply independently checked readable
+text dependencies for reasoning that depends on such material. Hash identity is
+not semantic reading. The notebook and explicit `--dependency` inputs require
+strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
+storage to 64 MiB, with refusal rather than silent truncation. This review
+currently accepts only tool mode `none`; other modes are unavailable. It executes
+one reviewer and does not establish a cross-family quorum.
+
+Any change to those bytes makes the previous review stale. Historical reports
+remain readable and retain their original input identity.
+
+Canonical verification records reflect the admissibility of the executed review,
+including its trace, tool mode and pre/post freshness, rather than PASS alone.
+Later edits can make a historically verified review stale. Moving a project leaves
+its frozen evidence readable but current execution freshness unavailable; review
+again in its new location. A setup failure records the failed attempt and its prior
+run, withdraws current acceptance, and reports unavailable. Reviewed text requires
+LF or CRLF line endings; bare CR is refused.
+A review is admitted when its immutable start record is durably stored. That
+record blocks reuse of the prior review even if control-pointer writes fail.
+Failure before durable admission produces no new review verdict.
+Start records are published atomically; a malformed managed start makes current
+admission unavailable. Concurrent writers preserve their separate execution
+histories and clear only their own pending marker under the shared control lock.
+Admission order is recorded under that lock. Only the latest admitted review
+can publish current acceptance or failure; an older execution finishing later
+cannot replace a newer rejection or bypass an unavailable later attempt.
+
+The reviewer reads the entire notebook and records coverage for every section,
+with source anchors and reasons addressing derivation completeness, logical
+consistency, notation, definitions, assumptions, and conventions. Partial
+reading, unavailable dependencies, failed execution, invalid output, or stale
+inputs cannot satisfy this requirement. Links, automatic tables, formula counts,
+completed checklists, and the writer's own assessment cannot supply a content
+verdict. The reviewer receives the frozen material and review question without
+an expected verdict or the writer's initial judgment.
+
+`notebook check` is read-only and returns `structure` (the `result_links` report)
+and `content_review` separately. Default unscoped exit 0 requires both structural
+success and an accepted full-text review of the current notebook and dependencies. Exit 1
+means acceptance is incomplete, including invalid review evidence; exit 2 means
+invalid command/setup input or unavailable execution/runtime.
+`--result` narrows only the structural result-link scope: content review always
+covers the entire notebook, and scoped success reports `diagnostic_passed`.
+Diagnostic success can return exit 0; it does not establish whole-project closeout.
+Default structural acceptance requires a present, valid result registry. Registry
+validation covers every row, including superseded rows; only current rows create
+the human-link obligation. An absent or defective registry is unavailable and
+must be repaired before closeout. Ordinary state and history remain readable.
+`--structure-only` checks navigation alone, so its
+exit 0 does not establish notebook closeout, even when there are no adopted
+results. The same current-version contract applies in file and engine mode.
+
+Converged folds invoke the same unscoped `nullius notebook check --json` required
+for final file closeout. `none` declarations and a missing launcher grant no
+exception. `--result` is a scoped structural diagnostic; it cannot substitute for
+the full default check, whose structural scope includes every current result.
+
+`nullius current` and `nullius status --json` expose `notebook.content_review`
+without launching a reviewer or blocking ordinary state and historical reads.
+Review evidence uses the existing verification subject, check-run, verdict,
+coverage, and `ArtifactRef` contracts. This is a supporting semantic check, not
+decisive computation validation or proof of scientific truth. A single reviewer
+also leaves explicit limits on model, method, and input independence; load-bearing
+claims still need their applicable derivation, numerical, and source checks.

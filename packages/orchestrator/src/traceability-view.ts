@@ -11,7 +11,8 @@ import { checkCurrentStateBlock, projectionFromRegistryState, type CurrentStateB
 import { listRunDirectories as listRunDirectoriesShared, readRunDirectoryInventory, slugFamilyOf, type RunDirectoryIssue, type RunDirEntry as SharedRunDirEntry } from './run-directories.js';
 import { checkRunIndexBlock, computeRunIndexProjection, type RunIndexBlockStatus } from './run-index.js';
 import { canonicalJson } from './validity-ledger.js';
-import { checkNotebookResultLinks, type NotebookResultLinks } from './notebook-result-links.js';
+import { checkNotebookStructure, type NotebookResultLinks } from './notebook-result-links.js';
+import { checkNotebookContentReview, type NotebookContentReview } from './notebook-content-review.js';
 
 /** ONE read model behind both consumers of the acceptance sentence:
  *  `nullius status --json` embeds this object as its `traceability` block
@@ -193,6 +194,7 @@ export type TraceabilityView = {
     current_state_block: CurrentStateBlockStatus;
     /** Necessary human-body evidence links; never a content-quality verdict. */
     result_links: NotebookResultLinks;
+    content_review: NotebookContentReview;
     /** Link-derived rewrite-discipline signals. Advisory everywhere; the
      *  fold gate consumes only the sections a packet declares rewritten. */
     run_links: {
@@ -552,7 +554,8 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
   const currentStateBlock = checkCurrentStateBlock(
     projectRoot, projectionFromRegistryState(resultRegistry),
   );
-  const notebookResultLinks = checkNotebookResultLinks(projectRoot, projectionFromRegistryState(resultRegistry));
+  const notebookResultLinks = checkNotebookStructure(projectRoot);
+  const notebookContentReview = checkNotebookContentReview(projectRoot);
 
   // Mirror-vs-ledger divergence (stage-1 acceptance hook): the ledger is the
   // authority; a run-directory mirror that no longer matches it — the narrow
@@ -838,6 +841,7 @@ export function buildTraceabilityView(projectRoot: string): TraceabilityView {
         .map(section => ({ heading: section.heading, cause: section.cause })),
       current_state_block: currentStateBlock,
       result_links: notebookResultLinks,
+      content_review: notebookContentReview,
       run_links: {
         sections: runLinks.sections,
         drifted_sections: runLinks.drifted_sections,
@@ -987,10 +991,12 @@ export function renderTraceabilityProse(view: TraceabilityView): string {
   }
   const block = view.notebook.current_state_block;
   const resultLinks = view.notebook.result_links;
+  const contentReview = view.notebook.content_review;
+  lines.push(`- Notebook content review: ${contentReview.status} — ${contentReview.reason}`);
   if (resultLinks.status === 'missing_links' || resultLinks.status === 'unavailable') {
     lines.push(`- HUMAN NOTEBOOK NEEDS ATTENTION: ${resultLinks.reason ?? `no body link to current result(s): ${resultLinks.missing_result_ids.join(', ')}`}. Rewrite the affected sections with reasoning, scope and evidence; notebook sync cannot do this.`);
   } else if (resultLinks.status === 'linked') {
-    lines.push('- Human notebook links current result artifacts; scientific explanation and derivation completeness still require review.');
+    lines.push('- Human notebook links current result artifacts (structure only).');
   }
   if (block.notebook_found) {
     if (block.duplicated_markers) {

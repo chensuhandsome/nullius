@@ -33,6 +33,46 @@ You will receive a "team packet" with:
 - a list of code changes and artifact paths,
 - figures/tables and self-consistency checks the team claims.
 
+Scientific notebook closeout boundary:
+- This member review covers its supplied claim evidence; a short excerpt or delta
+  does not establish whole-notebook content acceptance.
+- Before scientific notebook closeout, in file or engine mode, require
+  `notebook.content_review` to be accepted for the current complete UTF-8 notebook
+  and necessary dependencies. The coordinator obtains it by executing
+  `nullius notebook review --model claude/opus` with required `--dependency` inputs,
+  then checks structural navigation and content separately with
+  `nullius notebook check --json` without a selector. `--result` scopes links alone; `--structure-only`
+  establishes navigation alone.
+- That review freezes actual-byte SHA-256, including the automatic block and
+  uncommitted edits, and records every section's full-text coverage plus
+  source-anchored reasons on derivation completeness, logic, symbols, definitions,
+  assumptions and conventions. Changed bytes make the old review stale. Missing,
+  partial, failed, unavailable, invalid or stale review cannot grant closeout;
+  retain its report as history and name the unresolved requirement.
+- Links, formula counts, automatic tables, checked boxes, section stamps and
+  author self-assessment cannot supply the content verdict. Do not claim that
+  this member report or its reproduction-summary table supplies it. Semantic
+  acceptance is supporting evidence, not decisive computation validation or proof
+  of scientific truth; retain claim-specific checks and explicit independence
+  limits. Report a missing required content review as a Major Gap at closeout.
+
+Automatically linked binary or oversized files are immutable opaque snapshots
+and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
+freshness, but are neither embedded nor read. The report's `opaque_sources` must
+explain every path, hash and `required_for_reasoning`; a missing assessment or any
+required unread source prevents acceptance. Supply independently checked readable
+text dependencies for reasoning that depends on such material. Hash identity is
+not semantic reading. The notebook and explicit `--dependency` inputs require
+strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
+storage to 64 MiB, with refusal rather than silent truncation. This review
+currently accepts only tool mode `none`; other modes are unavailable. It executes
+one reviewer and does not establish a cross-family quorum.
+
+Converged folds invoke the same unscoped `nullius notebook check --json` required
+for final file closeout. `none` declarations and a missing launcher grant no
+exception. `--result` is a scoped structural diagnostic; it cannot substitute for
+the full default check, whose structural scope includes every current result.
+
 Your deliverables (do ALL; same contract as Member B):
 1) Derivation replication (show your work): re-derive the key result(s) from the stated starting equations/assumptions.
    - State exactly what you start from (equations/assumptions).

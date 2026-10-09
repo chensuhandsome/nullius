@@ -161,7 +161,7 @@ describe('human notebook links to adopted artifacts', () => {
     let registrationOutput = '';
     expect(await runCli(['result', 'set-current', 'estimate', '--run', run, '--artifact', 'docs/estimate.md'],
       { cwd: root, stdout: text => { registrationOutput += text; }, stderr: () => {} })).toBe(0);
-    expect(registrationOutput).toContain('notebook check --result estimate before closeout');
+    expect(registrationOutput).toContain('notebook check --json before closeout');
     setCurrentResult(root, { resultId: 'other', runId: run, artifactRelPath: 'docs/other.md' });
     refreshNotebookCurrentState(root, { insertIfMissing: true });
     const view = buildTraceabilityView(root);
@@ -173,18 +173,22 @@ describe('human notebook links to adopted artifacts', () => {
     const io = { cwd: root, stdout: (text: string) => { output += text; }, stderr: () => {} };
     const before = fs.readFileSync(path.join(root, 'research_notebook.md'), 'utf8');
     expect(await runCli(['notebook', 'check', '--result', 'estimate', '--json'], io)).toBe(1);
-    expect(JSON.parse(output).missing_result_ids).toEqual(['estimate']);
+    expect(JSON.parse(output).structure.missing_result_ids).toEqual(['estimate']);
     expect(fs.readFileSync(path.join(root, 'research_notebook.md'), 'utf8')).toBe(before);
     output = '';
     expect(await runCli(['notebook', 'check', '--result', 'unknown', '--json'], io)).toBe(2);
     expect(JSON.parse(output).status).toBe('unavailable');
     write(before + '\n[Evidence](docs/estimate.md)\n');
     output = '';
-    expect(await runCli(['notebook', 'check', '--result', 'estimate', '--json'], io)).toBe(0);
-    expect(JSON.parse(output).status).toBe('linked');
+    expect(await runCli(['notebook', 'check', '--result', 'estimate', '--json'], io)).toBe(1);
+    expect(JSON.parse(output).structure.status).toBe('linked');
+    expect(JSON.parse(output).content_review.status).toBe('missing');
+    output = '';
+    expect(await runCli(['notebook', 'check', '--result', 'estimate', '--structure-only', '--json'], io)).toBe(0);
+    expect(JSON.parse(output).status).toBe('structure_passed');
     fs.writeFileSync(path.join(root, 'docs/other.md'), 'Changed after registration.');
     output = '';
-    expect(await runCli(['notebook', 'check', '--result', 'estimate', '--json'], io)).toBe(0);
+    expect(await runCli(['notebook', 'check', '--result', 'estimate', '--structure-only', '--json'], io)).toBe(0);
     output = '';
     expect(await runCli(['notebook', 'check', '--result', 'other', '--json'], io)).toBe(2);
     output = '';

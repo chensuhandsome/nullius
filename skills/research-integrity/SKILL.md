@@ -91,6 +91,54 @@ whenever its pre-computation trigger fires.
   agent's own self-review that biases toward finding the failure mode
   rather than confirming the work is fine.
 
+## Human-notebook closeout
+
+In both file and engine mode, structural notebook links and current full-text
+content review are separate requirements. After rewriting the scientific account
+and refreshing its automatic block, execute `nullius notebook review --model claude/opus`
+with repeated `--dependency <project-relative-path>` for required supporting files.
+It runs a real reviewer through the existing review-swarm launcher once, with a
+default hard 1200-second timeout and no automatic reviewer retry. `--timeout-secs <N>`
+sets a different hard limit. Freeze the complete UTF-8 notebook, including the
+automatic block, and declared dependency SHA-256 from actual bytes, including
+uncommitted edits; commit and section stamps do not bind those edits.
+
+Before notebook closeout, require source-anchored reasons on derivation
+completeness, logical consistency, symbols, definitions, assumptions and
+conventions, and recorded full-text coverage of every section. The reviewer gets
+the materials and question without an expected verdict or the author's initial
+judgment. Links, automatic tables, formula counts, checked boxes and writing
+self-assessment are not content acceptance. `nullius notebook check` reports
+`structure` and `content_review` separately and requires both structural success
+and an accepted current review. `--result` narrows links only; `--structure-only`
+success establishes navigation alone. Missing, partial, failed, unavailable,
+invalid or stale review does not pass. Changed bytes require a new review;
+historical reports remain readable, and status/current only read them.
+
+This is supporting semantic evidence using existing verification
+subject/check-run/verdict/coverage and `ArtifactRef`, never decisive computation
+validation. Semantic acceptance does not prove scientific truth. Record a single
+reviewer's limits on model, method and input independence and retain the applicable
+claim-specific checks. The M1–M7 self-check remains a separate discipline and
+cannot author its own notebook content-review verdict.
+
+Automatically linked binary or oversized files are immutable opaque snapshots
+and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
+freshness, but are neither embedded nor read. The report's `opaque_sources` must
+explain every path, hash and `required_for_reasoning`; a missing assessment or any
+required unread source prevents acceptance. Supply independently checked readable
+text dependencies for reasoning that depends on such material. Hash identity is
+not semantic reading. The notebook and explicit `--dependency` inputs require
+strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
+storage to 64 MiB, with refusal rather than silent truncation. This review
+currently accepts only tool mode `none`; other modes are unavailable. It executes
+one reviewer and does not establish a cross-family quorum.
+
+Converged folds invoke the same unscoped `nullius notebook check --json` required
+for final file closeout. `none` declarations and a missing launcher grant no
+exception. `--result` is a scoped structural diagnostic; it cannot substitute for
+the full default check, whose structural scope includes every current result.
+
 ## The eight modes
 
 ### M1: implementation_bug_passing_self_review

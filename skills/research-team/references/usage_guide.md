@@ -108,7 +108,29 @@ Configured in `research_team_config.json`:
 - `review_access_mode=packet_only`: reviewers must use only the team packet (offline/portable review; legacy mode).
 - `review_access_mode=full_access`: reviewers still have no direct tools; they request file reads / command runs / network fetches via a leader-run proxy. Every access is logged to `artifacts/runs/<tag>/research_team/member_{a,b}_evidence.json` and enforced by deterministic gates.
 
-Independence of the two reproduction paths is machine-checked (`check_independent_reproduction.py`): reproduction sources that import/include the declared kernel-under-test (`independent_reproduction.kernel_modules`), or that share the same project-local module across both members, fail the gate with verdict `not_independent` (`SHARED_KERNEL_INHERITANCE`); the verdict JSON is written to `artifacts/runs/<tag>/research_team/independent_reproduction_gate.json`. Disagreements between reproductions are resolved by tracing the first diverging intermediate quantity — never by majority vote.
+Independent confirmation requires at least two evidence lanes independently constructed or derived and executed from a neutral question and raw inputs. Record method diversity, model-family diversity, execution independence and input independence separately. Same or similar methods, the same algorithm name, matching hashes or shared legitimate libraries do not by themselves disqualify a lane. Agent names, seeds, reworded prompts, copied answers and simple reruns of the original implementation do not establish independence. Different methods with contaminated input framing still fail. A fresh assessor must substantively inspect the actual steps, method preconditions, known defects and diagnostic power with exact source spans and reasons; a self-filled no-defect checkbox is insufficient. Missing, rejected, stale or non-diagnostic evidence does not count. Keep an explicit project-specific different-method risk requirement when that requirement tests a known shared failure mode. In full_access mode, the reproduction gate and convergence consumer each require a fresh successful source-assessor invocation via `--assessor-model MODEL`, bound to the complete original source/input/execution closure. Each invocation preserves a distinct `assessments/<id>/assessment.json`. Imported JSON cannot supply current execution authority. The gate requires two accepted lanes and emits `independent_confirmations` plus `confirmation_refs`; explicit `independent_reproduction.requires_method_diversity` and `method_diversity_risk` remain additional assessed conditions. Declared tested-kernel call-through fails; shared utilities alone require assessment rather than automatic rejection.
+
+Configure complete source-assessor request budgets in `research_team_config.json` under `independent_reproduction`:
+
+```json
+{
+  "independent_reproduction": {
+    "assessor_context_tokens": 1000000,
+    "assessor_context_bytes": 800000,
+    "assessor_timeout_secs": 1200
+  }
+}
+```
+
+These values are explicit caller configuration; choose a window supported by the selected executor/provider. They do not introspect or guarantee provider capacity. Defaults are 200,000 tokens, a conservative derived byte allowance (`null`), and 1200 seconds. Timeout must be an integer from 1 to 1200 seconds. The complete source/input/execution originals remain required; insufficient capacity, unavailable capture or compaction refuses acceptance without truncation. Existing generated projects keep their configuration; edit the project configuration explicitly when a different budget is needed.
+
+A successful enabled `full_access` cycle dispatches two fresh source-assessor invocations: one in the postflight reproduction gate and another in the final convergence consumer. Both receive these same budgets. The final consumer does not reuse the postflight verdict, so allow the token/call cost and up to two assessor timeouts in addition to member execution. Each invocation retains its own original evidence.
+
+The current source-assessor route accepts required source, raw inputs and command outputs as strict UTF-8. Binary or invalid UTF-8 originals are preserved but remain unavailable for a new text-route confirmation. Member proxy defaults are 20,000 characters per file read and 12,000 per command output; increase `--max-file-chars` or `--max-cmd-output-chars` before requesting larger complete material. A visibility shortfall refuses the episode.
+
+In `full_access`, submit complete independently constructed source through `files_written` entries containing `path`, `content` and `purpose`. The proxy writes exact UTF-8 bytes only inside the member’s `independent/` prefix before executing literal commands, and binds source snapshots/hash/size to the original model output in `original_transport.construction_refs`. Differing existing source is never overwritten. Each own-prefix code file must match a complete original model-output string; preseeded code without that match cannot count even if an examiner marks it independent. Shared libraries outside that prefix remain subject to source assessment.
+
+Select neutral reproduction input with the team-cycle `--reproduction-packet` option or `independent_reproduction.blind_packet` configuration. The selected route becomes the member writer’s ordinary `--packet` input. A route name does not prove blindness: the source assessor must examine the complete original packet, every actual read, command input and final-stage input for prior answers or author judgments.
 
 Third-party validation (offline):
 - `python3 "${SKILL_DIR:-$(for r in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${CODEX_HOME:-$HOME/.codex}" "$HOME/.config/opencode" "$HOME/.kimi-code"; do [ -d "$r/skills/research-team" ] && echo "$r/skills/research-team" && break; done || true)}/scripts/bin/validate_evidence.py" artifacts/runs/<tag>/research_team/member_a_evidence.json`
@@ -132,3 +154,5 @@ For a deterministic, offline JSON index over the 3 KB layers (for downstream ret
 - Rerun recipes and gate diagnosis: `RUNBOOK.md`
 - Skill entrypoint (short): `SKILL.md`
 - Chinese extended manual: `references/usage_guide.zh.md`
+
+The canonical team cycle selects its source assessor with `INDEPENDENCE_ASSESSOR_SPEC` (default `claude/opus`); direct gates accept `--assessor-model`. Shared project-source locators require explicit assessment using each member's own constructed source. Invalid or ambiguous configuration cannot downgrade the final consumer to report-only comparison.

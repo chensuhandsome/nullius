@@ -39,7 +39,7 @@ that were not supplied. If an input is truncated, unreadable, absent, or
 the coverage inventory does not include every section, return FAIL and
 incomplete coverage. Preserve uncertainty rather than guessing.
 
-The inventory's `opaque_links` are binary or oversized local targets whose
+The inventory's `opaque_links` are binary or invalid UTF-8 local targets whose
 original bytes are snapshotted and hashed, but whose content is NOT embedded
 or reviewed. Assess each in `opaque_sources`, with its exact path, hash,
 `required_for_reasoning` boolean and specific reasoning. Never claim to have

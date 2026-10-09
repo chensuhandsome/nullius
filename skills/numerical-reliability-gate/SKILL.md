@@ -1,6 +1,6 @@
 ---
 name: numerical-reliability-gate
-description: "Convergence and reliability gate for NUMERICAL results in any field, including fits, optimizations, integrals, eigenvalues, roots, poles, zeros, ODE/PDE solutions, Monte-Carlo estimates, and downstream feature extraction. Use before a RESULT-BEARING computed number — one a conclusion or durable artifact will rest on — is trusted, compared, published, or folded into durable research artifacts; numbers that exist only to exercise code (test fixtures, internal tooling values) are covered by ordinary tests, not this gate. Requires resolution convergence, independent-method checks, regression anchors, post-correction downstream recomputation, method-precondition checks, configuration-threading audits, gate-discrimination (negative-control) audits of purpose-built validation chains, accelerated/heuristic fast-path scoping (no false guarantee, unconditional escape hatch, production-validated precondition), and honest uncertainty/reporting. Emits an auditable reliability matrix. Sibling to derivation-verify for symbolic claims and julia-perf for speed claims."
+description: "Convergence and reliability gate for NUMERICAL results in any field, including fits, optimizations, integrals, eigenvalues, roots, poles, zeros, ODE/PDE solutions, Monte-Carlo estimates, and downstream feature extraction. Use before a RESULT-BEARING computed number — one a conclusion or durable artifact will rest on — is trusted, compared, published, or folded into durable research artifacts; numbers that exist only to exercise code (test fixtures, internal tooling values) are covered by ordinary tests, not this gate. Requires resolution convergence, independent-confirmation checks, regression anchors, post-correction downstream recomputation, method-precondition checks, configuration-threading audits, gate-discrimination (negative-control) audits of purpose-built validation chains, accelerated/heuristic fast-path scoping (no false guarantee, unconditional escape hatch, production-validated precondition), and honest uncertainty/reporting. Emits an auditable reliability matrix. Sibling to derivation-verify for symbolic claims and julia-perf for speed claims."
 ---
 
 # Numerical Reliability Gate
@@ -13,7 +13,7 @@ not, is not a result yet — it is a candidate.**
 
 This is the numerical sibling of `derivation-verify`. That skill certifies a **symbolic** answer by
 re-deriving it `>=2` independent ways; this one certifies a **numerical** answer by proving it is stable
-under refinement, agreed across orthogonal methods, and anchored to a known reference. Different failure
+under refinement, agreed across independent constructions, and anchored to a known reference. Different failure
 modes: a derivation is wrong because the algebra is wrong; a number is wrong because the grid was too
 coarse, the continuation was unstable, the search seeded the wrong basin, or the run was built on a
 superseded configuration.
@@ -83,9 +83,7 @@ Each check names its own minimum disconfirming test — never accept a number be
   frozen value but *shrinking uncertainty*: use independent seeds/chains, an effective sample size and
   autocorrelation check, sensitivity to rare events, and report a confidence/credible interval — not a
   single point that "stopped moving".
-- **G2 — Orthogonal-method cross-check.** Recompute with `>=2` genuinely independent methods (a
-  different algorithm or representation: two quadratures, two rational-continuation schemes, a
-  determinant search vs. a topological count). They must **agree** within a stated tolerance. **Declare each
+- **G2 — Independent-confirmation cross-check.** Recompute with `>=2` independently constructed and executed checks. Method diversity is a separate risk dimension; same/similar methods can qualify after substantive applicability and diagnostic checks. They must **agree** within a stated tolerance. **Declare each
   check's resolution** — the smallest discrepancy it could detect — and *what it cannot resolve*; an
   agreement within a tolerance **coarser** than the property/effect you are certifying is **non-diagnostic**
   (record it as "agree, but cannot resolve `<X>`"), not a pass for that property. The same applies to a G3
@@ -93,12 +91,12 @@ Each check names its own minimum disconfirming test — never accept a number be
   exploratory context, not a gate.
   Disagreement means *unresolved* — the value is **unpromotable until the discrepancy is explained**; do
   **not** silently pick one (a method may be disqualified by an independent conditioning / error analysis,
-  or a single certified-interval / a-posteriori-error method may suffice without a second). Prefer a method that stays well
+  or a rigorous certified error bound may provide an evidence anchor while the independent-evidence floor remains). Prefer a method that stays well
   conditioned as resolution grows; flag any method known to be fragile beyond a regime (e.g. a
   continued-fraction interpolation that destabilizes past `~N` nodes) and do not report its value past
   that regime without the robust method confirming it.
   **Independence is structural, not nominal.** A second computation counts as a cross-check only when it
-  evaluates the *same* quantity under the *same* model by a genuinely different route. A solver/engine that
+  evaluates the *same* quantity under the *same* model by an independently constructed and executed route. A solver/engine that
   implements a structurally *different* model (a different governing relation, a different approximation, a
   different set of modeling assumptions), or a check that holds only in a degenerate / limiting regime, is a
   **different-scientific-model (or limit-regime) comparison, not an apples-to-apples cross-check** — record its outcome
@@ -157,23 +155,8 @@ Each check names its own minimum disconfirming test — never accept a number be
   silent skip. (G8 then governs the number-level comparison; without this axis a numerical match can
   conceal compensating transcription errors, and a mismatch cannot be attributed — a genuine model
   difference and a transcription slip read the same.)
-  **Which LLM/engine runs a method is not the cross-check axis — the *route* is.** `>=2` orthogonal methods
-  run by ONE LLM is a valid G2 floor (parallelize them across same-model subagents if useful, one method
-  each — the independence lives in the method, never in the agent label), so a single-LLM host is never
-  blocked here; two subagents (or two LLMs) running the *same* algorithm are one check, not two. **A language
-  port is not a second method either:** re-implementing the same algorithm line-for-line in another language keeps the same
-  representation, discretization, and algorithmic route — it inherits the original's conceptual errors and
-  counts as an implementation check (useful against coding slips), never as the second G2 method. Every G2
-  record therefore states, in a sentence, what methodologically differs between the two routes
-  (representation / algorithm / discretization / basis); "same method, different language" disqualifies the
-  pair. A
-  **cross-LLM (different model-family)** independent re-implementation is the *ceiling* — it additionally
-  decorrelates the coding-style, transcription, and library error two methods inside ONE LLM can still share —
-  reached for a load-bearing number when a second LLM family is available, its absence recorded as a stated
-  limitation, not a blocker. **"Different model" here always means a different LLM/engine, never a different
-  scientific model:** recomputing under a different governing relation/approximation is a new scientific
-  question, out of this gate's scope — G2 verifies a result WITHIN its fixed scientific model (same model,
-  different route, per the structural-independence rule above).
+  Independent confirmation requires at least two evidence lanes independently constructed or derived and executed from a neutral question and raw inputs. Record method diversity, model-family diversity, execution independence and input independence separately. Same or similar methods, the same algorithm name, matching hashes or shared legitimate libraries do not by themselves disqualify a lane. Agent names, seeds, reworded prompts, copied answers and simple reruns of the original implementation do not establish independence. Different methods with contaminated input framing still fail. A fresh assessor must substantively inspect the actual steps, method preconditions, known defects and diagnostic power with exact source spans and reasons; a self-filled no-defect checkbox is insufficient. Missing, rejected, stale or non-diagnostic evidence does not count. Keep an explicit project-specific different-method risk requirement when that requirement tests a known shared failure mode.
+
 - **G3 — Invariant / topological validation (prefer it over heuristics).** For presence/absence and
   counting (zeros, roots, poles, eigenvalues, modes), prefer a **method-agnostic invariant** over a
   **fixed-seed search** or a **magnitude threshold**, both of which give false negatives (the feature
@@ -424,7 +407,7 @@ Each check names its own minimum disconfirming test — never accept a number be
 |---|---|---|
 | Presence/absence, counting | fixed-seed search; `|F| < ε` threshold | topological invariant (argument-principle winding) |
 | Analytic continuation | a continuation unstable past `~N` nodes | a continuation well conditioned as nodes grow + cross-check |
-| "It converged" | a single setting that "looks flat" | a measured plateau across a 2–3× knob range + orthogonal method |
+| "It converged" | a single setting that "looks flat" | a measured plateau across a 2–3× knob range + independently constructed check |
 | Best fit | one optimizer run from one start | multi-start + the converged grid (coarse-grid optima are mirages) |
 | Dominant eigenvalue/quantity (fast path) | a fixed-start Krylov/subspace iteration sold as a "never wrong" guarantee | the same heuristic scoped to its overlap precondition + an unconditional dense solve as escape hatch (validated ≡ at production scale) |
 
@@ -433,8 +416,7 @@ fooled when the feature moves or the resolution is too coarse; a method-agnostic
 refinement plateau is **much harder to fool — once its preconditions and numerical-error controls are
 validated**. It is not infallible: a common-mode discretization bias, roundoff/cancellation, a false
 plateau, an invalid sheet or near-contour singularity, or a net zero–pole cancellation can still defeat
-it, which is why G3 requires checking the invariant's preconditions and G2 requires a genuinely
-*independent* second method. And when such a heuristic is nonetheless *kept* — because it is the
+it, which is why G3 requires checking the invariant's preconditions and G2 requires a second independently constructed and executed evidence lane. And when such a heuristic is nonetheless *kept* — because it is the
 performance-motivated fast path and the robust method is too expensive to run everywhere — G10 governs
 how to keep it honestly: scope the guarantee to its precondition, document the blind spot, validate the
 precondition at production scale, and keep the unconditional path as an auto-selected escape hatch,
@@ -445,7 +427,7 @@ rather than paper the blind spot over with a guarantee the method cannot deliver
 Emit one auditable record per gated quantity, conforming to
 [`references/contract.md`](references/contract.md): an artifact named
 `numerical_reliability_matrix_v1.json` (ART-01) with, per quantity, the refinement ladder (setting →
-value), the orthogonal-method values and whether they agree, any invariant check, the regression-anchor
+value), the independently constructed check values and whether they agree, any invariant check, the regression-anchor
 result, a degeneracy note, the recorded converged value, and a `verdict ∈ reliable | mirage |
 unconverged | method_disagreement | fragile_method | anchor_failed | degenerate | stale_artifact |
 heterogeneous_series | precondition_violated | reference_mismatch | circular_validation | overclaimed_heuristic`
@@ -460,11 +442,11 @@ invalidated by unrelated edits.
 
 The checks are a discipline you apply with whatever your host exposes, not a single script (G1–G3 are
 inherently model/tool-specific — there is no one generic runner for "refine the grid of arbitrary
-code"). Run the orthogonal methods (G2) and any independent re-computation natively where you can; for
+code"). Run the independently constructed checks (G2) and any independent re-computation natively where you can; for
 a cross-*model* independent reproduction of a full numerical result, pair this with an independent
 backend via [`review-swarm`](../review-swarm/SKILL.md). Spend your *maximum* reasoning — and scale the *number* of independent cross-checks — with stakes: a routine
-anchor needs the `>=2`-method floor; a load-bearing number (a contested pole, a χ² that selects a model)
-warrants more orthogonal methods and — when a second LLM family exists — the cross-LLM re-implementation
+anchor needs the `>=2` independent-evidence floor; a load-bearing number (a contested pole, a χ² that selects a model)
+warrants more independent evidence and targeted checks of shared failure modes and — when a second LLM family exists — the cross-LLM re-implementation
 ceiling, while a trivial anchor warrants neither a tie-break nor a second engine. When the underlying compute is long and kill-prone, run it under
 [`research-harness`](../research-harness/SKILL.md) (checkpoint/heartbeat/resume) and gate the *results*
 here.

@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from assessment_fixture import SUMMARY, assessments, assessed_comparison, transport_for
 
 _MOD_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run_multi_backend.py"
 _spec = importlib.util.spec_from_file_location("run_multi_backend", _MOD_PATH)
@@ -68,7 +69,7 @@ def test_extract_json_prefer_keys_selects_keyed_object():
 # ---------------------------------------------------------------- parse_derivation
 def test_parse_derivation_valid():
     d = mb.parse_derivation('```json\n{"canonical_answer":"42","derivation_summary":"17+25","confidence":"high","checkable_form":"42"}\n```')
-    assert d == {"canonical_answer": "42", "derivation_summary": "17+25", "confidence": "high", "checkable_form": "42"}
+    assert d == {"canonical_answer": "42", "derivation_summary": "17+25", "confidence": "high", "checkable_form": "42", "derivation": ""}
 
 
 def test_parse_derivation_checkable_form_optional():
@@ -113,9 +114,9 @@ def test_parse_comparison_valid():
     assert c["adjudicated_matches_majority"] is True
 
 
-def test_parse_comparison_filters_out_of_range_indices():
-    c = mb.parse_comparison(_cmp_json(majority_indices=[0, 1, 5, -1]), 2)
-    assert c["majority_indices"] == [0, 1]  # 5 and -1 dropped (n_derivations=2)
+def test_parse_comparison_rejects_out_of_range_and_duplicate_indices():
+    for indices in ([0, 1, 5, -1], [0, 0, 1], [False, 1]):
+        assert mb.parse_comparison(_cmp_json(majority_indices=indices), 2) is None
 
 
 def test_parse_comparison_missing_size_is_none():
@@ -136,16 +137,19 @@ def test_cross_family_confirmations():
     assert mb.cross_family_confirmations(cmp, ["claude", "claude", "claude"]) == 1
 
 
-def test_decide_converged_needs_two_families_and_veto():
+def test_decide_converged_needs_two_assessed_executions_and_veto():
     fams = ["claude", "codex"]
-    ok = {"majority_indices": [0, 1], "adjudicated_matches_majority": True}
-    assert mb.decide_converged(ok, fams) is True
+    ds = [_drv("42", "42"), _drv("42", "42")]
+    ds[0]["execution_id"], ds[1]["execution_id"] = "fresh-0", "fresh-1"
+    ok = {"majority_answer": "42", "majority_size": 2, "majority_indices": [0, 1], "adjudicated_matches_majority": True, "independence_assessments": assessments(ds)}
+    ok["assessment_input_sha256"] = mb.hashlib.sha256(json.dumps(ds, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    assert mb.decide_converged(ok, fams, derivations=ds) is True
     # R2: veto false blocks even with 2 families
     veto = {"majority_indices": [0, 1], "adjudicated_matches_majority": False}
     assert mb.decide_converged(veto, fams) is False
     # R1: same family twice is NOT cross-family
     same = {"majority_indices": [0, 1], "adjudicated_matches_majority": True}
-    assert mb.decide_converged(same, ["claude", "claude"]) is False
+    assert mb.decide_converged(ok, ["claude", "claude"], derivations=ds) is True
     # single confirmation
     one = {"majority_indices": [0], "adjudicated_matches_majority": True}
     assert mb.decide_converged(one, fams) is False
@@ -247,10 +251,10 @@ def _mk_run(compare_scripts, derive_answer="42"):
         if "compare" in tag:
             i = state["compare_calls"]
             state["compare_calls"] += 1
-            payload = compare_scripts[min(i, len(compare_scripts) - 1)]
+            payload = assessed_comparison(compare_scripts[min(i, len(compare_scripts) - 1)], prompt)
             return "```json\n" + json.dumps(payload) + "\n```"
         # a deriver
-        return json.dumps({"canonical_answer": derive_answer, "derivation_summary": "did it", "confidence": "high"})
+        return json.dumps({"canonical_answer": derive_answer, "derivation_summary": SUMMARY, "derivation": SUMMARY, "confidence": "high"})
 
     return run
 
@@ -317,8 +321,8 @@ def test_verify_claim_independent_confirmations_from_indices_not_inflated():
     }
     run = _mk_run([inflated])
     row = mb.verify_claim(CLAIM, ctx="ctx", pool=POOL, comparators=["codex/default"], max_iter=1, run=run)
-    assert row["independent_confirmations"] == 2  # len(majority_indices), not 99
-    assert row["converged"] is True
+    assert row["independent_confirmations"] == 0  # inconsistent cluster cardinality cannot be accepted
+    assert row["converged"] is False
 
 
 def test_verify_claim_dead_comparator_degrades_not_crash():
@@ -329,7 +333,9 @@ def test_verify_claim_dead_comparator_degrades_not_crash():
 
     row = mb.verify_claim(CLAIM, ctx="ctx", pool=POOL, comparators=["codex/default"], max_iter=1, run=run)
     assert row["converged"] is False
-    assert row["agreed_answer"] == "(comparator unavailable)"
+    assert row["agreed_answer"] is None
+    assert row["adjudicated_correct"] is None
+    assert row["comparator_diagnostics"]["majority_answer"] == "(comparator unavailable)"
 
 
 def test_verify_claim_failed_derivers_filtered():
@@ -459,15 +465,15 @@ def test_verified_cross_family():
     assert decidable is False
 
 
-def _drv(ans, form, fam_summary="s"):
-    return {"canonical_answer": ans, "derivation_summary": fam_summary, "confidence": "high", "checkable_form": form}
+def _drv(ans, form, fam_summary=SUMMARY):
+    return {"canonical_answer": ans, "derivation_summary": fam_summary, "derivation": fam_summary, "confidence": "high", "checkable_form": form}
 
 
-def test_claim_status_cas_path_is_llm_independent():
-    # CAS converges on >=2 cross-family equal forms EVEN IF the comparator says nothing (de-anchored).
+def test_claim_status_cas_cannot_bypass_missing_independence_assessment():
+    # Equality alone does not supply independent evidence or adjudication agreement.
     derivations = [_drv("42", "42"), _drv("42", "6*7")]
     conv, verification, xfam = mb.claim_status(dict(mb.SAFE_CMP), derivations, ["claude", "codex"])
-    assert conv is True and verification == "cas" and xfam == 2
+    assert conv is False and xfam == 0
 
 
 def test_claim_status_cas_overrides_wrong_llm_consensus():
@@ -476,24 +482,30 @@ def test_claim_status_cas_overrides_wrong_llm_consensus():
     derivations = [_drv("42", "42"), _drv("43", "43")]
     lying_cmp = {**mb.SAFE_CMP, "majority_answer": "42", "majority_size": 2,
                  "majority_indices": [0, 1], "adjudicated_matches_majority": True}
+    lying_cmp["independence_assessments"] = assessments(derivations)
+    for i,d in enumerate(derivations): d["execution_id"] = f"fresh-{i}"
+    lying_cmp["assessment_input_sha256"] = mb.hashlib.sha256(json.dumps(derivations, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     conv, verification, xfam = mb.claim_status(lying_cmp, derivations, ["claude", "codex"])
-    assert conv is False and verification == "cas" and xfam == 1
+    assert conv is False and verification == "cas" and xfam == 0
 
 
 def test_claim_status_falls_back_to_llm_when_not_checkable():
     derivations = [_drv("Θ(n log n)", ""), _drv("Θ(n log n)", "")]
-    good_cmp = {**mb.SAFE_CMP, "majority_size": 2, "majority_indices": [0, 1],
+    good_cmp = {**mb.SAFE_CMP, "majority_answer": "Θ(n log n)", "majority_size": 2, "majority_indices": [0, 1],
                 "adjudicated_matches_majority": True}
+    good_cmp["independence_assessments"] = assessments(derivations)
+    for i,d in enumerate(derivations): d["execution_id"] = f"fresh-{i}"
+    good_cmp["assessment_input_sha256"] = mb.hashlib.sha256(json.dumps(derivations, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     conv, verification, xfam = mb.claim_status(good_cmp, derivations, ["claude", "codex"])
     assert verification == "llm" and conv is True  # R1+R2 on the LLM path
 
 
 def test_verify_claim_cas_path_end_to_end():
-    # derivers emit checkable_form -> gate converges via CAS independent of the comparator.
+    # Assessed forms agree by CAS and the fresh adjudicator also agrees.
     def run(spec, system, prompt, tag):
         if "compare" in tag:
-            return json.dumps(dict(mb.SAFE_CMP))  # comparator contributes nothing
-        return json.dumps({"canonical_answer": "42", "derivation_summary": "17+25",
+            return json.dumps(assessed_comparison({**mb.SAFE_CMP, 'majority_answer':'42', 'majority_indices':[0,1], 'majority_size':2, 'adjudicated_matches_majority': True}, prompt))  # provenance, applicability and explicit adjudication
+        return json.dumps({"canonical_answer": "42", "derivation_summary": "17+25", "derivation": "17+25",
                            "confidence": "high", "checkable_form": "42"})
     row = mb.verify_claim(CLAIM, ctx="ctx", pool=POOL, comparators=["codex/default"], max_iter=1, run=run)
     assert row["converged"] is True and row["verification"] == "cas"
@@ -504,48 +516,47 @@ def test_verify_claim_cas_path_end_to_end():
 def test_parse_native_derivation():
     d = mb.parse_native_derivation({"canonical_answer": "42", "family": "claude", "checkable_form": "42"})
     assert d == {"canonical_answer": "42", "derivation_summary": "", "confidence": "high",
-                 "checkable_form": "42", "family": "claude"}
+                 "checkable_form": "42", "family": "claude", "execution_id": "", "method": "unspecified", "derivation": "", "transport": None}
     assert mb.parse_native_derivation({"canonical_answer": "42"}) is None        # no family
     assert mb.parse_native_derivation({"family": "claude"}) is None              # no answer
     assert mb.parse_native_derivation("nope") is None
     assert mb.parse_native_derivation({"canonical_answer": "x", "family": "f", "confidence": "low"})["confidence"] == "low"
 
 
-def test_verify_claim_native_seed_no_self_cli_hop():
-    # Host runs Claude natively and feeds it in; Executor 2 must NOT CLI-run claude (auto-excluded), and
-    # must corroborate with ONE other CLI family -> cross-family CAS verdict, zero self-family hop.
+def test_external_native_claim_cannot_suppress_actual_cli_hops():
+    # An external native claim is not an observed invocation and cannot suppress real CLI construction.
     calls = []
 
     def run(spec, system, prompt, tag):
         calls.append((spec, tag))
         if "compare" in tag:
-            return json.dumps(dict(mb.SAFE_CMP))
-        return json.dumps({"canonical_answer": "42", "derivation_summary": "s", "confidence": "high",
+            return json.dumps(assessed_comparison({**mb.SAFE_CMP, 'majority_answer':'42', 'majority_indices':[0,1], 'majority_size':2, 'adjudicated_matches_majority': True}, prompt))
+        return json.dumps({"canonical_answer": "42", "derivation_summary": SUMMARY, "derivation": SUMMARY, "confidence": "high",
                            "checkable_form": "42"})
 
-    claim = {**CLAIM, "native_derivations": [{"canonical_answer": "42", "family": "claude", "checkable_form": "42"}]}
+    claim = {**CLAIM, "native_derivations": [{"canonical_answer": "42", "family": "claude", "checkable_form": "42", "derivation_summary": SUMMARY, "derivation": SUMMARY, "execution_id": "native-fixture", "transport": transport_for("42", SUMMARY, "native-fixture"), "method": "fresh arithmetic"}]}
     row = mb.verify_claim(claim, ctx="ctx", pool=["claude/default", "codex/default", "gemini/default"],
                           comparators=["codex/default"], max_iter=1, run=run)
-    assert row["native_seeded"] == 1
+    assert row["native_seeded"] == 0 and row["native_unavailable"]
     assert row["converged"] is True and row["verification"] == "cas"
     assert set(row["families"]) == {"claude", "codex"} and row["cross_family_confirmations"] == 2
     deriver_specs = [s for s, t in calls if "compare" not in t]
-    assert deriver_specs == ["codex/default"]          # exactly one CLI engine; gemini not needed
-    assert not any(s.startswith("claude") for s in deriver_specs)   # the host's own family never CLI-run
+    assert deriver_specs == ["claude/default", "codex/default"]  # two actual observed executions
 
 
-def test_verify_claim_native_seed_with_single_backend():
-    # native family + a pool of ONE other backend is enough for cross-family (the relaxed-guard case)
+def test_external_native_does_not_count_but_two_fresh_single_backend_lanes_do():
+    # The unavailable external lane does not count; the one available backend executes twice.
     def run(spec, system, prompt, tag):
         if "compare" in tag:
-            return json.dumps(dict(mb.SAFE_CMP))
+            return json.dumps(assessed_comparison({**mb.SAFE_CMP, 'majority_answer':'42', 'majority_indices':[0,1], 'majority_size':2, 'adjudicated_matches_majority': True}, prompt))
         return json.dumps({"canonical_answer": "42", "checkable_form": "42", "confidence": "high",
-                           "derivation_summary": "s"})
+                           "derivation_summary": SUMMARY, "derivation": SUMMARY})
 
-    claim = {**CLAIM, "native_derivations": [{"canonical_answer": "42", "family": "claude", "checkable_form": "42"}]}
+    claim = {**CLAIM, "native_derivations": [{"canonical_answer": "42", "family": "claude", "checkable_form": "42", "derivation_summary": SUMMARY, "derivation": SUMMARY, "execution_id": "native-fixture", "transport": transport_for("42", SUMMARY, "native-fixture"), "method": "fresh arithmetic"}]}
     out = mb.run_gate({"context": "", "claims": [claim]}, pool=["codex/default"], comparators=["codex/default"], run=run)
     assert out["converged"] == 1 and out["matrix"][0]["verification"] == "cas"
-    assert out["family_pool"] == ["claude", "codex"]   # native family surfaced in the pool summary
+    assert out["family_pool"] == ["codex"]
+    assert out["matrix"][0]["native_seeded"] == 0 and out["matrix"][0]["independent_confirmations"] == 2
 
 
 def test_verify_claim_invalid_natives_dropped():
@@ -577,28 +588,27 @@ def _native_run(answer="42"):
     def run(spec, system, prompt, tag):
         calls.append((spec, tag))
         if "compare" in tag:
-            return json.dumps(dict(mb.SAFE_CMP))
+            return json.dumps(assessed_comparison({**mb.SAFE_CMP, 'majority_answer':'42', 'majority_indices':[0,1], 'majority_size':2, 'adjudicated_matches_majority': True}, prompt))
         return json.dumps({"canonical_answer": answer, "checkable_form": answer, "confidence": "high",
-                           "derivation_summary": "s"})
+                           "derivation_summary": SUMMARY, "derivation": SUMMARY})
     return run, calls
 
 
-def test_native_family_tag_normalized_no_self_hop_or_double_count():
-    # BLOCKING regression (both reviewers): a native `family` given as a spec / wrong case / opencode-class
-    # provider must STILL exclude the matching CLI family (no self-hop) and not double-count as cross-family.
+def test_external_native_family_tags_do_not_replace_actual_execution():
+    # External native metadata is unavailable; both available CLI families execute normally.
     for fam, pool, expect_fams in [
         ("claude/default", ["claude/default", "codex/default"], {"claude", "codex"}),
         ("Claude", ["claude/default", "codex/default"], {"claude", "codex"}),
         ("minimax", ["minimax/m2", "codex/default"], {"opencode", "codex"}),
     ]:
         run, calls = _native_run()
-        claim = {**CLAIM, "native_derivations": [{"canonical_answer": "42", "family": fam, "checkable_form": "42"}]}
+        claim = {**CLAIM, "native_derivations": [{"canonical_answer": "42", "family": fam, "checkable_form": "42", "derivation_summary": SUMMARY, "derivation": SUMMARY, "execution_id": "native-fixture", "transport": transport_for("42", SUMMARY, "native-fixture"), "method": "fresh arithmetic"}]}
         row = mb.verify_claim(claim, ctx="ctx", pool=pool, comparators=["codex/default"], max_iter=1, run=run)
         deriver_specs = [s for s, t in calls if "compare" not in t]
         assert set(row["families"]) == expect_fams, (fam, row["families"])   # no phantom/double family
         assert row["cross_family_confirmations"] == 2
-        # the family the host ran natively is never CLI-derived
-        assert all(mb.normalize_family(mb.family_of(s)) != mb.normalize_family(fam) for s in deriver_specs)
+        assert row["native_seeded"] == 0 and row["native_unavailable"]
+        assert len(deriver_specs) == 2
 
 
 def test_natives_alone_do_not_converge():
@@ -610,31 +620,32 @@ def test_natives_alone_do_not_converge():
         {"canonical_answer": "42", "family": "codex", "checkable_form": "42"}]}
     row = mb.verify_claim(claim, ctx="ctx", pool=["claude/default", "codex/default"],
                           comparators=["codex/default"], max_iter=0, run=run)
-    assert row["native_seeded"] == 2 and row["converged"] is False   # no independent corroboration
+    assert row["native_seeded"] == 0 and row["converged"] is False
+    assert len(row["native_unavailable"]) == 2
 
 
-def test_natives_outvoted_by_dissenting_cli_does_not_converge():
-    # 2 natives say 42, the one independent CLI engine says 999 -> not converged (CAS cluster of natives
-    # has no independent member; the dissenting CLI is alone).
+def test_external_native_answers_do_not_contaminate_actual_cli_consensus():
+    # Two unobserved external answers cannot count or constrain the actual blind CLI executions.
     def run(spec, system, prompt, tag):
         if "compare" in tag:
-            return json.dumps(dict(mb.SAFE_CMP))
-        return json.dumps({"canonical_answer": "999", "checkable_form": "999", "confidence": "high",
-                           "derivation_summary": "s"})
+            return json.dumps(assessed_comparison({**mb.SAFE_CMP, 'majority_answer':'42', 'majority_indices':[0,1], 'majority_size':2, 'adjudicated_matches_majority': True}, prompt))
+        return json.dumps({"canonical_answer": "42", "checkable_form": "42", "confidence": "high",
+                           "derivation_summary": SUMMARY, "derivation": SUMMARY})
     claim = {**CLAIM, "native_derivations": [
-        {"canonical_answer": "42", "family": "claude", "checkable_form": "42"},
-        {"canonical_answer": "42", "family": "codex", "checkable_form": "42"}]}
+        {"canonical_answer": "999", "family": "claude", "checkable_form": "42"},
+        {"canonical_answer": "999", "family": "codex", "checkable_form": "42"}]}
     row = mb.verify_claim(claim, ctx="ctx", pool=["gemini/default"], comparators=["gemini/default"],
                           max_iter=0, run=run)
-    assert row["converged"] is False
+    assert row["converged"] is True and row["independent_confirmations"] == 2
+    assert row["native_seeded"] == 0
 
 
-def test_native_single_plus_independent_cli_still_converges():
-    # the legitimate case must still work: 1 native + 1 agreeing CLI = genuine cross-family
+def test_external_seed_is_unavailable_while_real_cli_floor_still_converges():
+    # Two genuine actual CLI executions can agree despite an unusable external seed.
     run, _ = _native_run("42")
-    claim = {**CLAIM, "native_derivations": [{"canonical_answer": "42", "family": "claude", "checkable_form": "42"}]}
+    claim = {**CLAIM, "native_derivations": [{"canonical_answer": "42", "family": "claude", "checkable_form": "42", "derivation_summary": SUMMARY, "derivation": SUMMARY, "execution_id": "native-fixture", "transport": transport_for("42", SUMMARY, "native-fixture"), "method": "fresh arithmetic"}]}
     row = mb.verify_claim(claim, ctx="ctx", pool=["codex/default"], comparators=["codex/default"], max_iter=1, run=run)
-    assert row["converged"] is True and row["verification"] == "cas" and set(row["families"]) == {"claude", "codex"}
+    assert row["converged"] is True and row["verification"] == "cas" and set(row["families"]) == {"codex"}
 
 
 def test_natives_alone_llm_path_does_not_converge():
@@ -653,27 +664,27 @@ def test_natives_alone_llm_path_does_not_converge():
     assert row["verification"] == "llm" and row["converged"] is False
 
 
-def test_native_plus_cli_llm_path_converges():
-    # legit LLM-path case: 1 native + 1 agreeing CLI (neither CAS-checkable) -> converges via comparator
+def test_actual_cli_llm_path_converges_without_external_native_credit():
+    # Two observed CLI derivations, no forms, converge via actual comparator input.
     def run(spec, system, prompt, tag):
         if "compare" in tag:
-            return json.dumps({"majority_answer": "42", "majority_size": 2, "majority_indices": [0, 1],
+            return json.dumps(assessed_comparison({"majority_answer": "42", "majority_size": 2, "majority_indices": [0, 1],
                                "all_equivalent": True, "outliers": "none", "correct_answer_adjudicated": "42",
-                               "adjudicated_matches_majority": True})
-        return json.dumps({"canonical_answer": "42", "confidence": "high", "derivation_summary": "s"})  # no form
-    claim = {**CLAIM, "native_derivations": [{"canonical_answer": "42", "family": "claude"}]}
+                               "adjudicated_matches_majority": True}, prompt))
+        return json.dumps({"canonical_answer": "42", "confidence": "high", "derivation_summary": SUMMARY, "derivation": SUMMARY})  # no form
+    claim = {**CLAIM, "native_derivations": [{"canonical_answer": "42", "family": "claude", "derivation_summary": SUMMARY, "derivation": SUMMARY, "execution_id": "native-fixture", "transport": transport_for("42", SUMMARY, "native-fixture"), "method": "fresh arithmetic"}]}
     row = mb.verify_claim(claim, ctx="ctx", pool=["codex/default"], comparators=["codex/default"], max_iter=1, run=run)
-    assert row["verification"] == "llm" and row["converged"] is True and set(row["families"]) == {"claude", "codex"}
+    assert row["verification"] == "llm" and row["converged"] is True and set(row["families"]) == {"codex"}
 
 
-def test_comparator_panel_excludes_native_family():
-    # the judge panel also avoids the host's own family (no self-family hop for the comparator either)
+def test_external_native_metadata_does_not_disable_actual_judges():
+    # Unavailable external native metadata cannot suppress an available actual comparator.
     run, calls = _native_run("42")
-    claim = {**CLAIM, "native_derivations": [{"canonical_answer": "42", "family": "claude", "checkable_form": "42"}]}
+    claim = {**CLAIM, "native_derivations": [{"canonical_answer": "42", "family": "claude", "checkable_form": "42", "derivation_summary": SUMMARY, "derivation": SUMMARY, "execution_id": "native-fixture", "transport": transport_for("42", SUMMARY, "native-fixture"), "method": "fresh arithmetic"}]}
     mb.verify_claim(claim, ctx="ctx", pool=["codex/default"],
                     comparators=["claude/default", "codex/default"], max_iter=1, run=run)
     judge_specs = {s for s, t in calls if "compare" in t}
-    assert "claude/default" not in judge_specs and "codex/default" in judge_specs
+    assert judge_specs == {"claude/default", "codex/default"}
 
 
 # ---------------------------------------------------------------- runner resolution (review-swarm dep)
@@ -757,8 +768,8 @@ def test_run_gate_drops_backend_after_consecutive_failures():
             calls["gemini"] += 1
             return None  # backend-level failure every time
         if "compare" in tag:
-            return "```json\n" + json.dumps(good_cmp) + "\n```"
-        return json.dumps({"canonical_answer": "42", "derivation_summary": "did it", "confidence": "high"})
+            return "```json\n" + json.dumps(assessed_comparison(good_cmp, prompt)) + "\n```"
+        return json.dumps({"canonical_answer": "42", "derivation_summary": SUMMARY, "derivation": SUMMARY, "confidence": "high"})
 
     claims = [dict(CLAIM, id=f"T{i}") for i in range(4)]
     # gemini first in the pool, so it is seeded for claim after claim until the tracker trips.
@@ -786,8 +797,8 @@ def test_run_gate_degraded_pool_reports_unconverged_not_success():
         if mb.family_of(spec) == "gemini":
             return None
         if "compare" in tag:
-            return "```json\n" + json.dumps(good_cmp) + "\n```"
-        return json.dumps({"canonical_answer": "42", "derivation_summary": "did it", "confidence": "high"})
+            return "```json\n" + json.dumps(assessed_comparison(good_cmp, prompt)) + "\n```"
+        return json.dumps({"canonical_answer": "42", "derivation_summary": SUMMARY, "derivation": SUMMARY, "confidence": "high"})
 
     claims = [dict(CLAIM, id=f"T{i}") for i in range(3)]
     out = mb.run_gate({"context": "", "claims": claims},

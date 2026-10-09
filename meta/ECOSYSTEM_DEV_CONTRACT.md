@@ -575,13 +575,11 @@ reviewer 的模型、方法与输入独立性局限必须保留。
 
 收敛 fold 与最终 file closeout 均调用无 scope 的 `nullius notebook check --json`；
 `none` 声明及 launcher 缺失不豁免检查。`--result` 仅是结构范围诊断，不能替代
-覆盖全部当前结果的最终默认检查。自动链接的 binary 或过大文件记录为
-`opaque_links` 的不可变快照与 SHA-256 定位符，参与 manifest 新鲜度校验但不嵌入、
-不读取。报告 `opaque_sources` 须逐项说明 path/hash/`required_for_reasoning`；
-任何必要未读来源或缺少评估都阻断接受，应使用独立核对的可读文本依赖。
-哈希身份不是语义阅读。notebook 与显式 `--dependency` 仍须严格 UTF-8；文本闭包
-不超过 1 MiB，快照总存储不超过 64 MiB，禁止静默截断。当前仅接受 tool mode
-`none`，其他模式为 unavailable；单 reviewer 不授予跨家族 quorum。
+覆盖全部当前结果的最终默认检查。合法 UTF-8 文本不因体积变大而归为 `opaque_links`，Markdown 依赖递归发现。只有二进制或无效 UTF-8 的自动链接来源作为不可变快照及哈希定位符；报告须逐项说明 path/hash/`required_for_reasoning`，必要但未读的来源不能通过。notebook 与显式依赖须为严格 UTF-8，并使用 LF 或 CRLF。
+
+完整原材料先冻结；存储预算与模型单次请求分开：`--snapshot-bytes` 默认 512 MiB、`--max-files` 默认 256，`--context-bytes` 控制请求体积，`--context-tokens` 声明可用后端的上下文窗口（默认 200,000 tokens，保留指令及输出余量）。默认以字节数作保守 token 上界；显式扩大字节预算后，如该上界超过窗口，则须有执行时记录的后端 token 用量。缺少容量证据、后端压缩原上下文或投递失败均不能通过。
+
+大材料逐个原文区间审读，附相邻原文；随后联合审读接收完整 notebook 与所有文本依赖，检查跨章符号、定义、假设、约定和推理。所有区间与联合审读均完整且 fresh 才可接受，不能用精选引文或摘要代替原文。默认总执行预算 1200 秒、64 次调用（`--timeout-secs`、`--max-batches`），每次只有一次尝试，无自动重试。预算不足报告完整冻结量、待审区间、联合审读欠缺、原因及续审命令；材料枚举未完成时只报告已发现量，并明确闭包不完整。`--resume <run-id>` 新建运行并复核旧收据及原材料身份，保留显式依赖与存储预算，不改旧证据。完整联合原文若超出可用后端窗口，须提高实际可用容量或保持 incomplete。目前仅接受 tool mode `none`；多个批次仍是一次语义审查，不构成多份独立验证或跨家族 quorum。
 
 **CI 验证**:
 ```bash
@@ -912,3 +910,19 @@ if (internal.length) { console.error('PLUG-01:', internal); process.exit(1); }
 3. **豁免**: 特殊情况可通过在代码中添加 `# CONTRACT-EXEMPT: {规则ID} {原因}` 注释豁免，但必须在 PR review 中说明。CODE-01.1 文件级豁免需额外包含 `sunset:YYYY-MM-DD` (待 AMEND-01 批准后生效)
 4. **版本演进**: 规则变更需经当前 monorepo 的 checked-in 治理流程审批
 5. **待批准修订**: 标记为 `AMEND-{NN}` 的提案在治理审批前不具有强制力，仅供参考实施
+
+独立复现的运行时须保留完整原始输入、成员输出、精确源码来源与执行证据。团队循环在启用复现门时通过 `--reproduction-packet` 或 `independent_reproduction.blind_packet` 接收独立的中性输入，不以候选材料的数字遮蔽替代。实际后续读取仍须审查；同一可靠方法或模型家族不自动拒绝，原实现重跑、输入污染、相关方法缺陷与作者声明不能计为独立确认。多评审汇总只接受源锚定且完整的共同判断，不拼接不同评审的部分判断；未通过的结果不得发布约定答案。
+
+Capacity evidence requires an adjacent runtime observation of the actual successful invocation, including requests that fit the conservative byte bound. The local runtime binds the complete original request, actual report locator, working directory and captured bytes using its host authority; recalculating project artifact hashes cannot create that observation. Verification trusts the runtime and owning OS account, and does not authenticate provider truth or scientific correctness. Historical unsigned records remain readable, but cannot supply new capacity acceptance; they are never retrospectively signed.
+
+Interrupted notebook reviews resume in a fresh run from immutable intake and batch checkpoints, retaining original bytes and rechecking current material. Only completed, fresh, runtime-observed primary interval receipts can be reused; the complete-original joint audit is always executed again. Missing closure, stale sources or incomplete operations remain unavailable or incomplete. Member reproduction evidence requires an authenticated actual producer episode and the complete source/data inputs bound to the executed command; declared inputs and bounded static discovery do not prove arbitrary filesystem activity.
+
+Runtime observations bind the actual report location, so copying signed capture bytes cannot authenticate a new invocation elsewhere. Member episodes freeze every observed file into durable original storage before publication; successful workspace cleanup preserves subsequent verification. Records lacking these bindings remain readable and unavailable for new acceptance.
+
+Member origin trusts the configured runner and owning host runtime: the complete runner bytes are recorded, but no runner allowlist or provider attestation is claimed. Offline or injected host execution establishes a local process/callable observation; actual provider capacity evidence requires the corresponding CLI capture. The canonical team cycle performs a postflight source assessment and a separate fresh assessment at the final consumer; both use the configured assessor request/execution budgets.
+
+The owning account can read the authority key, including code executed by a member under that account; this authenticates against non-executing artifact tampering, not hostile same-account code. No OS sandbox or provider attestation is supplied.
+
+The configured token window is frozen before the original reviewer subprocess starts and bound into its authenticated runtime observation. Changing historical window metadata cannot admit that receipt. Older observations without this policy remain readable and require a fresh execution for capacity acceptance.
+
+Local directory links leave notebook dependency closure pending and prevent acceptance. The complete-original joint audit requires exact substantive original-byte anchors for every interval; a reasoning checkbox alone cannot supply coverage.

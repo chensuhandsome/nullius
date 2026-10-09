@@ -11,8 +11,8 @@
  *      verification — its "confirm" can sit inside the claimant's blind
  *      spot, because the supplied evidence may probe the wrong axis
  *      altogether. Load-bearing structural claims require at least one
- *      reviewer who independently recomputes the quantity through a
- *      different route, receiving only the problem statement and raw
+ *      independent evidence pair that constructs and executes sound checks,
+ *      receiving only the problem statement and raw
  *      inputs (never the claimant's answer, evidence selection, or
  *      initial judgment), and the record states which axis the
  *      recomputation actually probed.
@@ -66,11 +66,11 @@ function requireAll(relPath, text, needles) {
 
 // 1. research-team: both clauses in the non-negotiable contracts list.
 requireAll(TEAM_SKILL_FILE, read(TEAM_SKILL_FILE), [
-  ['recomputation bullet', '- **Re-reading is not recomputation (mandatory for load-bearing structural claims)**'],
+  ['recomputation bullet', '- **Re-reading is not recomputation (mandatory for load-bearing structural claims).**'],
   ['argument-audit distinction', 'argument audit, not a verification'],
   ['claimant blind-spot motivation', "claimant's blind spot"],
-  ['different-route requirement', 'through a different route'],
-  ['blinded-input requirement', 'receiving only the problem statement and raw inputs'],
+  ['actual independent construction/execution', 'independently constructed and executed checks'],
+  ['blinded-input requirement', 'with only the problem statement and raw inputs'],
   ['no answer-bearing input', "never the claimant's answer, evidence selection, or initial judgment"],
   ['probed-axis record', 'which axis the recomputation actually probed'],
   ['routing to the swarm reviewer role', '`review-swarm` independent-recomputation reviewer'],
@@ -140,11 +140,16 @@ requireAll(SWARM_SKILL_FILE, read(SWARM_SKILL_FILE), [
   ['reviewer-role heading', '### Independent-recomputation reviewer'],
   ['argument-audit distinction', '**argument audit**, not a'],
   ['generalizes the reference-reproduction special case', 'anchors the check'],
-  ['different-route requirement', 'through a different route'],
+  ['actual independent construction/execution', 'independently construct or derive and execute the check'],
+  ['same-method allowance', 'Same or similar sound methods may count'],
+  ['separate independence dimensions', 'method diversity, model-family diversity, execution independence and input independence are separate dimensions'],
+  ['explicit risk remains', 'explicit project shared-failure risk may require a different mechanism'],
   ['blinded-input requirement', 'receiving **only the problem statement'],
   ['no answer-bearing input', "never the claimant's answer, evidence selection, or initial judgment"],
   ['probed-axis record in meta.json', 'which axis the independent recomputation actually probed'],
   ['axis-mismatch demotion to static-only', 'does not intersect the claim'],
+  ['original capacity policy binding', 'The configured token window is frozen before the original reviewer subprocess starts'],
+  ['no historical policy promotion', 'Changing historical window metadata cannot admit that receipt'],
 ]);
 
 if (errors.length > 0) {

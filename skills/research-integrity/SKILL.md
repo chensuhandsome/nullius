@@ -97,7 +97,7 @@ In both file and engine mode, structural notebook links and current full-text
 content review are separate requirements. After rewriting the scientific account
 and refreshing its automatic block, execute `nullius notebook review --model claude/opus`
 with repeated `--dependency <project-relative-path>` for required supporting files.
-It runs a real reviewer through the existing review-swarm launcher once, with a
+It runs a real reviewer through the existing review-swarm launcher in bounded calls, with a
 default hard 1200-second timeout and no automatic reviewer retry. `--timeout-secs <N>`
 sets a different hard limit. Freeze the complete UTF-8 notebook, including the
 automatic block, and declared dependency SHA-256 from actual bytes, including
@@ -122,17 +122,34 @@ reviewer's limits on model, method and input independence and retain the applica
 claim-specific checks. The M1–M7 self-check remains a separate discipline and
 cannot author its own notebook content-review verdict.
 
-Automatically linked binary or oversized files are immutable opaque snapshots
-and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
-freshness, but are neither embedded nor read. The report's `opaque_sources` must
-explain every path, hash and `required_for_reasoning`; a missing assessment or any
-required unread source prevents acceptance. Supply independently checked readable
-text dependencies for reasoning that depends on such material. Hash identity is
-not semantic reading. The notebook and explicit `--dependency` inputs require
-strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
-storage to 64 MiB, with refusal rather than silent truncation. This review
-currently accepts only tool mode `none`; other modes are unavailable. It executes
-one reviewer and does not establish a cross-family quorum.
+Valid UTF-8 text remains text regardless of size; Markdown links are discovered
+recursively. Binary or invalid UTF-8 linked files are immutable `opaque_links`
+snapshots and hash locators, not read evidence. Every opaque path/hash needs a
+specific `opaque_sources` assessment; a required unread source prevents acceptance.
+Notebook and explicit dependencies require strict UTF-8 and LF or CRLF endings.
+
+The complete material is frozen before review. Storage (`--snapshot-bytes`,
+default 512 MiB; `--max-files`, default 256) is separate from each request's
+`--context-bytes` and configured backend `--context-tokens` window (default
+200,000 tokens, with instruction/output reserves). Default request bytes use a
+conservative token upper bound. A larger explicit byte packet requires captured
+backend token usage when that bound exceeds the window; missing capacity evidence,
+observed backend compaction or delivery failure supplies no acceptance.
+
+Larger materials use original UTF-8 intervals with adjacent original context,
+followed by a joint audit receiving the COMPLETE original notebook and text
+dependencies. All intervals and the joint audit must be complete and fresh;
+selected quotations or summaries cannot replace this original input. The default
+execution budget is 1200 seconds and 64 calls (`--timeout-secs`, `--max-batches`),
+with one attempt per call and no automatic retry. Shortfalls expose total frozen
+material, pending intervals and joint scope, the reason and a resumable command.
+An unfinished intake reports discovered material and incomplete dependency
+enumeration. `--resume <run-id>` creates a new run, revalidates original receipts
+and material identity, retains explicit dependencies and storage budgets, and
+never rewrites old evidence. If the full joint input does not fit the backend,
+raise an available backend's request budget or leave the review incomplete.
+Only tool mode `none` is accepted. Multiple batches are one semantic review;
+they do not establish independent confirmations or a cross-family quorum.
 
 Converged folds invoke the same unscoped `nullius notebook check --json` required
 for final file closeout. `none` declarations and a missing launcher grant no
@@ -743,7 +760,7 @@ When a printed item is suspected to be wrong without a published correction, mai
 explicit tracks. The literal track records `PRINTED_FORM` and its source-fidelity verdict.
 The scientific track records `SCIENTIFIC_STATUS`, any `PROPOSED_CORRECTION`, the independent
 evidence and counterchecks, and the downstream policy. Never overwrite the literal track.
-Before using a proposed correction, run at least two blind, method-diverse derivations from
+Before using a proposed correction, run at least two blind independent derivations from
 the definitions, conventions, domain, and neighboring premises while withholding both the
 printed disputed expression and the proposed replacement. Compare those outputs with the
 printed and proposed forms only afterward. Audit premise provenance and exclude every later
@@ -771,10 +788,7 @@ extraction at that promotion moment, before the conclusion is folded — central
 re-judged when the note's role changes, not only when the note is written. Use the `review-swarm` `source-extraction` role so candidate artifacts,
 diffs, and additional context are rejected by packet construction; separately inspect the
 request for answer anchoring because neutrality is not machine-decidable. Then run the
-candidate-visible literal comparison. At least one
-reviewer must also be **cross-model-family**, but model-family independence alone is not
-input/framing independence. Record all three axes separately: model family, method, and
-candidate/prior-verdict visibility.
+candidate-visible literal comparison. Record method diversity, model-family diversity, execution independence and candidate/prior-verdict visibility separately. Same-family independent construction may count; family diversity alone does not establish input/framing independence.
 
 Run the comparison through the gate harness (`review-swarm`'s source-fidelity reviewer),
 **re-reviewing after every fix** because a correction can introduce a fresh defect. The
@@ -844,17 +858,13 @@ checks whether the implementation matches the derived **form**, not whether the 
   established independent cross-validation pattern **silently lapsing**, or a
   structurally **different-model** engine / a degenerate-or-limit regime being **presented
   as validation**. *Minimum disconfirming check:* confirm any cross-validation evaluates
-  the *same* model by a different route; if the only reachable alternative engine
+  the *same* model with an independently constructed and executed check; if the only reachable alternative engine
   implements a structurally different model (or the check holds only in a limit), **label
   it as a different-model / limit-regime comparison and record the absence of an
   apples-to-apples check as an explicit stated limitation** — never let the prior
   cross-check pattern quietly disappear and never let the different-model check stand in
-  for it. "Different route" means a different mathematical representation, algorithm,
-  discretization, or basis — **a line-for-line port of the same algorithm to another
-  language is the same route** (it inherits the original's conceptual errors) and counts
-  only as an implementation check, never as the independent cross-check; the
-  reproduction record must name what methodologically differs, and "same method,
-  different language" is the honest label that disqualifies it from D2 credit.
+  for it. Independent confirmation requires at least two evidence lanes independently constructed or derived and executed from a neutral question and raw inputs. Record method diversity, model-family diversity, execution independence and input independence separately. Same or similar methods, the same algorithm name, matching hashes or shared legitimate libraries do not by themselves disqualify a lane. Agent names, seeds, reworded prompts, copied answers and simple reruns of the original implementation do not establish independence. Different methods with contaminated input framing still fail. A fresh assessor must substantively inspect the actual steps, method preconditions, known defects and diagnostic power with exact source spans and reasons; a self-filled no-defect checkbox is insufficient. Missing, rejected, stale or non-diagnostic evidence does not count. Keep an explicit project-specific different-method risk requirement when that requirement tests a known shared failure mode.
+
 - **D3 — model-transcription identity (the declared model IS the source's model).** The
   failure mode is reading internal verification as external fidelity: the convergence
   ladder, independent discretizations, and regression anchors certify only that the

@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parent.parent
 TEAM_GATE = ROOT / "scripts" / "gates" / "check_team_convergence.py"
@@ -99,6 +101,57 @@ def test_team_gate_converged_outputs_structured_json(tmp_path: Path):
     assert payload["exit_code"] == 0
     assert payload["report_status"]["member_a"]["parse_ok"] is True
     assert "Team convergence check" not in proc.stdout
+
+
+@pytest.mark.parametrize("raw", [
+    b'{', b'[]', b'{"review_access_mode":"full_access","review_access_mode":"packet_only"}',
+    b'{"review_access_mode":NaN}', b'\xff', b'{"review_access_mode":"unknown"}',
+    b'{"features":[]}', b'{"features":{"independent_reproduction_gate":"false"}}',
+    b'{"independent_reproduction":[]}',
+    b'{"independent_reproduction":{"kernel_modules":"kernel"}}',
+    b'{"independent_reproduction":{"kernel_modules":[42]}}',
+    b'{"independent_reproduction":{"requires_method_diversity":"true"}}',
+    b'{"independent_reproduction":{"requires_method_diversity":1}}',
+    b'{"independent_reproduction":{"method_diversity_risk":[]}}',
+    b'{"logic_isolation":[]}',
+    b'{"logic_isolation":{"allowed_local_import_roots":"shared_utils"}}',
+    b'{"logic_isolation":{"allowed_local_import_roots":[false]}}',
+])
+def test_invalid_configuration_cannot_downgrade_final_confirmation(tmp_path: Path, raw: bytes):
+    (tmp_path / "research_team_config.json").write_bytes(raw)
+    a = _write(tmp_path / "a.md", _team_report())
+    b = _write(tmp_path / "b.md", _team_report())
+    proc, payload = _run_gate(TEAM_GATE, ["--member-a", str(a), "--member-b", str(b), "--project-root", str(tmp_path)])
+    assert proc.returncode == 2
+    assert payload["status"] == "parse_error"
+    assert any("configuration unavailable" in reason for reason in payload["reasons"])
+
+
+@pytest.mark.parametrize("slot", ["directory", "dangling", "explicit_missing"])
+def test_missing_reserved_configuration_cannot_downgrade_confirmation(tmp_path: Path, monkeypatch, slot: str):
+    cfg = tmp_path / "research_team_config.json"
+    if slot == "directory":
+        cfg.mkdir()
+    elif slot == "dangling":
+        cfg.symlink_to(tmp_path / "absent-config")
+    else:
+        monkeypatch.setenv("RESEARCH_TEAM_CONFIG", str(tmp_path / "absent-config"))
+    a = _write(tmp_path / "a.md", _team_report())
+    b = _write(tmp_path / "b.md", _team_report())
+    proc, payload = _run_gate(TEAM_GATE, ["--member-a", str(a), "--member-b", str(b), "--project-root", str(tmp_path)])
+    assert proc.returncode == 2
+    assert payload["status"] == "parse_error"
+
+
+def test_disabled_feature_does_not_waive_full_access_confirmation(tmp_path: Path):
+    (tmp_path / "research_team_config.json").write_text(json.dumps({"review_access_mode": "full_access", "features": {"independent_reproduction_gate": False}}))
+    a = _write(tmp_path / "a.md", _team_report())
+    b = _write(tmp_path / "b.md", _team_report())
+    proc, payload = _run_gate(TEAM_GATE, ["--member-a", str(a), "--member-b", str(b), "--project-root", str(tmp_path)])
+    assert proc.returncode == 1
+    assert payload["status"] == "not_converged"
+    assert payload["meta"]["independent_confirmations"] == 0
+    assert any("disabled" in reason and "requires" in reason for reason in payload["reasons"])
 
 
 def test_team_gate_surfaces_blocking_and_minor_counts(tmp_path: Path):
@@ -355,3 +408,10 @@ def test_validator_rejects_trailing_newline_key() -> None:
         "meta": _valid_meta(),
     }
     assert any("does not match the shared schema" in e for e in validate_convergence_result(verdict))
+
+
+def test_closed_markdown_blocking_field_does_not_swallow_separate_nonblocking_prose(tmp_path):
+    from check_team_convergence import _parse_blocking_count
+    assert _parse_blocking_count('## Verdict\n**Blocking issues: none.** A separate non-blocking note is recorded.\n') == 0
+    assert _parse_blocking_count('## Verdict\nBlocking issues: **none**, but the normalization is wrong.\n') == 1
+    assert _parse_blocking_count('## Verdict\nBlocking issues: none; normalization error.\n') == 2

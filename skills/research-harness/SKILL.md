@@ -440,21 +440,38 @@ Then land the folded result (the same obligations apply in engine and file mode)
 
 - Rewrite the affected `research_notebook.md` sections into a coherent scientific account: assumptions and conventions, starting relations, non-obvious derivation steps, results and interpretation, validity limits and unresolved questions. Keep already verified intermediate understanding current; do not wait for whole-project acceptance. Label unverified reasoning explicitly rather than silently treating it as established. Topic notes may carry extended detail, but links or result tables alone do not replace the notebook's load-bearing reasoning.
 - Link each adopted result's registered artifact directly from the relevant human `##` section, outside the automatic block, comments and code examples. After rewriting, record the section's `written-against` commit. `notebook.result_links` recognizes direct inline and explicit reference links, not recursive documents, HTML, shortcut references or indented link lines. A `linked` result is a navigation witness only.
-- Finish the whole notebook and refresh its automatic block before running `nullius notebook review --model claude/opus` with repeated `--dependency <project-relative-path>` for every required supporting file. This actually executes the existing review-swarm launcher once; the default hard timeout is 1200 seconds (`--timeout-secs <N>` overrides it), with no automatic reviewer retry. Freeze the complete UTF-8 notebook, including its automatic block, and declared dependency SHA-256 from actual bytes, including uncommitted edits. A commit or section stamp alone is insufficient. Any changed input bytes make prior acceptance stale; preserve the original review and input identity as readable history.
+- Finish the whole notebook and refresh its automatic block before running `nullius notebook review --model claude/opus` with repeated `--dependency <project-relative-path>` for every required supporting file. This actually executes the existing review-swarm launcher in bounded calls; the default hard timeout is 1200 seconds (`--timeout-secs <N>` overrides it), with no automatic reviewer retry. Freeze the complete UTF-8 notebook, including its automatic block, and declared dependency SHA-256 from actual bytes, including uncommitted edits. A commit or section stamp alone is insufficient. Any changed input bytes make prior acceptance stale; preserve the original review and input identity as readable history.
 - Require a reviewer report covering every notebook section, with source anchors and reasons addressing complete derivation steps, logical consistency, notation, definitions, assumptions and conventions. Do not give the reviewer an expected verdict or the writer's initial judgment. Links, automatic tables, formula counts, completed checklists and writing self-assessment cannot supply a content verdict. Semantic review does not prove scientific truth, and a single reviewer leaves limits on model, method and input independence; result-specific verification remains required.
 - Run `nullius notebook check --json` without a result selector for final closeout and inspect `nullius current --json`. The read-only check reports `structure` and `content_review` separately; exit 0 requires structural success and an accepted current full-text review, exit 1 means incomplete acceptance (including invalid review evidence), and exit 2 means invalid command/setup input or unavailable execution/runtime. `--result` scopes only the link check; content coverage always remains full-text. `--structure-only` success establishes navigation alone. Missing, partial, failed, unavailable, invalid or stale review leaves closeout incomplete in both file and engine mode; retired historical records remain readable, while every current result participates in the final unscoped structural check.
 
-Automatically linked binary or oversized files are immutable opaque snapshots
-and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
-freshness, but are neither embedded nor read. The report's `opaque_sources` must
-explain every path, hash and `required_for_reasoning`; a missing assessment or any
-required unread source prevents acceptance. Supply independently checked readable
-text dependencies for reasoning that depends on such material. Hash identity is
-not semantic reading. The notebook and explicit `--dependency` inputs require
-strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
-storage to 64 MiB, with refusal rather than silent truncation. This review
-currently accepts only tool mode `none`; other modes are unavailable. It executes
-one reviewer and does not establish a cross-family quorum.
+Valid UTF-8 text remains text regardless of size; Markdown links are discovered
+recursively. Binary or invalid UTF-8 linked files are immutable `opaque_links`
+snapshots and hash locators, not read evidence. Every opaque path/hash needs a
+specific `opaque_sources` assessment; a required unread source prevents acceptance.
+Notebook and explicit dependencies require strict UTF-8 and LF or CRLF endings.
+
+The complete material is frozen before review. Storage (`--snapshot-bytes`,
+default 512 MiB; `--max-files`, default 256) is separate from each request's
+`--context-bytes` and configured backend `--context-tokens` window (default
+200,000 tokens, with instruction/output reserves). Default request bytes use a
+conservative token upper bound. A larger explicit byte packet requires captured
+backend token usage when that bound exceeds the window; missing capacity evidence,
+observed backend compaction or delivery failure supplies no acceptance.
+
+Larger materials use original UTF-8 intervals with adjacent original context,
+followed by a joint audit receiving the COMPLETE original notebook and text
+dependencies. All intervals and the joint audit must be complete and fresh;
+selected quotations or summaries cannot replace this original input. The default
+execution budget is 1200 seconds and 64 calls (`--timeout-secs`, `--max-batches`),
+with one attempt per call and no automatic retry. Shortfalls expose total frozen
+material, pending intervals and joint scope, the reason and a resumable command.
+An unfinished intake reports discovered material and incomplete dependency
+enumeration. `--resume <run-id>` creates a new run, revalidates original receipts
+and material identity, retains explicit dependencies and storage budgets, and
+never rewrites old evidence. If the full joint input does not fit the backend,
+raise an available backend's request budget or leave the review incomplete.
+Only tool mode `none` is accepted. Multiple batches are one semantic review;
+they do not establish independent confirmations or a cross-family quorum.
 
 Converged folds invoke the same unscoped `nullius notebook check --json` required
 for final file closeout. `none` declarations and a missing launcher grant no

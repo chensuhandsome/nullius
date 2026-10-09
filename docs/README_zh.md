@@ -315,10 +315,30 @@ MIT
 
 科研结果采用时，engine 与 file 模式都须重写 notebook 中受影响的正文，保留假设、推导步骤、解释和局限，并直接链接已登记的结果文件。完成编辑并刷新自动块后，运行 `nullius notebook review --model claude/opus`，以重复的 `--dependency <project-relative-path>` 声明必要依赖，再运行 `nullius notebook check --json`。检查分别报告 `structure`（`result_links`）与 `content_review`；只有结构通过且当前全篇正文审查 accepted 才成功。`--result` 只缩小链接范围，正文始终审查全文；`--structure-only` 的成功只证明导航。
 
-正文审查实际调用 reviewer，默认硬超时 1200 秒、一次执行、不自动重试。输入冻结完整 UTF-8 notebook（包括自动块）与依赖的实际字节 SHA-256，涵盖未提交编辑；字节变化使旧报告 stale，历史报告仍可读取。逐节全文覆盖与源锚定理由须检查推导完整性、逻辑、符号、定义、假设和约定。缺失、部分、失败、unavailable、invalid 或 stale 均不能通过。链接、自动表、公式数量、勾选项和作者自评不能替代正文判定。`current` 与 `status` 的 `notebook.content_review` 只读报告，不自动启动 reviewer，也不妨碍普通状态和历史读取。语义审查不证明科学真理，单 reviewer 的独立性局限须明确保留；具体结论仍须对应的推导、数值或文献验证。详见[笔记检查范围](../packages/orchestrator/README.md#human-notebook-integration)。
+正文审查实际调用 reviewer，默认总硬超时 1200 秒、最多 64 次有界调用、每次一次尝试且不自动重试。输入冻结完整 UTF-8 notebook（包括自动块）与依赖的实际字节 SHA-256，涵盖未提交编辑；字节变化使旧报告 stale，历史报告仍可读取。逐节全文覆盖与源锚定理由须检查推导完整性、逻辑、符号、定义、假设和约定。缺失、部分、失败、unavailable、invalid 或 stale 均不能通过。链接、自动表、公式数量、勾选项和作者自评不能替代正文判定。`current` 与 `status` 的 `notebook.content_review` 只读报告，不自动启动 reviewer，也不妨碍普通状态和历史读取。语义审查不证明科学真理，单 reviewer 的独立性局限须明确保留；具体结论仍须对应的推导、数值或文献验证。详见[笔记检查范围](../packages/orchestrator/README.md#human-notebook-integration)。
 
 收敛 fold 与最终 file closeout 都必须调用无 `--result` 的 `nullius notebook check --json`；`none` 声明或 launcher 缺失不构成例外。`--result` 仅用于缩小结构诊断范围，不能替代覆盖所有当前结果的最终默认检查。
 
 默认结构检查要求结果注册表存在且有效，并检查全部登记行，包括已被替代的行；只有当前结果须在人工正文中有直接链接。closeout 检查失败时，普通状态和历史读取仍可使用。
 
-自动链接的二进制或过大文件进入 `opaque_links`，仅作为不可变快照及 SHA-256 定位符，参与 review-swarm manifest 新鲜度校验，不嵌入正文包、也未被读取。报告的 `opaque_sources` 必须逐项说明 path、hash 和 `required_for_reasoning`；缺少评估或存在推理必需但未读的来源都不能通过。应提供经独立核对的可读文本依赖；哈希身份不等于语义阅读。notebook 与显式 `--dependency` 仍须严格 UTF-8，文本闭包最多 1 MiB、快照总存储最多 64 MiB，超限拒绝而非静默截断。目前仅接受 reviewer tool mode `none`，其他模式如实标为 unavailable；单 reviewer 不构成跨模型家族 quorum。
+合法 UTF-8 文本不因体积变大而归为 `opaque_links`，Markdown 依赖递归发现。只有二进制或无效 UTF-8 的自动链接来源作为不可变快照及哈希定位符；报告须逐项说明 path/hash/`required_for_reasoning`，必要但未读的来源不能通过。notebook 与显式依赖须为严格 UTF-8，并使用 LF 或 CRLF。
+
+完整原材料先冻结；存储预算与模型单次请求分开：`--snapshot-bytes` 默认 512 MiB、`--max-files` 默认 256，`--context-bytes` 控制请求体积，`--context-tokens` 声明可用后端的上下文窗口（默认 200,000 tokens，保留指令及输出余量）。默认以字节数作保守 token 上界；显式扩大字节预算后，如该上界超过窗口，则须有执行时记录的后端 token 用量。缺少容量证据、后端压缩原上下文或投递失败均不能通过。
+
+大材料逐个原文区间审读，附相邻原文；随后联合审读接收完整 notebook 与所有文本依赖，检查跨章符号、定义、假设、约定和推理。所有区间与联合审读均完整且 fresh 才可接受，不能用精选引文或摘要代替原文。默认总执行预算 1200 秒、64 次调用（`--timeout-secs`、`--max-batches`），每次只有一次尝试，无自动重试。预算不足报告完整冻结量、待审区间、联合审读欠缺、原因及续审命令；材料枚举未完成时只报告已发现量，并明确闭包不完整。`--resume <run-id>` 新建运行并复核旧收据及原材料身份，保留显式依赖与存储预算，不改旧证据。完整联合原文若超出可用后端窗口，须提高实际可用容量或保持 incomplete。目前仅接受 tool mode `none`；多个批次仍是一次语义审查，不构成多份独立验证或跨家族 quorum。
+
+启用 full-access 独立复现门时，须用 `--reproduction-packet <中性输入文件>` 或 `research_team_config.json` 中的 `independent_reproduction.blind_packet` 提供中性问题、约定与完整原始输入，不携带作者答案或待检实现。两个成员阶段都使用其冻结原文和复现指令；完整候选材料供协调者及其他审读步骤使用。成员通过受审计的 `files_written` 请求写入完整源码，再请求实际执行。新调用的 source assessor 检查实际读取、命令输入、源码构建、执行与方法适用性；输入路由或数值遮蔽本身不证明盲性。同一／相似可靠方法、同一模型家族的两份真正独立构建可以计数，方法与家族多样性另列。作者勾选、导入评语、受污染输入、原实现重跑或相关方法缺陷均不能提供当前确认；至少两份有效独立证据的门槛不变。
+
+容量证据必须附带本机运行时对实际成功调用的来源记录，即使请求满足保守字节上界也一样。该记录绑定完整原始请求、报告、实际工作目录与捕获内容，重算项目摘要不能伪造运行来源。这项验证信任本机运行时及操作系统账户，不证明外部服务或科学结论的正确性。历史未签发记录仍可读取，但不能支持新的容量验收，也不得补签。
+
+Interrupted notebook reviews resume in a fresh run from immutable intake and batch checkpoints, retaining original bytes and rechecking current material. Only completed, fresh, runtime-observed primary interval receipts can be reused; the complete-original joint audit is always executed again. Missing closure, stale sources or incomplete operations remain unavailable or incomplete. Member reproduction evidence requires an authenticated actual producer episode and the complete source/data inputs bound to the executed command; declared inputs and bounded static discovery do not prove arbitrary filesystem activity.
+
+Runtime observations bind the actual report location, so copying signed capture bytes cannot authenticate a new invocation elsewhere. Member episodes freeze every observed file into durable original storage before publication; successful workspace cleanup preserves subsequent verification. Records lacking these bindings remain readable and unavailable for new acceptance.
+
+Member origin trusts the configured runner and owning host runtime: the complete runner bytes are recorded, but no runner allowlist or provider attestation is claimed. Offline or injected host execution establishes a local process/callable observation; actual provider capacity evidence requires the corresponding CLI capture. The canonical team cycle performs a postflight source assessment and a separate fresh assessment at the final consumer; both use the configured assessor request/execution budgets.
+
+The owning account can read the authority key, including code executed by a member under that account; this authenticates against non-executing artifact tampering, not hostile same-account code. No OS sandbox or provider attestation is supplied.
+
+The configured token window is frozen before the original reviewer subprocess starts and bound into its authenticated runtime observation. Changing historical window metadata cannot admit that receipt. Older observations without this policy remain readable and require a fresh execution for capacity acceptance.
+
+Local directory links leave notebook dependency closure pending and prevent acceptance. The complete-original joint audit requires exact substantive original-byte anchors for every interval; a reasoning checkbox alone cannot supply coverage.

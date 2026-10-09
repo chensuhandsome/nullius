@@ -587,6 +587,43 @@ def load_team_config(seed_path: Path) -> TeamConfig:
     return build_team_config(path, raw)
 
 
+def load_strict_team_config(seed_path: Path) -> TeamConfig:
+    """Read one validated control snapshot; invalid controls never grant defaults."""
+    broken = find_broken_config_path(seed_path)
+    if broken is not None:
+        raise ValueError(f"configuration is not a regular readable file: {broken}")
+    path = find_config_path(seed_path)
+    if path is None and os.environ.get("RESEARCH_TEAM_CONFIG", "").strip():
+        raise ValueError("explicit configuration is missing")
+    raw = load_config_object(path) if path is not None else None
+    if raw is not None:
+        mode = raw.get("review_access_mode", "packet_only")
+        if mode not in ("packet_only", "full_access"):
+            raise ValueError("review_access_mode must be packet_only or full_access")
+        features = raw.get("features", {})
+        if not isinstance(features, dict):
+            raise ValueError("features must be an object")
+        if "independent_reproduction_gate" in features and type(features["independent_reproduction_gate"]) is not bool:
+            raise ValueError("independent_reproduction_gate must be a boolean")
+        reproduction = raw.get("independent_reproduction", {})
+        if not isinstance(reproduction, dict):
+            raise ValueError("independent_reproduction must be an object")
+        if "kernel_modules" in reproduction and (not isinstance(reproduction["kernel_modules"], list)
+                or any(not isinstance(item, str) or not item.strip() for item in reproduction["kernel_modules"])):
+            raise ValueError("independent_reproduction.kernel_modules must be a list of nonempty strings")
+        if "requires_method_diversity" in reproduction and type(reproduction["requires_method_diversity"]) is not bool:
+            raise ValueError("independent_reproduction.requires_method_diversity must be a boolean")
+        if "method_diversity_risk" in reproduction and not isinstance(reproduction["method_diversity_risk"], str):
+            raise ValueError("independent_reproduction.method_diversity_risk must be a string")
+        isolation = raw.get("logic_isolation", {})
+        if not isinstance(isolation, dict):
+            raise ValueError("logic_isolation must be an object")
+        if "allowed_local_import_roots" in isolation and (not isinstance(isolation["allowed_local_import_roots"], list)
+                or any(not isinstance(item, str) or not item.strip() for item in isolation["allowed_local_import_roots"])):
+            raise ValueError("logic_isolation.allowed_local_import_roots must be a list of nonempty strings")
+    return build_team_config(path, raw)
+
+
 def build_team_config(path: Path | None, raw: dict | None) -> TeamConfig:
     """Assemble a TeamConfig from an already-loaded raw config object.
 

@@ -18,6 +18,9 @@ output contract in the system prompts:
 from __future__ import annotations
 
 import argparse
+import json
+import hashlib
+import subprocess
 import re
 import sys
 from dataclasses import dataclass, field
@@ -32,7 +35,7 @@ from convergence_schema import (
     emit_convergence_result,
     validate_convergence_result,
 )
-from team_config import get_language_tokens, load_team_config  # type: ignore
+from team_config import get_language_tokens, load_strict_team_config, TeamConfig  # type: ignore
 
 # Controlled vocabulary for nontriviality reasons
 NONTRIVIALITY_REASONS = frozenset({
@@ -353,6 +356,10 @@ def _parse_blocking_count(text: str) -> int | None:
         if re.fullmatch(r"\[.*\]", raw_value) or _is_unfilled_placeholder(raw_value):
             return None
         value = raw_value.strip("*_`").strip().lower()
+        # A closed emphasis span ends the structured field; subsequent prose
+        # is a separate statement. A comma/semicolon continuation stays a finding.
+        if re.match(r"^none\.?(?:\*\*|__|\*|_|`)(?:\s|$)", raw_value.lstrip("*_`"), re.IGNORECASE):
+            return 0
         if value in {"none", "none."}:
             return 0
         if not value:
@@ -363,10 +370,10 @@ def _parse_blocking_count(text: str) -> int | None:
     return None
 
 
-def _parse_report(path: Path) -> ReportStatus:
+def _parse_report(path: Path, cfg: TeamConfig | None = None) -> ReportStatus:
     text = path.read_text(encoding="utf-8", errors="replace")
 
-    cfg = load_team_config(path)
+    cfg = cfg if cfg is not None else load_strict_team_config(path)
     pass_tokens, fail_tokens, ready_tokens, needs_tokens = get_language_tokens(cfg)
 
     deriv_from_table = _parse_pass_fail_from_table(text, "Derivation replication", pass_tokens, fail_tokens)
@@ -629,6 +636,16 @@ def main() -> int:
         default=None,
         help="Optional file path to persist the structured convergence result JSON.",
     )
+    p.add_argument("--notes", type=Path)
+    p.add_argument("--tag")
+    p.add_argument("--project-root", type=Path)
+    p.add_argument("--member-a-evidence", type=Path)
+    p.add_argument("--member-b-evidence", type=Path)
+    p.add_argument("--assessor-model", default=None)
+    p.add_argument("--assessor-runner", type=Path, default=None)
+    p.add_argument("--assessor-timeout-secs", type=int, default=1200)
+    p.add_argument("--assessor-context-bytes", type=int, default=None)
+    p.add_argument("--assessor-context-tokens", type=int, default=200000)
     args = p.parse_args()
 
     mode = args.workflow_mode
@@ -655,8 +672,17 @@ def main() -> int:
             out_json=args.out_json,
         )
 
-    member_a = _parse_report(args.member_a)
-    member_b = _parse_report(args.member_b)
+    try:
+        cfg = load_strict_team_config(args.project_root if args.project_root else (args.notes or args.member_a))
+    except (ValueError, OSError, UnicodeError) as error:
+        return _emit_result_or_fallback(
+            status="parse_error", exit_code=2,
+            reasons=[f"review configuration unavailable: {error}"],
+            report_status={"member_a": default_member_status(args.member_a), "member_b": default_member_status(args.member_b)},
+            meta=base_meta, out_json=args.out_json,
+        )
+    member_a = _parse_report(args.member_a, cfg)
+    member_b = _parse_report(args.member_b, cfg)
 
     parse_errors_a = _collect_parse_errors(member_a, "member_a", require_sweep=require_sweep)
     parse_errors_b = _collect_parse_errors(member_b, "member_b", require_sweep=require_sweep)
@@ -678,6 +704,51 @@ def main() -> int:
         )
 
     rc = check_convergence(member_a, member_b, mode, require_sweep)
+    independence_errors = []
+    base_meta["independent_confirmations"] = 0
+    base_meta["confirmation_refs"] = []
+    base_meta["verification_scope"] = "report_consistency_only"
+    if rc == 0 and str(cfg.data.get("review_access_mode", "packet_only")) == "full_access":
+        if not cfg.feature_enabled("independent_reproduction_gate", default=False):
+            independence_errors = ["independent_reproduction_gate disabled; full_access convergence requires current independent reproduction assessment"]
+        elif not all((args.notes, args.tag, args.project_root, args.member_a_evidence, args.member_b_evidence)):
+            independence_errors = ["independent reproduction evidence/assessment is required; nonempty derivation prose is not confirmation"]
+        else:
+            from member_evidence import validate_original_transport
+            try:
+                for report, evidence_path in ((args.member_a, args.member_a_evidence), (args.member_b, args.member_b_evidence)):
+                    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+                    original = validate_original_transport(evidence, args.project_root.resolve())
+                    ref = evidence["original_transport"]["stages"]["final"]["output"]
+                    if (report.resolve() not in {(args.project_root / relative).resolve() for relative in original["report_paths"]}
+                            or hashlib.sha256(report.read_bytes()).hexdigest() != ref["sha256"]):
+                        raise ValueError("consumer report is not the original executed member report")
+            except (KeyError, TypeError, ValueError, OSError, UnicodeError) as error:
+                independence_errors = [f"original member report binding unavailable: {error}"]
+            checked = subprocess.run([sys.executable, str(Path(__file__).with_name("check_independent_reproduction.py")),
+                "--notes", str(args.notes), "--tag", args.tag, "--project-root", str(args.project_root),
+                "--member-a", str(args.member_a_evidence), "--member-b", str(args.member_b_evidence),
+                *(["--assessor-model", args.assessor_model] if args.assessor_model else []),
+                *(["--assessor-runner", str(args.assessor_runner)] if args.assessor_runner else []),
+                "--assessor-timeout-secs", str(args.assessor_timeout_secs),
+                "--assessor-context-tokens", str(args.assessor_context_tokens),
+                *(["--assessor-context-bytes", str(args.assessor_context_bytes)] if args.assessor_context_bytes is not None else [])],
+                capture_output=True, text=True, check=False) if not independence_errors else None
+            try:
+                receipt = json.loads(checked.stdout) if checked else {}
+            except (ValueError, TypeError):
+                receipt = {}
+            meta = receipt.get("meta", {})
+            if (checked is None or checked.returncode != 0 or receipt.get("status") != "converged"
+                    or type(meta.get("independent_confirmations")) is not int
+                    or meta["independent_confirmations"] < 2 or not meta.get("confirmation_refs")):
+                independence_errors = independence_errors or ["independent reproduction assessment unavailable/rejected/stale"]
+            else:
+                base_meta["independent_confirmations"] = meta["independent_confirmations"]
+                base_meta["confirmation_refs"] = meta["confirmation_refs"]
+                base_meta["verification_scope"] = "independent_reproduction"
+        if independence_errors:
+            rc = 1
     if rc == 0:
         status = "converged"
         reasons = []
@@ -696,7 +767,7 @@ def main() -> int:
         reasons = [f"member_b challenged steps: {len(challenged)}", *challenged]
     else:
         status = "not_converged"
-        reasons = _collect_not_converged_reasons(member_a, member_b, mode=mode, require_sweep=require_sweep)
+        reasons = [*_collect_not_converged_reasons(member_a, member_b, mode=mode, require_sweep=require_sweep), *independence_errors]
 
     return _emit_result_or_fallback(
         status=status,

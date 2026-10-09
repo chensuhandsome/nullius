@@ -14,11 +14,17 @@ including uncommitted edits. A URI or commit alone cannot establish current
 content acceptance. See [human notebook integration](../packages/orchestrator/README.md#human-notebook-integration)
 for the full-text review contract.
 
-Automatically linked binary or oversized sources appear as immutable
-`opaque_links` snapshots and SHA-256 locators, included in manifest freshness
-without embedding or reading their content. `opaque_sources` assesses each
+Automatically linked binary or invalid UTF-8 sources appear as immutable
+`opaque_links` snapshots and SHA-256 locators without embedding or reading
+their content. Single-call review includes the original locators in the review
+manifest's freshness checks. Batched review binds their hashes in the joint
+inventory and streams the original bytes for full-material freshness before
+dispatch and at current acceptance. `opaque_sources` assesses each
 path/hash/`required_for_reasoning`; missing assessments and necessary unread
-sources cannot grant content acceptance. A hash locator proves identity only.
+sources cannot grant content acceptance. A hash locator proves identity only. Large valid text stays in the recursively
+discovered text closure. Batch plans, original interval receipts and a full-original
+joint audit use these same ArtifactRefs. A resumed run references the original
+receipt under its original run ID; it never relocates or rewrites that evidence.
 
 ## Covered Schemes
 
@@ -76,3 +82,17 @@ The current emitted/resolved URI schemes covered by this registry are `hep://`, 
 When another document needs to describe URI truth at a cross-package level, it should point back to this registry instead of creating a second authority list.
 
 Run artifact URIs resolve through Nullius to the original readable run location, including historical `team/runs`. A bare run ID shared by both roots is ambiguous and cannot silently select a payload. File exports preserve project-relative paths; `--run-root` explicitly selects the export location. Historical URI reads do not grant write or execution authority.
+
+Capacity evidence requires an adjacent runtime observation of the actual successful invocation, including requests that fit the conservative byte bound. The local runtime binds the complete original request, actual report locator, working directory and captured bytes using its host authority; recalculating project artifact hashes cannot create that observation. Verification trusts the runtime and owning OS account, and does not authenticate provider truth or scientific correctness. Historical unsigned records remain readable, but cannot supply new capacity acceptance; they are never retrospectively signed.
+
+Interrupted notebook reviews resume in a fresh run from immutable intake and batch checkpoints, retaining original bytes and rechecking current material. Only completed, fresh, runtime-observed primary interval receipts can be reused; the complete-original joint audit is always executed again. Missing closure, stale sources or incomplete operations remain unavailable or incomplete. Member reproduction evidence requires an authenticated actual producer episode and the complete source/data inputs bound to the executed command; declared inputs and bounded static discovery do not prove arbitrary filesystem activity.
+
+Runtime observations bind the actual report location, so copying signed capture bytes cannot authenticate a new invocation elsewhere. Member episodes freeze every observed file into durable original storage before publication; successful workspace cleanup preserves subsequent verification. Records lacking these bindings remain readable and unavailable for new acceptance.
+
+Member origin trusts the configured runner and owning host runtime: the complete runner bytes are recorded, but no runner allowlist or provider attestation is claimed. Offline or injected host execution establishes a local process/callable observation; actual provider capacity evidence requires the corresponding CLI capture. The canonical team cycle performs a postflight source assessment and a separate fresh assessment at the final consumer; both use the configured assessor request/execution budgets.
+
+The owning account can read the authority key, including code executed by a member under that account; this authenticates against non-executing artifact tampering, not hostile same-account code. No OS sandbox or provider attestation is supplied.
+
+The configured token window is frozen before the original reviewer subprocess starts and bound into its authenticated runtime observation. Changing historical window metadata cannot admit that receipt. Older observations without this policy remain readable and require a fresh execution for capacity acceptance.
+
+Local directory links leave notebook dependency closure pending and prevent acceptance. The complete-original joint audit requires exact substantive original-byte anchors for every interval; a reasoning checkbox alone cannot supply coverage.

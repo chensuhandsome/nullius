@@ -40,7 +40,7 @@ CI-safe. Run:
 python3 -m pytest skills/derivation-verify/tests/test_run_multi_backend.py -q
 ```
 
-It locks: cross-family convergence (R1), adjudicator veto (R2), diversity-first tie-break (R3), robust
+It locks: source-grounded independent confirmation (with family diversity reported separately), adjudicator veto (R2), diversity-first tie-break (R3), robust
 JSON extraction from noisy CLI text (incl. Gemini startup noise + JSON-in-prose), and "a dead comparator
 degrades the claim to unconverged, never crashes the matrix".
 
@@ -53,6 +53,8 @@ python3 skills/derivation-verify/scripts/run_multi_backend.py \
   --comparator codex/default --out /tmp/dv2_matrix.json
 ```
 
-Expect `2/2 converged` with each row showing `cross_family_confirmations >= 2`. The mechanical
+Expect `2/2 converged` with each row showing `independent_confirmations >= 2`. The mechanical
 subprocess/arg/output-parsing path (everything the unit mock stubs) is validated against a fake runner;
 a real run additionally validates the live model behaviour.
+
+Derivation comparator requests preserve every original lane and use `--context-bytes` and `--context-tokens` in the Python CLI, or `context_bytes` and `context_tokens` in Native args. The default token window is 200000 with separate protocol/output reserves. Python CLI comparisons require the current successful capture observation, exact request/report/cwd, and observed usage or a conservative bound; detected compaction refuses. Native and injected host protocols enforce conservative complete-input/output bounds and explicitly report provider token usage, authenticated CLI capture and compaction witnesses unavailable. A configured window is not provider capability introspection.

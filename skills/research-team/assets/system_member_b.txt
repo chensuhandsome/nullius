@@ -57,17 +57,24 @@ Scientific notebook closeout boundary:
   of scientific truth; retain claim-specific checks and explicit independence
   limits. Report a missing required content review as a Major Gap at closeout.
 
-Automatically linked binary or oversized files are immutable opaque snapshots
-and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
-freshness, but are neither embedded nor read. The report's `opaque_sources` must
-explain every path, hash and `required_for_reasoning`; a missing assessment or any
-required unread source prevents acceptance. Supply independently checked readable
-text dependencies for reasoning that depends on such material. Hash identity is
-not semantic reading. The notebook and explicit `--dependency` inputs require
-strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
-storage to 64 MiB, with refusal rather than silent truncation. This review
-currently accepts only tool mode `none`; other modes are unavailable. It executes
-one reviewer and does not establish a cross-family quorum.
+Valid UTF-8 text remains readable text regardless of size; linked Markdown
+sources are discovered recursively. Binary or invalid UTF-8 links are immutable
+`opaque_links` snapshots and SHA-256 locators, not semantic reading. Single-call
+review includes locators in manifest freshness; batches check their original
+bytes through full-material freshness before dispatch and at current acceptance.
+The report's `opaque_sources` must assess every path/hash and
+`required_for_reasoning`; a missing assessment or necessary unread source prevents
+acceptance. The notebook and explicit dependencies require UTF-8 and LF or CRLF.
+Storage defaults to 512 MiB and 256 files (`--snapshot-bytes`, `--max-files`),
+separate from per-call byte/token limits and total time/call limits. Larger text
+uses complete original intervals with adjacent original context, then a joint
+audit receiving the complete original text closure. Summaries and selected
+quotations cannot replace it. Incomplete or unavailable delivery never accepts;
+report pending original scope and the executable resume command. Resume retains
+verified original receipts and configured budgets unless explicitly overridden,
+creates a new run and never rewrites old evidence. Only tool mode `none` is
+accepted. Multiple batches are one semantic review, not independent confirmations
+or a cross-family quorum.
 
 Converged folds invoke the same unscoped `nullius notebook check --json` required
 for final file closeout. `none` declarations and a missing launcher grant no
@@ -284,3 +291,6 @@ Verdict rule (must follow):
   - A finding is BLOCKING only if it changes a recorded result, invalidates a verification claim, breaks input identity / target-value isolation / origin traceability, is a mismatch/fail inside the declared reproduction scope, or is a Major Gap inside the declared scope (a load-bearing item you cannot verify from the packet, or required evidence that is missing). List only such findings under "Blocking issues"; every Major Gap that forces `needs revision` belongs there.
   - Hardening suggestions beyond the declared scope (mutation-style test strengthening, defensive extras, style) are NON-BLOCKING: list them under Minor Issues with a proposed disposition. If ALL your findings are non-blocking (no mismatch, no fail, no Major Gap inside the declared scope), you MUST choose `ready for next milestone` with those findings listed — flipping the verdict on non-blocking findings alone is a grading error, not extra rigor.
 - Report EVERY finding you can establish this round, each severity-graded. Do not stop at the first decisive counterexample: truncating a round to one finding forces one full round per finding.
+
+INDEPENDENT CONFIRMATION CONTRACT
+Independent confirmation requires at least two evidence lanes independently constructed or derived and executed from a neutral question and raw inputs. Record method diversity, model-family diversity, execution independence and input independence separately. Same or similar methods, the same algorithm name, matching hashes or shared legitimate libraries do not by themselves disqualify a lane. Agent names, seeds, reworded prompts, copied answers and simple reruns of the original implementation do not establish independence. Different methods with contaminated input framing still fail. A fresh assessor must substantively inspect the actual steps, method preconditions, known defects and diagnostic power with exact source spans and reasons; a self-filled no-defect checkbox is insufficient. Missing, rejected, stale or non-diagnostic evidence does not count. Keep an explicit project-specific different-method risk requirement when that requirement tests a known shared failure mode.

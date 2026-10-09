@@ -28,6 +28,7 @@ import re
 import signal
 import shutil
 import subprocess
+import runtime_capture_observation
 import sys
 import tempfile
 import threading
@@ -79,12 +80,16 @@ if str(_SCRIPT_DIR) not in sys.path:
 
 from review_contract import (
     check_review_contract_file,
+    check_review_contract_text,
     check_two_phase_conformance,
     declared_criteria_categories,
     extract_review_criteria_block,
     first_verdict,
+    first_verdict_text,
+    sanitize_contract_text,
     sanitize_contract_output,
     sanitize_gemini_output,
+    sanitize_gemini_text,
 )
 
 
@@ -114,7 +119,9 @@ def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
 class SeatBudget:
     """One review seat's runner-call cap and monotonic execution deadline."""
 
-    def __init__(self, max_attempts: int, timeout_secs: int, progress_policy: Optional[dict[str, Any]] = None):
+    def __init__(self, max_attempts: int, timeout_secs: int, progress_policy: Optional[dict[str, Any]] = None, context_tokens: Optional[int] = None):
+        runtime_capture_observation._validate_context_tokens(context_tokens)
+        self.context_tokens = context_tokens
         self.max_attempts = max_attempts
         self.timeout_secs = timeout_secs
         self.progress_policy = progress_policy or {}
@@ -902,7 +909,8 @@ def _stop_and_collect(proc: subprocess.Popen) -> tuple[str, str]:
         return proc.communicate()
 
 
-def _run_with_timeout(cmd: list[str], *, timeout_secs: float) -> dict[str, Any]:
+def _run_with_timeout(cmd: list[str], *, timeout_secs: float, context_tokens: Optional[int] = None) -> dict[str, Any]:
+    observation = runtime_capture_observation._prepare(cmd, context_tokens=context_tokens)
     with _PROCESS_LOCK:
         if _STOP_REQUESTED.is_set():
             raise RuntimeError("Review execution interrupted")
@@ -910,9 +918,11 @@ def _run_with_timeout(cmd: list[str], *, timeout_secs: float) -> dict[str, Any]:
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, start_new_session=True,
         )
+        runtime_capture_observation._bind(observation, proc)
         _ACTIVE_PROCESSES.add(proc)
     try:
         stdout, stderr = proc.communicate(timeout=timeout_secs if timeout_secs > 0 else None)
+        runtime_capture_observation._finish(observation, proc)
         return {
             "timed_out": False,
             "exit_code": proc.returncode,
@@ -931,6 +941,7 @@ def _run_with_timeout(cmd: list[str], *, timeout_secs: float) -> dict[str, Any]:
         _stop_and_collect(proc)
         raise
     finally:
+        runtime_capture_observation._discard(observation)
         with _PROCESS_LOCK:
             _ACTIVE_PROCESSES.discard(proc)
 
@@ -1010,14 +1021,17 @@ def _run_one(
 
     prior_capture_runs = set(Path(str(out_path)+".attempts").glob("run.*")) if plan.backend == "claude" else set()
     try:
-        proc = _run_with_timeout(cmd, timeout_secs=remaining)
+        proc = _run_with_timeout(cmd, timeout_secs=remaining, **({"context_tokens": budget.context_tokens} if budget.context_tokens is not None else {}))
         if gemini_cli_home:
             for stream in ("stdout", "stderr"):
                 proc[stream] = proc[stream].replace(gemini_cli_home, "[Gemini home]")
             if out_path.is_file():
                 output_text = out_path.read_text(encoding="utf-8")
                 if gemini_cli_home in output_text:
-                    out_path.write_text(output_text.replace(gemini_cli_home, "[Gemini home]"), encoding="utf-8")
+                    # The original report is already runtime-observed. Redaction
+                    # is a separately named diagnostic view, never original bytes.
+                    _atomic_write_text(Path(str(out_path) + ".redacted-view.txt"),
+                                       output_text.replace(gemini_cli_home, "[Gemini home]"))
         result = {
             "index": plan.index,
             "backend": plan.backend,
@@ -1451,20 +1465,21 @@ def _postprocess_result(
     out_path = Path(str(result.get("out", "")))
     backend = str(result.get("resolved", {}).get("backend") or result.get("backend") or "")
 
-    if check_review_contract and out_path.exists():
-        if backend == "gemini":
-            sanitize_gemini_output(out_path)
-        else:
-            sanitize_contract_output(out_path)
+    # Keep the exact observed output immutable. Normalization is an in-memory
+    # contract view; result['out'] continues to identify the original report.
+    original_text = out_path.read_text(encoding="utf-8", errors="replace") if out_path.is_file() else None
+    view = original_text
+    if check_review_contract and view is not None:
+        view = sanitize_gemini_text(view) if backend == "gemini" else sanitize_contract_text(view)
 
     blank_output = _is_blank_file(out_path)
     result["blank_output"] = blank_output
-    result["verdict"] = first_verdict(out_path) if out_path.exists() else None
+    result["verdict"] = first_verdict_text(view) if view is not None else None
 
     contract_ok: Optional[bool] = None
     contract_errors: list[str] = []
     if check_review_contract:
-        contract_errors = check_review_contract_file(out_path)
+        contract_errors = check_review_contract_text(view) if view is not None else [f"missing file: {out_path}"]
         contract_ok = len(contract_errors) == 0
     result["contract_ok"] = contract_ok
     if contract_errors:
@@ -2323,6 +2338,7 @@ def _parse_args() -> argparse.Namespace:
         default=_DEFAULT_TIMEOUT_SECS,
         help="Explicit hard deadline per review seat across phases/retries/fallback; default: no hard budget (0).",
     )
+    ap.add_argument("--context-tokens", type=int, default=None, help="Caller token window bound into the original runtime observation.")
     ap.add_argument("--claude-live-capture", action="store_true", help="Opt into durable Claude events and partial answer; a terminal result is required.")
     ap.add_argument("--expected-secs", type=float, default=1200, help="Soft expected review duration (default: 1200); does not kill generation.")
     ap.add_argument("--inactivity-secs", type=float, default=0, help="Opt-in Claude stream inactivity diagnostic; unknown capture never terminates (default: disabled).")
@@ -2511,6 +2527,7 @@ def _main(home_stack: contextlib.ExitStack) -> int:
     family_spec_by_index: dict[int, str] = {}
 
     try:
+        runtime_capture_observation._validate_context_tokens(args.context_tokens)
         if args.max_prompt_bytes is not None and args.max_prompt_bytes <= 0:
             raise ValueError("--max-prompt-bytes must be a positive integer")
         if args.max_prompt_chars is not None and args.max_prompt_chars <= 0:
@@ -2843,7 +2860,7 @@ def _main(home_stack: contextlib.ExitStack) -> int:
     two_phase_extra: dict[str, Any] = {"scope_prompt": scope_prompt} if args.two_phase else {}
     progress_policy = {"live_capture": bool(args.claude_live_capture), "expected_secs": args.expected_secs,
                        "inactivity_secs": args.inactivity_secs, "inactivity_grace_secs": args.inactivity_grace_secs}
-    seat_budgets = {plan.index: SeatBudget(int(args.max_attempts), int(args.timeout_secs), progress_policy) for plan in plans}
+    seat_budgets = {plan.index: SeatBudget(int(args.max_attempts), int(args.timeout_secs), progress_policy, args.context_tokens) for plan in plans}
 
     if args.parallel:
         max_workers = min(len(plans), 32)
@@ -3057,7 +3074,7 @@ def _main(home_stack: contextlib.ExitStack) -> int:
                 original_reason = r.get("failure_reason")
                 out_path = Path(str(r.get("out", "")))
                 recovered = False
-                for backend in fallback_order:
+                for fallback_index, backend in enumerate(fallback_order):
                     if backend == "opencode":
                         model = None
                         requested_model = "default"
@@ -3126,7 +3143,7 @@ def _main(home_stack: contextlib.ExitStack) -> int:
                         gemini_review_profile=fallback_gemini_review_profile,
                         timeout_secs=int(args.timeout_secs),
                         seat_budget=seat_budgets[plan.index],
-                        output_path=out_path,
+                        output_path=out_path.with_name(f"{out_path.stem}.fallback-{fallback_index + 1}-{backend}{out_path.suffix}"),
                     )
                     if not fb.get("budget_failure"):
                         r["resolved"] = {"backend": backend, "model": model}

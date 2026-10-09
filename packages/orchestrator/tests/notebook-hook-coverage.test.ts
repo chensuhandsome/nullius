@@ -17,7 +17,7 @@ const read = (name: string): string => fs.readFileSync(path.join(SRC, name), 'ut
 describe('notebook current-state refresh hook coverage', () => {
   it('the shared stamp writer refreshes after an appended stamp', () => {
     const source = read('run-stamp.ts');
-    expect(source).toContain("import { refreshNotebookCurrentState } from './notebook-current-state.js'");
+    expect(source).toMatch(/import\s*\{[^}]*\brefreshNotebookCurrentState\b[^}]*\}\s*from\s*['"]\.\/notebook-current-state\.js['"]/);
     expect(source).toContain('refreshNotebookCurrentState(projectRoot, { insertIfMissing: false })');
   });
 

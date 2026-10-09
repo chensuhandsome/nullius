@@ -39,6 +39,8 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 import run_multi_task  # same-directory launcher; single orchestration path
+# Capture observations are issued inside the launcher's actual Popen boundary,
+# so this entry and direct MultiTaskRunner consumers share the same authority.
 import verify_review_freshness
 
 _SKILL_ROOT = _SCRIPT_DIR.parents[1]
@@ -46,6 +48,8 @@ _TEMPLATES_DIR = _SKILL_ROOT / "templates"
 _ROLES = (
     "generic",
     "notebook",
+    "notebook-batch",
+    "notebook-crosscheck",
     "correctness",
     "execution-adversary",
     "source-extraction",
@@ -1029,6 +1033,7 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                          "hermetic runs.")
     ap.add_argument("--timeout-secs", type=int, default=None,
                     help="Explicit hard budget across phases/retries/fallback; default: no hard budget.")
+    ap.add_argument("--context-tokens", type=int, default=None, help="Caller token window bound at original runner launch.")
     ap.add_argument("--max-attempts", type=int, default=None,
                     help="Maximum launcher subprocess invocations per seat, including retries.")
     ap.add_argument("--claude-live-capture", action="store_true", help="Opt into durable Claude stream events and partial output.")
@@ -1067,9 +1072,11 @@ def _delegate(args: argparse.Namespace, *, out_dir: Path, system_path: Path, pac
             "--prompt", str(packet_path), "--models", str(args.model).strip(), "--check-review-contract",
             # Notebook closeout has one execution and no automatic retry.
             # Other roles retain the existing empty-output recovery policy.
-            "--retry-empty-output", "0" if args.role == "notebook" else "1"]
+            "--retry-empty-output", "0" if args.role in ("notebook", "notebook-batch", "notebook-crosscheck") else "1"]
     if args.timeout_secs is not None:
         argv += ["--timeout-secs", str(args.timeout_secs)]
+    if args.context_tokens is not None:
+        argv += ["--context-tokens", str(args.context_tokens)]
     if args.max_attempts is not None:
         argv += ["--max-attempts", str(args.max_attempts)]
     if args.claude_live_capture:
@@ -1138,9 +1145,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         _validate_model(args)
         _validate_source_review_inputs(args)
-        if args.locator and args.role != "notebook":
+        if args.locator and args.role not in ("notebook", "notebook-batch", "notebook-crosscheck"):
             raise ValueError("--locator is only valid for notebook review with a frozen coverage inventory")
-        if args.role == "notebook":
+        if args.role in ("notebook", "notebook-batch", "notebook-crosscheck"):
             if args.diff or len(args.artifact or []) != 1 or not args.context:
                 raise ValueError("notebook review requires one full notebook artifact and its frozen coverage inventory as context; diff-only review is refused")
             for raw in [*(args.artifact or []), *(args.context or [])]:

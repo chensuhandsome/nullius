@@ -320,6 +320,12 @@ and delegation contracts, and consolidated run authority under one canonical
   skills-market catalog ranges).
 
 ### Fixed
+- **Complete reviewer output through capacity checks.** The Claude CLI runner
+  assembles the complete, ordered assistant text from its stream log (raw tool and
+  thinking events stay in the log), and the review-capacity checks in research-team,
+  derivation-verify, and the notebook review batches bind that complete output by
+  hash to the frozen runtime capture; a capacity verdict is unavailable unless the
+  complete original output is bound.
 - **Forty-nine test regressions** introduced by the run-authority consolidation
   (canonical project roots, plan timestamps, raw dispatch) are fixed at the source in
   the CLI run path, execution-plan materialization, path safety, verification, and the

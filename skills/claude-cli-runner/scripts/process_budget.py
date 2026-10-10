@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import time
+from complete_assistant_text import AssistantText, CompleteTextError
 
 
 def save(path: Path, state: dict) -> None:
@@ -45,8 +46,8 @@ class Capture:
         self.raw, self.partial, self.trace = raw, partial, trace
         self.offset = 0
         self.pending = b""
-        self.seen = set()
         self.answer = ""
+        self.complete_text = AssistantText()
         self.error_path = raw.with_suffix('.error.log')
         self.error_path.write_text("")
         self.terminal = None
@@ -58,21 +59,27 @@ class Capture:
         self.partial.write_text("")
         self.trace.with_suffix(".partial").write_text("")
 
-    def read(self):
+    def read(self, *, final=False):
         with self.raw.open("rb") as stream:
             stream.seek(self.offset)
             chunk = stream.read()
         self.offset += len(chunk)
         self.pending += chunk
+        if final and self.pending and not self.pending.endswith(b"\n"):
+            self.pending += b"\n"
         while b"\n" in self.pending:
             line, self.pending = self.pending.split(b"\n", 1)
+            if not line.strip():
+                continue
             try:
                 obj = json.loads(line)
             except (ValueError, UnicodeDecodeError):
                 self.state["unparsed_lines"] += 1
+                self.complete_text.error_seen = True
                 self.state["capture_health"] = "degraded"
                 continue
             if not isinstance(obj, dict):
+                self.complete_text.error_seen = True
                 self.state["capture_health"] = "degraded"
                 continue
             typ = obj.get("type")
@@ -83,10 +90,14 @@ class Capture:
             self.state["last_event_kind"] = kind
             kinds = self.state["event_kinds"]
             kinds[kind] = kinds.get(kind, 0) + 1
-            fingerprint_input = {"uuid":obj.get("uuid"), "event":obj.get("event")} if kind == "stream_event" else obj
-            fingerprint = hashlib.sha256(json.dumps(fingerprint_input, sort_keys=True).encode()).digest()
-            duplicate = fingerprint in self.seen
-            self.seen.add(fingerprint)
+            try:
+                novel = self.complete_text.add(obj)
+                self.answer = self.complete_text.text()
+            except CompleteTextError as exc:
+                novel = False
+                self.state["capture_health"] = "degraded"
+                with self.error_path.open('a') as error_log:
+                    error_log.write(str(exc)+'\n')
             if kind == "error" or (kind == "result" and obj.get("is_error")):
                 error = obj.get("error")
                 message = error.get("message") if isinstance(error, dict) else error
@@ -103,19 +114,12 @@ class Capture:
                 message = obj["message"]
                 if isinstance(message.get("model"), str):
                     self.state["reported_model"] = message["model"]
-                # A full assistant snapshot may accompany partial deltas. Keep
-                # the longer answer without counting that duplicate representation.
-                body = "".join(item.get("text", "") for item in message.get("content", [])
-                               if isinstance(item, dict) and item.get("type") == "text")
-                if len(body) > len(self.answer):
-                    self.answer = body
             event = obj.get("event") if kind == "stream_event" else None
             delta = event.get("delta") if isinstance(event, dict) else None
             advancing = 0
-            if isinstance(delta, dict) and not duplicate:
+            if isinstance(delta, dict) and novel:
                 dtype = delta.get("type")
                 if dtype == "text_delta" and isinstance(delta.get("text"), str):
-                    self.answer += delta["text"]
                     advancing = len(delta["text"])
                     self.state["answer_chars"] += advancing
                 elif dtype == "thinking_delta" and isinstance(delta.get("thinking"), str):
@@ -285,7 +289,7 @@ def main() -> int:
             save(progress_path, progress)
             stop_group(proc)
             if capture:
-                capture.read()
+                capture.read(final=True)
                 terminal = capture.terminal
                 if code == 0:
                     if (not terminal or terminal.get('is_error') or terminal.get('subtype') != 'success'
@@ -293,8 +297,12 @@ def main() -> int:
                         code = 65
                         termination_reason = 'incomplete_or_error_result'
                     else:
-                        args.out.write_text(terminal['result'])
-                        if args.session_id_file and isinstance(terminal.get('session_id'), str):
+                        try:
+                            args.out.write_text(capture.complete_text.success_text(code))
+                        except CompleteTextError:
+                            code = 65
+                            termination_reason = 'incomplete_or_error_result'
+                        if code == 0 and args.session_id_file and isinstance(terminal.get('session_id'), str):
                             args.session_id_file.write_text(terminal['session_id']+'\n')
                 progress.update(termination_reason=termination_reason, process_status='exited', exit_code=code)
                 save(progress_path, progress)

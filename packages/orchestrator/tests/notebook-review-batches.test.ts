@@ -57,7 +57,14 @@ else:
     if case=='mutate-joint':
         q=root/'research_notebook.md';q.write_bytes(q.read_bytes()+b'\nChanged during joint audit.\n')
 print(json.dumps({'type':'system','subtype':'init','model':'transport-fixture'}),flush=True)
-print(json.dumps({'type':'result','subtype':'success','is_error':False,'session_id':'transport','result':json.dumps(base)}),flush=True)
+report=json.dumps(base,indent=2).replace('\n','\r\n') if case=='split-output' else json.dumps(base)
+terminal=report
+if case=='split-output':
+    pivot=len(report)//2
+    for mid,text in [('first',report[:pivot]),('last',report[pivot:])]:
+        print(json.dumps({'type':'assistant','message':{'id':mid,'content':[{'type':'text','text':text}]}}),flush=True)
+    terminal=report[pivot:]
+print(json.dumps({'type':'result','subtype':'success','is_error':False,'session_id':'transport','result':terminal}),flush=True)
 `;
 let root: string;
 const block = 'A finite anonymous source passage specifies its starting relations, domains, notation, hypotheses and all intermediate steps. UTF-8 λ and Γ preserve their original meaning.\n\n';
@@ -87,6 +94,32 @@ beforeEach(async () => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('complete materials with bounded individual requests', () => {
+  it('preserves a multi-message CRLF report through actual capture and notebook capacity admission', async () => {
+    vi.stubEnv('BATCH_TEST_CASE', 'split-output');
+    write('research_notebook.md', '# Notebook\n\n' + block.repeat(25));
+    const result = await review(['--context-bytes', '20000']);
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    expect(result.value.status).toBe('accepted');
+    const observations: any[] = [];
+    function walk(dir: string): void {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const file = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(file);
+        else if (entry.name.endsWith('.runtime-observation.json')) {
+          const observation = JSON.parse(fs.readFileSync(file, 'utf8')).payload;
+          const report = fs.readFileSync(observation.report_path);
+          expect(report.includes(Buffer.from('\r\n'))).toBe(true);
+          const terminal = JSON.parse(fs.readFileSync(path.join(path.dirname(observation.report_path), path.dirname(observation.capture.budget_relative), observation.capture.complete_output.terminal), 'utf8'));
+          expect(report.toString('utf8')).not.toBe(terminal.result);
+          expect(report.toString('utf8').endsWith(terminal.result)).toBe(true);
+          observations.push(observation);
+        }
+      }
+    }
+    walk(path.join(root, 'artifacts/runs'));
+    expect(observations.length).toBeGreaterThanOrEqual(2);
+  }, 30000);
+
   it('validates the effective clamped budget and rejects unsafe interval limits without looping', async () => {
     expect(() => notebookBudgets({ contextTokens: 45000 })).toThrow();
     expect(() => notebookBudgets({ contextBytes: 12000 })).toThrow();

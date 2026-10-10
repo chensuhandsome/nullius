@@ -41,8 +41,14 @@ def actual(tmp_path, monkeypatch, mode='complete', *, budget=None):
         usage={'input_tokens':100,'output_tokens':20}
         if mode=='over-window':usage={'input_tokens':180000,'cache_read_input_tokens':10000,'output_tokens':20000}
         if mode=='output-budget':usage={'input_tokens':100,'output_tokens':32769}
-        event={'type':'result','is_error':False,'result':report,'usage':usage}
-        event_line=json.dumps({'type':'system','subtype':'compact_boundary'}) if mode=='compacted' else json.dumps(event)
+        if mode=='multipart-crlf':report=json.dumps(json.loads(report),indent=2).replace('\n','\r\n')
+        terminal=report[len(report)//2:] if mode in ('multipart','multipart-crlf') else report
+        event={'type':'result','subtype':'success','is_error':False,'result':terminal,'usage':usage}
+        records=[event]
+        if mode in ('multipart','multipart-crlf'):
+            records=[{'type':'assistant','message':{'id':mid,'content':[{'type':'text','text':body}]}}
+                     for mid,body in [('first',report[:len(report)//2]),('last',terminal)]]+[event]
+        event_line=json.dumps({'type':'system','subtype':'compact_boundary'}) if mode=='compacted' else '\n'.join(json.dumps(r) for r in records)
         script=d/'transport.py';script.write_text('from pathlib import Path\nimport sys\n'
             +f'cap=Path({str(cap)!r});cap.mkdir(parents=True)\n'
             +f'Path({str(out)!r}).write_text({report!r})\n'
@@ -133,3 +139,23 @@ def test_gate_tracking_wrapper_keeps_caller_capacity_and_refuses_before_compare(
     assert capacity['configured']['context_bytes']==12000
     assert capacity['judges'][0]['status']=='unavailable'
     assert all(d['derivation']==body for d in result['matrix'][0]['derivation_records'])
+
+@pytest.mark.parametrize('mode',['multipart','multipart-crlf'])
+def test_complete_multipart_report_reaches_actual_comparator_capacity(tmp_path,monkeypatch,mode):
+    ds,cmp,count=compare(actual(tmp_path,monkeypatch,mode))
+    assert count==1 and mb.claim_status(cmp,ds,['host','host'])[0]
+    output=(tmp_path/'current/out.txt').read_bytes().decode('utf-8')
+    sidecar=json.loads(next((tmp_path/'current/out.txt.attempts').glob('run.*/*.events.result.json')).read_text())
+    assert output != sidecar['result']
+    assert cmp['request_capacity']['judges'][0]['capacity']['observed_usage']==[{'input_tokens':100,'output_tokens':20}]
+    if mode=='multipart-crlf':assert '\r\n' in output
+
+
+def test_comparator_receives_steps_outside_selected_json_field():
+    early='An earlier original premise and necessary step.\r\n'
+    raw=early+json.dumps({'canonical_answer':'42','derivation':SUMMARY,'checkable_form':'42','confidence':'high'})
+    ds=[mb._execute_derivation(lambda *a:raw,'claude/offline','neutral','raw operands',f'original-{i}') for i in range(2)]
+    packet=mb._compare_prompt('Raw inputs only.',CLAIM,ds,['host','host'])
+    decoded,_=json.JSONDecoder().raw_decode(packet.split('FULL_DERIVATION_RECORDS_JSON:\n')[1])
+    assert all(d['derivation_context']==raw and d['derivation']==SUMMARY for d in decoded)
+    assert all(mb.valid_derivation_transport(d) for d in ds)

@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from independence import assessed_indices, independence_record, source_material, valid_derivation_transport, method_risk_passes, observe_runtime_derivation
+from independence import derivation_body, assessed_indices, independence_record, source_material, valid_derivation_transport, method_risk_passes, observe_runtime_derivation
 
 _THIS = Path(__file__).resolve()
 _SKILLS_ROOT = _THIS.parents[2]  # skills/derivation-verify/scripts/run_multi_backend.py -> skills/
@@ -551,7 +551,14 @@ def parse_derivation(text: Optional[str]) -> Optional[dict]:
     if not isinstance(ans, str) or not ans.strip():
         return None
     form = obj.get("checkable_form")
+    try:
+        whole = json.loads(strip_markdown_fences(normalize_newlines(text)).strip())
+        additional_text = whole != obj
+    except (ValueError, TypeError):
+        additional_text = True
     return {
+        "original_assistant_output": text,
+        "additional_assistant_text_present": additional_text,
         "canonical_answer": ans.strip(),
         "derivation_summary": summ.strip() if isinstance(summ, str) else "",
         "derivation": obj.get("derivation", "") if isinstance(obj.get("derivation"), str) else "",
@@ -869,18 +876,22 @@ def _tiebreak_prompt(ctx: str, c: dict, method: str, prior: list[dict]) -> str:
 def _compare_prompt(ctx: str, c: dict, derivations: list[dict], families: list[str]) -> str:
     listing = "\n".join(f'[#{i}] (family={families[i]}) canonical_answer="{d["canonical_answer"]}" | {d["derivation_summary"]}'
                         for i, d in enumerate(derivations))
-    packet = [{**d, "family": families[i], "assessment_source": source_material(d)} for i, d in enumerate(derivations)]
+    packet = [{**d, "family": families[i], "assessment_source": source_material(d), "derivation_context": derivation_body(d)} for i, d in enumerate(derivations)]
     return (
         f"{ctx}\n\nClaim:\n{c['statement']}\nExpected canonical format: {c['report_format']}\n\n"
         f"{len(derivations)} candidate derivations with recorded model-family metadata:\n{listing}\n\n"
         "FULL_DERIVATION_RECORDS_JSON:\n" + json.dumps(packet, ensure_ascii=False) + "\n\n"
         "Read the COMPLETE original derivations and runtime-observed requests, raw outputs and execution records. "
+        "The structured derivation field is unchanged; derivation_context also preserves any other original assistant text. "
+        "Check whether earlier text contains necessary steps, contradictions, repetitions or unrelated commentary. "
+        "Do not assume all text is a derivation, or that one selected JSON field contains every necessary step. "
+        "If the JSON already contains the complete derivation, retain that contract and substantively explain coverage of earlier text. "
         "Summaries, author assertions of freshness and labels cannot substitute for original material. "
         "Cluster by mathematical equivalence, independently recompute, and provide independence_assessments for EVERY index. "
         "majority_answer must be an exact canonical_answer representative from its majority_indices; no empty or unenumerated cluster can converge. "
         "Each has booleans input_independent, execution_independent, construction_independent, method_applicable, diagnostic; "
         "unresolved_defects (array); observed_method (source-grounded description, not the hint); evidence with input, execution, "
-        "construction, applicability, diagnostic. Each entry quotes an exact source_span plus a substantive reason: construction/applicability/diagnostic MUST quote the COMPLETE derivation body itself; input/execution may quote assessment_source including actual transport. "
+        "construction, applicability, diagnostic. Each entry quotes an exact source_span plus a substantive reason: construction/applicability/diagnostic MUST quote the COMPLETE derivation_context itself (structured body when no additional text); input/execution may quote assessment_source including actual transport. "
         "Reject absent original steps/transport, failed invocations, copied reasoning, original-code reruns, contaminated inputs, "
         "known relevant defects and non-diagnostic checks. Same/similar methods, same family and shared legitimate libraries alone do not reject. "
         f"Explicit method risk required: {c.get('requires_method_diversity') is True}. Declared risk: {c.get('method_diversity_risk', 'assess shared failure modes substantively')}. "
@@ -953,7 +964,7 @@ class MultiTaskRunner:
         if not outf.exists():
             return None
         try:
-            txt = outf.read_text(encoding="utf-8")
+            txt = outf.read_bytes().decode("utf-8")
         except (OSError, UnicodeError):
             return None
         return txt if txt.strip() else None
@@ -1064,7 +1075,7 @@ def _compare(c, ctx, derivations, families, comparators: list, run: RunFn, *, ta
                     expected_working_directory=working_directory)
                 if any(item["output_tokens"] > OUTPUT_RESERVE for item in capacity["observed_usage"]):
                     raise ValueError("unavailable: observed comparator output exceeds configured output budget")
-                if not isinstance(raw, str) or Path(invocation["output"]).read_text(encoding="utf-8") != raw:
+                if not isinstance(raw, str) or Path(invocation["output"]).read_bytes().decode("utf-8") != raw:
                     raise ValueError("unavailable: comparator return differs from observed current report")
             else:
                 if not isinstance(raw, str) or not raw.strip():
@@ -1112,7 +1123,7 @@ def _execute_derivation(run, spec, system, prompt, tag):
             if path.is_file():
                 artifacts.append({"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
                 if path.suffix in {".json", ".jsonl", ".log"}:
-                    captured[str(path)] = path.read_text(encoding="utf-8")
+                    captured[str(path)] = path.read_bytes().decode("utf-8")
     result.update(execution_id=tag, transport={"execution_id": tag, "exit_code": exit_code,
         "request": request, "raw_output": raw, "request_sha256": hashlib.sha256(json.dumps(request, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
         "output_sha256": hashlib.sha256(raw.encode()).hexdigest(), "invocation": invocation, "captured_records": captured, "artifact_refs": artifacts})

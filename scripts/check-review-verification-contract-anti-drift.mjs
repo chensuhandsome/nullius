@@ -152,6 +152,19 @@ requireAll(SWARM_SKILL_FILE, read(SWARM_SKILL_FILE), [
   ['no historical policy promotion', 'Changing historical window metadata cannot admit that receipt'],
 ]);
 
+// Complete-output capture is shared by independently installed runner/swarm skills.
+const claudeText = read('skills/claude-cli-runner/scripts/complete_assistant_text.py');
+const swarmText = read('skills/review-swarm/scripts/bin/complete_assistant_text.py');
+if (claudeText !== swarmText) errors.push('complete assistant text collectors differ');
+requireAll('skills/claude-cli-runner/SKILL.md', read('skills/claude-cli-runner/SKILL.md'), [
+  ['ordered complete output', '`OUT` contains the complete assistant'],
+  ['unidentified real increments', 'identical text deltas are retained as separate observed increments'],
+]);
+requireAll('skills/derivation-verify/references/contract.md', read('skills/derivation-verify/references/contract.md'), [
+  ['complete terminal capacity binding', 'capacity accounting uses only that terminal'],
+  ['complete original comparator context', 'enters the comparator as `derivation_context`'],
+]);
+
 if (errors.length > 0) {
   console.error('[check-review-verification-contract-anti-drift] FAIL');
   for (const err of errors) console.error(`  - ${err}`);

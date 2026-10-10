@@ -54,9 +54,13 @@ locations. `OUT.partial` and each attempt's partial answer contain answer text o
 private reasoning stays in the raw evidence. Progress JSON contains event kinds, growth counters,
 timestamps, capture health and process/provider status, never reasoning text. Replays with the same
 event identity and payload do not advance the counters; distinct event identities with repeated text
-do advance. Without event identity, exact payload replays are conservatively treated as duplicates.
-Heartbeats do not advance the counters. A separately saved terminal result plus exit 0 and nonblank
-result text is required before `OUT` is created. Partial text never completes a review contract.
+do advance. Without event identity, identical text deltas are retained as separate observed increments.
+Heartbeats do not advance the counters. Text is collected by message identity and content-block index,
+in original order, with snapshots and deltas reconciled without duplication. Incompatible block types
+or text refuse completion while retaining prior partial text. `OUT` contains the complete assistant
+text, including earlier messages; tool and thinking blocks stay in raw events. Exit 0, a successful
+terminal record matching the complete text or final text message, and completed text blocks are required.
+Partial text never completes a review contract.
 
 `--expected-secs` (default `1200`) is a soft estimate only. `--timeout-secs` defaults to `0` (no hard
 budget); any explicit positive value is a hard total cap across attempts and backoff, unaffected by

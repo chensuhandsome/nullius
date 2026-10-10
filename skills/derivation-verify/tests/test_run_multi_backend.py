@@ -68,8 +68,11 @@ def test_extract_json_prefer_keys_selects_keyed_object():
 
 # ---------------------------------------------------------------- parse_derivation
 def test_parse_derivation_valid():
-    d = mb.parse_derivation('```json\n{"canonical_answer":"42","derivation_summary":"17+25","confidence":"high","checkable_form":"42"}\n```')
-    assert d == {"canonical_answer": "42", "derivation_summary": "17+25", "confidence": "high", "checkable_form": "42", "derivation": ""}
+    raw = '```json\n{"canonical_answer":"42","derivation_summary":"17+25","confidence":"high","checkable_form":"42"}\n```'
+    d = mb.parse_derivation(raw)
+    assert {key: d[key] for key in ("canonical_answer", "derivation_summary", "confidence", "checkable_form", "derivation")} == {"canonical_answer": "42", "derivation_summary": "17+25", "confidence": "high", "checkable_form": "42", "derivation": ""}
+    assert d["additional_assistant_text_present"] is False
+    assert d["original_assistant_output"] == raw
 
 
 def test_parse_derivation_checkable_form_optional():

@@ -38,7 +38,14 @@ def runtime_observed(d: dict) -> bool:
 
 
 def derivation_body(d: dict) -> str:
-    """Scientific steps only; request/execution metadata cannot stand in for this body."""
+    """Original assistant context; assessors must identify the actual scientific steps."""
+    transport = d.get("transport")
+    if runtime_observed(d) and isinstance(transport, dict):
+        from run_multi_backend import parse_derivation
+        original = transport.get("raw_output")
+        parsed = parse_derivation(original) if isinstance(original, str) else None
+        if parsed and parsed["additional_assistant_text_present"]:
+            return original
     body = d.get("derivation", d.get("derivation_body", ""))
     return body if isinstance(body, str) else ""
 
@@ -119,10 +126,15 @@ def valid_derivation_transport(d: dict) -> bool:
         return False
     # Parsed raw output must contain the complete derivation actually shown to the assessor.
     try:
-        from run_multi_backend import extract_json
+        from run_multi_backend import extract_json, parse_derivation
         result = extract_json(raw, prefer_keys={"canonical_answer"})
         if not isinstance(result, dict) or result.get("derivation") != d["derivation"] or result.get("canonical_answer") != d["canonical_answer"]:
             return False
+        if "original_assistant_output" in d:
+            parsed = parse_derivation(raw)
+            if (d["original_assistant_output"] != raw or not parsed
+                    or d.get("additional_assistant_text_present") != parsed["additional_assistant_text_present"]):
+                return False
         for ref in t.get("artifact_refs", []):
             path = Path(ref["path"])
             if hashlib.sha256(path.read_bytes()).hexdigest() != ref["sha256"]:

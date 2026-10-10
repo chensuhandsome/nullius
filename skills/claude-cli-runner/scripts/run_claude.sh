@@ -252,7 +252,19 @@ if ! command -v claude >/dev/null 2>&1; then
   exit 2
 fi
 
-SYSTEM_PROMPT="$(cat "${SYSTEM_PROMPT_FILE}")"
+# A sentinel preserves terminal newlines through command substitution. NUL
+# cannot be represented in argv and must not silently change request identity.
+SYSTEM_PROMPT="$(python3 - "${SYSTEM_PROMPT_FILE}" <<'PY'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_bytes().decode('utf-8')
+if '\0' in text:
+    print('System prompt contains NUL, which cannot be passed unchanged to Claude.', file=sys.stderr)
+    raise SystemExit(2)
+sys.stdout.write(text + '.')
+PY
+)"
+SYSTEM_PROMPT="${SYSTEM_PROMPT%.}"
 declare -a MODEL_ARG=()
 if [[ -n "${MODEL}" ]]; then
   MODEL_ARG=(--model "${MODEL}")

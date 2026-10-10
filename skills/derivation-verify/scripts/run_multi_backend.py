@@ -7,19 +7,11 @@ Satisfies the SAME backend-agnostic contract as the Claude/Workflow-native execu
 blind re-derivations across SEPARATE model CLIs (Claude / Codex / Gemini / OpenCode / Kimi) for TRUE
 cross-model independence — the reliability ceiling per the SOTA on multi-agent verification.
 
-Why cross-model (not same-model self-consistency): same-model "committees" demonstrably suffer
-*representational collapse* (near-identical reasoning, low effective rank), so agreement among
-prompt-variants of ONE model is weak evidence. Independent model FAMILIES decorrelate errors
-(cf. ReConcile / Council Mode / diversity-aware-consensus literature). This executor therefore
-enforces, beyond Executor 1's "majority_size >= 2":
-  R1 cross-family diversity : a claim converges only on >=2 derivations from DISTINCT model
-                              families that the comparator clusters as mathematically equivalent.
-  R2 adjudicator veto       : the comparator independently RECOMPUTES the answer; if its recompute
-                              does not match the agreeing cluster, the claim does NOT converge
-                              (guards the "consensus trap" — a correlated wrong majority).
-  R3 diversity-first tiebreak: each tie-break round pulls a NOT-YET-USED family first (maximize
-                              decorrelation), bounded by max_iter (a fixed lower bound; adaptive
-                              KS / Beta-Binomial stopping is a documented future enhancement).
+At least two independently constructed/executed blind evidence lanes must agree after a
+fresh source-grounded applicability/provenance assessment. Method diversity and model-family
+diversity are separate records, not generic rejection predicates. A comparator checks actual
+steps, input visibility, known defects and diagnostic power; CAS agreement alone never approves
+unassessed evidence. Diversity-first tie-break scheduling remains bounded by max_iter.
 
 It reuses review-swarm's multi-backend runner (skills/review-swarm/scripts/bin/run_multi_task.py)
 as the per-backend launcher: each deriver/comparator is one runner invocation pinned to one model
@@ -40,6 +32,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -50,10 +43,17 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from independence import assessed_indices, independence_record, source_material, valid_derivation_transport, method_risk_passes, observe_runtime_derivation
+
 _THIS = Path(__file__).resolve()
 _SKILLS_ROOT = _THIS.parents[2]  # skills/derivation-verify/scripts/run_multi_backend.py -> skills/
 _DEFAULT_RUNNER = _SKILLS_ROOT / "review-swarm" / "scripts" / "bin" / "run_multi_task.py"
 _REVIEW_BIN = _DEFAULT_RUNNER.parent
+_REQUEST_LIB = _SKILLS_ROOT / "research-team" / "scripts" / "lib"
+if str(_REQUEST_LIB) not in sys.path:
+    sys.path.insert(0, str(_REQUEST_LIB))
+from request_capacity import OUTPUT_RESERVE, request_budgets, validate_request_bytes, validate_request_capacity
 
 
 def _resolve_runner(explicit):
@@ -69,8 +69,8 @@ def _resolve_runner(explicit):
                 return p.resolve()
     return None
 
-# Reuse review-swarm's output sanitizers (strip Gemini CLI startup noise / markdown fences) — the
-# ONLY review-swarm coupling, and it is generic text cleanup, not the review-specific contract.
+# Reuse review-swarm's generic output cleanup; request capacity is validated
+# separately and does not import the review-specific output contract.
 if str(_REVIEW_BIN) not in sys.path:
     sys.path.insert(0, str(_REVIEW_BIN))
 try:
@@ -310,8 +310,8 @@ def resolve_family_spec(spec: str, roster: Optional[dict]) -> str:
     runner = str(fam.get("runner") or "")
     if runner == "native":
         raise ValueError(
-            f"family {name!r} is declared native: supply it as native_derivations in "
-            "claims.json (the host runs its own family in-process), not as a CLI backend"
+            f"family {name!r} is declared native: use the in-host Workflow executor; "
+            "external native_derivations JSON has no validated invocation authority in this CLI"
         )
     if not agents_runner_available(runner):
         raise ValueError(
@@ -554,6 +554,7 @@ def parse_derivation(text: Optional[str]) -> Optional[dict]:
     return {
         "canonical_answer": ans.strip(),
         "derivation_summary": summ.strip() if isinstance(summ, str) else "",
+        "derivation": obj.get("derivation", "") if isinstance(obj.get("derivation"), str) else "",
         "confidence": conf if conf in _CONFIDENCE else "low",
         # optional strict-sympy rewrite of the answer for deterministic equivalence; "" if not a
         # closed-form/number (asymptotic bound, set, prose) -> CAS abstains, gate falls back to LLM.
@@ -562,10 +563,10 @@ def parse_derivation(text: Optional[str]) -> Optional[dict]:
 
 
 def parse_native_derivation(d) -> Optional[dict]:
-    """Validate a HOST-PROVIDED native derivation — one the host already computed IN-PROCESS for its own
-    model family (no CLI hop). Same verdict shape as a CLI deriver, plus a required `family` tag. Returns
-    the verdict dict with `family` included (the caller pops it into the parallel families list); None if
-    it lacks a non-empty canonical_answer or family."""
+    """Normalize an externally supplied native record for readable provenance.
+    Author transport and observation flags are stripped: no validated external capture authority is
+    supported, so this record cannot count as a runtime-observed confirmation.
+    Returns None when its canonical answer or family is absent."""
     if not isinstance(d, dict):
         return None
     ans, fam = d.get("canonical_answer"), d.get("family")
@@ -576,8 +577,12 @@ def parse_native_derivation(d) -> Optional[dict]:
     return {
         "canonical_answer": ans.strip(),
         "derivation_summary": summ.strip() if isinstance(summ, str) else "",
+        "derivation": d.get("derivation", "") if isinstance(d.get("derivation"), str) else "",
+        "transport": None,  # External author fields are not a runtime observation authority.
         "confidence": conf if conf in _CONFIDENCE else "high",  # host-native default: high
         "checkable_form": form.strip() if isinstance(form, str) else "",
+        "execution_id": d.get("execution_id", ""),
+        "method": d.get("method", "unspecified"),
         "family": normalize_family(fam),  # canonical namespace, so it dedups/excludes vs CLI families
     }
 
@@ -587,21 +592,22 @@ def parse_comparison(text: Optional[str], n_derivations: int) -> Optional[dict]:
     obj = extract_json(text, prefer_keys={"majority_size", "majority_answer"})
     if not isinstance(obj, dict):
         return None
-    try:
-        majority_size = int(obj.get("majority_size"))
-    except (TypeError, ValueError):
+    majority_size = obj.get("majority_size")
+    if type(majority_size) is not int or majority_size < 0:
         return None
     raw_idx = obj.get("majority_indices")
-    indices = (
-        sorted({i for i in raw_idx if isinstance(i, int) and 0 <= i < n_derivations})
-        if isinstance(raw_idx, list) else []
-    )
+    if (not isinstance(raw_idx, list) or any(type(i) is not int or not 0 <= i < n_derivations for i in raw_idx)
+            or len(set(raw_idx)) != len(raw_idx) or majority_size != len(raw_idx)):
+        return None
+    indices = sorted(raw_idx)
     return {
         "majority_answer": str(obj.get("majority_answer", "")).strip(),
         "majority_size": majority_size,
         "majority_indices": indices,
-        "all_equivalent": bool(obj.get("all_equivalent", False)),
-        "adjudicated_matches_majority": bool(obj.get("adjudicated_matches_majority", False)),
+        "independence_assessments": obj.get("independence_assessments", []),
+        "method_risk_assessments": obj.get("method_risk_assessments", []),
+        "all_equivalent": obj.get("all_equivalent") is True,
+        "adjudicated_matches_majority": obj.get("adjudicated_matches_majority") is True and majority_size == len(indices),
         "outliers": str(obj.get("outliers", "")).strip() or "none",
         "correct_answer_adjudicated": str(obj.get("correct_answer_adjudicated", "")).strip(),
     }
@@ -612,6 +618,7 @@ def parse_comparison(text: Optional[str], n_derivations: int) -> Optional[dict]:
 SAFE_CMP = {
     "majority_answer": "(comparator unavailable)", "majority_size": 0, "majority_indices": [],
     "all_equivalent": False, "adjudicated_matches_majority": False,
+    "independence_assessments": [],
     "outliers": "comparator backend produced no parseable verdict",
     "correct_answer_adjudicated": "(unadjudicated — comparator unavailable)",
 }
@@ -623,15 +630,10 @@ def cross_family_confirmations(cmp: dict, families: list[str]) -> int:
     return len(fams)
 
 
-def decide_converged(cmp: dict, families: list[str], native_count: int = 0) -> bool:
-    """Converged iff >=2 DISTINCT families agree (R1) AND the adjudicator's recompute matches (R2) AND the
-    agreeing cluster contains >=1 INDEPENDENT (non-native, i.e. CLI-derived) family — host-supplied native
-    derivations (indices < native_count) cannot self-certify without an independent engine corroborating."""
-    idx = [i for i in cmp.get("majority_indices", []) if 0 <= i < len(families)]
-    has_independent = any(i >= native_count for i in idx)
-    return (cross_family_confirmations(cmp, families) >= 2
-            and has_independent
-            and bool(cmp.get("adjudicated_matches_majority")))
+def decide_converged(cmp: dict, families: list[str], native_count: int = 0,
+                     derivations: Optional[list[dict]] = None) -> bool:
+    """Use the same answer-bound acceptance policy as the runtime consumer."""
+    return claim_status(cmp, derivations or [], families, native_count)[0]
 
 
 def pick_next_spec(pool: list[str], used: list[str]) -> Optional[str]:
@@ -783,34 +785,61 @@ def verified_cross_family(forms: list[str], families: list[str], native_count: i
 
 def claim_status(cmp: dict, derivations: list[dict], families: list[str],
                  native_count: int = 0) -> tuple[bool, str, int]:
-    """Decide convergence capability-first. Returns (converged, verification, cross_family_count).
-    CAS path (LLM-independent) when any answer pair is CAS-decidable; else the LLM clustering path.
-    `native_count` host-seeded derivations occupy indices [0, native_count) and cannot, alone, converge a
-    claim — both paths require >=1 independent (CLI) family in the agreeing cluster."""
-    cas_xfam, decidable = verified_cross_family(
-        [d.get("checkable_form", "") for d in derivations], families, native_count)
+    eligible = [i for i in assessed_indices(derivations, cmp.get("independence_assessments", [])) if valid_derivation_transport(derivations[i])]
+    if cmp.get("assessment_input_sha256") != hashlib.sha256(json.dumps(derivations, ensure_ascii=False, sort_keys=True).encode()).hexdigest():
+        eligible = []
+    # CAS checks agreement only; it cannot bypass provenance/applicability review.
+    groups: list[list[int]] = []
+    decidable = False
+    for i in eligible:
+        placed = False
+        for group in groups:
+            same = equivalent_forms(derivations[i].get("checkable_form", ""),
+                                    derivations[group[0]].get("checkable_form", ""))
+            decidable |= same is not None
+            if same is True:
+                group.append(i)
+                placed = True
+                break
+        if not placed:
+            groups.append([i])
+    raw_indices = cmp.get("majority_indices", [])
+    valid_indices = (isinstance(raw_indices, list) and all(type(i) is int and 0 <= i < len(derivations) for i in raw_indices)
+                     and len(set(raw_indices)) == len(raw_indices))
+    idx = sorted(i for i in raw_indices if i in eligible) if valid_indices else []
+    answer = cmp.get("majority_answer")
+    representative = (isinstance(answer, str) and bool(answer.strip()) and any(
+        answer.strip() == str(derivations[i].get("canonical_answer", "")).strip() for i in idx))
+    adjudicated = len(idx) >= 2 and type(cmp.get("majority_size")) is int and cmp["majority_size"] == len(raw_indices) and cmp.get("adjudicated_matches_majority") is True
     if decidable:
-        return cas_xfam >= 2, "cas", cas_xfam
-    return decide_converged(cmp, families, native_count), "llm", cross_family_confirmations(cmp, families)
+        # Equality is evidence about this cluster only. An inconclusive or
+        # different adjudicated cluster cannot publish some other group's answer.
+        same_group = any(set(idx).issubset(group) for group in groups)
+        bindings = [equivalent_forms(answer, derivations[i].get("checkable_form", "")) for i in idx] if isinstance(answer, str) else []
+        answer_bound = bool(bindings) and all(x is True for x in bindings)
+        if representative and bindings and all(x is not False for x in bindings):
+            answer_bound = True
+        accepted = idx if adjudicated and same_group and answer_bound else []
+        cmp["accepted_indices"] = accepted
+        return bool(accepted), "cas", len({families[i] for i in accepted})
+    accepted = idx if adjudicated and representative else []
+    cmp["accepted_indices"] = accepted
+    return bool(accepted), "llm", len({families[i] for i in accepted})
 
 
 # --------------------------------------------------------------------------------------
 # Prompts (mirror Executor 1's vPrompt/cmpPrompt/tiePrompt; comparator schema extended for R1/R2).
 # --------------------------------------------------------------------------------------
 _DERIVE_SYSTEM = (
-    "You are a careful domain expert doing an INDEPENDENT blind re-derivation (the field is whatever the "
-    "task implies — math, physics, statistics, CS, economics, ...). Derive the requested result FROM "
-    "SCRATCH; do not assume any answer. Be rigorous about every step — signs, factors, edge/boundary "
-    "cases, and any convention or branch choice. Output ONLY a single fenced ```json block with EXACTLY these keys: "
-    '"canonical_answer" (the result in the exact requested format), "derivation_summary" (2-6 sentences '
-    "of the actual steps, incl. any computation you ran and its output), \"confidence\" (high|medium|low), "
-    'and "checkable_form" (your canonical_answer rewritten as a STRICT sympy-parseable expression — sympy '
-    "function names like atan/asin/exp/log/sqrt, explicit * for multiplication, ** for powers; set it to "
-    '"" if the answer is NOT a closed-form/number, e.g. an asymptotic bound, a set, or prose). '
-    "No prose outside the json block."
+    "Derive the requested result blindly from the neutral question and raw inputs. Do not assume any answer. "
+    "Return ONLY one JSON object with canonical_answer, derivation (COMPLETE original steps, all premises, "
+    "conventions, applicability and diagnostic limits; no sentence limit or truncation), derivation_summary "
+    "(optional navigation summary), confidence (high|medium|low), and checkable_form (strict sympy expression "
+    "or empty for non-algebraic answers). Include complete computation source and actual output if used; "
+    "say unavailable when actual execution records are unavailable. Never invent execution or provenance."
 )
 _COMPARE_SYSTEM = (
-    "You are an impartial comparator+adjudicator. You are given several INDEPENDENT derivations of one "
+    "You are an impartial comparator+adjudicator. You are given candidate derivations of one "
     "claim. Decide which are MATHEMATICALLY EQUIVALENT (not string-equal; e.g. -pi/(4mu) == -(1/4)pi/mu). "
     "Then INDEPENDENTLY RECOMPUTE the answer yourself. Output ONLY a single fenced ```json block with "
     'EXACTLY these keys: "majority_answer" (canonical answer of the largest equivalent cluster), '
@@ -818,7 +847,7 @@ _COMPARE_SYSTEM = (
     '"all_equivalent" (bool), "outliers" (each non-majority index + its specific error, or "none"), '
     '"correct_answer_adjudicated" (the answer YOU recompute as correct + one-line reason), '
     '"adjudicated_matches_majority" (bool: does YOUR recomputed answer equal majority_answer?). '
-    "No prose outside the json block."
+    "Include independence_assessments and method_risk_assessments as required by the user prompt. No prose outside the json block."
 )
 
 
@@ -833,25 +862,32 @@ def _derive_prompt(ctx: str, c: dict, method: str) -> str:
 
 
 def _tiebreak_prompt(ctx: str, c: dict, method: str, prior: list[dict]) -> str:
-    listing = "  ;  ".join(f'"{d["canonical_answer"]}"' for d in prior)
-    return (
-        f"{ctx}\n\nINDEPENDENT TIE-BREAK derivation. Prior attempts disagreed: {listing}. IGNORE them; "
-        f"derive the claim yourself from scratch.\n{c['statement']}\n\n"
-        f"Suggested route: {method or '(choose any rigorous route)'}\n\n"
-        f"Report canonical_answer in EXACTLY this format: {c['report_format']}\n"
-        "Show any computation you run in derivation_summary."
-    )
+    # Prior answers are deliberately withheld: asking a reader to ignore them does not un-anchor input.
+    return _derive_prompt(ctx, c, method)
 
 
 def _compare_prompt(ctx: str, c: dict, derivations: list[dict], families: list[str]) -> str:
-    listing = "\n".join(
-        f'[#{i}] (family={families[i]}) canonical_answer="{d["canonical_answer"]}" | {d["derivation_summary"]}'
-        for i, d in enumerate(derivations)
-    )
+    listing = "\n".join(f'[#{i}] (family={families[i]}) canonical_answer="{d["canonical_answer"]}" | {d["derivation_summary"]}'
+                        for i, d in enumerate(derivations))
+    packet = [{**d, "family": families[i], "assessment_source": source_material(d)} for i, d in enumerate(derivations)]
     return (
         f"{ctx}\n\nClaim:\n{c['statement']}\nExpected canonical format: {c['report_format']}\n\n"
-        f"{len(derivations)} independent derivations (different model families):\n{listing}\n\n"
-        "Cluster by mathematical equivalence, recompute the correct answer yourself, and fill the json."
+        f"{len(derivations)} candidate derivations with recorded model-family metadata:\n{listing}\n\n"
+        "FULL_DERIVATION_RECORDS_JSON:\n" + json.dumps(packet, ensure_ascii=False) + "\n\n"
+        "Read the COMPLETE original derivations and runtime-observed requests, raw outputs and execution records. "
+        "Summaries, author assertions of freshness and labels cannot substitute for original material. "
+        "Cluster by mathematical equivalence, independently recompute, and provide independence_assessments for EVERY index. "
+        "majority_answer must be an exact canonical_answer representative from its majority_indices; no empty or unenumerated cluster can converge. "
+        "Each has booleans input_independent, execution_independent, construction_independent, method_applicable, diagnostic; "
+        "unresolved_defects (array); observed_method (source-grounded description, not the hint); evidence with input, execution, "
+        "construction, applicability, diagnostic. Each entry quotes an exact source_span plus a substantive reason: construction/applicability/diagnostic MUST quote the COMPLETE derivation body itself; input/execution may quote assessment_source including actual transport. "
+        "Reject absent original steps/transport, failed invocations, copied reasoning, original-code reruns, contaminated inputs, "
+        "known relevant defects and non-diagnostic checks. Same/similar methods, same family and shared legitimate libraries alone do not reject. "
+        f"Explicit method risk required: {c.get('requires_method_diversity') is True}. Declared risk: {c.get('method_diversity_risk', 'assess shared failure modes substantively')}. "
+        "Provide method_risk_assessments: array of {indices:[i,j], addresses_shared_failure:boolean, methods_distinct:boolean (actual mechanisms, never hint labels), risk:string, method_analysis:string, "
+        "evidence:[{index,source_span,reason} from each COMPLETE derivation BODY, not request/metadata]}. Approval must explain with both actual derivations why the declared shared "
+        "failure mode is independently tested or avoided through substantively distinct mechanisms; differently named hints or rewordings do not establish orthogonality. "
+        "Missing material or unsupported risk assessment is unavailable, never approval."
     )
 
 
@@ -864,27 +900,36 @@ RunFn = Callable[[str, str, str, str], Optional[str]]
 
 class MultiTaskRunner:
     def __init__(self, *, runner_path: Path, work_dir: Path, timeout: int, tools: bool,
-                 config: Optional[str], python_exe: str = sys.executable):
+                 config: Optional[str], python_exe: str = sys.executable, live_capture: bool = True,
+                 context_tokens: int = 200000, context_bytes: Optional[int] = None):
         self.runner_path = runner_path
         self.work_dir = work_dir
         self.timeout = timeout
         self.tools = tools
         self.config = config
         self.python_exe = python_exe
+        self.live_capture = live_capture
+        self.request_budgets = request_budgets(context_tokens, context_bytes)
+        self.invocations: dict[str, dict] = {}
 
     def run(self, spec: str, system: str, prompt: str, tag: str) -> Optional[str]:
         backend = family_of(spec)
-        d = self.work_dir / tag.replace("/", "__")
-        d.mkdir(parents=True, exist_ok=True)
+        parent = self.work_dir / tag.replace("/", "__")
+        parent.mkdir(parents=True, exist_ok=True)
+        d = Path(tempfile.mkdtemp(prefix="invocation-", dir=parent))
         sysf, promptf, outf = d / "system.txt", d / "prompt.txt", d / "out.txt"
+        outf.unlink(missing_ok=True)
         sysf.write_text(system, encoding="utf-8")
         promptf.write_text(prompt, encoding="utf-8")
         cmd = [
             self.python_exe, str(self.runner_path),
             "--out-dir", str(d), "--system", str(sysf), "--prompt", str(promptf),
             "--models", spec, "--backend-output", f"{backend}={outf}",
-            "--output-prefix", "d", "--timeout-secs", str(self.timeout), "--no-parallel",
+            "--output-prefix", "d", "--timeout-secs", str(self.timeout), "--max-attempts", "1", "--no-parallel",
+            "--context-tokens", str(self.request_budgets["context_tokens"]),
         ]
+        if self.live_capture and backend == "claude":
+            cmd.append("--claude-live-capture")
         if self.config:
             cmd += ["--config", self.config]
         if self.tools and backend in _TOOL_MODES:
@@ -895,15 +940,21 @@ class MultiTaskRunner:
         # makes the gate reproducible and config-independent; an explicit --config is still honored.
         env = {**os.environ, "REVIEW_SWARM_NO_AUTO_CONFIG": "1"}
         try:
-            subprocess.run(cmd, timeout=(self.timeout + 60) if self.timeout else None,
-                           capture_output=True, text=True, check=False, env=env)
+            proc = subprocess.run(cmd, timeout=self.timeout if self.timeout else None,
+                                  capture_output=True, text=True, check=False, env=env)
+            self.invocations[tag] = {"exit_code": proc.returncode, "model": spec, "stdout": proc.stdout, "stderr": proc.stderr,
+                                     "system": str(sysf), "prompt": str(promptf), "output": str(outf),
+                                     "work_dir": str(d), "meta": str(d / "meta.json")}
+            if proc.returncode != 0:
+                return None
         except (subprocess.TimeoutExpired, OSError):
+            self.invocations[tag] = {"exit_code": None, "model": spec, "work_dir": str(d), "meta": str(d / "meta.json")}
             return None
         if not outf.exists():
             return None
         try:
-            txt = outf.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            txt = outf.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
             return None
         return txt if txt.strip() else None
 
@@ -911,7 +962,7 @@ class MultiTaskRunner:
 # --------------------------------------------------------------------------------------
 # The gate (per claim) — cross-model derive -> adjudicate -> diversity-first tie-break to converge.
 # --------------------------------------------------------------------------------------
-def _aggregate_judges(verdicts: list, n_derivations: int) -> tuple:
+def _aggregate_judges(verdicts: list, n_derivations: int, derivations: Optional[list[dict]] = None) -> tuple:
     """Meta-judge aggregation of a cross-family comparator PANEL into one verdict (SOTA: multiple judges
     surface single-judge anchoring/bias). Returns (cmp, n_ok). MUST be EQUAL-or-STRICTER than a single
     judge — never converge what no judge endorsed.
@@ -942,15 +993,44 @@ def _aggregate_judges(verdicts: list, n_derivations: int) -> tuple:
                  "outliers": f"no strict-majority cluster across {len(ok)} judges",
                  "correct_answer_adjudicated": ok[0].get("correct_answer_adjudicated", "")}, len(ok))
     backers = [v for v in ok if norm(v) == cluster]
+    # Vote on complete source-validated lane sets jointly with this cluster and
+    # adjudication. Free-text reasons need not match; individual axes cannot be
+    # assembled from different judges into an approval nobody gave.
+    assessments, risk_assessments, joint_adjudication = [], [], ""
+    if derivations is not None:
+        complete_votes = []
+        for v in backers:
+            if v.get("adjudicated_matches_majority") is True:
+                lanes = tuple(i for i in assessed_indices(derivations, v.get("independence_assessments", [])) if i in cluster)
+                if len(lanes) >= 2:
+                    complete_votes.append((lanes, v))
+        counts = Counter(lanes for lanes, _ in complete_votes)
+        lanes, approvals = counts.most_common(1)[0] if counts else ((), 0)
+        if approvals >= need:
+            lane_backers = [v for actual, v in complete_votes if actual == lanes]
+            assessments = [a for a in lane_backers[0].get("independence_assessments", []) if a.get("index") in lanes]
+            joint_adjudication = lane_backers[0].get("correct_answer_adjudicated", "")
+            pair_votes = {}
+            for v in lane_backers:
+                seen_pairs = set()
+                for r in v.get("method_risk_assessments", []) if isinstance(v.get("method_risk_assessments"), list) else []:
+                    if method_risk_passes(derivations, list(lanes), [r]):
+                        pair = tuple(sorted(r["indices"]))
+                        if pair not in seen_pairs:
+                            pair_votes.setdefault(pair, []).append(r)
+                            seen_pairs.add(pair)
+            risk_assessments = [records[0] for records in pair_votes.values() if len(records) >= need]
     cmp = {
         "majority_answer": Counter(v.get("majority_answer", "") for v in backers).most_common(1)[0][0],
         "majority_size": len(cluster),
+        "independence_assessments": assessments,
+        "method_risk_assessments": risk_assessments,
         "majority_indices": list(cluster),
         "all_equivalent": sum(1 for v in backers if v.get("all_equivalent")) >= need,
         # veto JOINTLY attached to THIS cluster by a strict majority (of all judges, not just backers)
         "adjudicated_matches_majority": sum(1 for v in backers if v.get("adjudicated_matches_majority")) >= need,
         "outliers": " || ".join(f"judge{j}: {v.get('outliers', '')}" for j, v in enumerate(ok)),
-        "correct_answer_adjudicated": ok[0].get("correct_answer_adjudicated", ""),
+        "correct_answer_adjudicated": joint_adjudication,
     }
     return cmp, len(ok)
 
@@ -961,30 +1041,108 @@ def _compare(c, ctx, derivations, families, comparators: list, run: RunFn, *, ta
     if not derivations:
         return dict(SAFE_CMP), 0
     prompt = _compare_prompt(ctx, c, derivations, families)
+    owner = getattr(run, "__self__", None)
+    configured = getattr(run, "request_budgets", getattr(owner, "request_budgets", {}))
+    budgets = request_budgets(configured.get("context_tokens", 200000), configured.get("context_bytes"))
+    evidence = [None] * len(comparators)
 
     def _judge(idx_spec):
         j, spec = idx_spec
+        call_tag = f"{tag}_j{j}_{roster_family_of(spec)}"
         try:  # one judge's failure must drop to None, not abort the whole panel (ex.map re-raises)
-            return parse_comparison(run(spec, _COMPARE_SYSTEM, prompt, f"{tag}_j{j}_{roster_family_of(spec)}"), len(derivations))
-        except Exception:
+            bound = validate_request_bytes(_COMPARE_SYSTEM, prompt, budgets)
+            receipts = getattr(run, "invocations", getattr(owner, "invocations", None))
+            # The injected host callable has no CLI capture/token protocol. Its
+            # full input plus output reserve must fit conservatively before call.
+            if receipts is None and bound + OUTPUT_RESERVE > budgets["context_tokens"]:
+                raise ValueError("unavailable: host comparator request exceeds conservative token window")
+            working_directory = str(Path.cwd().resolve())
+            raw = run(spec, _COMPARE_SYSTEM, prompt, call_tag)
+            if receipts is not None:
+                invocation = receipts.get(call_tag, {})
+                capacity = validate_request_capacity(_COMPARE_SYSTEM, prompt, invocation, budgets,
+                    expected_working_directory=working_directory)
+                if any(item["output_tokens"] > OUTPUT_RESERVE for item in capacity["observed_usage"]):
+                    raise ValueError("unavailable: observed comparator output exceeds configured output budget")
+                if not isinstance(raw, str) or Path(invocation["output"]).read_text(encoding="utf-8") != raw:
+                    raise ValueError("unavailable: comparator return differs from observed current report")
+            else:
+                if not isinstance(raw, str) or not raw.strip():
+                    raise ValueError("unavailable: host comparator invocation returned no output")
+                emitted_bound = len(raw.encode("utf-8"))
+                if emitted_bound > OUTPUT_RESERVE or bound + emitted_bound > budgets["context_tokens"]:
+                    raise ValueError("unavailable: host comparator output exceeds conservative output/window budget")
+                capacity = {**budgets, "conservative_input_bound": bound,
+                    "conservative_output_bound": emitted_bound, "capacity_evidence": "conservative_host_bound",
+                    "observed_usage": [], "compaction_witness": "unavailable", "capture_observation": "unavailable"}
+            parsed = parse_comparison(raw, len(derivations))
+            evidence[j] = {"tag": call_tag, "model": spec, "status": "completed", "capacity": capacity}
+            return parsed
+        except Exception as exc:
+            evidence[j] = {"tag": call_tag, "model": spec, "status": "unavailable", "reason": str(exc)}
             return None
 
     with cf.ThreadPoolExecutor(max_workers=max(1, len(comparators))) as ex:
         verdicts = list(ex.map(_judge, list(enumerate(comparators))))
-    return _aggregate_judges(verdicts, len(derivations))
+    cmp, n_ok = _aggregate_judges(verdicts, len(derivations), derivations)
+    cmp["assessment_input_sha256"] = hashlib.sha256(json.dumps(derivations, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    cmp["request_capacity"] = {"configured": budgets, "judges": evidence}
+    return cmp, n_ok
+
+
+def _execute_derivation(run, spec, system, prompt, tag):
+    raw = run(spec, system, prompt, tag)
+    result = parse_derivation(raw)
+    if not result:
+        return None
+    request = {"system": system, "prompt": prompt}
+    owner = getattr(run, "__self__", None)
+    invocations = getattr(run, "invocations", getattr(owner, "invocations", None))
+    invocation = invocations.get(tag, {}) if isinstance(invocations, dict) else {}
+    # Real adapters must furnish their observed successful process receipt. An injected host RunFn
+    # has the documented str=success / None=terminal-failure interface and is tested separately.
+    exit_code = invocation.get("exit_code") if invocations is not None else 0
+    artifacts = []
+    captured = {}
+    for key in ("system", "prompt", "output", "meta"):
+        if invocation.get(key) and Path(invocation[key]).is_file():
+            path = Path(invocation[key]); artifacts.append({"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    if invocation.get("output"):
+        for path in Path(invocation["output"] + ".attempts").glob("run.*/*"):
+            if path.is_file():
+                artifacts.append({"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+                if path.suffix in {".json", ".jsonl", ".log"}:
+                    captured[str(path)] = path.read_text(encoding="utf-8")
+    result.update(execution_id=tag, transport={"execution_id": tag, "exit_code": exit_code,
+        "request": request, "raw_output": raw, "request_sha256": hashlib.sha256(json.dumps(request, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
+        "output_sha256": hashlib.sha256(raw.encode()).hexdigest(), "invocation": invocation, "captured_records": captured, "artifact_refs": artifacts})
+    return observe_runtime_derivation(result)
+
+
+def _method_risk_satisfied(c, derivations, cmp):
+    return c.get("requires_method_diversity") is not True or method_risk_passes(
+        derivations, cmp.get("accepted_indices", []), cmp.get("method_risk_assessments", []))
 
 
 def verify_claim(c: dict, *, ctx: str, pool: list[str], comparators: list, max_iter: int, run: RunFn,
                  unavailable: Optional[Callable[[str], bool]] = None) -> dict:
+    invalid = [key for key, expected in (("requires_method_diversity", bool), ("method_diversity_risk", str))
+               if key in c and type(c[key]) is not expected]
+    if invalid:
+        return {"claim": c.get("id"), "status": "unavailable", "verification": "invalid_claim_controls",
+                "converged": False, "independent_confirmations": 0, "cross_family_confirmations": 0,
+                "judges": 0, "native_seeded": 0, "native_dropped": [], "families": [],
+                "total_derivations": 0, "derivation_records": [], "iterate_rounds": 0,
+                "agreed_answer": None, "adjudicated_correct": None, "adjudicated_matches_majority": False,
+                "independence_evidence": {"accepted_evidence_indices": []},
+                "failure_reason": "Invalid claim control types: " + ", ".join(invalid), "outliers": None}
     methods = [c.get("method0", ""), c.get("method1", "")]
     derivations: list[dict] = []
     families: list[str] = []
     used: list[str] = []
 
-    # Seed HOST-PROVIDED native derivations first (computed in-host for the host's own family — no CLI
-    # hop). Their families are AUTO-EXCLUDED from the CLI pool below, so we never shell out to a family
-    # the host already ran natively, even if the caller left it in --backends. They participate in the
-    # cross-family gate (CAS + comparator) exactly like CLI derivations.
+    # External native records remain readable but cannot supply runtime-owned observation.
+    # Unverifiable records are unavailable and do not suppress available CLI executions.
     #
     # With an agents file in force, a native derivation must land in a DECLARED family that is
     # not declared unavailable: an unattributable tag (e.g. the gateway alias "opencode") could
@@ -993,12 +1151,17 @@ def verify_claim(c: dict, *, ctx: str, pool: list[str], comparators: list, max_i
     # mislabel — both are dropped VISIBLY (native_dropped in the row), never silently absorbed.
     native_families: set = set()
     native_dropped: list = []
+    native_unavailable: list = []
     roster_families = (_AGENTS_ROSTER.get("families") or {}) if _AGENTS_ROSTER is not None else None
     for raw in (c.get("native_derivations") or []):
         nat = parse_native_derivation(raw)
         if not nat:
             continue
         fam = nat.pop("family")
+        if not valid_derivation_transport(nat):
+            native_dropped.append(fam)
+            native_unavailable.append({"family": fam, "reason": "External native seeds lack runtime-owned invocation observation; no validated external capture authority is supported."})
+            continue
         if roster_families is not None:
             fam_decl = roster_families.get(fam)
             if not isinstance(fam_decl, dict) or fam_decl.get("available") is False:
@@ -1028,7 +1191,7 @@ def verify_claim(c: dict, *, ctx: str, pool: list[str], comparators: list, max_i
         if len(seed_specs) >= need_cli:
             break
     if native_seeded == 0 and len(seed_specs) < 2:  # pool lacks 2 families (degraded independence)
-        seed_specs = cli_pool[:2]
+        seed_specs = (cli_pool * 2)[:2]
 
     # The comparator panel also avoids the host's own family — pick non-native judges when any exist, so
     # even the judge isn't a self-family CLI hop (falls back to the given panel if all are native-family).
@@ -1037,7 +1200,10 @@ def verify_claim(c: dict, *, ctx: str, pool: list[str], comparators: list, max_i
     def _derive(idx_spec):
         i, spec = idx_spec
         tag = f"{c['id']}/derive{i}_{roster_family_of(spec)}"
-        return spec, parse_derivation(run(spec, _DERIVE_SYSTEM, _derive_prompt(ctx, c, methods[i % 2]), tag))
+        result = _execute_derivation(run, spec, _DERIVE_SYSTEM, _derive_prompt(ctx, c, methods[i % 2]), tag)
+        if result:
+            result.update(execution_id=tag, method=methods[i % 2] or "unspecified")
+        return spec, result
 
     with cf.ThreadPoolExecutor(max_workers=max(1, len(seed_specs))) as ex:
         for spec, d in ex.map(_derive, list(enumerate(seed_specs))):
@@ -1048,6 +1214,7 @@ def verify_claim(c: dict, *, ctx: str, pool: list[str], comparators: list, max_i
 
     cmp, n_judges = _compare(c, ctx, derivations, families, judges, run, tag=f"{c['id']}/compare0")
     converged, verification, cas_xfam = claim_status(cmp, derivations, families, native_seeded)
+    converged = converged and _method_risk_satisfied(c, derivations, cmp)
     rounds = 0
     while not converged and rounds < max_iter:
         rounds += 1
@@ -1058,37 +1225,54 @@ def verify_claim(c: dict, *, ctx: str, pool: list[str], comparators: list, max_i
             break
         used.append(spec)
         method = methods[rounds % 2]
-        d = parse_derivation(run(spec, _DERIVE_SYSTEM,
+        d = _execute_derivation(run, spec, _DERIVE_SYSTEM,
                                  _tiebreak_prompt(ctx, c, method, derivations),
-                                 tag=f"{c['id']}/tiebreak{rounds}_{roster_family_of(spec)}"))
+                                 tag=f"{c['id']}/tiebreak{rounds}_{roster_family_of(spec)}")
         if d:
+            d.update(execution_id=f"{c['id']}/tiebreak{rounds}_{roster_family_of(spec)}", method=method or "unspecified")
             derivations.append(d)
             families.append(roster_family_of(spec))
         cmp, n_judges = _compare(c, ctx, derivations, families, judges, run, tag=f"{c['id']}/compare{rounds}")
         converged, verification, cas_xfam = claim_status(cmp, derivations, families, native_seeded)
+        converged = converged and _method_risk_satisfied(c, derivations, cmp)
 
-    # cross_family_confirmations: CAS-verified count when the CAS path decided; else the comparator's.
+    risk_satisfied = _method_risk_satisfied(c, derivations, cmp)
+    if not converged:
+        cmp["accepted_indices"] = []
+    # Published confirmations count accepted evidence only; rejected candidate
+    # observations remain separately visible in independence_evidence.
     xfam = cas_xfam if verification == "cas" else cross_family_confirmations(cmp, families)
+    if not converged:
+        xfam = 0
     # Honest cluster size: indices the comparator enumerated (never exceeds derivations that ran).
     idx = cmp.get("majority_indices") or []
-    independent_confirmations = len(idx) if idx else min(int(cmp.get("majority_size", 0) or 0), len(derivations))
+    independent_confirmations = len(cmp.get("accepted_indices", []))
     return {
         "claim": c["id"],
         "converged": converged,
-        # how convergence was decided: "cas" = LLM-independent (deterministic equivalence, de-anchored
-        # from the comparator); "llm" = comparator clustering + adjudicator veto (LLM-bounded).
+        # CAS or comparator clustering establishes agreement; either path still
+        # requires source eligibility, adjudication and declared method risks.
         "verification": verification,
         "independent_confirmations": independent_confirmations,
+        "independence_evidence": independence_record(derivations, families, cmp.get("accepted_indices", []), cmp.get("independence_assessments", [])),
+        "source_eligible_indices": [i for i in assessed_indices(derivations, cmp.get("independence_assessments", [])) if valid_derivation_transport(derivations[i])],
+        "method_risk_satisfied": risk_satisfied,
+        "method_risk_assessments": cmp.get("method_risk_assessments", []),
         "cross_family_confirmations": xfam,
         "judges": n_judges,  # comparator-panel size that returned a usable verdict (>=2 = de-biased)
         "native_seeded": native_seeded,  # host-provided derivations injected (no CLI hop)
         # native tags dropped because the agents file declares no such family (visible, never silent)
         "native_dropped": native_dropped,
+        "native_unavailable": native_unavailable,
         "families": sorted(set(families)),
         "total_derivations": len(derivations),
+        "derivation_records": derivations,
         "iterate_rounds": rounds,
-        "agreed_answer": cmp["majority_answer"],
-        "adjudicated_correct": cmp["correct_answer_adjudicated"],
+        "agreed_answer": cmp["majority_answer"] if converged else None,
+        "adjudicated_correct": cmp["correct_answer_adjudicated"] if converged else None,
+        "comparator_diagnostics": {"majority_answer": cmp["majority_answer"],
+                                   "correct_answer_adjudicated": cmp["correct_answer_adjudicated"],
+                                   "request_capacity": cmp.get("request_capacity")},
         "adjudicated_matches_majority": cmp["adjudicated_matches_majority"],
         "outliers": cmp["outliers"],
     }
@@ -1105,9 +1289,7 @@ def _summarize(rows: list[dict], n_claims: int, family_pool: list[str],
         "clean_first_pass": sum(1 for r in rows if r["converged"] and r["iterate_rounds"] == 0),
         "needed_iteration": [{"claim": r["claim"], "rounds": r["iterate_rounds"]} for r in rows if r["iterate_rounds"] > 0],
         "dropped_claims": n_claims - len(rows),
-        # Distinct families available to derivers; <2 means R1 (cross-family) is structurally
-        # unsatisfiable and EVERY claim will report converged:false by design — surfaced here so the
-        # matrix is self-explanatory rather than silently all-unconverged.
+        # Available family diversity is reported separately from assessed independence.
         "family_pool": family_pool,
         # Which agents file was in force and which families actually produced usable
         # derivations, at which independence level. A gate run below the cross-family
@@ -1157,6 +1339,12 @@ def run_gate(spec: dict, *, pool: list[str], comparators: list, run: RunFn,
                 fail_streak[model_spec] = 0
         return out
 
+    owner = getattr(run, "__self__", None)
+    if hasattr(run, "invocations") or hasattr(owner, "invocations"):
+        tracked_run.invocations = getattr(run, "invocations", getattr(owner, "invocations", {}))
+    if hasattr(run, "request_budgets") or hasattr(owner, "request_budgets"):
+        tracked_run.request_budgets = getattr(run, "request_budgets", getattr(owner, "request_budgets", {}))
+
     def unavailable(model_spec: str) -> bool:
         return fail_streak.get(model_spec, 0) >= _BACKEND_DISABLE_AFTER
 
@@ -1174,7 +1362,8 @@ def run_gate(spec: dict, *, pool: list[str], comparators: list, run: RunFn,
                 "cross_family_confirmations": 0, "judges": 0, "native_seeded": 0,
                 "native_dropped": [], "families": [],
                 "total_derivations": 0,
-                "iterate_rounds": 0, "agreed_answer": "", "adjudicated_correct": f"(error: {exc})",
+                "iterate_rounds": 0, "agreed_answer": None, "adjudicated_correct": None,
+                "failure_reason": str(exc),
                 "adjudicated_matches_majority": False, "outliers": f"claim crashed: {exc}",
             })
     roster_families = (_AGENTS_ROSTER.get("families") or {}) if _AGENTS_ROSTER is not None else None
@@ -1188,7 +1377,7 @@ def run_gate(spec: dict, *, pool: list[str], comparators: list, run: RunFn,
     native_fams = {nat["family"]
                    for c in claims if isinstance(c, dict)
                    for nat in (parse_native_derivation(d) for d in (c.get("native_derivations") or []))
-                   if nat and _native_admitted(nat["family"])}
+                   if nat and valid_derivation_transport(nat) and _native_admitted(nat["family"])}
     family_pool = sorted({roster_family_of(s) for s in pool} | native_fams)
     downed = sorted(
         ({"spec": s, "consecutive_failures": n} for s, n in fail_streak.items()
@@ -1208,8 +1397,10 @@ def main(argv=None) -> int:
                     help="comma model-spec PANEL of cross-family judges; consensus de-biases any single "
                          "judge (overrides --comparator). Default: one judge (= --comparator).")
     ap.add_argument("--out", type=Path, default=None, help="write matrix JSON here (default: stdout)")
-    ap.add_argument("--work-dir", type=Path, default=None, help="scratch dir (default: a temp dir)")
+    ap.add_argument("--work-dir", type=Path, default=None, help="durable invocation records (default: beside --out, or beside --claims for stdout)")
     ap.add_argument("--timeout-secs", type=int, default=_DEFAULT_TIMEOUT, help="per-backend timeout")
+    ap.add_argument("--context-tokens", type=int, default=200000, help="configured comparator context window including output reserve")
+    ap.add_argument("--context-bytes", type=int, default=None, help="complete comparator request byte budget; oversized original input is refused")
     ap.add_argument("--max-iter", type=int, default=None, help="override claims.max_iter")
     ap.add_argument("--runner", type=Path, default=None,
                     help="path to review-swarm's run_multi_task.py (default: $DERIVATION_VERIFY_RUNNER, "
@@ -1223,6 +1414,11 @@ def main(argv=None) -> int:
                          "configuration, never an error. DERIVATION_VERIFY_NO_AUTO_CONFIG=1 disables "
                          "the auto-discovery only.")
     args = ap.parse_args(argv)
+    try:
+        request_budgets(args.context_tokens, args.context_bytes)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
     if not args.claims.exists():
         print(f"claims file not found: {args.claims}", file=sys.stderr)
@@ -1234,9 +1430,9 @@ def main(argv=None) -> int:
         return 2
     set_agents_roster(roster, source=roster_source, path=roster_path)
     spec = json.loads(args.claims.read_text(encoding="utf-8"))
-    has_natives = any(parse_native_derivation(d)
+    has_natives = any(nat and valid_derivation_transport(nat)
                       for c in (spec.get("claims") or []) if isinstance(c, dict)
-                      for d in (c.get("native_derivations") or []))
+                      for nat in (parse_native_derivation(d) for d in (c.get("native_derivations") or [])))
 
     def _resolve_specs(raw: str, *, flag: str) -> Optional[list[str]]:
         out = []
@@ -1259,10 +1455,6 @@ def main(argv=None) -> int:
     if not pool:
         print("need >=1 backend spec", file=sys.stderr)
         return 2
-    if len(pool) < 2 and not has_natives:
-        print("need >=2 backend specs for cross-model independence "
-              "(or supply native_derivations + >=1 backend to remove the host's own CLI hop)", file=sys.stderr)
-        return 2
     if len({roster_family_of(s) for s in pool}) < 2 and not has_natives:
         print("warning: backend pool has <2 distinct model families; independence is degraded", file=sys.stderr)
     comparators = _resolve_specs(args.comparators, flag="--comparators")
@@ -1284,24 +1476,20 @@ def main(argv=None) -> int:
         )
         return 2
 
-    tmp = None
     work_dir = args.work_dir
     if work_dir is None:
-        tmp = tempfile.TemporaryDirectory(prefix="derivverify2_")
-        work_dir = Path(tmp.name)
+        anchor = (args.out or args.claims).expanduser().resolve()
+        work_dir = anchor.parent / (anchor.name + ".derivation-records")
     # Absolutize before anything is spawned: per-backend paths derived from work_dir are passed to
     # subprocess runners, and a relative work-dir has produced outputs written under nested paths
     # the gate never read back — a silently wasted cross-family round.
     work_dir = work_dir.expanduser().resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
     runner = MultiTaskRunner(runner_path=runner_path, work_dir=work_dir, timeout=args.timeout_secs,
-                             tools=args.tools, config=args.config)
-    try:
-        result = run_gate(spec, pool=pool, comparators=comparators, run=runner.run,
-                          max_iter_override=args.max_iter)
-    finally:
-        if tmp is not None:
-            tmp.cleanup()
+                             tools=args.tools, config=args.config,
+                             context_tokens=args.context_tokens, context_bytes=args.context_bytes)
+    result = run_gate(spec, pool=pool, comparators=comparators, run=runner.run,
+                      max_iter_override=args.max_iter)
 
     text = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.out:

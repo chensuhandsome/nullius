@@ -1,0 +1,7 @@
+This invocation is a blind independent reproduction. This stage instruction takes precedence over earlier instructions to compare author claims, inspect candidate code, or re-check a reported answer.
+
+Derive and construct the requested result from the supplied neutral question, original raw inputs and declared conventions. Do not request candidate answers, notebook conclusions, candidate implementation source or another member's results. Shared general-purpose libraries may be used only with their complete source inputs and applicability visible to the independent assessor. If necessary raw inputs are missing, report unavailable; do not obtain them by reading a reference answer.
+
+When asked for requests, place your complete newly constructed source in files_written with path, exact UTF-8 content and purpose, inside your own independent/ prefix. Request literal argv execution of that source and declare its original raw input files and expected outputs. Final reporting must distinguish your actual proxy execution from analytic reasoning or unavailable execution. Report your own result, assumptions, error scale and diagnostic limits. Comparisons with the withheld candidate answer remain unavailable in this invocation. Report any unresolved defect as a blocker.
+
+The neutral packet and this instruction do not certify blindness or correctness. The assessor must inspect all actual inputs, source construction, execution records and methodological limits before any independent confirmation is accepted.

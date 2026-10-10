@@ -2,9 +2,10 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { withExplicitHandoffMethod } from './explicitArtifactWriterMethod.js';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { handleToolCall, stageIdeaArtifactsIntoRun } from '../src/index.js';
+import { keepStagedCreatedAt } from '../src/computation/materialize-execution-plan.js';
 import { StateManager } from '../src/state-manager.js';
 
 function makeTmpDir(prefix: string): string {
@@ -177,6 +178,59 @@ describe('orch_run_plan_computation tool', () => {
     expect(fs.existsSync(path.join(runDir, 'computation', 'results', 'provider_result.json'))).toBe(true);
   });
 
+  it('keeps an A3 approval valid when planning is repeated later from unchanged inputs, and re-gates changed inputs', async () => {
+    const projectRoot = makeTmpDir('orch-plan-project-');
+    const runDir = makeTmpDir('orch-plan-run-');
+    CLEANUP_DIRS.push(projectRoot, runDir);
+    // This method passes the execution plan to its script, so the plan file is
+    // an approved input alongside the manifest.
+    stageIdeaArtifactsIntoRun({
+      handoffRecord: makeHandoff(),
+      handoffUri: path.join(runDir, 'source-handoff.json'),
+      runDir,
+    });
+    const manager = new StateManager(projectRoot);
+    manager.createRun(manager.readState(), 'run-provider-replan', 'computation');
+    fs.writeFileSync(manager.policyPath, JSON.stringify({ require_approval_for: { compute_runs: true } }) + '\n', 'utf-8');
+    const plan = async () => extractPayload(await handleToolCall('orch_run_plan_computation', {
+      project_root: projectRoot,
+      run_id: 'run-provider-replan',
+      run_dir: runDir,
+      dry_run: false,
+    }, 'full'));
+    const manifestPath = path.join(runDir, 'computation', 'manifest.json');
+    const executionPlanPath = path.join(runDir, 'computation', 'execution_plan_v1.json');
+
+    const first = await plan();
+    expect(first).toMatchObject({ status: 'requires_approval', approval_id: 'A3-0001' });
+    const approvedBytes = fs.readFileSync(manifestPath, 'utf-8');
+    const approvedPlanBytes = fs.readFileSync(executionPlanPath, 'utf-8');
+    manager.approveRun(manager.readState(), 'A3-0001', 'approve provider-backed plan');
+
+    // Human approval takes real time; planning again afterwards must reproduce
+    // the approved manifest bytes rather than restamp them.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.parse(JSON.parse(approvedBytes).created_at) + 3_600_000);
+      await expect(plan()).resolves.toMatchObject({ status: 'planned', requires_approval: false });
+      expect(fs.readFileSync(manifestPath, 'utf-8')).toBe(approvedBytes);
+      expect(fs.readFileSync(executionPlanPath, 'utf-8')).toBe(approvedPlanBytes);
+
+      const hintsPath = path.join(runDir, 'artifacts', 'idea_handoff_hints_v1.json');
+      const hints = JSON.parse(fs.readFileSync(hintsPath, 'utf-8')) as {
+        hints: { method_spec: { run_card: { phases: Array<{ backend: { timeout_seconds: number } }> } } };
+      };
+      hints.hints.method_spec.run_card.phases[0]!.backend.timeout_seconds = 600;
+      fs.writeFileSync(hintsPath, `${JSON.stringify(hints, null, 2)}\n`, 'utf-8');
+      await expect(plan()).resolves.toMatchObject({ status: 'requires_approval', approval_id: 'A3-0002' });
+      const replanned = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as { created_at: string; steps: Array<{ timeout_minutes?: number }> };
+      expect(replanned.steps[0]!.timeout_minutes).toBe(10);
+      expect(replanned.created_at).not.toBe(JSON.parse(approvedBytes).created_at);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('returns a ready-to-execute planned result (no approval) when A3 (compute_runs) is opt-out by default', async () => {
     const projectRoot = makeTmpDir('orch-plan-project-');
     const runDir = makeTmpDir('orch-plan-run-');
@@ -224,5 +278,32 @@ describe('orch_run_plan_computation tool', () => {
 
     expect(executed.status).toBe('completed');
     expect(fs.existsSync(path.join(runDir, 'computation', 'results', 'provider_result.json'))).toBe(true);
+  });
+});
+
+describe('keepStagedCreatedAt', () => {
+  it('reuses only a well-formed staged timestamp of otherwise identical content', () => {
+    const dir = makeTmpDir('orch-plan-stamp-');
+    CLEANUP_DIRS.push(dir);
+    const file = path.join(dir, 'artifact.json');
+    const fresh = { schema_version: 1, value: 'x', nested: { a: 1, b: 2 }, created_at: '2026-10-09T02:00:00Z' };
+    expect(keepStagedCreatedAt(file, fresh)).toBe(fresh);
+
+    const cases: Array<[unknown, string]> = [
+      [{ ...fresh, created_at: '2026-10-09T01:00:00Z' }, '2026-10-09T01:00:00Z'],
+      [{ created_at: '2026-10-09T01:00:00Z', nested: { b: 2, a: 1 }, value: 'x', schema_version: 1 }, '2026-10-09T01:00:00Z'],
+      [{ ...fresh, value: 'y', created_at: '2026-10-09T01:00:00Z' }, fresh.created_at],
+      [{ ...fresh, created_at: 'not-a-date' }, fresh.created_at],
+      [{ ...fresh, created_at: '2026-02-30T00:00:00Z' }, fresh.created_at],
+      [{ ...fresh, created_at: '2026-10-09T01:00:00.000Z' }, fresh.created_at],
+      [{ ...fresh, created_at: 7 }, fresh.created_at],
+      [{ schema_version: 1, value: 'x', nested: { a: 1, b: 2 } }, fresh.created_at],
+    ];
+    for (const [staged, expected] of cases) {
+      fs.writeFileSync(file, JSON.stringify(staged), 'utf-8');
+      expect(keepStagedCreatedAt(file, fresh).created_at).toBe(expected);
+    }
+    fs.writeFileSync(file, '{not json', 'utf-8');
+    expect(keepStagedCreatedAt(file, fresh)).toBe(fresh);
   });
 });

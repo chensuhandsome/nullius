@@ -15,7 +15,7 @@ import { invalidParams, writeBytesAtomicDurable } from '@nullius/shared';
 import { z } from 'zod';
 import { createRunArtifactRef } from '../computation/artifact-refs.js';
 import { writeJsonAtomic } from '../computation/io.js';
-import { assertNoSymlinkComponents } from '../computation/path-safety.js';
+import { assertNoSymlinkComponents, respellUnderRoot } from '../computation/path-safety.js';
 import { assertNativeRuntimeIdentityLive } from '../computation/runtime-identity.js';
 import { recordVerificationToMemoryGraph } from '../computation/memory-graph-hookup.js';
 import { attachVerificationBoundaryToWorkspaceFeedback } from '../computation/workspace-feedback-boundaries.js';
@@ -36,11 +36,18 @@ type VerificationStatus = z.output<typeof OrchRunRecordVerificationSchema>['stat
 
 function resolveWithinRunDir(runDir: string, candidatePath: string, field: string): string {
   const resolvedRunDir = path.resolve(runDir);
-  const resolved = path.isAbsolute(candidatePath)
+  const lexical = path.isAbsolute(candidatePath)
     ? path.resolve(candidatePath)
     : path.resolve(resolvedRunDir, candidatePath);
-  const relative = path.relative(resolvedRunDir, resolved);
+  const relative = path.relative(resolvedRunDir, lexical);
+  let resolved: string | null = lexical;
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    // The run directory derives from the admitted (canonical) project root,
+    // so an absolute caller path may name it through an alias above it, such
+    // as the un-canonicalized project root the caller passed in.
+    resolved = path.isAbsolute(candidatePath) ? respellUnderRoot(resolvedRunDir, lexical) : null;
+  }
+  if (resolved === null) {
     throw invalidParams(`${field} must stay within the run directory`, {
       field,
       run_dir: resolvedRunDir,

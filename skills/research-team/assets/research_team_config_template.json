@@ -2,20 +2,37 @@
   "version": 1,
   "mode": "theory_numerics",
   "workflow_mode": "leader",
-  "_workflow_mode_options": ["peer", "leader", "asymmetric"],
+  "_workflow_mode_options": [
+    "peer",
+    "leader",
+    "asymmetric"
+  ],
   "_note_workflow_mode": "Workflow mode controls the team interaction pattern. peer: symmetric review (both members audit independently). leader: leader produces step-by-step analysis, verifier checks each step. asymmetric: leader analysis with blind verification (critical steps redacted for verifier).",
   "profile": "<PROFILE>",
   "project_stage": "development",
-  "_project_stage_options": ["exploration", "development", "publication"],
+  "_project_stage_options": [
+    "exploration",
+    "development",
+    "publication"
+  ],
   "_note_project_stage": "Stage controls strictness of some contracts. In exploration, the Capsule gate supports a minimal mode (see capsule.exploration_minimal) and selected preflight gates are downgraded to warn-only with debt recorded under artifacts/runs/<tag>/research_team/<tag>_exploration_debt.md. Development remains fail-fast.",
   "scaffold_variant": "full",
-  "_scaffold_variant_options": ["full", "minimal"],
+  "_scaffold_variant_options": [
+    "full",
+    "minimal"
+  ],
   "_note_scaffold_variant": "Project scaffold size policy: minimal is now the canonical default surface; full adds optional wrappers/prompts/KB/references/team scaffolds when you intentionally want the research-team host-local bundle.",
   "review_access_mode": "full_access",
-  "_review_access_mode_options": ["full_access", "packet_only"],
+  "_review_access_mode_options": [
+    "full_access",
+    "packet_only"
+  ],
   "_note_review_access_mode": "full_access allows members to request file reads/command runs/network fetches via the leader proxy with auditable evidence logs; packet_only restricts members to the team packet only (offline/portable review).",
   "isolation_strategy": "separate_worktrees",
-  "_isolation_strategy_options": ["separate_worktrees", "sequential_with_acl"],
+  "_isolation_strategy_options": [
+    "separate_worktrees",
+    "sequential_with_acl"
+  ],
   "_note_isolation_strategy": "Isolation is best-effort and enforced via the access proxy + evidence gates. separate_worktrees prefers isolated git worktrees when available; sequential_with_acl runs sequentially and denies reading the other member outputs.",
   "_profile_options": [
     "theory_only",
@@ -87,15 +104,26 @@
     "allowed_external_hosts_extra": []
   },
   "logic_isolation": {
-    "_note": "Independent reproduction scripts may import only these local project roots (default: shared_utils/toolkit).",
-    "allowed_local_import_roots": ["shared_utils", "toolkit"]
+    "_note": "Shared utility roots are risk locators. Declared tested-kernel call-through is forbidden; source-grounded construction/input/method assessment decides independence.",
+    "allowed_local_import_roots": [
+      "shared_utils",
+      "toolkit"
+    ]
   },
   "independent_reproduction": {
-    "_note": "Names of the kernel-under-test modules/packages. A reproduction that imports/includes/`using`s one of these is a call-through of the tested kernel, not an independent path (verdict not_independent, fail-closed). Declared kernels override allowed_local_import_roots. Independent of declarations, the gate also fails when BOTH members' reproduction sources import/include the same project-local module.",
-    "kernel_modules": []
+    "assessor_context_tokens": 200000,
+    "assessor_context_bytes": null,
+    "assessor_timeout_secs": 1200,
+    "_note_assessor_capacity": "Caller-configured complete source-assessor request budgets, forwarded to both postflight and final convergence checks. These are not provider introspection; complete originals are never truncated. Null bytes uses the conservative token-based default. Timeout is bounded to 1..1200 seconds per fresh assessor invocation; a successful full-access cycle performs two fresh invocations.",
+    "blind_packet": null,
+    "_note_blind_packet": "Path relative to the project root containing the neutral question, conventions and complete raw inputs for both member stages. Required by an enabled full-access reproduction gate unless --reproduction-packet is explicit. Full candidate packets and numeric redaction cannot establish blind input; all actual member reads, imports and command inputs remain subject to independent source assessment.",
+    "_note": "Names of the kernel-under-test modules/packages. A reproduction that imports/includes/`using`s one of these is a call-through of the tested kernel, not an independent path (verdict not_independent, fail-closed). Declared kernels override allowed_local_import_roots. Shared project-local libraries alone do not reject. A fresh independent source assessment must inspect their role, method applicability, input framing and actual construction; missing/rejected/stale assessment cannot pass.",
+    "kernel_modules": [],
+    "requires_method_diversity": false,
+    "method_diversity_risk": ""
   },
   "delegation_budget": {
-    "_note": "Delegation budget contracts (delegation_budget_contract_v1) for FULL-TIER delegated computation / verification workstreams (execution / claim-bearing results / blindness-dependent — see 'Delegation weight tiers' in the research-team skill), validated fail-closed by check_delegation_budget.py: numeric tolerance ceiling or exact stopping predicate + anchor note, time box, attempt cap, scope negative list, dry-run peak RSS + heap cap. Any contract present under delegations_dir is always validated. Set required=true when this milestone dispatches at least one FULL-TIER delegated workstream, so a run with no full-tier contract also fails (NO_CONTRACTS_FOUND); a milestone dispatching only light-tier work (read-only analysis, review-only reading, consultation — one LEDGER.md line each) leaves it false.",
+    "_note": "Delegation budget contracts (delegation_budget_contract_v1) for FULL-TIER delegated computation / verification workstreams (execution / claim-bearing results / blindness-dependent \u2014 see 'Delegation weight tiers' in the research-team skill), validated fail-closed by check_delegation_budget.py: numeric tolerance ceiling or exact stopping predicate + anchor note, time box, attempt cap, scope negative list, dry-run peak RSS + heap cap. Any contract present under delegations_dir is always validated. Set required=true when this milestone dispatches at least one FULL-TIER delegated workstream, so a run with no full-tier contract also fails (NO_CONTRACTS_FOUND); a milestone dispatching only light-tier work (read-only analysis, review-only reading, consultation \u2014 one LEDGER.md line each) leaves it false.",
     "required": false,
     "delegations_dir": "team/delegations"
   },
@@ -181,7 +209,10 @@
     "min_headline_numbers": 3,
     "min_nontrivial_headlines": 1,
     "_note_nontrivial": "Require at least N Tier-T2/T3 headline(s) in Capsule section E (nontrivial diagnostics/proxies; avoids purely trivial arithmetic cross-checks). Set 0 only if truly N/A for a milestone.",
-    "nontrivial_tiers": ["T2", "T3"],
+    "nontrivial_tiers": [
+      "T2",
+      "T3"
+    ],
     "exploration_minimal": {
       "_note": "When project_stage=exploration: relax the Capsule gate to avoid blocking early research. This is still deterministic and requires a non-empty reproduction command and at least one declared output path.",
       "enabled": true,
@@ -217,11 +248,19 @@
     "max_rounds": 10,
     "max_retries_per_task": 3,
     "no_progress_rounds": 2,
-    "stop_files": [".stop", ".pause", "STOP"],
+    "stop_files": [
+      ".stop",
+      ".pause",
+      "STOP"
+    ],
     "require_executor": false,
     "pause_on_manual": true,
     "warn_if_no_executor": true,
-    "initial_instruction_paths": ["project_brief.md", "项目开始指令.md", "README.md"]
+    "initial_instruction_paths": [
+      "project_brief.md",
+      "\u9879\u76ee\u5f00\u59cb\u6307\u4ee4.md",
+      "README.md"
+    ]
   },
   "plan_tracking": {
     "_note": "Plan progress tracking and enforcement.",
@@ -244,19 +283,44 @@
   "member_a": {
     "_note": "Member A assignment strategy. Default host_native means the current host agent should use its official subagent mechanism. Shell runner scripts fail closed for host_native; set codex/claude explicitly only when a CLI runner is requested.",
     "runner_kind": "host_native",
-    "_runner_kind_options": ["host_native", "subagent", "codex", "claude", "auto"],
+    "_runner_kind_options": [
+      "host_native",
+      "subagent",
+      "codex",
+      "claude",
+      "auto"
+    ],
     "_note_runner_kind": "subagent is an alias for host_native. Use codex/claude only when a CLI compatibility runner is explicitly desired.",
     "reasoning_effort": "auto",
-    "_reasoning_effort_options": ["auto", "low", "medium", "high", "xhigh"],
+    "_reasoning_effort_options": [
+      "auto",
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ],
     "_note_reasoning_effort": "auto maps exploration/literature projects to medium and development/publication or leader/asymmetric work to high."
   },
   "member_b": {
     "_note": "Member B assignment strategy. Default host_native means the current host agent should use its official subagent mechanism. Shell runner scripts fail closed for host_native; set gemini/claude/codex explicitly only when the user requests a provider-specific CLI runner.",
     "runner_kind": "host_native",
-    "_runner_kind_options": ["host_native", "subagent", "codex", "gemini", "claude", "auto"],
+    "_runner_kind_options": [
+      "host_native",
+      "subagent",
+      "codex",
+      "gemini",
+      "claude",
+      "auto"
+    ],
     "_note_runner_kind": "subagent is an alias for host_native. Use codex/gemini/claude only when a CLI compatibility runner is explicitly desired.",
     "reasoning_effort": "auto",
-    "_reasoning_effort_options": ["auto", "low", "medium", "high", "xhigh"],
+    "_reasoning_effort_options": [
+      "auto",
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ],
     "_note_reasoning_effort": "auto maps exploration/literature projects to medium and development/publication or leader/asymmetric work to high.",
     "_note_claude_system_prompt": "Optional alternate system prompt file for Claude runner (relative to project root). If empty, Member B uses --member-b-system.",
     "claude_system_prompt": ""
@@ -271,9 +335,15 @@
     "_note_leader_system_prompt": "Default Team Leader Draft Audit system prompt (Member C). run_draft_cycle.sh uses this when --member-c-system is omitted.",
     "leader_system_prompt": "prompts/_system_draft_member_c_leader.txt",
     "_note_focus_sections": "Selectors (heuristic; not exact title matching): methods/results/physics. Use [\"auto\"] to use the default trio.",
-    "focus_sections": ["methods", "results", "physics"],
+    "focus_sections": [
+      "methods",
+      "results",
+      "physics"
+    ],
     "_note_focus_envs": "Env allowlist for key extraction. [\"auto\"] expands to: math (equation, equation*, align, align*, gather, gather*, multline, multline*), algorithm/code (algorithm, algorithm*, algorithm2e, algorithmic, lstlisting, minted), theorem/proof (theorem, lemma, proposition, corollary, definition, proof).",
-    "focus_envs": ["auto"],
+    "focus_envs": [
+      "auto"
+    ],
     "max_sections": 6,
     "max_section_chars": 12000,
     "max_env_blocks": 25
@@ -289,7 +359,11 @@
     "enable_trajectory_gate": false
   },
   "pointer_lint": {
-    "_strategy_options": ["python_import", "file_symbol_grep", "disabled"],
+    "_strategy_options": [
+      "python_import",
+      "file_symbol_grep",
+      "disabled"
+    ],
     "_note": "Set strategy to \"\" to use mode default. Otherwise overrides mode.",
     "strategy": "",
     "allow_skip_unimportable": true,
@@ -304,9 +378,38 @@
     "require_when_declared": true
   },
   "language": {
-    "pass_tokens": ["pass", "ok", "success", "通过", "合格"],
-    "fail_tokens": ["fail", "failed", "error", "失败", "不合格"],
-    "ready_tokens": ["ready for next milestone", "ready for review cycle", "ready", "准备好", "就绪", "可推进", "可以推进"],
-    "needs_revision_tokens": ["needs revision", "not ready", "需要修改", "需修改", "未通过", "不通过", "需要修订", "需修订"]
+    "pass_tokens": [
+      "pass",
+      "ok",
+      "success",
+      "\u901a\u8fc7",
+      "\u5408\u683c"
+    ],
+    "fail_tokens": [
+      "fail",
+      "failed",
+      "error",
+      "\u5931\u8d25",
+      "\u4e0d\u5408\u683c"
+    ],
+    "ready_tokens": [
+      "ready for next milestone",
+      "ready for review cycle",
+      "ready",
+      "\u51c6\u5907\u597d",
+      "\u5c31\u7eea",
+      "\u53ef\u63a8\u8fdb",
+      "\u53ef\u4ee5\u63a8\u8fdb"
+    ],
+    "needs_revision_tokens": [
+      "needs revision",
+      "not ready",
+      "\u9700\u8981\u4fee\u6539",
+      "\u9700\u4fee\u6539",
+      "\u672a\u901a\u8fc7",
+      "\u4e0d\u901a\u8fc7",
+      "\u9700\u8981\u4fee\u8ba2",
+      "\u9700\u4fee\u8ba2"
+    ]
   }
 }

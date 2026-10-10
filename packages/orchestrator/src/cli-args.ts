@@ -1,3 +1,4 @@
+import type { NotebookBudgets } from './notebook-review-batches.js';
 // # CONTRACT-EXEMPT: CODE-01.1 Existing canonical parser registry; this change adds only the report-validate union arm and dispatch case, while splitting unrelated command parsers would expand this bounded front-door change.
 import { isNulliusPublicCommand } from './cli-command-inventory.js';
 
@@ -67,7 +68,7 @@ export type ParsedCliArgs =
     deps: Record<string, string>;
   }
   | { command: 'current'; projectRoot: string | null; json: boolean }
-  | { command: 'notebook'; projectRoot: string | null; action: 'sync' | 'check' | 'review'; json: boolean; resultId?: string; structureOnly?: boolean; model?: string; dependencies?: string[]; timeoutSecs?: number }
+  | { command: 'notebook'; projectRoot: string | null; action: 'sync' | 'check' | 'review'; json: boolean; resultId?: string; structureOnly?: boolean; model?: string; dependencies?: string[]; timeoutSecs?: number; budgets?: Partial<NotebookBudgets>; resume?: string }
   | { command: 'index'; projectRoot: string | null; action: 'sync'; json: boolean }
   | {
     command: 'result';
@@ -221,14 +222,14 @@ function parseStatusArgs(args: string[]): { json: boolean } {
   return { json };
 }
 
-function parseNotebookArgs(args: string[]): { action: 'sync' | 'check' | 'review'; json: boolean; resultId?: string; structureOnly?: boolean; model?: string; dependencies?: string[]; timeoutSecs?: number } {
+function parseNotebookArgs(args: string[]): { action: 'sync' | 'check' | 'review'; json: boolean; resultId?: string; structureOnly?: boolean; model?: string; dependencies?: string[]; timeoutSecs?: number; budgets?: Partial<NotebookBudgets>; resume?: string } {
   const action = args[0];
   if (action !== 'sync' && action !== 'check' && action !== 'review') {
     throw new Error('notebook: expected sync, check [--result <id>] [--structure-only], or review --model <spec> [--dependency <path>] [--timeout-secs <n>]');
   }
   let json = false;
   let resultId: string | undefined;
-  let structureOnly = false; let model: string | undefined; const dependencies: string[] = []; let timeoutSecs = 1200;
+  let structureOnly = false; let model: string | undefined; const dependencies: string[] = []; let timeoutSecs = 1200; const budgets: Partial<NotebookBudgets> = {}; let resume: string | undefined;
   for (let i = 1; i < args.length; i += 1) {
     const arg = args[i]!;
     if (arg === '--json') { json = true; continue; }
@@ -246,6 +247,15 @@ function parseNotebookArgs(args: string[]): { action: 'sync' | 'check' | 'review
     if (arg === '--dependency' && action === 'review') {
       const value = args[++i]; if (!value || value.startsWith('-')) throw new Error('--dependency requires a path'); dependencies.push(value); continue;
     }
+    if (action === 'review' && ['--context-bytes', '--context-tokens', '--snapshot-bytes', '--max-files', '--max-batches'].includes(arg)) {
+      const value = args[++i]; if (!value || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) <= 0) throw new Error(`${arg} requires a positive integer resource budget`);
+      const key = ({ '--context-bytes': 'contextBytes', '--context-tokens': 'contextTokens', '--snapshot-bytes': 'snapshotBytes', '--max-files': 'maxFiles', '--max-batches': 'maxBatches' } as const)[arg as '--context-bytes'];
+      budgets[key] = Number(value); continue;
+    }
+    if (arg === '--resume' && action === 'review' && resume === undefined) {
+      const value = args[++i]; if (!value || !/^\d{8}T\d{6}-notebook-review-[a-f\d]{8}$/.test(value)) throw new Error('--resume requires an immutable notebook-review run id');
+      resume = value; continue;
+    }
     if (arg === '--timeout-secs' && action === 'review') {
       const value = args[++i]; if (!value || !/^\d+$/.test(value) || Number(value) <= 0 || Number(value) > 86400) throw new Error('--timeout-secs requires a positive hard budget up to 86400 seconds');
       timeoutSecs = Number(value); continue;
@@ -254,7 +264,7 @@ function parseNotebookArgs(args: string[]): { action: 'sync' | 'check' | 'review
   }
   if (action === 'review' && model === undefined) throw new Error('notebook review requires --model <spec>');
   return { action, json, ...(resultId === undefined ? {} : { resultId }),
-    ...(action === 'check' ? { structureOnly } : {}), ...(action === 'review' ? { model, dependencies, timeoutSecs } : {}) };
+    ...(action === 'check' ? { structureOnly } : {}), ...(action === 'review' ? { model, dependencies, timeoutSecs, budgets, ...(resume ? { resume } : {}) } : {}) };
 }
 
 function parseIndexArgs(args: string[]): { action: 'sync'; json: boolean } {

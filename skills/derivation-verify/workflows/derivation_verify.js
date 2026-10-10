@@ -1,8 +1,8 @@
 // ============================================================================
 // derivation_verify.js — REUSABLE convergence-gate harness for derivation-heavy tasks.
 //
-// Generic version of the N²LO `verify-converge` run: for EACH atomic claim, spawn >=2 INDEPENDENT
-// BLIND re-derivations (method-diverse), an adversarial comparator detects mathematical
+// For for EACH atomic claim, spawn >=2 INDEPENDENT
+// BLIND re-derivations (independence-assessed), an adversarial comparator detects mathematical
 // (dis)agreement, and a tie-break loop adds fresh independent derivations until >=2 agree —
 // implementing the standing rule "every derivation needs >=2 independent verifications; iterate
 // every disagreement to convergence; the leader never self-declares convergence."
@@ -15,8 +15,8 @@
 //       id: "A1",
 //       statement: "what to DERIVE BLIND (do not assume the answer)",
 //       report_format: "the exact canonical format to report the answer in (e.g. a single rational, or an expression)",
-//       method0: "method hint for deriver #0 (a distinct route)",
-//       method1: "method hint for deriver #1 (a different distinct route)"
+//       method0: "method hint for deriver #0 (optional route hint)",
+//       method1: "method hint for deriver #1 (optional route hint; may be same/similar)"
 //     }, ... ]
 //   }})
 //
@@ -29,7 +29,7 @@ export const meta = {
   name: 'derivation-verify',
   description: 'Reusable >=2-independent-blind-derivation convergence gate for a supplied list of atomic claims; iterate disagreements to convergence; emit a verification matrix',
   phases: [
-    { title: 'Verify',     detail: '2 independent blind re-derivations per claim (method-diverse)' },
+    { title: 'Verify',     detail: '2 independent blind re-derivations per claim (independence-assessed)' },
     { title: 'Iterate',    detail: 'adversarial reconcile + tie-break derivers until >=2 agree' },
     { title: 'Synthesize', detail: 'verification matrix: claim x independent confirmations x convergence' },
   ],
@@ -44,6 +44,12 @@ A = (A && typeof A === 'object') ? A : {}
 const CTX = String(A.context || '')
 const CLAIMS = Array.isArray(A.claims) ? A.claims : []
 const MAX_ITER = Number.isInteger(A.max_iter) && A.max_iter >= 0 ? A.max_iter : 3 // max_iter:0 disables iteration; negative/non-int -> default 3
+const PROTOCOL_RESERVE = 8192
+const OUTPUT_RESERVE = 32768
+const CONTEXT_TOKENS = A.context_tokens === undefined ? 200000 : A.context_tokens
+const CONTEXT_BYTES = A.context_bytes === undefined ? Math.min(160000, CONTEXT_TOKENS - PROTOCOL_RESERVE - OUTPUT_RESERVE) : A.context_bytes
+const validBudgets = Number.isSafeInteger(CONTEXT_TOKENS) && CONTEXT_TOKENS > PROTOCOL_RESERVE + OUTPUT_RESERVE && Number.isSafeInteger(CONTEXT_BYTES) && CONTEXT_BYTES >= 12000
+const utf8Bytes = text => new TextEncoder().encode(text).length
 if (CLAIMS.length === 0) {
   log('derivation-verify: no claims supplied in args.claims — nothing to do.')
   return { total_claims: 0, converged: 0, unconverged: [], clean_first_pass: 0, needed_iteration: [], matrix: [] }
@@ -53,33 +59,130 @@ const VERDICT = {
   type: 'object', additionalProperties: false,
   properties: {
     canonical_answer: { type: 'string', description: 'the single canonical result in the exact requested format' },
-    derivation_summary: { type: 'string', description: '2-6 sentences of the actual steps incl. any computation run and its output' },
+    derivation_summary: { type: 'string', description: 'Optional navigation summary, never assessment evidence by itself' },
+    derivation: { type: 'string', description: 'COMPLETE original derivation, all steps, premises, applicability/limits and actual computation source/output if used; no sentence limit or truncation' },
     confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
   },
-  required: ['canonical_answer', 'derivation_summary', 'confidence'],
+  required: ['canonical_answer', 'derivation', 'confidence'],
 }
+const EVIDENCE_ITEM = { type: 'object', properties: {
+  source_span: { type: 'string' }, reason: { type: 'string' },
+}, required: ['source_span', 'reason'], additionalProperties: false }
+const ASSESSMENT = { type: 'object', properties: {
+  observed_method: { type: 'string' }, index: { type: 'integer' }, input_independent: { type: 'boolean' },
+  execution_independent: { type: 'boolean' }, construction_independent: { type: 'boolean' },
+  method_applicable: { type: 'boolean' }, diagnostic: { type: 'boolean' },
+  unresolved_defects: { type: 'array', items: { type: 'string' } },
+  evidence: { type: 'object', properties: Object.fromEntries(
+    ['input','execution','construction','applicability','diagnostic'].map(k => [k, EVIDENCE_ITEM])),
+    required: ['input','execution','construction','applicability','diagnostic'], additionalProperties: false },
+}, required: ['index','input_independent','execution_independent','construction_independent',
+  'method_applicable','diagnostic','unresolved_defects','evidence'], additionalProperties: false }
 const COMPARE = {
   type: 'object', additionalProperties: false,
   properties: {
     majority_answer: { type: 'string', description: 'the canonical answer the largest mathematically-equivalent cluster agrees on' },
+    majority_indices: { type: 'array', items: { type: 'integer' } },
+    adjudicated_matches_majority: { type: 'boolean' },
+    independence_assessments: { type: 'array', items: ASSESSMENT },
+    method_risk_assessments: { type: 'array', items: { type: 'object', properties: {
+      indices: { type: 'array', items: { type: 'integer' } }, addresses_shared_failure: { type: 'boolean' }, methods_distinct: { type: 'boolean' },
+      risk: { type: 'string' }, method_analysis: { type: 'string' }, evidence: { type: 'array', items: {
+        type: 'object', properties: { index: { type: 'integer' }, source_span: { type: 'string' }, reason: { type: 'string' } },
+        required: ['index','source_span','reason'], additionalProperties: false } },
+    }, required: ['indices','addresses_shared_failure','methods_distinct','risk','method_analysis','evidence'], additionalProperties: false } },
     majority_size: { type: 'integer', description: 'how many supplied derivations are mathematically equivalent to majority_answer' },
     all_equivalent: { type: 'boolean' },
     outliers: { type: 'string', description: 'for each derivation NOT in the majority: its index and the specific error; "none" if all agree' },
     correct_answer_adjudicated: { type: 'string', description: 'the answer YOU independently judge correct (recompute if needed), with a one-line reason' },
   },
-  required: ['majority_answer', 'majority_size', 'all_equivalent', 'outliers', 'correct_answer_adjudicated'],
+  required: ['method_risk_assessments','majority_indices','adjudicated_matches_majority','independence_assessments','majority_answer', 'majority_size', 'all_equivalent', 'outliers', 'correct_answer_adjudicated'],
 }
 
 function vPrompt(c, method) {
-  return `${CTX}\nBLIND TASK (do NOT assume the answer; derive it from scratch):\n${c.statement}\n\n${method || ''}\n\nOUTPUT: report canonical_answer in EXACTLY this format: ${c.report_format}\nAlso give a short derivation_summary (include any computation output you ran) and your confidence. You MAY use any CAS/numeric tool (e.g. python sympy/mpmath, julia) via Bash to check the computation.`
+  return `${CTX}\nBLIND TASK (do NOT assume the answer; derive it from scratch):\n${c.statement}\n\n${method || ''}\n\nOUTPUT: canonical_answer in EXACTLY this format: ${c.report_format}. Give derivation with COMPLETE original steps, conventions, raw input, method applicability and diagnostic limits; no sentence limit or truncation. If you used computation, include complete source and actual records, never invent execution. A short derivation_summary may help navigation but is not the evidence. Give confidence.`
+}
+function sourceMaterial(d) {
+  return `${d.derivation || ''}\n${JSON.stringify(d.transport || {})}`
 }
 function cmpPrompt(c, ds) {
-  const listing = ds.map((d, i) => `[#${i}] canonical_answer="${d.canonical_answer}" | summary: ${d.derivation_summary}`).join('\n')
-  return `${CTX}\nYou are an impartial comparator+adjudicator for the claim:\n${c.statement}\nExpected canonical format: ${c.report_format}\n\n${ds.length} independent derivations:\n${listing}\n\nDecide which are MATHEMATICALLY EQUIVALENT (not just string-equal). Report the largest equivalent cluster (majority_answer, majority_size), whether all agree, the outliers WITH their specific error, and the answer YOU independently adjudicate correct (recompute if needed). Be rigorous about signs, factors, and conventions.`
+  const packet = ds.map(d => ({ ...d, assessment_source: sourceMaterial(d) }))
+  return `${CTX}\nClaim: ${c.statement}\nExpected canonical format: ${c.report_format}\nFULL_DERIVATION_RECORDS_JSON:\n${JSON.stringify(packet)}\n\nRead COMPLETE original derivations, runtime-observed requests/raw outputs and successful call records. A summary, self-filled freshness checkbox or name is not provenance. Cluster mathematical equivalence and independently recompute. majority_answer must copy an actual canonical_answer from majority_indices, and majority_size must equal their enumerated cardinality; empty or contradictory clusters are unavailable. For every lane provide independence_assessments for input/execution/construction, applicability, diagnostic power and unresolved defects, plus observed_method grounded in actual steps. Every evidence item quotes an exact source_span with a substantive reason. Construction/applicability/diagnostic MUST anchor the COMPLETE original derivation BODY itself; only input/execution may anchor assessment_source including transport. Missing original steps, failed invocation, contaminated input, copied reasoning, relevant defects or non-diagnostic checks refuse. Same/similar methods, same family and legitimate shared libraries alone do not reject. Explicit method risk required: ${c.requires_method_diversity === true}; declared risk: ${c.method_diversity_risk || 'assess shared failure modes substantively'}. Give method_risk_assessments with indices [i,j], addresses_shared_failure and methods_distinct booleans (actual mechanisms, never labels), specific risk and method_analysis, plus evidence [{index,source_span,reason}] from BOTH COMPLETE original derivation BODIES, never metadata. Explain why the shared failure mode is independently tested or avoided; distinct hint names or wording do not establish orthogonality. Unsupported evidence is unavailable.`
 }
-function tiePrompt(c, method, ds) {
-  const listing = ds.map((d, i) => `[#${i}] "${d.canonical_answer}"`).join('  ;  ')
-  return `${CTX}\nINDEPENDENT TIE-BREAK derivation. Prior attempts disagreed: ${listing}. IGNORE them; derive the claim yourself from scratch, then state your canonical answer.\n${c.statement}\n\n${method || ''}\n\nOUTPUT canonical_answer as: ${c.report_format}\nPlus derivation_summary (show your computation) + confidence.`
+const runtimeObservations = new WeakSet()
+
+function validTransport(d) {
+  if (!runtimeObservations.has(d)) return false
+  const t = d.transport
+  if (typeof d.derivation !== 'string' || !d.derivation.trim() || !t || t.exit_code !== 0 || t.execution_id !== d.execution_id) return false
+  if (!t.request || typeof t.request.prompt !== 'string' || !t.request.prompt.trim() || typeof t.raw_output !== 'string') return false
+  try { const raw = JSON.parse(t.raw_output); return raw.derivation === d.derivation && raw.canonical_answer === d.canonical_answer } catch { return false }
+}
+function riskPasses(c, ds, idx, cmp) {
+  if (c.requires_method_diversity !== true) return true
+  return (Array.isArray(cmp.method_risk_assessments) ? cmp.method_risk_assessments : []).some(r => {
+    if (!r || r.addresses_shared_failure !== true || r.methods_distinct !== true || !Array.isArray(r.indices) || r.indices.length !== 2 || r.indices[0] === r.indices[1] || r.indices.some(i => !Number.isInteger(i) || !idx.includes(i))) return false
+    if (['risk','method_analysis'].some(k => typeof r[k] !== 'string' || r[k].trim().length < 20) || !Array.isArray(r.evidence) || r.evidence.length !== 2) return false
+    return r.indices.every(i => r.evidence.some(e => e && e.index === i && typeof e.source_span === 'string' && e.source_span.trim() && typeof ds[i].derivation === 'string' && ds[i].derivation.includes(e.source_span) && typeof e.reason === 'string' && e.reason.trim().length >= 20))
+  })
+}
+function accepted(c, ds, cmp) {
+  if (cmp.assessment_input !== JSON.stringify(ds)) return []
+  const records = Array.isArray(cmp.independence_assessments) ? cmp.independence_assessments : []
+  const good = new Set()
+  for (const a of records) {
+    if (!a) continue
+    const i = a.index
+    if (!Number.isInteger(i) || i < 0 || i >= ds.length || !validTransport(ds[i]) || records.filter(x => x && x.index === i).length !== 1) continue
+    if (['input_independent','execution_independent','construction_independent','method_applicable','diagnostic'].some(k => a[k] !== true)) continue
+    if (!Array.isArray(a.unresolved_defects) || a.unresolved_defects.length) continue
+    if (['input','execution','construction','applicability','diagnostic'].every(k => {
+      const e = (a.evidence || {})[k]
+      return e && typeof e.reason === 'string' && e.reason.trim().length >= 20 && typeof e.source_span === 'string' && e.source_span.trim() && (['input','execution'].includes(k) ? sourceMaterial(ds[i]) : ds[i].derivation).includes(e.source_span)
+    })) good.add(i)
+  }
+  const rawIndices = cmp.majority_indices
+  if (!Array.isArray(rawIndices) || rawIndices.some(i => !Number.isInteger(i) || i < 0 || i >= ds.length) || new Set(rawIndices).size !== rawIndices.length) return []
+  const idx = rawIndices.filter(i => good.has(i))
+  const representative = typeof cmp.majority_answer === 'string' && cmp.majority_answer.trim() && idx.some(i => typeof ds[i].canonical_answer === 'string' && ds[i].canonical_answer.trim() === cmp.majority_answer.trim())
+  return idx.length >= 2 && Number.isInteger(cmp.majority_size) && cmp.majority_size === rawIndices.length && representative && cmp.adjudicated_matches_majority === true && riskPasses(c, ds, idx, cmp) ? idx : []
+}
+async function derive(c, method, label, stage) {
+  const prompt = vPrompt(c, method)
+  const d = await agent(prompt, { label, phase: stage, schema: VERDICT })
+  // Host agent() object=completed invocation / null=terminal failure is the actual API boundary.
+  // Capture the complete returned object before adding runtime-owned provenance. No author label certifies it.
+  if (!d) return null
+  const observed = { ...d, execution_id: label, method_hint: method || 'unspecified', transport: {
+    execution_id: label, exit_code: 0, request: { prompt }, raw_output: JSON.stringify(d),
+  } }
+  runtimeObservations.add(observed)
+  return observed
+}
+
+
+async function compare(c, ds, label, stage) {
+  const prompt = cmpPrompt(c, ds)
+  const inputBound = utf8Bytes(prompt) + utf8Bytes(JSON.stringify(COMPARE)) + PROTOCOL_RESERVE
+  const configured = { context_tokens: CONTEXT_TOKENS, context_bytes: CONTEXT_BYTES, output_reserve: OUTPUT_RESERVE }
+  const unavailable = reason => ({ ...SAFE_CMP, assessment_input: JSON.stringify(ds), request_capacity: {
+    ...configured, status: 'unavailable', reason, conservative_input_bound: inputBound,
+    observed_usage: null, capture_observation: 'unavailable', compaction_witness: 'unavailable',
+  } })
+  if (!validBudgets) return unavailable('Invalid configured comparator request budget.')
+  if (inputBound > CONTEXT_BYTES) return unavailable('Complete original comparator request exceeds configured byte budget; no truncation.')
+  // agent() has no authenticated provider token/capture API in this host protocol.
+  // Conservatively bound the entire visible request and output before dispatch.
+  if (inputBound + OUTPUT_RESERVE > CONTEXT_TOKENS) return unavailable('Complete original comparator request and output reserve exceed configured token window.')
+  const reply = await agent(prompt, { label, phase: stage, schema: COMPARE })
+  if (!reply || typeof reply !== 'object' || Array.isArray(reply)) return unavailable('Host comparator returned no complete object.')
+  const outputBound = utf8Bytes(JSON.stringify(reply))
+  if (outputBound > OUTPUT_RESERVE || inputBound + outputBound > CONTEXT_TOKENS) return unavailable('Host comparator output exceeds conservative output/window budget.')
+  return { ...reply, assessment_input: JSON.stringify(ds), request_capacity: {
+    ...configured, status: 'completed', conservative_input_bound: inputBound, conservative_output_bound: outputBound,
+    capacity_evidence: 'conservative_host_bound', observed_usage: null,
+    capture_observation: 'unavailable', compaction_witness: 'unavailable',
+  } }
 }
 
 // A dead comparator (agent() returns null on a terminal backend error) must degrade to "unconverged
@@ -87,49 +190,90 @@ function tiePrompt(c, method, ds) {
 // every other claim's verified result. majority_size:0 keeps the claim honestly unconverged (cf.
 // contract.md "transient executor failures must NOT count; report unconverged honestly").
 const SAFE_CMP = {
-  majority_answer: '(comparator unavailable)', majority_size: 0, all_equivalent: false,
+  majority_answer: '(comparator unavailable)', majority_size: 0, majority_indices: [],
+  adjudicated_matches_majority: false, independence_assessments: [], all_equivalent: false,
   outliers: 'comparator subagent returned null (terminal backend error)',
   correct_answer_adjudicated: '(unadjudicated — comparator unavailable)',
 }
 
+function unavailableRow(c, reason, derivations = [], rounds = 0) {
+  return {
+    claim: c?.id ?? null,
+    status: 'unavailable',
+    converged: false,
+    independent_confirmations: 0,
+    independence_evidence: { accepted_evidence_indices: [], method_diversity: [], method_hints: [],
+      model_family_diversity: ['host'], execution_independence: 'unavailable', input_independence: 'unavailable' },
+    method_risk_assessments: [],
+    total_derivations: derivations.length,
+    derivation_records: derivations,
+    iterate_rounds: rounds,
+    agreed_answer: null,
+    adjudicated_correct: null,
+    outliers: null,
+    failure_reason: reason,
+  }
+}
+
 phase('Verify')
 const matrix = await parallel(CLAIMS.map(c => async () => {
-  let ds = (await parallel([
-    () => agent(vPrompt(c, c.method0), { label: `verify:${c.id}#0`, phase: 'Verify', schema: VERDICT }),
-    () => agent(vPrompt(c, c.method1), { label: `verify:${c.id}#1`, phase: 'Verify', schema: VERDICT }),
-  ])).filter(Boolean)
-  let cmp = (await agent(cmpPrompt(c, ds.length ? ds : [{ canonical_answer: '(none)', derivation_summary: 'both verifiers failed' }]),
-    { label: `compare:${c.id}`, phase: 'Verify', schema: COMPARE })) || SAFE_CMP
+  const invalid = [['requires_method_diversity', 'boolean'], ['method_diversity_risk', 'string']]
+    .filter(([key, expected]) => Object.prototype.hasOwnProperty.call(c, key) && typeof c[key] !== expected)
+    .map(([key]) => key)
+  if (invalid.length) return unavailableRow(c, `Invalid claim control types: ${invalid.join(', ')}`)
+  let ds = []
   let rounds = 0
-  while (cmp.majority_size < 2 && rounds < MAX_ITER) {
-    rounds++
-    // Tie-break re-uses the two supplied method hints (seed-diverse re-run, not a NEW route) — the
-    // contract carries exactly method0/method1. Independence here is via fresh derivation + ignore-priors.
-    const method = rounds % 2 === 1 ? c.method1 : c.method0
-    const extra = await agent(tiePrompt(c, method, ds), { label: `tiebreak:${c.id}#r${rounds}`, phase: 'Iterate', schema: VERDICT })
-    if (extra) ds.push(extra)
-    cmp = (await agent(cmpPrompt(c, ds), { label: `compare:${c.id}#r${rounds}`, phase: 'Iterate', schema: COMPARE })) || SAFE_CMP
-  }
-  return {
-    claim: c.id,
-    converged: cmp.majority_size >= 2,
-    independent_confirmations: cmp.majority_size,
-    total_derivations: ds.length,
-    iterate_rounds: rounds,
-    agreed_answer: cmp.majority_answer,
-    adjudicated_correct: cmp.correct_answer_adjudicated,
-    outliers: cmp.outliers,
+  try {
+    ds = (await parallel([
+      () => derive(c, c.method0, `verify:${c.id}#0`, 'Verify'),
+      () => derive(c, c.method1, `verify:${c.id}#1`, 'Verify'),
+    ])).filter(Boolean)
+    let cmp = await compare(c, ds, `compare:${c.id}`, 'Verify')
+    while (accepted(c, ds, cmp).length < 2 && rounds < MAX_ITER) {
+      rounds++
+      // Tie-break re-uses the two supplied method hints (fresh blind construction, with methods recorded separately) — the
+      // contract carries exactly method0/method1. Independence still requires substantive assessment; prior answers are withheld.
+      const method = rounds % 2 === 1 ? c.method1 : c.method0
+      const extra = await derive(c, method, `tiebreak:${c.id}#r${rounds}`, 'Iterate')
+      if (extra) ds.push(extra)
+      cmp = await compare(c, ds, `compare:${c.id}#r${rounds}`, 'Iterate')
+    }
+    return {
+      claim: c.id,
+      status: accepted(c, ds, cmp).length >= 2 ? 'converged' : (ds.length === 0 || cmp.majority_size === 0 ? 'unavailable' : 'unconverged'),
+      converged: accepted(c, ds, cmp).length >= 2,
+      independent_confirmations: accepted(c, ds, cmp).length,
+      independence_evidence: { accepted_evidence_indices: accepted(c, ds, cmp),
+        method_diversity: [...new Set((cmp.independence_assessments || []).map(a => a.observed_method).filter(m => typeof m === 'string' && m.trim()))],
+        method_hints: ds.map(d => d.method_hint), model_family_diversity: ['host'],
+        execution_independence: accepted(c, ds, cmp).length ? 'assessed' : 'unavailable', input_independence: accepted(c, ds, cmp).length ? 'assessed' : 'unavailable' },
+      method_risk_assessments: cmp.method_risk_assessments || [],
+      total_derivations: ds.length,
+      derivation_records: ds,
+      iterate_rounds: rounds,
+      agreed_answer: accepted(c, ds, cmp).length >= 2 ? cmp.majority_answer : null,
+      adjudicated_correct: accepted(c, ds, cmp).length >= 2 ? cmp.correct_answer_adjudicated : null,
+      comparator_diagnostics: { majority_answer: cmp.majority_answer,
+        correct_answer_adjudicated: cmp.correct_answer_adjudicated, request_capacity: cmp.request_capacity },
+      outliers: cmp.outliers,
+    }
+  } catch (error) {
+    // Preserve any completed original evidence; a transport failure supplies no scientific verdict.
+    return unavailableRow(c, `Claim execution failed: ${error instanceof Error ? error.message : String(error)}`, ds, rounds)
   }
 }))
 
 phase('Synthesize')
-// Defense in depth: a per-claim thunk that threw resolves to null in the parallel result. Drop such
-// rows (and report the drop) rather than crash on `null.converged` — never silently undercount.
-const rows = matrix.filter(Boolean)
-if (rows.length < CLAIMS.length) log(`derivation-verify: WARNING ${CLAIMS.length - rows.length} claim(s) crashed mid-derivation and were dropped from the matrix.`)
+// The host may return null for a failed claim thunk. Preserve the original scope and id at each
+// position: omitted evidence cannot make the surviving subset appear fully converged.
+const returned = Array.isArray(matrix) ? matrix : []
+const rows = CLAIMS.map((c, i) => {
+  const row = returned[i]
+  return row && row.claim === (c?.id ?? null) ? row : unavailableRow(c, 'Host returned no complete result for this original claim.')
+})
 const unconverged = rows.filter(m => !m.converged).map(m => m.claim)
 const summary = {
-  total_claims: rows.length,
+  total_claims: CLAIMS.length,
   converged: rows.filter(m => m.converged).length,
   unconverged,
   clean_first_pass: rows.filter(m => m.iterate_rounds === 0 && m.converged).length,

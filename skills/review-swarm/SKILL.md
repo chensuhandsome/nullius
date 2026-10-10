@@ -171,12 +171,27 @@ version-bound review of the whole research notebook. Its `notebook` role uses
 this same `review_one.py` and `run_multi_task.py` execution path, records the
 same `inputs/review_input_manifest.json`, and checks freshness before launch,
 after execution, and again at current-version acceptance. The public command
-defaults to a hard 1200-second budget and one runner invocation. Declare
+defaults to a hard 1200-second budget and one attempt per bounded call. Declare
 additional necessary files with repeated `--dependency <path>`; local linked
 Markdown text dependencies are also discovered. It refuses unsupported text,
-missing local files and oversized packets without truncation. Directory and
-remote links are locators; the reviewer must reject a necessary dependency
-whose contents were not provided.
+missing local files and resource shortfalls without truncation. Local directory
+links leave original dependency closure pending and prevent acceptance. Remote
+links are locators; a necessary unread dependency prevents acceptance.
+
+Larger inputs use the `notebook-batch` role for each complete original interval
+with adjacent raw context, followed by `notebook-crosscheck` receiving every
+original byte of the full notebook and text dependency closure. All primary
+intervals and every joint-audit inventory unit must be complete and fresh.
+Every joint inventory unit requires exact original-byte anchors including substantive body text where present. Selected quotations or summaries cannot define or reduce that joint scope.
+Storage (`--snapshot-bytes`, default 512 MiB; `--max-files`, default 256), per-call
+byte/token context and the total execution budget (`--max-batches`, default 64)
+are separate. Default context is a configured 200,000-token window with output
+and protocol reserves; explicit larger byte packets need captured backend usage
+when the conservative bound exceeds the window. Observed compaction or unverified capacity
+supplies no acceptance. Resource shortfalls remain incomplete/unavailable and
+report frozen/discovered material, pending scope and a `--resume` command.
+Resume creates a new run, rechecks original receipts and material identity, and
+never rewrites the old evidence. Batches do not constitute independent reviewers.
 
 The coverage inventory partitions every line of the full UTF-8 notebook at
 all top-level Markdown heading depths, including Setext and front matter.
@@ -336,7 +351,7 @@ Flags:
   an `--artifact` target is rejected for every reviewer role.
 - `--locator PATH` — notebook-only raw-byte source locator. Its bytes and hash
   enter the same review input manifest and pre/post/final freshness checks,
-  without embedding or claiming to read its binary/oversized content. The scope
+  without embedding or claiming to read its binary/invalid UTF-8 content. The scope
   inventory must list it under `opaque_links`; its necessity assessment belongs
   in `opaque_sources`. Missing assessments or required unread sources refuse
   notebook acceptance. Supply checked readable text dependencies when needed.
@@ -504,7 +519,7 @@ inconsistent, preserve the exact printed form and open a separate suspected-sour
 record. Keep `PRINTED_FORM`/`SOURCE_FIDELITY_STATUS` distinct from
 `SCIENTIFIC_STATUS`/`PROPOSED_CORRECTION`/`EVIDENCE_AND_COUNTERCHECKS`/
 `DOWNSTREAM_POLICY`. Source-fidelity checks the first track only. For a re-derivable item,
-the second track needs candidate-withheld, method-diverse re-derivation through
+the second track needs candidate-withheld independent re-derivation through
 `derivation-verify`, with every premise checked to exclude downstream consequences of the
 disputed item. For an empirical or reported numerical item, it needs independent
 reproduction from the underlying data, calculation, or measurement; downstream sources
@@ -591,7 +606,7 @@ that a correctness / methodology / honesty review routinely passes over:
   access (a host-native sub-agent with run/Bash, or an executing sandbox) when the comparison requires
   computation.
 - **D2 — the independent cross-check did not silently lapse.** Confirm that any cross-validation evaluates
-  the *same* model by a different route. A structurally **different-model** engine, or a check valid only in
+  the *same* model with independently constructed and executed checks. Record the actual method and shared-failure risks. A structurally **different-model** engine, or a check valid only in
   a degenerate / limit regime, must be **labeled as a different-model / limit-regime comparison, not
   presented as validation**; and when no apples-to-apples independent check is feasible, the **absence is
   recorded as an explicit stated limitation** rather than an established cross-check being allowed to
@@ -622,9 +637,8 @@ evidence may probe the wrong axis altogether. The reference-reproduction reviewe
 case where a published number anchors the check; the general contract covers any **load-bearing
 structural claim** — a claim about what a computed object *is* (its shape, degeneracy structure, scaling,
 sign structure, convergence behavior) on which downstream conclusions rest. For such a claim, at least
-one reviewer must **independently recompute** the quantity through a different route (a different
-discretization, implementation, or representation), receiving **only the problem statement and the raw
-inputs** — never the claimant's answer, evidence selection, or initial judgment. Record in `meta.json`
+at least two evidence lanes must independently construct or derive and execute the check,
+receiving **only the problem statement and the raw inputs** — never the claimant's answer, evidence selection, or initial judgment. Same or similar sound methods may count; method diversity, model-family diversity, execution independence and input independence are separate dimensions. An explicit project shared-failure risk may require a different mechanism that tests that risk. Record in `meta.json`
 **which axis the independent recomputation actually probed** (what it could have falsified); a
 recomputation whose probed axis does not intersect the claim's load-bearing axis leaves the swarm
 static-only for that claim, and it must be labeled as such rather than counted as a verification pass.
@@ -1047,3 +1061,13 @@ Only Claude CLI uses a true system role with elevated priority. The other four r
 
 Use `review-swarm` as the canonical external name.
 Use `review-swarm` consistently during migration and in new integrations.
+
+Capacity evidence requires an adjacent runtime observation of the actual successful invocation, including requests that fit the conservative byte bound. The local runtime binds the complete original request, actual report locator, working directory and captured bytes using its host authority; recalculating project artifact hashes cannot create that observation. Verification trusts the runtime and owning OS account, and does not authenticate provider truth or scientific correctness. Historical unsigned records remain readable, but cannot supply new capacity acceptance; they are never retrospectively signed.
+
+Runtime observations bind the actual report location, so copying signed capture bytes cannot authenticate a new invocation elsewhere. Member episodes freeze every observed file into durable original storage before publication; successful workspace cleanup preserves subsequent verification. Records lacking these bindings remain readable and unavailable for new acceptance.
+
+Member origin trusts the configured runner and owning host runtime: the complete runner bytes are recorded, but no runner allowlist or provider attestation is claimed. Offline or injected host execution establishes a local process/callable observation; actual provider capacity evidence requires the corresponding CLI capture. The canonical team cycle performs a postflight source assessment and a separate fresh assessment at the final consumer; both use the configured assessor request/execution budgets.
+
+The owning account can read the authority key, including code executed by a member under that account; this authenticates against non-executing artifact tampering, not hostile same-account code. No OS sandbox or provider attestation is supplied.
+
+The configured token window is frozen before the original reviewer subprocess starts and bound into its authenticated runtime observation. Changing historical window metadata cannot admit that receipt. Older observations without this policy remain readable and require a fresh execution for capacity acceptance.

@@ -217,8 +217,8 @@ Existing `PROJECT_INDEX_AUTO` blocks are historical, unmaintained observations; 
 
 The shared traceability read model exposes `notebook.result_links` for structural
 navigation and `notebook.content_review` for current full-text semantic review.
-`notebook review --model <SPEC>` executes the existing review-swarm launcher once,
-with a default hard 1200-second timeout and no automatic reviewer retry. It
+`notebook review --model <SPEC>` executes the existing review-swarm launcher in bounded calls,
+with a default hard 1200-second budget and one attempt per call without automatic retry. It
 freezes the complete UTF-8 notebook, including the automatic block, and declared
 required dependencies by SHA-256 of their actual bytes, including uncommitted
 edits. Review reports retain that identity and per-section full-text coverage,
@@ -241,19 +241,52 @@ author self-assessment cannot determine the content verdict. Semantic acceptance
 is bounded by the reviewer's coverage and independence and does not prove
 scientific truth or replace result-specific verification.
 
-Automatically linked binary or oversized files are immutable opaque snapshots
-and SHA-256 locators in `opaque_links`. They participate in review-swarm manifest
-freshness, but are neither embedded nor read. The report's `opaque_sources` must
-explain every path, hash and `required_for_reasoning`; a missing assessment or any
-required unread source prevents acceptance. Supply independently checked readable
-text dependencies for reasoning that depends on such material. Hash identity is
-not semantic reading. The notebook and explicit `--dependency` inputs require
-strict UTF-8; the text packet closure is limited to 1 MiB and total snapshot
-storage to 64 MiB, with refusal rather than silent truncation. This review
-currently accepts only tool mode `none`; other modes are unavailable. It executes
-one reviewer and does not establish a cross-family quorum.
+Valid UTF-8 text remains text regardless of size; Markdown links are discovered
+recursively. Binary or invalid UTF-8 linked files are immutable `opaque_links`
+snapshots and hash locators, not read evidence. Every opaque path/hash needs a
+specific `opaque_sources` assessment; a required unread source prevents acceptance.
+Notebook and explicit dependencies require strict UTF-8 and LF or CRLF endings.
+
+The complete material is frozen before review. Storage (`--snapshot-bytes`,
+default 512 MiB; `--max-files`, default 256) is separate from each request's
+`--context-bytes` and configured backend `--context-tokens` window (default
+200,000 tokens, with instruction/output reserves). Default request bytes use a
+conservative token upper bound. A larger explicit byte packet requires captured
+backend token usage when that bound exceeds the window; missing capacity evidence,
+observed backend compaction or delivery failure supplies no acceptance.
+
+Larger materials use original UTF-8 intervals with adjacent original context,
+followed by a joint audit receiving the COMPLETE original notebook and text
+dependencies. All intervals and the joint audit must be complete and fresh;
+selected quotations or summaries cannot replace this original input. The default
+execution budget is 1200 seconds and 64 calls (`--timeout-secs`, `--max-batches`),
+with one attempt per call and no automatic retry. Shortfalls expose total frozen
+material, pending intervals and joint scope, the reason and a resumable command.
+An unfinished intake reports discovered material and incomplete dependency
+enumeration. `--resume <run-id>` creates a new run, revalidates original receipts
+and material identity, retains explicit dependencies and storage budgets, and
+never rewrites old evidence. If the full joint input does not fit the backend,
+raise an available backend's request budget or leave the review incomplete.
+Only tool mode `none` is accepted. Multiple batches are one semantic review;
+they do not establish independent confirmations or a cross-family quorum.
 
 Converged folds invoke the same unscoped `nullius notebook check --json` required
 for final file closeout. `none` declarations and a missing launcher grant no
 exception. `--result` is a scoped structural diagnostic; it cannot substitute for
 the full default check, whose structural scope includes every current result.
+
+Full-access team reproduction uses an explicit separate neutral packet (`--reproduction-packet` or `independent_reproduction.blind_packet`) for both member stages and appends a reproduction-stage system instruction. The full candidate packet remains a coordinator/review input. Source writes are exact model-origin UTF-8 requests within each member's own prefix. Complete original requests, outputs, source dependencies and successful execution receipts feed a new source-assessor invocation. This route does not hide later reads or certify blindness: the assessor must reject contaminated inputs. The consumer requires two genuine independent constructions, not two families or different method labels; declared shared-failure risks require source-grounded method evidence.
+
+Capacity evidence requires an adjacent runtime observation of the actual successful invocation, including requests that fit the conservative byte bound. The local runtime binds the complete original request, actual report locator, working directory and captured bytes using its host authority; recalculating project artifact hashes cannot create that observation. Verification trusts the runtime and owning OS account, and does not authenticate provider truth or scientific correctness. Historical unsigned records remain readable, but cannot supply new capacity acceptance; they are never retrospectively signed.
+
+Interrupted notebook reviews resume in a fresh run from immutable intake and batch checkpoints, retaining original bytes and rechecking current material. Only completed, fresh, runtime-observed primary interval receipts can be reused; the complete-original joint audit is always executed again. Missing closure, stale sources or incomplete operations remain unavailable or incomplete. Member reproduction evidence requires an authenticated actual producer episode and the complete source/data inputs bound to the executed command; declared inputs and bounded static discovery do not prove arbitrary filesystem activity.
+
+Runtime observations bind the actual report location, so copying signed capture bytes cannot authenticate a new invocation elsewhere. Member episodes freeze every observed file into durable original storage before publication; successful workspace cleanup preserves subsequent verification. Records lacking these bindings remain readable and unavailable for new acceptance.
+
+Member origin trusts the configured runner and owning host runtime: the complete runner bytes are recorded, but no runner allowlist or provider attestation is claimed. Offline or injected host execution establishes a local process/callable observation; actual provider capacity evidence requires the corresponding CLI capture. The canonical team cycle performs a postflight source assessment and a separate fresh assessment at the final consumer; both use the configured assessor request/execution budgets.
+
+The owning account can read the authority key, including code executed by a member under that account; this authenticates against non-executing artifact tampering, not hostile same-account code. No OS sandbox or provider attestation is supplied.
+
+The configured token window is frozen before the original reviewer subprocess starts and bound into its authenticated runtime observation. Changing historical window metadata cannot admit that receipt. Older observations without this policy remain readable and require a fresh execution for capacity acceptance.
+
+Local directory links leave notebook dependency closure pending and prevent acceptance. The complete-original joint audit requires exact substantive original-byte anchors for every interval; a reasoning checkbox alone cannot supply coverage.

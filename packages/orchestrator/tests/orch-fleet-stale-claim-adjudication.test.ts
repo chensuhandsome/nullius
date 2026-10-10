@@ -5,9 +5,11 @@ import { readFleetQueue } from '../src/orch-tools/fleet-queue-store.js';
 import { handleOrchFleetAdjudicateStaleClaim } from '../src/orch-tools/fleet-queue-tools.js';
 import { OrchFleetAdjudicateStaleClaimSchema } from '../src/orch-tools/schemas.js';
 import {
+  admittedRoot,
   baseState,
   buildLeaseClaim,
   cleanupTmpDirs,
+  makeAliasedTmpDir,
   makeTmpDir,
   writeLedger,
   writeQueue,
@@ -227,7 +229,7 @@ describe('orch_fleet_adjudicate_stale_claim', () => {
       note: 'operator attempted to adjudicate an unclaimed item',
     }))).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
 
-    const invalidQueueProjectRoot = makeTmpDir();
+    const invalidQueueProjectRoot = makeAliasedTmpDir();
     writeProject(invalidQueueProjectRoot);
     writeQueue(invalidQueueProjectRoot, '{not-valid-json\n');
     await expect(handleOrchFleetAdjudicateStaleClaim(OrchFleetAdjudicateStaleClaimSchema.parse({
@@ -241,7 +243,7 @@ describe('orch_fleet_adjudicate_stale_claim', () => {
     }))).rejects.toMatchObject({
       code: 'INVALID_PARAMS',
       data: expect.objectContaining({
-        fleet_queue_path: `${invalidQueueProjectRoot}/.nullius/fleet_queue.json`,
+        fleet_queue_path: `${admittedRoot(invalidQueueProjectRoot)}/.nullius/fleet_queue.json`,
       }),
     });
   });

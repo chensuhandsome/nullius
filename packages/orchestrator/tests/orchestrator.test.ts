@@ -2402,8 +2402,9 @@ describe('checkpoint command (Stage 3b)', () => {
     const state1 = baseState({ run_id: 'r1', run_status: 'paused' });
     expect(() => sm.checkpoint(state1)).not.toThrow();
 
-    // awaiting_approval (with no timeout)
-    const state2 = baseState({
+    // awaiting_approval (with no timeout). The paused checkpoint persisted
+    // state, so the next write starts from a re-read of the canonical state.
+    const state2 = Object.assign(sm.readState(), baseState({
       run_id: 'r2',
       run_status: 'awaiting_approval',
       pending_approval: {
@@ -2415,7 +2416,7 @@ describe('checkpoint command (Stage 3b)', () => {
         on_timeout: 'block',
         packet_path: 'p.md',
       },
-    });
+    }));
     expect(() => sm.checkpoint(state2)).not.toThrow();
   });
 });
@@ -2463,14 +2464,16 @@ describe('Ledger detail parity (Stage 3b regression)', () => {
     expect(resumed.details.note).toBe('go');
   });
 
-  it('removePauseSentinel runs before idle guard (B3 regression)', () => {
+  it('a refused resume changes neither the pause sentinel nor state', () => {
     const sm = new StateManager(tmpDir);
-    // Create .pause sentinel manually
+    // The sentinel moves only together with a committed state event, so a
+    // resume refused by the terminal-status guard leaves both untouched.
     fs.writeFileSync(path.join(tmpDir, '.pause'), 'paused\n', 'utf-8');
     const state = baseState({ run_id: 'r1', run_status: 'completed' });
-    // Resume should throw (completed without force), but .pause should still be removed
     expect(() => sm.resumeRun(state)).toThrow(/cannot resume/);
-    expect(fs.existsSync(path.join(tmpDir, '.pause'))).toBe(false);
+    expect(fs.readFileSync(path.join(tmpDir, '.pause'), 'utf-8')).toBe('paused\n');
+    expect(fs.existsSync(sm.statePath)).toBe(false);
+    expect(state.run_status).toBe('completed');
   });
 });
 
@@ -3641,8 +3644,8 @@ describe('Stage 3c: checkpoint with plan step sync', () => {
         { step_id: 's1', description: 'Step 1', status: 'pending', expected_approvals: [], expected_outputs: [], recovery_notes: '' },
       ],
     });
-    const state = baseState({ plan, run_status: 'running', run_id: 'r1' });
-    writeState(tmpDir, state);
+    writeState(tmpDir, baseState({ plan, run_status: 'running', run_id: 'r1' }));
+    const state = sm.readState();
     sm.checkpoint(state, { step_id: 's1', step_title: 'Step 1' });
     const steps = (state.plan as Record<string, unknown>).steps as Record<string, unknown>[];
     expect(steps[0].status).toBe('in_progress');
@@ -3655,8 +3658,8 @@ describe('Stage 3c: checkpoint with plan step sync', () => {
         { step_id: 's1', description: 'Step 1', status: 'pending', expected_approvals: [], expected_outputs: [], recovery_notes: '' },
       ],
     });
-    const state = baseState({ plan, run_status: 'running', run_id: 'r1' });
-    writeState(tmpDir, state);
+    writeState(tmpDir, baseState({ plan, run_status: 'running', run_id: 'r1' }));
+    const state = sm.readState();
     sm.checkpoint(state, { note: 'heartbeat only' });
     const steps = (state.plan as Record<string, unknown>).steps as Record<string, unknown>[];
     expect(steps[0].status).toBe('pending');

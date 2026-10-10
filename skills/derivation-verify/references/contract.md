@@ -1,146 +1,23 @@
-# derivation-verify — backend-agnostic contract
+# Derivation verification contract
 
-Any executor (Executor 1 = Claude/Workflow-native; Executor 2 = CLI multi-backend) MUST consume this
-input and produce this output, so a caller's `claims` port verbatim across executors.
+Independent confirmation requires at least two evidence lanes independently constructed or derived and executed from a neutral question and raw inputs. Record method diversity, model-family diversity, execution independence and input independence separately. Same or similar methods, the same algorithm name, matching hashes or shared legitimate libraries do not by themselves disqualify a lane. Agent names, seeds, reworded prompts, copied answers and simple reruns of the original implementation do not establish independence. Different methods with contaminated input framing still fail. A fresh assessor must substantively inspect the actual steps, method preconditions, known defects and diagnostic power with exact source spans and reasons; a self-filled no-defect checkbox is insufficient. Missing, rejected, stale or non-diagnostic evidence does not count. Keep an explicit project-specific different-method risk requirement when that requirement tests a known shared failure mode.
 
-## Input
+Inputs: `context`, optional bounded `max_iter`, and `claims` with `id`, `statement`, `report_format`, optional `method0` and `method1` hints. A claim may set `requires_method_diversity: true` and describe `method_diversity_risk` for an explicit project-specific shared failure. Native lane records add `family`, `execution_id`, `method`, `canonical_answer`, complete `derivation`, optional `derivation_summary`, `confidence`, observed `transport` and optional strict `checkable_form`.
 
-```jsonc
-{
-  "context": "string",          // shared ground-truth equations / conventions, prepended to EVERY deriver + the comparator
-  "max_iter": 3,                // optional (default 3): tie-break rounds before a claim is left unconverged; 0 disables iteration
-  "claims": [
-    {
-      "id": "A1",               // short stable id
-      "statement": "string",    // what to DERIVE BLIND — MUST NOT contain the answer
-      "report_format": "string",// the exact canonical format for the answer (so derivations are comparable),
-                                //   e.g. "a single rational like 2/3", a closed form, or "Θ(n log n)"
-      "method0": "string",      // method hint for independent deriver #0 (a distinct route)
-      "method1": "string",      // method hint for independent deriver #1 (a DIFFERENT distinct route)
-      "native_derivations": [   // OPTIONAL (Executor 2): host-computed derivations for the host's OWN
-        {                       //   family, so it is included WITHOUT a CLI hop. Executor 2 seeds these
-          "canonical_answer": "string",   // and AUTO-EXCLUDES their family from the CLI backend pool.
-          "family": "string",             // the producing family, canonicalized like a backend spec:
-                                          //   "claude"/"codex"/"gemini"/"kimi" (any case), a spec "claude/default",
-                                          //   or any other token -> "opencode". With a third-party agents
-                                          //   file in force (docs/AGENTS_FILE.md), the tag must land in a
-                                          //   DECLARED family: declared names pass verbatim, a dedicated
-                                          //   backend alias maps to its declared family, and an
-                                          //   unattributable tag is dropped VISIBLY (native_dropped in the
-                                          //   row) so it can never pair with a roster-attributed CLI family
-                                          //   and count one physical family twice. A native family can supply
-                                          //   at most ONE of the >=2 confirmations: convergence still
-                                          //   requires >=1 independent CLI family (no self-certification).
-          "checkable_form": "string",     // optional strict-sympy form (enables the CAS path)
-          "derivation_summary": "string", // optional
-          "confidence": "high"            // optional (default high)
-        }
-      ]
-    }
-  ]
-}
-```
+Every fresh blind lane receives the question, raw premises, canonical format and its own optional method hint; tie-break lanes receive no prior answers. Lane outputs give `canonical_answer`, complete original `derivation` without a sentence limit or truncation, `confidence`, optional navigation-only `derivation_summary` and `checkable_form`. The runtime records each exact request and raw returned output, successful invocation, source hashes and captured original tool records when available. Native Workflow lanes require actual calls observed within that executor. Python external native records have no validated capture authority and are unavailable for confirmation; supplied transport, success flags and hashes cannot count or exclude available CLI execution. Serialized receipts remain readable but cannot recreate runtime observation. CLI invocations use fresh directories and durable records; the default record directory is beside the requested matrix output, or beside the claims file for stdout. Absent original steps, nonzero/failed invocations and stale source/transport records refuse.
 
-**Blindness requirement.** `statement` and `report_format` must not leak the answer; derivers receive
-`context` + `statement` + `report_format` + their own `method` only. This is what makes the >=2
-confirmations independent rather than confirmatory.
+The fresh comparator receives the complete original derivations and runtime request/output/execution records. It supplies `majority_indices`, equivalence/adjudication results and `independence_assessments`. Every assessment has a source-grounded `observed_method`, `index`, `input_independent`, `execution_independent`, `construction_independent`, `method_applicable`, `diagnostic`, `unresolved_defects` and `evidence`. Evidence contains `input`, `execution`, `construction`, `applicability`, `diagnostic`; each item has an exact `source_span` and a substantive `reason`. Construction, applicability and diagnostic spans must occur in that lane's complete original `derivation` body; only input and execution may quote the full `assessment_source` transport closure. Duplicate, missing, rejected, stale or unsupported assessments count as zero. Neither the author nor an unfilled checklist approves a lane.
 
-## Per-claim algorithm (the gate)
+Both executors require at least two assessed independent agreeing lanes. Same/similar methods or one model family may satisfy that floor. Explicit method-risk requirements remain additional conditions, consumed through fresh `method_risk_assessments`: each names a pair of eligible indices, literal `addresses_shared_failure` and `methods_distinct` booleans for actual mechanisms, a concrete `risk`, substantive `method_analysis`, and exact source spans/reasons from both actual derivations. Different hint names or wording do not satisfy this condition. The assessor must explain whether actual method mechanisms independently test or avoid the declared shared failure; absent or unsupported assessments refuse. The whole complete lane packet is hash-bound to the current Python comparison; Native execution retains the exact compared packet. Changed original material invalidates the comparison. CAS establishes equivalence only among assessed forms. Both CAS and LLM comparison require adjudication agreement; an explicit veto cannot be overridden by equality of supplied forms. Method applicability and scientific truth remain distinct: reviewer acceptance does not certify truth.
 
-1. **Derive (>=2, blind, method-diverse).** Spawn deriver #0 with `method0` and #1 with `method1`,
-   each producing `{canonical_answer, derivation_summary, confidence}`. Derivers MAY run a CAS / numerics
-   (sympy, mpmath, Julia, Mathematica) and MUST show the computation in `derivation_summary`. They MAY
-   also emit an optional `checkable_form` — the answer as a strict, machine-parseable expression (e.g.
-   sympy syntax) — or `""` when the answer is not a closed-form/number; Executor 2 uses it for
-   deterministic, LLM-independent equivalence (Executor 1 ignores it).
-2. **Compare (adjudicate by MATH equivalence, not strings).** An impartial comparator receives all
-   derivations and returns `{majority_answer, majority_size, all_equivalent, outliers, correct_answer_adjudicated}`.
-   It must treat e.g. `-pi/(4mu)` == `-(1/4)pi/mu`, and `(2m^2-mu^2)` (leading `-`) == `(mu^2-2m^2)`.
-3. **Iterate to convergence.** While `majority_size < 2` and `rounds < max_iter`: add ONE fresh
-   independent tie-break deriver (told the prior answers disagreed; instructed to ignore them and derive
-   from scratch), then re-compare. Never resolve by majority of a single source — convergence requires
-   `>= 2` *independent derivations* that the comparator finds mathematically equivalent. The contract
-   carries exactly two method hints, so a tie-break round re-uses `method0`/`method1` (a seed-diverse,
-   ignore-the-priors re-run, not a brand-new route); supply `method0`/`method1` as genuinely distinct
-   routes for the strongest first pass. A dead comparator (transient backend failure) must degrade to an
-   unconverged round, not crash the run.
-4. A claim is **converged** iff `independent_confirmations (= majority_size) >= 2`.
+Outputs retain complete `derivation_records` including runtime-observed request/output receipts, the matrix, `converged`, `independent_confirmations`, `cross_family_confirmations`, `verification`, family pool, iteration counts and native admission records. `independence_evidence` separately records examiner-observed method diversity, caller `method_hints`, model-family diversity, accepted evidence indices and input/execution assessment status. Missing reviewer capability is unavailable rather than an approval. Tests are offline acceptance witnesses, not independent scientific results.
 
-## Output
+Comparison booleans must be literal JSON booleans; strings and numeric substitutes never approve. Failed/nonzero/timeout launchers cannot reuse prior output.
 
-```jsonc
-{
-  "total_claims": 0,
-  "converged": 0,                       // count with independent_confirmations >= 2
-  "unconverged": ["id", ...],
-  "clean_first_pass": 0,                // converged with iterate_rounds == 0
-  "needed_iteration": [{"claim":"id","rounds":N}],
-  "matrix": [
-    {
-      "claim": "id",
-      "converged": true,
-      "independent_confirmations": 2,   // size of the agreeing cluster (>= 2 when converged)
-      "total_derivations": 2,           // how many derivers ran (>= 2; more if iterated)
-      "iterate_rounds": 0,
-      "agreed_answer": "string",        // the majority canonical answer
-      "adjudicated_correct": "string",  // the comparator's independently-recomputed correct answer + reason
-      "outliers": "string"              // each non-majority derivation + its specific error, or "none"
-    }
-  ]
-}
-```
+The Native matrix retains every original claim in input order, including execution failures. `total_claims` is the original `claims` length; failed or missing host results produce `status=unavailable`, `converged=false`, zero confirmations, no invented answer and an explicit `failure_reason`. Their original ids remain in `unconverged`. A surviving successful subset cannot establish full convergence.
 
-**Executor 2 extends this output (superset; Executor 1 fields all still present).** Each matrix row adds
-`verification` (`"cas"` = decided by deterministic cross-family equivalence, LLM-independent; `"llm"` =
-comparator clustering + veto; `"error"` = claim crashed), `cross_family_confirmations` (# distinct model
-families in the agreeing cluster), `families`, `judges` (comparator-panel size that returned a verdict),
-`native_seeded` (# host-provided `native_derivations` injected without a CLI hop), `native_dropped`
-(native tags rejected because the agents file declares no such family — visible, never silent), and
-`adjudicated_matches_majority`; the summary adds `dropped_claims`, `family_pool` (distinct families
-available, incl. native — `<2` means cross-family convergence is structurally impossible),
-`agents_file` (which third-party agents file was in force: source explicit/project/user/none plus its
-path; see docs/AGENTS_FILE.md), `independence` (participating families; level cross_family /
-single_family / none; and the declared-available families, absent families, cross-family minimum and
-below-minimum flag — null without an agents file), and
-`unavailable_backends` (specs dropped from the deriver pool after consecutive infrastructure-level
-failures, so backend outages stay distinguishable from mathematical disagreement). Family identity
-throughout (cross-family counting, diversity tie-break, native auto-exclusion) is refined by the
-agents file when one is in force; without one it stays the backend namespace above. Convergence is **capability-first**: when any answer is CAS-checkable, a claim
-converges iff **>=2 cross-family `checkable_form`s are CAS-verified equal** (the comparator is NOT in the
-gate path, and a CAS refutation overrides a wrong LLM consensus); otherwise it falls back to the LLM path
-(**R1 ∧ R2**: `cross_family_confirmations >= 2` AND `adjudicated_matches_majority`). Both are strictly
-stronger than Executor 1's `majority_size >= 2`.
+An accepted comparison must enumerate at least two eligible indices and report their exact cardinality. Its published answer must represent that adjudicated cluster. CAS equality cannot accept an empty, singleton or different cluster, override a veto, or publish another cluster's answer. Inconclusive and contradictory cardinalities leave zero accepted confirmations.
 
-## Honesty / integrity invariants
+Derivation comparator requests preserve every original lane and use `--context-bytes` and `--context-tokens` in the Python CLI, or `context_bytes` and `context_tokens` in Native args. The default token window is 200000 with separate protocol/output reserves. Python CLI comparisons require the current successful capture observation, exact request/report/cwd, and observed usage or a conservative bound; detected compaction refuses. Native and injected host protocols enforce conservative complete-input/output bounds and explicitly report provider token usage, authenticated CLI capture and compaction witnesses unavailable. A configured window is not provider capability introspection.
 
-- The leader (caller) does NOT declare convergence — the gate's `converged` flag, derived from >=2
-  independent agreeing derivations, is the verdict. (Cf. the project rule "convergence-gate — no
-  self-judgment".)
-- The `>=2` floor may be met by `>=2` independent SAME-model derivations (Executor 1): a single-model host
-  is first-class and is never required to add a second model; `>=2` cross-family confirmations (Executor 2)
-  are the stronger ceiling, not the entry bar. Executor 1's `converged` flag stays defined at
-  `independent_confirmations >= 2` (Executor 2's cross-family convergence, R1, is unchanged); for a
-  load-bearing claim the CALLER raises the *promotion* bar (demand more cross-family breadth — the
-  decorrelating lever — and read `cross_family_confirmations`, treating a bare same-model `converged@2` as
-  necessary-not-sufficient), rather than the gate auto-raising a fixed floor.
-- Transient executor failures (rate limits, a crashed backend) must NOT count as a confirmation; the
-  tie-break loop adds *successful* independent derivations until >=2 agree. Report unconverged claims
-  honestly rather than padding the count.
-- The comparator must recompute the contested quantity itself when adjudicating an outlier — not decide
-  by vote alone.
-
-## Executor notes
-
-- **Executor 1 (Claude/Workflow-native, `workflows/derivation_verify.js`):** derivers/comparator are
-  in-process Claude subagents (`agent()` with a JSON `schema`); "independent" = same model, distinct
-  prompts/methods. Strong + fast lower bound on independence.
-- **Executor 2 (CLI multi-backend, `scripts/run_multi_backend.py`, available):** derivers are separate
-  CLIs (Claude/Codex/Gemini/OpenCode/Kimi) via review-swarm's `run_multi_task.py` (one runner invocation per
-  deriver/comparator, pinned to one model spec); "independent" = distinct model FAMILIES — the
-  reliability ceiling. Same INPUT contract; output is the superset above. Convergence is stricter:
-  - **R1 cross-family** — needs `>= 2` agreeing derivations from DISTINCT families (same-backend
-    repeats do not count; mitigates same-model *representational collapse*).
-  - **R2 adjudicator veto** — the comparator's independent recompute must match the agreeing cluster
-    (`adjudicated_matches_majority`), else not converged (guards the "consensus trap").
-  - **R3 diversity-first tie-break** — each round pulls an unused family first; bounded by `max_iter`
-    (adaptive KS/Beta-Binomial stopping is a future enhancement).
+The current text comparator requires strict UTF-8 for required scientific bodies and transported source/input/output text. Preserving binary originals or their hashes does not provide evidence that their contents were assessed; an unsupported required original prevents confirmation.

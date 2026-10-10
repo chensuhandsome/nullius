@@ -2,14 +2,9 @@
 """
 Logic isolation gate for full_access independent reproduction scripts.
 
-Goal: keep "independent reproduction" independent by preventing imports of project-specific core logic.
-
-Heuristic (Python):
-- For scripts under artifacts/runs/<run_id>/research_team/<member>/independent/*.py
-- Parse import statements via AST
-- If the imported top-level module name corresponds to a local package/module in the project root,
-  it is FORBIDDEN unless it is explicitly allowed (default: shared_utils, toolkit).
-- Relative imports are forbidden.
+Goal: reject call-through of declared tested kernels. Shared utilities, own
+relative helpers and same algorithm names are inspected by the source-grounded
+independent-reproduction assessment, not rejected solely by import identity.
 
 Exit codes:
   0  PASS (or SKIP)
@@ -140,8 +135,10 @@ def main() -> int:
     if not isinstance(cfg_data, dict):
         cfg_data = {}
 
+    from check_independent_reproduction import _collect_member_sources, _scan_declared_kernels, _config_kernel_modules
     local_roots = _local_module_roots(project_root)
     allowed = _allowed_local_roots(cfg_data)
+    kernels = _config_kernel_modules(cfg)
 
     tag = args.tag.strip()
     try:
@@ -155,19 +152,9 @@ def main() -> int:
         ind_dir = project_root / "artifacts" / "runs" / st / "research_team" / member / "independent"
         if not ind_dir.is_dir():
             continue
-        for script in sorted(ind_dir.rglob("*.py")):
-            for lineno, root in _python_import_roots(script):
-                if root == "__RELATIVE__":
-                    violations.append(Violation(script, lineno, "relative import is forbidden for independent reproduction"))
-                    continue
-                if root in local_roots and root not in allowed:
-                    violations.append(
-                        Violation(
-                            script,
-                            lineno,
-                            f"imports local project module {root!r} (allowed local roots: {sorted(allowed)})",
-                        )
-                    )
+        sources = _collect_member_sources(member, ind_dir)
+        for issue in _scan_declared_kernels(sources, kernels):
+            violations.append(Violation(ind_dir, 1, issue.message))
 
     print(f"- Notes: `{args.notes}`")
     print(f"- Project root: `{project_root}`")
@@ -188,7 +175,7 @@ def main() -> int:
     if len(violations) > args.max_violations:
         print(f"... ({len(violations) - args.max_violations} more)")
     print("")
-    print("Fix: keep independent scripts self-contained or import only shared_utils/toolkit (or configure logic_isolation.allowed_local_import_roots).")
+    print("Fix: remove tested-kernel call-through; shared utilities and independent construction need source-grounded assessment.")
     print("- Gate: FAIL")
     return 1
 

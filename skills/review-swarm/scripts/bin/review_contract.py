@@ -159,14 +159,9 @@ def sanitize_contract_output(path: Path) -> bool:
     return False
 
 
-def sanitize_gemini_output(path: Path) -> bool:
-    if not path.exists() or not path.is_file():
-        return False
-    try:
-        raw = normalize_newlines(path.read_text(encoding="utf-8", errors="replace"))
-    except Exception:
-        return False
-
+def sanitize_gemini_text(text: str) -> str:
+    """Derive a contract view without modifying original transport bytes."""
+    raw = normalize_newlines(text)
     cleaned = raw.lstrip()
     while cleaned:
         changed = False
@@ -209,7 +204,18 @@ def sanitize_gemini_output(path: Path) -> bool:
                     cleaned = candidate
 
     cleaned = cleaned.rstrip() + "\n"
-    cleaned = sanitize_contract_text(cleaned)
+    return sanitize_contract_text(cleaned)
+
+
+def sanitize_gemini_output(path: Path) -> bool:
+    """Explicit mutable-file utility; runtime consumers use the pure text view."""
+    if not path.exists() or not path.is_file():
+        return False
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return False
+    cleaned = sanitize_gemini_text(raw)
     if cleaned != raw:
         path.write_text(cleaned, encoding="utf-8")
         return True
@@ -256,6 +262,13 @@ def first_verdict(path: Path) -> Optional[str]:
         text = normalize_newlines(path.read_text(encoding="utf-8", errors="replace"))
     except Exception:
         return None
+
+    return first_verdict_text(text)
+
+
+def first_verdict_text(text: str) -> Optional[str]:
+    """Read a verdict from an explicitly derived view, preserving the original."""
+    text = normalize_newlines(text)
 
     # Try JSON format first
     fmt = _detect_format(text)

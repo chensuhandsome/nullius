@@ -8,36 +8,15 @@ Layer 1 — artifact presence (per member):
     (excluding script files like .py/.jl/.sh)
   - that file must exist on disk
 
-Layer 2 — shared-kernel inheritance scan (fail-closed):
-  Two reproductions that import / include / `using` the SAME kernel are not
-  independent: their agreement can be a shared-error artifact, not a
-  confirmation. The scan reads the reproduction sources each member wrote
-  under its own independent/ directory and fails the gate
-  (verdict `not_independent`, label SHARED_KERNEL_INHERITANCE) when:
-
-  - K1: any member's reproduction source loads a DECLARED kernel-under-test
-        module (config `independent_reproduction.kernel_modules` or repeated
-        `--kernel-module`) — a call-through of the tested kernel is not a
-        reproduction of it;
-  - K2: BOTH members import the same module name that resolves to a
-        project-local source through an IMPORTABLE layout (project root,
-        src/ layout, or a package manifest at root / one level down) —
-        an unrelated basename collision deep in the tree does not count;
-  - K3: BOTH members include/source the same resolved project file by path.
-
-  K2/K3 honor the same `logic_isolation.allowed_local_import_roots` allowlist
-  the logic_isolation gate uses (default: shared_utils, toolkit), so the two
-  gates never disagree about a deliberately shared utility root. A DECLARED
-  kernel module is never allowlistable — declaring `pkg.kernel` also strips
-  `pkg` from the allowlist, and the dotted form is matched against both
-  module chains (`pkg.kernel`, submodules, parent packages) and path
-  spellings (.../pkg/kernel.jl).
-
-  Fail-closed scan coverage: with declared kernels, a member with NO
-  scannable sources, or with sources the scan could not read (oversized /
-  unreadable / beyond the file cap), fails as UNVERIFIABLE_INDEPENDENCE.
-  Without declared kernels such blind spots are recorded as
-  SCAN_INCOMPLETE notes in the machine verdict's reasons.
+Layer 2 — source-grounded independence assessment (fail closed):
+  - Declared tested-kernel call-through remains rejected.
+  - Shared modules/includes are risk locators, not automatic rejection.
+  - A fresh assessor examines exact reproduction source and execution/input evidence;
+    every member needs substantive source spans and reasons for input, execution,
+    construction, method applicability and diagnostic power, without unresolved defects.
+  - SHA-256 binds the assessment to current source/evidence bytes. Shared hashes
+    establish neither semantic reading nor dependence by themselves.
+  - At least two assessed independent evidence lanes are required.
 
 Resolution discipline (printed on failure): when two reproductions disagree,
 locate the FIRST diverging intermediate quantity by tracing both paths;
@@ -60,9 +39,14 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
+import shlex
 import sys
+import subprocess
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -76,7 +60,12 @@ from convergence_schema import (  # type: ignore
     emit_convergence_result,
     validate_convergence_result,
 )
-from team_config import load_team_config  # type: ignore
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "derivation-verify" / "scripts"))
+from independence import assessed_indices, independence_record, method_risk_passes
+
+from team_config import load_strict_team_config as load_team_config  # type: ignore
+from member_evidence import validate_original_transport, original_source_origin
+from source_inputs import local_source_closure
 
 MEMBERS = ("member_a", "member_b")
 
@@ -166,6 +155,12 @@ def _parse_args() -> argparse.Namespace:
         help="Declared kernel-under-test module/package name (repeatable). "
         "Merged with config independent_reproduction.kernel_modules.",
     )
+    p.add_argument("--assessment", type=Path, default=None, help="Historical assessment to recheck; cannot supply current execution authority.")
+    p.add_argument("--assessor-model", default=None, help="Explicit model for a fresh assessor invocation in this gate; absent means unavailable.")
+    p.add_argument("--assessor-runner", type=Path, default=None, help="Explicit task runner for the fresh assessor.")
+    p.add_argument("--assessor-timeout-secs", type=int, default=1200)
+    p.add_argument("--assessor-context-bytes", type=int, default=None)
+    p.add_argument("--assessor-context-tokens", type=int, default=200000)
     p.add_argument("--out-json", type=Path, default=None, help="Also write the convergence_gate_result_v1 JSON here.")
     return p.parse_args()
 
@@ -214,14 +209,14 @@ def _find_independent_outputs(ev: dict, prefix: str) -> list[str]:
 def _config_kernel_modules(cfg: Any) -> list[str]:
     data = getattr(cfg, "data", {})
     if not isinstance(data, dict):
-        return []
+        raise ValueError("invalid configuration object")
     block = data.get("independent_reproduction", {})
     if not isinstance(block, dict):
-        return []
+        raise ValueError("independent_reproduction must be an object")
     mods = block.get("kernel_modules", [])
-    if not isinstance(mods, list):
-        return []
-    return [str(m).strip() for m in mods if str(m).strip()]
+    if not isinstance(mods, list) or any(not isinstance(m, str) or not m.strip() for m in mods):
+        raise ValueError("independent_reproduction.kernel_modules must be a list of nonempty strings")
+    return [m.strip() for m in mods]
 
 
 def _allowed_local_roots(cfg: Any, kernels: list[str]) -> set[str]:
@@ -229,18 +224,20 @@ def _allowed_local_roots(cfg: Any, kernels: list[str]) -> set[str]:
     logic_isolation gate uses). A DECLARED kernel module is never
     allowlistable: the kernel-under-test wins over the allowlist."""
     data = getattr(cfg, "data", {})
-    li = data.get("logic_isolation", {}) if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        raise ValueError("invalid configuration object")
+    li = data.get("logic_isolation", {})
     if not isinstance(li, dict):
-        li = {}
+        raise ValueError("logic_isolation must be an object")
     roots = li.get("allowed_local_import_roots", ["shared_utils", "toolkit"])
-    if not isinstance(roots, list):
-        roots = ["shared_utils", "toolkit"]
+    if not isinstance(roots, list) or any(not isinstance(x, str) or not x.strip() for x in roots):
+        raise ValueError("logic_isolation.allowed_local_import_roots must be a list of nonempty strings")
     # A dotted declared kernel also strips its TOP-LEVEL root from the
     # allowlist: with kernel_modules=["shared_utils.kernel"] nothing under
     # shared_utils/ may be shared, or the kernel could be reached by path
     # through the allowlisted root.
     kernel_roots = {k.split(".", 1)[0] for k in kernels}
-    return {str(x).strip() for x in roots if str(x).strip()} - set(kernels) - kernel_roots
+    return {x.strip() for x in roots} - set(kernels) - kernel_roots
 
 
 def _strip_comment(line: str, ext: str) -> str:
@@ -306,11 +303,16 @@ def _collect_python(ms: MemberSources, f: Path, text: str) -> None:
                     # matching (modules_full only; top-level already recorded).
                     if alias.name and alias.name != "*":
                         ms.modules_full.setdefault(f"{mod}.{alias.name}", where)
-            elif level >= 2 and mod:
-                rel = Path(*([".."] * (level - 1))) / Path(*mod.split("."))
-                for cand in (f.parent / rel).with_suffix(".py"), (f.parent / rel / "__init__.py"):
-                    if cand.is_file():
-                        ms.includes.setdefault(cand.resolve(), where)
+            elif level >= 1:
+                base = f.parent
+                for _ in range(level - 1):
+                    base = base.parent
+                names = ([mod] if mod else []) + [f"{mod}.{alias.name}".strip(".") for alias in node.names if alias.name != "*"]
+                for name in names:
+                    target = base / Path(*name.split("."))
+                    for cand in target.with_suffix(".py"), target / "__init__.py":
+                        if cand.is_file():
+                            ms.includes.setdefault(cand.resolve(), where)
 
 
 def _collect_member_sources(member: str, root: Path) -> MemberSources:
@@ -552,8 +554,7 @@ def _scan_shared_kernel(
     shared_full = sorted(set(ms_a.modules_full) & set(ms_b.modules_full))
     for name in [*shared_top, *(n for n in shared_full if "." in n)]:
         top = name.split(".", 1)[0]
-        if top in allowed_roots:
-            continue
+        # A conventional library name is a locator, never independent evidence.
         if top in flagged or name in flagged:
             continue
         if _member_shadows(ms_a, name) or _member_shadows(ms_b, name):
@@ -581,8 +582,6 @@ def _scan_shared_kernel(
         if any(inc.is_relative_to(r) for r in member_roots):
             continue
         rel = inc.relative_to(project_root)
-        if rel.parts and rel.parts[0] in allowed_roots:
-            continue
         issues.append(
             Issue(
                 "member_a+member_b",
@@ -592,6 +591,275 @@ def _scan_shared_kernel(
             )
         )
     return issues
+
+
+def _packet_digest(packet: dict) -> str:
+    return hashlib.sha256(json.dumps(packet, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _external_source_locators(derivations: list[dict]) -> list[str]:
+    """Every executed external project source needs its own risk disposition."""
+    return sorted({f"{d['execution_id']} executes external project source '{rel}'"
+                   for d in derivations for rel, role in d.get("source_roles", {}).items()
+                   if role == "external_to_member_construction"})
+
+
+def assessment_packet(ms: dict, evidence_paths: dict, project_root: Path, cfg: Any = None) -> dict:
+    """Close actual source, raw input, output and execution-log dependencies; never truncate."""
+    sources, derivations = {}, []
+    for member in MEMBERS:
+        ev = _load(evidence_paths[member])
+        original = validate_original_transport(ev, project_root)
+        pending = [*ms[member].files, evidence_paths[member]]
+        body_paths = {p.resolve() for p in ms[member].files}
+        body_paths.add((project_root / original["report_path"]).resolve())
+        pending.extend(project_root / ref["path"] for ref in original["refs"])
+        expected_hashes = {}
+        for field, key in (("files_read", "path"), ("outputs_produced", "path"),
+                           ("fetched_sources", "local_path_under_references"),
+                           ("commands_run", "output_path")):
+            for item in ev.get(field, []):
+                if not isinstance(item, dict) or not isinstance(item.get(key), str):
+                    raise ValueError(f"incomplete {member}.{field} closure entry")
+                p = Path(item[key])
+                p = p if p.is_absolute() else project_root / p
+                pending.append(p)
+                digest = item.get("sha256") or item.get("output_sha256")
+                if digest is not None:
+                    expected_hashes[p.resolve()] = digest
+        # The assessor may inspect only the same local command dependency
+        # closure frozen before execution. Current helper/data bytes without a
+        # matching executed-input receipt are unavailable, never new evidence.
+        command_sources: set[Path] = set()
+        for item in ev.get("commands_run", []):
+            cwd = Path(item.get("cwd", "."))
+            cwd = cwd if cwd.is_absolute() else project_root / cwd
+            cwd = cwd.resolve()
+            recorded = item.get("input_files")
+            if not isinstance(recorded, list):
+                raise ValueError("unavailable missing actual command input closure")
+            frozen: dict[Path, str] = {}
+            for ref in recorded:
+                if not isinstance(ref, dict) or not isinstance(ref.get("path"), str) or not isinstance(ref.get("sha256"), str):
+                    raise ValueError("unavailable invalid actual command input")
+                path = (project_root / ref["path"]).resolve()
+                if path in frozen or not path.is_relative_to(project_root):
+                    raise ValueError("unavailable duplicate/outside-root command input")
+                frozen[path] = ref["sha256"]
+            seeds = list(frozen)
+            for token in shlex.split(item.get("command", ""))[1:]:
+                p = (cwd / token).resolve()
+                try:
+                    regular = p.is_file() and p.is_relative_to(project_root)
+                except OSError:
+                    # Literal argument values are not necessarily filenames.
+                    regular = False
+                if regular and p in frozen:
+                    seeds.append(p)
+            closure = set(local_source_closure(seeds, project_root, cwd=cwd))
+            if closure != set(frozen):
+                raise ValueError("unavailable current command source/data dependency was not frozen for execution")
+            for path in closure:
+                if hashlib.sha256(path.read_bytes()).hexdigest() != frozen[path]:
+                    raise ValueError(f"stale executed command dependency: {path}")
+                expected_hashes[path] = frozen[path]
+            command_sources.update(closure)
+            pending.extend(closure)
+        seen, chunks, bodies, construction_origins, constructed_bodies, source_roles = set(), [], [], [], [], {}
+        while pending:
+            p = pending.pop().resolve()
+            if p in seen:
+                continue
+            if not p.is_relative_to(project_root) or not p.is_file():
+                raise ValueError(f"missing/outside-root assessment dependency: {p}")
+            seen.add(p)
+            if len(seen) > _MAX_SOURCES_PER_MEMBER:
+                raise ValueError("assessment closure exceeds file cap; no omitted dependencies permitted")
+            data = p.read_bytes()
+            if len(data) > _MAX_SOURCE_BYTES:
+                raise ValueError("UNAVAILABLE: complete assessment dependency exceeds 2000000 byte file cap")
+            digest = hashlib.sha256(data).hexdigest()
+            if p in expected_hashes and expected_hashes[p] != digest:
+                raise ValueError(f"stale execution evidence binding for {p}")
+            text = data.decode("utf-8")
+            rel = p.relative_to(project_root).as_posix()
+            if p.suffix in _K1_SCAN_EXTS and p.is_relative_to(ms[member].root.resolve()):
+                construction_origins.append(original_source_origin(p, original, project_root, member))
+                constructed_bodies.append(f"{rel}:\n{text}")
+                source_roles[rel] = "member_constructed_source"
+            elif p.suffix in _K1_SCAN_EXTS and p in command_sources:
+                source_roles[rel] = "external_to_member_construction"
+            else:
+                source_roles[rel] = "original_input_output_or_report"
+            sources[rel] = digest
+            chunks.append(f"{rel}:\n{text}")
+            if p in body_paths or p.suffix in _K1_SCAN_EXTS:
+                bodies.append(f"{rel}:\n{text}")
+            if p.suffix in _K1_SCAN_EXTS and p in body_paths:
+                if p not in command_sources:
+                    raise ValueError(f"unavailable assessed member computation source was not frozen for execution: {p}")
+        # Evidence identity binds actual request/execution logs; labels alone never approve.
+        derivations.append({"execution_id": member, "method": "assessed from source",
+                            "derivation": "\n".join(sorted(bodies)),
+                            "derivation_summary": "\n".join(sorted(chunks)),
+                            "transport": original["material"], "construction_origins": construction_origins,
+                            "construction_body": "\n".join(sorted(constructed_bodies)), "source_roles": source_roles})
+    cfg = cfg if cfg is not None else load_team_config(project_root)
+    requirement = cfg.data.get("independent_reproduction", {})
+    if not isinstance(requirement, dict):
+        raise ValueError("invalid independent reproduction requirements")
+    if "requires_method_diversity" in requirement and type(requirement["requires_method_diversity"]) is not bool:
+        raise ValueError("invalid project method-risk requirement")
+    if "method_diversity_risk" in requirement and not isinstance(requirement["method_diversity_risk"], str):
+        raise ValueError("invalid project method-risk description")
+    kernels = _config_kernel_modules(cfg)
+    allowed_roots = _allowed_local_roots(cfg, kernels)
+    shared_locators = [issue.message.split(" — ", 1)[0].replace("SHARED_KERNEL_INHERITANCE: ", "")
+                       for issue in _scan_shared_kernel(ms["member_a"], ms["member_b"], project_root, allowed_roots)]
+    shared_locators = sorted(set(shared_locators + _external_source_locators(derivations)))
+    packet = {"sources": dict(sorted(sources.items())), "derivations": derivations,
+        "shared_source_locators": shared_locators,
+        "requirements": {"requires_method_diversity": requirement.get("requires_method_diversity", False),
+                         "method_diversity_risk": requirement.get("method_diversity_risk", "")}}
+    packet["input_sha256"] = _packet_digest(packet)
+    return packet
+
+
+_ASSESSOR_AUTHORITY = object()
+
+
+class _ObservedAssessment:
+    def __init__(self, packet: dict, path: Path, command: list[str], exit_code: int):
+        self.authority = _ASSESSOR_AUTHORITY
+        self.input_sha256 = packet["input_sha256"]
+        self.path = path.resolve()
+        self.sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.command = tuple(command)
+        self.exit_code = exit_code
+
+
+def _invoke_assessor(args, packet: dict, project_root: Path, tag: str):
+    if not args.assessor_model:
+        raise ValueError("fresh source-assessor invocation is required; imported JSON has no execution authority")
+    if type(args.assessor_timeout_secs) is not int or args.assessor_timeout_secs <= 0:
+        raise ValueError("invalid source-assessor execution budget")
+    path = project_root / f"artifacts/runs/{tag}/research_team/assessments/{uuid.uuid4().hex}/assessment.json"
+    path.parent.mkdir(parents=True)
+    command = [sys.executable, str(Path(__file__).parent.parent / "bin/assess_independent_reproduction.py"),
+               "--notes", str(args.notes.resolve()), "--project-root", str(project_root), "--tag", tag,
+               "--member-a", str(args.member_a.resolve()), "--member-b", str(args.member_b.resolve()),
+               "--model", args.assessor_model, "--out", str(path),
+               "--timeout-secs", str(min(1200, args.assessor_timeout_secs)),
+               "--context-tokens", str(args.assessor_context_tokens)]
+    if args.assessor_runner is not None:
+        command.extend(["--runner", str(args.assessor_runner.resolve())])
+    if args.assessor_context_bytes is not None:
+        command.extend(["--context-bytes", str(args.assessor_context_bytes)])
+    environment = dict(os.environ)
+    if environment.get("RESEARCH_TEAM_CONFIG", "").strip():
+        environment["RESEARCH_TEAM_CONFIG"] = str(Path(environment["RESEARCH_TEAM_CONFIG"]).resolve())
+    observed = subprocess.run(command, cwd=project_root, capture_output=True, text=True, check=False, env=environment)
+    (path.parent / "invocation.stdout").write_text(observed.stdout, encoding="utf-8")
+    (path.parent / "invocation.stderr").write_text(observed.stderr, encoding="utf-8")
+    (path.parent / "invocation.json").write_text(json.dumps({"argv": command, "exit_code": observed.returncode,
+        "input_sha256": packet["input_sha256"]}, indent=2) + "\n", encoding="utf-8")
+    if observed.returncode != 0 or not path.is_file():
+        raise ValueError("actual source-assessor invocation failed/unavailable")
+    return _load(path), path, _ObservedAssessment(packet, path, command, observed.returncode)
+
+
+def validate_transport(packet: dict, assessment: dict, assessment_path: Path, project_root: Path,
+                       observation: _ObservedAssessment | None = None, *, historical: bool = False) -> list[str]:
+    """Bind evaluator output to an actual successful launcher receipt and exact request bytes."""
+    from run_multi_backend import extract_json
+    if not historical and (not isinstance(observation, _ObservedAssessment)
+            or observation.authority is not _ASSESSOR_AUTHORITY or observation.exit_code != 0
+            or observation.input_sha256 != packet["input_sha256"]
+            or observation.path != assessment_path.resolve()
+            or not assessment_path.is_file()
+            or observation.sha256 != hashlib.sha256(assessment_path.read_bytes()).hexdigest()):
+        return ["UNVERIFIABLE_INDEPENDENCE: no current runtime-observed source-assessor invocation"]
+    ref = assessment.get("transport_ref")
+    if not isinstance(ref, dict):
+        return ["UNVERIFIABLE_INDEPENDENCE: missing assessor transport receipt"]
+    try:
+        path = (project_root / ref["path"]).resolve()
+        if not path.is_relative_to(project_root) or hashlib.sha256(path.read_bytes()).hexdigest() != ref["sha256"]:
+            raise ValueError("invalid transport reference")
+        transport = _load(path)
+        if type(transport.get("exit_code")) is not int or transport["exit_code"] != 0:
+            raise ValueError("assessor execution failed")
+        from request_capacity import request_budgets, validate_request_capacity
+        capacity = transport.get("request_capacity")
+        if not isinstance(capacity, dict) or not isinstance(transport.get("capacity_artifacts"), list):
+            raise ValueError("missing exact original request capacity evidence")
+        for item in transport["capacity_artifacts"]:
+            p = (project_root / item["path"]).resolve()
+            if not p.is_relative_to(project_root) or hashlib.sha256(p.read_bytes()).hexdigest() != item["sha256"]:
+                raise ValueError("stale original captured capacity evidence")
+        artifacts = {}
+        for key in ("system", "prompt", "output"):
+            item = transport[key]
+            p = (project_root / item["path"]).resolve()
+            if not p.is_relative_to(project_root) or hashlib.sha256(p.read_bytes()).hexdigest() != item["sha256"]:
+                raise ValueError(f"stale {key} transport bytes")
+            artifacts[key] = p.read_text(encoding="utf-8")
+        budgets = request_budgets(capacity.get("context_tokens"), capacity.get("context_bytes"))
+        actual_capacity = validate_request_capacity(artifacts["system"], artifacts["prompt"],
+            {"exit_code": transport["exit_code"], "output": str((project_root / transport["output"]["path"]).resolve())}, budgets)
+        if actual_capacity != capacity:
+            raise ValueError("original request capacity differs from current exact capture")
+        request = json.loads(artifacts["prompt"])
+        if request != packet or transport.get("input_sha256") != packet["input_sha256"]:
+            raise ValueError("assessor request differs from current exact packet")
+        raw = extract_json(artifacts["output"])
+        parsed = {k: v for k, v in assessment.items() if k not in ("input_sha256", "assessor_role", "transport_ref")}
+        if raw != parsed:
+            raise ValueError("assessment differs from actual assessor output")
+        sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
+        from assess_independent_reproduction import ASSESSOR_SYSTEM
+        if artifacts["system"] != ASSESSOR_SYSTEM:
+            raise ValueError("assessor system contract differs from the source reviewer prompt")
+        if transport.get("assessor_entrypoint_sha256") != hashlib.sha256((Path(__file__).parent.parent / "bin/assess_independent_reproduction.py").read_bytes()).hexdigest():
+            raise ValueError("assessor contract source changed")
+    except (KeyError, TypeError, ValueError, OSError, UnicodeError) as e:
+        return [f"UNVERIFIABLE_INDEPENDENCE: invalid/stale assessor transport: {e}"]
+    return []
+
+
+def evaluate_assessment(packet: dict, assessment: dict) -> tuple[list[int], list[str]]:
+    if (not isinstance(assessment, dict) or assessment.get("input_sha256") != packet["input_sha256"]
+            or assessment.get("assessor_role") != "independent_source_review"):
+        return [], ["UNVERIFIABLE_INDEPENDENCE: missing, invalid or stale independent assessment"]
+    indices = assessed_indices(packet["derivations"], assessment.get("independence_assessments", []))
+    locators = packet.get("shared_source_locators", [])
+    if locators:
+        dispositions = assessment.get("shared_source_assessments", [])
+        if not isinstance(dispositions, list):
+            dispositions = []
+        for locator in locators:
+            records = [record for record in dispositions if isinstance(record, dict) and record.get("locator") == locator]
+            if len(records) != 1 or records[0].get("independence_preserved") is not True:
+                return [], ["UNVERIFIABLE_INDEPENDENCE: shared source requires an explicit source-grounded disposition"]
+            record = records[0]
+            if not isinstance(record.get("reason"), str) or len(record["reason"].strip()) < 20:
+                return [], ["UNVERIFIABLE_INDEPENDENCE: shared-source disposition lacks substantive reasoning"]
+            covered = set()
+            for item in record.get("evidence", []) if isinstance(record.get("evidence"), list) else []:
+                if not isinstance(item, dict) or type(item.get("index")) is not int or item["index"] not in indices:
+                    continue
+                lane = packet["derivations"][item["index"]]
+                span, reason = item.get("source_span"), item.get("reason")
+                if (isinstance(span, str) and span.strip() and span in lane.get("construction_body", "")
+                        and isinstance(reason, str) and len(reason.strip()) >= 20):
+                    covered.add(item["index"])
+            if covered != {0, 1}:
+                return [], ["UNVERIFIABLE_INDEPENDENCE: shared-source disposition must quote both independently constructed bodies"]
+    if packet.get("requirements", {}).get("requires_method_diversity") is True and not method_risk_passes(
+            packet["derivations"], indices, assessment.get("method_risk_assessments", [])):
+        return [], ["UNVERIFIABLE_INDEPENDENCE: explicit project shared-failure/method-risk requirement is unmet"]
+    return indices, [f"UNVERIFIABLE_INDEPENDENCE: {MEMBERS[i]} lacks an accepted source-grounded assessment"
+                     for i in range(2) if i not in indices]
 
 
 # ---------------------------------------------------------------------------
@@ -713,7 +981,7 @@ def _run(args: argparse.Namespace, base_meta: dict[str, Any], _input_error: Any)
             issues.append(Issue(member, f"MISSING_INDEPENDENT_ARTIFACT: no outputs_produced under {prefix!r} (excluding scripts)"))
             continue
         missing = []
-        for p in outputs[:10]:
+        for p in outputs:
             abs_p = (project_root / p).resolve() if not Path(p).is_absolute() else Path(p).resolve()
             if not abs_p.exists():
                 missing.append(p)
@@ -760,7 +1028,47 @@ def _run(args: argparse.Namespace, base_meta: dict[str, Any], _input_error: Any)
                     f"SCAN_INCOMPLETE: {member}: {len(ms[member].skipped)} source(s) not scanned "
                     f"({'; '.join(ms[member].skipped[:3])})"
                 )
-    issues.extend(_scan_shared_kernel(ms["member_a"], ms["member_b"], project_root, allowed_roots))
+    # Shared libraries require source-level assessment; pathname identity alone is not disqualifying.
+    scan_notes.extend(it.message.replace("SHARED_KERNEL_INHERITANCE", "SHARED_SOURCE_REQUIRES_ASSESSMENT")
+                      for it in _scan_shared_kernel(ms["member_a"], ms["member_b"], project_root, allowed_roots))
+    assessment_path = args.assessment or (project_root / f"artifacts/runs/{st}/research_team/independence_assessment.json")
+    packet, assessment = {"derivations": []}, {}
+    observation = None
+    transport_errors = ["no current validated assessor transport"]
+    try:
+        packet = assessment_packet(ms, {"member_a": args.member_a, "member_b": args.member_b}, project_root, cfg)
+    except (OSError, ValueError, UnicodeError) as e:
+        # Original invocation/input closure is a prerequisite; never consult
+        # examiner booleans when any member's original material is unavailable.
+        eligible, assessment_errors = [], [f"UNVERIFIABLE_INDEPENDENCE: original member closure unavailable: {e}"]
+    else:
+        try:
+            assessment = _load(assessment_path)
+        except (OSError, ValueError):
+            assessment = {}
+        # Historical records remain readable and freshness checked, but never
+        # reconstruct the process-local authority for a current confirmation.
+        historical_errors = []
+        if args.assessment is not None:
+            historical_errors = validate_transport(packet, assessment, assessment_path, project_root, historical=True)
+        if historical_errors:
+            eligible, assessment_errors = [], historical_errors
+        else:
+            try:
+                assessment, assessment_path, observation = _invoke_assessor(args, packet, project_root, st)
+                eligible, assessment_errors = evaluate_assessment(packet, assessment)
+                transport_errors = validate_transport(packet, assessment, assessment_path, project_root, observation)
+                if transport_errors:
+                    eligible = []
+                    assessment_errors.extend(transport_errors)
+            except (OSError, ValueError) as e:
+                eligible, assessment_errors = [], [f"UNVERIFIABLE_INDEPENDENCE: {e}"]
+    for message in assessment_errors:
+        member = next((m for m in MEMBERS if m in message), "member_a+member_b")
+        issues.append(Issue(member, message))
+    for member in MEMBERS:
+        if not ms[member].files or ms[member].skipped:
+            issues.append(Issue(member, "UNVERIFIABLE_INDEPENDENCE: complete reproduction sources are required"))
 
     print(f"- Notes: `{args.notes}`", file=sys.stderr)
     print(f"- Project root: `{project_root}`", file=sys.stderr)
@@ -773,13 +1081,19 @@ def _run(args: argparse.Namespace, base_meta: dict[str, Any], _input_error: Any)
 
     member_errors = {m: [it.message for it in issues if m in it.member] for m in MEMBERS}
     not_independent = {
-        m: any("SHARED_KERNEL_INHERITANCE" in msg for msg in member_errors[m]) for m in MEMBERS
+        m: any("SHARED_KERNEL_INHERITANCE" in msg or "UNVERIFIABLE_INDEPENDENCE" in msg for msg in member_errors[m]) for m in MEMBERS
     }
+    eligible = [i for i in eligible if not member_errors[MEMBERS[i]]]
     meta = {
         **base_meta,
         "tag": tag,
         "kernel_modules": kernels,
         "allowed_local_import_roots": sorted(allowed_roots),
+        "confirmation_refs": [{"path": str(assessment_path), "sha256": hashlib.sha256(assessment_path.read_bytes()).hexdigest()}]
+            if isinstance(observation, _ObservedAssessment) and not transport_errors and assessment_path.is_file() else [],
+        "independent_confirmations": len(eligible),
+        "independence": {**independence_record(packet["derivations"], assessment.get("families", []), eligible),
+                         "method_diversity": assessment.get("methods", [])},
     }
 
     if issues:

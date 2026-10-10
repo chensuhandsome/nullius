@@ -32,7 +32,7 @@ and MUST equal the filename's `_vN` (ART-02). Write atomically (ART-03).
       "converged": true,              // measured plateau, not assumed
       "mirage": false,                // true if a coarse-setting optimum did not survive refinement
 
-      // G2 — orthogonal-method cross-check. >=2 independent methods; agree within tolerance.
+      // G2 — independent-confirmation cross-check. >=2 independent evidence lanes; agree within tolerance.
       "cross_method": [
         { "method": "AAA continuation", "value": "1.920" },
         { "method": "Thiele continuation", "value": "1.929" }
@@ -183,7 +183,7 @@ and MUST equal the filename's `_vN` (ART-02). Write atomically (ART-03).
 | `reliable` | passed **every applicable** G1–G10 check at the converged setting — including the G4 anchor, G6 non-staleness and connected-series fingerprint homogeneity, the G7 production-scale method-precondition, the G8 reference-match where a published-value match is claimed, the G9 gate-discrimination audit where trust rests on a purpose-built validation chain, and the G10 fast-path scoping where the value comes from an accelerated/heuristic path, not only G1–G3 | **yes** |
 | `mirage` | a candidate optimum/feature that did not survive G1 refinement | no |
 | `unconverged` | value still moving as the resolution is refined (G1) | no |
-| `method_disagreement` | orthogonal methods (G2) do not agree and the discrepancy is unexplained | no |
+| `method_disagreement` | independent checks (G2) do not agree and the discrepancy is unexplained | no |
 | `fragile_method` | result depended on a seed/threshold (or a method used outside its stable regime) and is not confirmed by an invariant/robust method (G2/G3) | no |
 | `anchor_failed` | the reference/default configuration did not reproduce its known anchor (G4), so no variation built on it can be trusted | no |
 | `degenerate` | a flat-direction parameter quoted as if determined (G5 violation) — report the robust observable instead | no |
@@ -238,27 +238,7 @@ is a **labeled candidate** kept for follow-up or discarded — never silently pr
   setting; for a projected/effective eigenvalue, record the true-operator residual `‖Oψ − λψ‖/‖Oψ‖` and the
   variance. A precondition verified only at a smaller/cheaper setting than the recorded value does NOT
   satisfy G7 (verdict `precondition_violated`).
-- `cross_method` MUST contain `>=2` genuinely independent methods for any `reliable` verdict that depends
-  on a continuation/quadrature/search; record both values even when they agree. The `>=2` methods MAY run on
-  ONE LLM (parallelize across same-model subagents if useful, one method each) — a single-LLM host is
-  first-class and never blocked; a **cross-LLM (different model-family)** independent re-implementation is the
-  ceiling (it decorrelates the coding-style/transcription/library error two methods in one LLM can still share
-  — distinct from a *different scientific model*, which is a new scientific question, not a cross-check),
-  reached for a load-bearing number when available and its absence stated as a limitation, not a blocker. **Independence is
-  structural, not nominal** (mirrors G2): an entry counts toward `methods_agree` only if it evaluates the
-  *same* quantity under the *same* model by a different route. A solver/engine implementing a structurally
-  *different* model, or a check valid only in a degenerate/limit regime, is recorded labeled as a
-  different-scientific-model / limit-regime comparison (e.g. in `notes`) and does **not** set `methods_agree`; when no
-  apples-to-apples independent method is reachable, state that absence in `notes` rather than letting an
-  established cross-check silently lapse. Independence must also hold **in the setting under suspicion**
-  (mirrors G2): an entry that inherits the same suspect knob value, truncation order, or extraction window
-  as the computation it checks does **not** set `methods_agree` for that setting — vary the suspect setting
-  in at least one entry, or record the check in `notes` as "agree, but cannot resolve `<the setting under
-  suspicion>`". **Narrow exception** (mirrors G2): a single method MAY stand
-  alone iff it carries a *rigorous a-posteriori / certified-interval error bound* that by itself establishes
-  the value — then record that one method with its certificate in `tolerance`/`notes` and state why no
-  second was required. Do not invoke this to excuse an un-cross-checked seed/heuristic search (which has no
-  such bound).
+- `cross_method` retains its field name and MUST record at least two independently constructed/executed checks, their values, tolerance, raw-input provenance, method applicability, known-defect assessment and diagnostic limits. Independent confirmation requires at least two evidence lanes independently constructed or derived and executed from a neutral question and raw inputs. Record method diversity, model-family diversity, execution independence and input independence separately. Same or similar methods, the same algorithm name, matching hashes or shared legitimate libraries do not by themselves disqualify a lane. Agent names, seeds, reworded prompts, copied answers and simple reruns of the original implementation do not establish independence. Different methods with contaminated input framing still fail. A fresh assessor must substantively inspect the actual steps, method preconditions, known defects and diagnostic power with exact source spans and reasons; a self-filled no-defect checkbox is insufficient. Missing, rejected, stale or non-diagnostic evidence does not count. Keep an explicit project-specific different-method risk requirement when that requirement tests a known shared failure mode. A different scientific model or limit regime is labeled as such and does not establish an apples-to-apples check. Inheriting a suspect setting is non-diagnostic for that setting. A rigorous certificate may be an evidence anchor, but never silently erases the two-independent-evidence floor.
 - **G8 reference-match (when applicable)**: for any quantity reported as reproducing/matching a published
   reference number, record a `reference_match` object — `{ "published_value": …, "source_locator":
   "<paper + table/eq/figure>", "computed_value": <on the comparable regime>, "comparable_regime":

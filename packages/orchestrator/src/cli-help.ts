@@ -264,7 +264,9 @@ read model that \`nullius status --json\` carries as its traceability block.
 `,
   notebook: `nullius notebook sync [--json]
 nullius notebook check [--result <id>] [--structure-only] [--json]
-nullius notebook review --model <spec> [--dependency <path>] [--timeout-secs <n>] [--json]
+nullius notebook review --model <spec> [--dependency <path>] [--resume <run-id>] [--timeout-secs <n>] [--json]
+  [--context-bytes <n>] [--context-tokens <n>] [--snapshot-bytes <n>]
+  [--max-files <n>] [--max-batches <n>]
 
 Insert (first run) or refresh the machine-maintained current-state block at
 the top of research_notebook.md. The block is rendered from the results
@@ -288,15 +290,25 @@ covering every section, including intermediate reasoning, logic, notation,
 definitions, assumptions and conventions. Links, automatic tables, formulas,
 self-evaluations and checkboxes cannot replace explanatory prose. Local linked
 text files are included recursively for Markdown; declare further dependencies
-with repeatable --dependency. Linked binary/oversized files are frozen hash-only
+with repeatable --dependency. Valid UTF-8 text stays text at any size.
+Linked binary/invalid UTF-8 files are frozen hash-only
 locators, never reported as read; a required unread locator prevents acceptance.
 Supply independently checked readable text for necessary source content. The
-text packet limit is 1 MiB; all source snapshots together are limited to 64 MiB.
+complete closure is frozen with separate storage and per-request budgets.
+Storage defaults: 512 MiB and 256 files (--snapshot-bytes, --max-files).
+Request capacity: --context-bytes plus the available backend --context-tokens
+window (default 200000), with instruction/output reserves. Oversized token
+upper bounds require captured backend usage; compaction cannot grant coverage.
+Large text uses original intervals and a separate COMPLETE-original joint audit.
+Every original interval and joint audit must be complete and fresh; no summaries.
+Shortfalls expose material totals, pending scope and a --resume command. Resume
+creates a new run, retains explicit dependencies, rechecks old receipts and
+requires unchanged original material; original evidence is never rewritten.
 Remote or directory links alone do not provide their contents. No truncation.
 Reviewed text requires LF or CRLF line endings. Bare CR is refused.
 UTF-8 byte-order marks are preserved. python3 is required; accepted reviewer
 execution must report tool mode none. A route using another mode is unavailable.
-Default hard budget: 1200 seconds, one execution, no automatic retry.
+Default hard budget: 1200 seconds, max 64 calls, one attempt per call, no automatic retry.
 
 Check is read-only and reports structure and content_review independently.
 Default exit 0 requires structural links and an accepted whole-notebook review

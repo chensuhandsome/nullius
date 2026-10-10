@@ -1245,6 +1245,11 @@ class ReviewOneTests(unittest.TestCase):
                 for required in ("scope_sha256", "coverage_status", "dependency_closure", "cross_section_reasoning", "source anchors", "exactly one JSON object"):
                     self.assertIn(required, template)
                 continue
+            if role in ("notebook-batch", "notebook-crosscheck"):
+                for required in ("inventory_sha256", "coverage_status", "missing_dependencies", '"verdict": "PASS or FAIL"'):
+                    self.assertIn(required, template)
+                self.assertIn("cross_context" if role == "notebook-batch" else "original_unit_coverage", template)
+                continue
             for required in (
                 "VERDICT: READY",
                 "VERDICT: NOT_READY",

@@ -3,6 +3,7 @@ set -euo pipefail
 
 TAG=""
 PACKET=""
+REPRODUCTION_PACKET=""
 OUT_DIR="" # default set later
 NOTES=""
 PROJECT_POLICY="real_project"
@@ -665,6 +666,9 @@ Options:
                               The resolved <base>-rN may be used as the project-local run_id.
   --notes PATH                Optional. Primary notebook path. If provided and --packet is omitted, the script
                               auto-builds a team packet (and enforces all preflight gates).
+  --reproduction-packet PATH   Neutral question and complete raw inputs for full-access reproduction members.
+                              Required when the independent reproduction gate is enabled unless configured
+                              with independent_reproduction.blind_packet; candidate answers must be absent.
   --project-policy POLICY     Optional. real_project|maintainer_fixture (default: real_project).
                               `maintainer_fixture` is internal maintainer-only and should not be used as the public default.
   --member-a-system PATH      Required. Member A system prompt file.
@@ -703,6 +707,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag) TAG="${2:-}"; shift 2 ;;
     --packet) PACKET="${2:-}"; shift 2 ;;
+    --reproduction-packet) REPRODUCTION_PACKET="${2:-}"; shift 2 ;;
     --notes) NOTES="${2:-}"; shift 2 ;;
     --out-dir) OUT_DIR="${2:-}"; shift 2 ;;
     --project-policy) PROJECT_POLICY="${2:-}"; shift 2 ;;
@@ -1157,7 +1162,11 @@ REVIEW_ACCESS_MODE="packet_only"
 ISOLATION_STRATEGY="separate_worktrees"
 REVIEW_SETTINGS_SCRIPT="${SCRIPT_DIR}/team_cycle_get_review_settings.py"
 if [[ -f "${REVIEW_SETTINGS_SCRIPT}" ]]; then
-  read -r REVIEW_ACCESS_MODE ISOLATION_STRATEGY CONFIG_WORKFLOW_MODE <<<"$(python3 "${REVIEW_SETTINGS_SCRIPT}" --notes "${NOTEBOOK_PATH}" 2>/dev/null || echo "packet_only separate_worktrees ")"
+  if ! REVIEW_SETTINGS_VALUE="$(python3 "${REVIEW_SETTINGS_SCRIPT}" --notes "${NOTEBOOK_PATH}")"; then
+    echo "ERROR: review configuration is unavailable; cannot select a confirmation route." >&2
+    exit 1
+  fi
+  read -r REVIEW_ACCESS_MODE ISOLATION_STRATEGY CONFIG_WORKFLOW_MODE <<<"${REVIEW_SETTINGS_VALUE}"
   # RT-01: resolve workflow_mode from config if not set via CLI and --blind-numerics didn't force asymmetric
   if [[ ${WORKFLOW_MODE_FROM_CLI} -eq 0 && ${BLIND_NUMERICS} -eq 0 && -n "${CONFIG_WORKFLOW_MODE}" ]]; then
     WORKFLOW_MODE="${CONFIG_WORKFLOW_MODE}"
@@ -1173,6 +1182,21 @@ if [[ "${WORKFLOW_MODE}" == "asymmetric" ]] && has_phase 2; then
     COLLABORATION_PHASES="1"
   fi
 fi
+
+# Source-assessor capacity settings: explicit configuration, never provider inference.
+# Both gates independently dispatch a fresh assessor with this same exact budget.
+if [[ ! -f "${REVIEW_SETTINGS_SCRIPT}" ]]; then
+  echo "ERROR: source-assessor capacity config reader unavailable" >&2
+  exit 2
+fi
+if ! _assessor_capacity_lines="$(python3 "${REVIEW_SETTINGS_SCRIPT}" --notes "${NOTEBOOK_PATH}" --assessor-capacity)"; then
+  echo "ERROR: invalid/unavailable source-assessor capacity configuration" >&2
+  exit 2
+fi
+declare -a independence_assessor_capacity_flags=()
+while IFS= read -r _assessor_arg; do
+  independence_assessor_capacity_flags+=( "${_assessor_arg}" )
+done <<< "${_assessor_capacity_lines}"
 
 # Member runner settings (config-based defaults; CLI overrides).
 MEMBER_B_SETTINGS_SCRIPT="${SCRIPT_DIR}/team_cycle_get_member_b_runner.py"
@@ -2660,10 +2684,26 @@ code_a=0
 code_b=0
 
 RUN_MEMBER_REVIEW_SCRIPT="${SCRIPT_DIR}/run_member_review.py"
+member_packet_for_run="${packet_for_run}"
+member_a_system_for_run="${MEMBER_A_SYSTEM}"
+member_b_system_for_run="${MEMBER_B_SYSTEM_EFFECTIVE}"
 if [[ "${REVIEW_ACCESS_MODE}" == "full_access" ]]; then
   if [[ ! -f "${RUN_MEMBER_REVIEW_SCRIPT}" ]]; then
     echo "ERROR: missing full_access member runner: ${RUN_MEMBER_REVIEW_SCRIPT}" >&2
     exit 2
+  fi
+
+  _reproduction_packet_args=( --notes "${NOTEBOOK_PATH}" --project-root "${PROJECT_ROOT}"
+    --packet "${packet_for_run}" --out "${run_dir}/reproduction_packet_${safe_tag}.txt"
+    --system-a "${MEMBER_A_SYSTEM}" --system-b "${MEMBER_B_SYSTEM_EFFECTIVE}"
+    --system-a-out "${run_dir}/reproduction_member_a_system.txt" --system-b-out "${run_dir}/reproduction_member_b_system.txt" )
+  if [[ -n "${REPRODUCTION_PACKET}" ]]; then
+    _reproduction_packet_args+=( --source "${REPRODUCTION_PACKET}" )
+  fi
+  member_packet_for_run="$(python3 "${SCRIPT_DIR}/team_cycle_prepare_reproduction_packet.py" "${_reproduction_packet_args[@]}")"
+  if [[ "${member_packet_for_run}" != "${packet_for_run}" ]]; then
+    member_a_system_for_run="${run_dir}/reproduction_member_a_system.txt"
+    member_b_system_for_run="${run_dir}/reproduction_member_b_system.txt"
   fi
 
   # Build optional API arg arrays for full_access invocations.
@@ -2769,7 +2809,7 @@ except Exception:
     python3 "${RUN_MEMBER_REVIEW_SCRIPT}" \
       --member-id "member_a" --mode "full_access" --tag "${RESOLVED_TAG}" \
       --project-root "${PROJECT_ROOT}" --workspace-root "${MEMBER_A_WORKSPACE_DIR}" \
-      --packet "${packet_for_run}" --system "${MEMBER_A_SYSTEM}" \
+      --packet "${member_packet_for_run}" --system "${member_a_system_for_run}" \
       --runner "${MEMBER_A_RUNNER}" --runner-kind "${MEMBER_A_RUNNER_KIND_RESOLVED}" \
       --model "${MEMBER_A_MODEL}" --reasoning-effort "${MEMBER_A_REASONING_EFFORT}" --tools "${MEMBER_A_TOOLS}" \
       --run-dir "${run_dir}" --out-report "${member_a_out}" --out-evidence "${member_a_evidence}" \
@@ -2821,7 +2861,7 @@ except Exception:
     python3 "${RUN_MEMBER_REVIEW_SCRIPT}" \
       --member-id "member_b" --mode "full_access" --tag "${RESOLVED_TAG}" \
       --project-root "${PROJECT_ROOT}" --workspace-root "${MEMBER_B_WORKSPACE_DIR}" \
-      --packet "${packet_for_run}" --system "${MEMBER_B_SYSTEM_EFFECTIVE}" \
+      --packet "${member_packet_for_run}" --system "${member_b_system_for_run}" \
       --runner "${MEMBER_B_RUNNER}" --runner-kind "${MEMBER_B_RUNNER_KIND_RESOLVED}" \
       --model "${MEMBER_B_MODEL_EFFECTIVE}" --reasoning-effort "${MEMBER_B_REASONING_EFFORT}" --tools "" --output-format "${MEMBER_B_OUTPUT_FORMAT}" \
       --run-dir "${run_dir}" --out-report "${member_b_out}" --out-evidence "${member_b_evidence}" \
@@ -2980,7 +3020,7 @@ for entry in "${post_gates[@]}"; do
       gate_code=$?
       ;;
     independent_reproduction_gate)
-      python3 "${gate_script}" --notes "${NOTEBOOK_PATH}" --tag "${RESOLVED_TAG}" --member-a "${member_a_evidence}" --member-b "${member_b_evidence}" --project-root "${PROJECT_ROOT}" --out-json "${run_dir}/independent_reproduction_gate.json"
+      python3 "${gate_script}" --notes "${NOTEBOOK_PATH}" --tag "${RESOLVED_TAG}" --member-a "${member_a_evidence}" --member-b "${member_b_evidence}" --project-root "${PROJECT_ROOT}" --assessor-model "${INDEPENDENCE_ASSESSOR_SPEC:-claude/opus}" "${independence_assessor_capacity_flags[@]}" --out-json "${run_dir}/independent_reproduction_gate.json"
       gate_code=$?
       ;;
     logic_isolation_gate)
@@ -3207,6 +3247,10 @@ if [[ -f "${GATE_SCRIPT}" ]]; then
     --member-a "${member_a_out}"
     --member-b "${member_b_out}"
     --workflow-mode "${WORKFLOW_MODE}"
+    --notes "${NOTEBOOK_PATH}" --tag "${RESOLVED_TAG}" --project-root "${PROJECT_ROOT}"
+    --member-a-evidence "${member_a_evidence}" --member-b-evidence "${member_b_evidence}"
+    --assessor-model "${INDEPENDENCE_ASSESSOR_SPEC:-claude/opus}"
+    "${independence_assessor_capacity_flags[@]}"
     "${gate_sweep_flag}"
   )
   if ((${#gate_rt05_flags[@]} > 0)); then
@@ -3454,9 +3498,9 @@ fi
 # replaced runs superseded, rewritten memo sections stamped — declared in
 # the adjudication's 'Result registration' section and verified against
 # `nullius current --json`. check_convergence_registration.py is the
-# machine consumer; it SKIPs (exit 0) on projects without a nullius
-# launcher, where the registration contract does not apply. On a project
-# WITH a launcher, a converged cycle whose adjudication (and declaration)
+# machine consumer; a converged cycle without a nullius launcher lacks
+# current whole-notebook acceptance and is refused. An unconverged cycle
+# cannot fold. A converged cycle whose adjudication (and declaration)
 # does not exist yet is withheld — writing it is part of the convergence
 # deliverable, not a later chore.
 registration_ok=1

@@ -14,6 +14,8 @@ import { notebookCloseoutGate } from '../src/notebook-result-links.js';
 import { StateManager } from '../src/state-manager.js';
 import { handleOrchRunRequestFinalConclusions } from '../src/orch-tools/final-conclusions.js';
 import { createRunArtifactRef } from '../src/computation/artifact-refs.js';
+import { assessNotebookRequestCapacity } from '../src/notebook-review-batches.js';
+import * as runtime from '../src/cli-runtime.js';
 
 // Deterministic transport/contract fixtures. This executable supplies no
 // scientific judgment; actual semantic controls are separate real model runs.
@@ -26,6 +28,7 @@ embedded = re.search(r'^=== ADDITIONAL CONTEXT: (.+/notebook-scope.json) ===$', 
 scope_path = Path(embedded.group(1)) if embedded else max(root.glob('artifacts/runs/*/inputs/notebook-scope.json'), key=lambda p: p.stat().st_mtime_ns)
 scope = json.loads(scope_path.read_text())
 case = os.environ.get('NOTEBOOK_CONTRACT_CASE', 'complete')
+if case == 'deadline-sleep': time.sleep(30)
 source = (root / scope['notebook']['path']).read_text()
 lines = source.split('\n')
 def anchor(text, lo, hi):
@@ -69,6 +72,7 @@ if Path(sys.argv[0]).name == 'codex':
     print('Deterministic transport only.', flush=True)
     sys.exit(0)
 print(json.dumps({'type': 'system', 'subtype': 'init', 'model': 'contract-fixture-only'}), flush=True)
+if case == 'compacted': print(json.dumps({'type': 'system', 'subtype': 'compact_boundary'}), flush=True)
 print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'session_id': 'contract-fixture', 'result': json.dumps(report)}), flush=True)
 if case == 'nonzero': sys.exit(1)
 `;
@@ -99,15 +103,53 @@ beforeEach(async () => {
   write('dependencies/premises.md', '# Premises\n\nFinite real variables.\n');
   const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { stdio: 'pipe' });
   git('init', '-q'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.com');
-  git('add', '.'); git('commit', '-qm', 'Anonymous contract fixture');
+  git('add', '.');
   write('test-bin/claude', transport); fs.chmodSync(path.join(root, 'test-bin/claude'), 0o755);
   write('test-bin/codex', transport); fs.chmodSync(path.join(root, 'test-bin/codex'), 0o755);
   vi.stubEnv('PATH', path.join(root, 'test-bin') + path.delimiter + process.env.PATH);
   vi.stubEnv('NOTEBOOK_CONTRACT_ROOT', root);
 }, 30000);
-afterEach(() => { vi.unstubAllEnvs(); fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('whole-notebook execution and current-version contract', () => {
+  it('retains historical failed capacity as unavailable after runtime authority recovers', async () => {
+    const originalRuntime = runtime.installedRuntimeRoot; let calls = 0;
+    const spy = vi.spyOn(runtime, 'installedRuntimeRoot').mockImplementation(() => { if (++calls > 1) throw new Error('fixture runtime unavailable during capacity assessment'); return originalRuntime(); });
+    const first = await review(); expect(first.code).toBe(2); const canonical = path.join(runDir(), 'artifacts/verification_subject_verdict_notebook_v1.json'); const bytes = fs.readFileSync(canonical); expect(JSON.parse(bytes.toString()).status).toBe('failed'); spy.mockRestore();
+    expect(checkNotebookContentReview(root)).toMatchObject({ status: 'unavailable' }); expect(checkNotebookContentReview(root).reason).toContain('immutable canonical outcome');
+    expect((await cli(['notebook', 'check', '--json'])).code).toBe(2); expect(notebookCloseoutGate(root).decision).toBe('unavailable'); expect(fs.readFileSync(canonical)).toEqual(bytes);
+  });
+
+  it('enforces the delegated single-call seat deadline on an actual sleeping runner', async () => {
+    vi.stubEnv('NOTEBOOK_CONTRACT_CASE', 'deadline-sleep'); const started = Date.now();
+    const result = await cli(['notebook', 'review', '--model', 'claude/contract-fixture', '--timeout-secs', '1', '--json']);
+    expect(result.code).toBe(2); expect(result.value.status).toBe('unavailable'); expect(Date.now() - started).toBeLessThan(10000);
+    const trace = fs.readFileSync(path.join(runDir(), 'review/trace.jsonl'), 'utf8'); expect(trace).toContain('"timed_out": true'); expect(notebookCloseoutGate(root).decision).not.toBe('pass');
+  }, 15000);
+  it('keeps missing direct runtime authority unavailable without rewriting historical acceptance', async () => {
+    expect((await review()).code).toBe(0); const canonical = path.join(runDir(), 'artifacts/verification_subject_verdict_notebook_v1.json'); const original = fs.readFileSync(canonical);
+    vi.spyOn(runtime, 'installedRuntimeRoot').mockImplementation(() => { throw new Error('fixture runtime unavailable'); });
+    expect(checkNotebookContentReview(root)).toMatchObject({ status: 'unavailable' }); expect((await cli(['notebook', 'check', '--json'])).code).toBe(2);
+    expect(notebookCloseoutGate(root).decision).toBe('unavailable'); expect(fs.readFileSync(canonical)).toEqual(original);
+  });
+
+  it('bounds capacity by the complete persisted actual system and packet request bytes', async () => {
+    expect((await review()).code).toBe(0); const id = pointer().run_id; const dir = runDir(); const receipt = JSON.parse(fs.readFileSync(path.join(dir, 'review_execution.json'), 'utf8'));
+    const file = (ref: any) => path.join(dir, decodeURIComponent(ref.uri.split('/artifact/')[1])); const manifest = JSON.parse(fs.readFileSync(file(receipt.manifest_ref), 'utf8'));
+    const requestBytes = manifest.file_inputs.filter((i: any) => i.kind === 'persisted_review_input').reduce((n: number, i: any) => n + fs.readFileSync(i.path).length, 0);
+    const binding = { report: receipt.report_ref, meta: receipt.meta_ref, manifest: receipt.manifest_ref };
+    const evidence: any = assessNotebookRequestCapacity(dir, id, receipt.captured_refs, [receipt.scope_ref], 200000, binding);
+    expect(evidence.persisted_request_bytes).toBe(requestBytes); expect(evidence.conservative_input_token_upper_bound).toBe(requestBytes + 8192);
+    expect(() => assessNotebookRequestCapacity(dir, id, receipt.captured_refs, [receipt.scope_ref], requestBytes + 8192 + 32768 - 1, binding)).toThrow('capacity policy');
+  });
+
+  it('keeps linked bare CR text pending and refuses explicit bare CR dependencies', async () => {
+    write('research_notebook.md', notebook + '\n[Unsupported text](linked.txt)\n'); write('linked.txt', 'Original UTF-8 text\rA linked assumption.\r');
+    const linked = await review(); expect(linked.code).toBe(2); expect(linked.value).toMatchObject({ status: 'unavailable', progress: { closure_complete: false } });
+    expect(linked.value.progress.pending_sources).toContain('linked.txt'); expect(linked.value.reason).toContain('bare CR');
+    const explicit = await cli(['notebook', 'review', '--model', 'claude/contract-fixture', '--dependency', 'linked.txt', '--json']);
+    expect(explicit.code).toBe(2); expect(explicit.value.reason).toContain('LF or CRLF'); expect(checkNotebookContentReview(root).status).toBe('unavailable');
+  });
   it('uses one model with a positive hard budget and never accepts an import-PASS option', () => {
     expect(parseCliArgs(['notebook', 'review', '--model', 'claude/fixture', '--dependency', 'a.md'])).toMatchObject({ action: 'review', dependencies: ['a.md'], timeoutSecs: 1200 });
     for (const args of [['review'], ['review', '--model', 'a,b'], ['review', '--model', 'a', '--timeout-secs', '0'], ['review', '--model', 'a', '--import-pass', 'out.json'], ['review', '--model', 'a', '--result', 'x'], ['sync', '--structure-only']]) {
@@ -429,8 +471,8 @@ describe('whole-notebook execution and current-version contract', () => {
     expect(result.value.acceptance_scope).toContain('always whole-notebook');
   });
 
-  it('refuses missing, binary, invalid-UTF8, oversized and escaping inputs without a reviewer invocation', async () => {
-    for (const data of [Buffer.from([0xff]), Buffer.from('binary\0input'), Buffer.from('# Notebook\r\r## Reasoning\rA step.\r'), Buffer.alloc(1024 * 1024 + 1, 65), Buffer.from('# Notebook\n[missing](dependencies/missing.md)\n'), Buffer.from('# Notebook\n[escape](../../outside.md)\n')]) {
+  it('refuses missing, binary, invalid-UTF8 and escaping inputs without a reviewer invocation', async () => {
+    for (const data of [Buffer.from([0xff]), Buffer.from('binary\0input'), Buffer.from('# Notebook\r\r## Reasoning\rA step.\r'), Buffer.from('# Notebook\n[missing](dependencies/missing.md)\n'), Buffer.from('# Notebook\n[escape](../../outside.md)\n')]) {
       write('research_notebook.md', data);
       expect((await review()).code).toBe(2);
       expect(checkNotebookContentReview(root).status).not.toBe('accepted');
@@ -493,5 +535,77 @@ describe('whole-notebook execution and current-version contract', () => {
     const result = await review(caseName);
     expect(result.code).not.toBe(0);
     expect(checkNotebookContentReview(root).status).not.toBe('accepted');
+  });
+
+  it('refuses a direct request whose token capacity is unverified', async () => {
+    write('research_notebook.md', notebook + '\n' + 'Complete original explanatory body.\n'.repeat(1500));
+    const result = await cli(['notebook', 'review', '--model', 'claude/fixture', '--context-bytes', '500000', '--context-tokens', '50000', '--timeout-secs', '20', '--json']);
+    expect(result.code, result.stdout + result.stderr).toBe(2); expect(result.value.status).toBe('unavailable');
+    expect(result.value.reason).toContain('token capacity'); expect(notebookCloseoutGate(root).decision).not.toBe('pass');
+    expect(JSON.parse(fs.readFileSync(path.join(runDir(), 'artifacts/verification_subject_verdict_notebook_v1.json'), 'utf8')).status).toBe('failed');
+  });
+
+  it('refuses direct reviewer context compaction even after a complete delivery', async () => {
+    const result = await review('compacted');
+    expect(result.code, result.stdout + result.stderr).toBe(2); expect(result.value.status).toBe('unavailable');
+    expect(result.value.reason).toContain('compacted'); expect(notebookCloseoutGate(root).decision).not.toBe('pass');
+    expect((await cli(['notebook', 'check', '--json'])).code).not.toBe(0);
+  });
+
+  it('rejects authored capacity receipts even after the entire project artifact graph is rehashed', async () => {
+    expect((await review()).code).toBe(0);
+    const id = pointer().run_id; const dir = runDir();
+    const load = (ref: any) => JSON.parse(fs.readFileSync(path.join(dir, decodeURIComponent(ref.uri.split('/artifact/')[1])), 'utf8'));
+    const receipt = JSON.parse(fs.readFileSync(path.join(dir, 'review_execution.json'), 'utf8'));
+    const meta = load(receipt.meta_ref); const manifest = load(receipt.manifest_ref);
+    const reportPath = path.join(dir, decodeURIComponent(receipt.report_ref.uri.split('/artifact/')[1]));
+    const fakeDir = path.join(dir, 'authored-capacity'); fs.mkdirSync(fakeDir);
+    const budgetPath = path.join(fakeDir, 'budget.json');
+    fs.writeFileSync(budgetPath, JSON.stringify({ status: 'completed', runner_exit_code: 0,
+      input_sha256: manifest.file_inputs.filter((i: any) => i.kind === 'persisted_review_input').map((i: any) => i.sha256),
+      attempts: [{ status: 'exited', exit_code: 0 }] }));
+    const resultPath = path.join(fakeDir, 'fake.events.result.json');
+    fs.writeFileSync(resultPath, JSON.stringify({ type: 'result', is_error: false,
+      result: fs.readFileSync(reportPath, 'utf8'), usage: { input_tokens: 1, output_tokens: 1 } }));
+    meta.agents[0].capture_receipt = budgetPath;
+    fs.writeFileSync(path.join(dir, decodeURIComponent(receipt.meta_ref.uri.split('/artifact/')[1])), JSON.stringify(meta));
+    receipt.captured_refs.push(...[budgetPath, resultPath].map(file => createRunArtifactRef(id, dir, file, 'authored_capacity_negative')));
+    fs.writeFileSync(path.join(dir, 'review_execution.json'), JSON.stringify(receipt));
+    const done = new Set<string>(); const active = new Set<string>();
+    function rehash(file: string) {
+      if (done.has(file)) return;
+      if (active.has(file)) throw new Error('unexpected artifact reference cycle');
+      active.add(file);
+      let value: any;
+      try { value = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { active.delete(file); done.add(file); return; }
+      let changed = false;
+      function walk(v: any) {
+        if (!v || typeof v !== 'object') return;
+        if (typeof v.uri === 'string' && v.uri.startsWith('rep://runs/') && v.sha256) {
+          const match = /^rep:\/\/runs\/([^/]+)\/artifact\/(.*)$/.exec(v.uri);
+          if (match) {
+            const target = path.join(root, 'artifacts/runs', match[1]!, decodeURIComponent(match[2]!));
+            rehash(target); const bytes = fs.readFileSync(target); const sha = digest(bytes);
+            if (v.sha256 !== sha || v.size_bytes !== bytes.length) { v.sha256 = sha; v.size_bytes = bytes.length; changed = true; }
+          }
+        }
+        Object.values(v).forEach(walk);
+      }
+      walk(value);
+      if (changed) fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n');
+      active.delete(file); done.add(file);
+    }
+    for (const file of [path.join(dir, 'review_execution.json'), ...fs.readdirSync(path.join(dir, 'artifacts')).map(name => path.join(dir, 'artifacts', name)), path.join(root, '.nullius/notebook-review.json')]) rehash(file);
+    const rebound = JSON.parse(fs.readFileSync(path.join(dir, 'review_execution.json'), 'utf8'));
+    expect(() => assessNotebookRequestCapacity(dir, id, rebound.captured_refs,
+      [rebound.scope_ref], 41000, { report: rebound.report_ref, meta: rebound.meta_ref, manifest: rebound.manifest_ref })).toThrow('runtime observation');
+    expect(checkNotebookContentReview(root).status).not.toBe('accepted');
+    expect(buildTraceabilityView(root).notebook.content_review.status).not.toBe('accepted');
+    expect((await cli(['notebook', 'check', '--json'])).code).not.toBe(0);
+    expect(notebookCloseoutGate(root).decision).not.toBe('pass');
+    const manager = new StateManager(root); const state = manager.readState();
+    state.run_id = id; state.gate_satisfied.A5 = 'historical-private-fixture';
+    fs.writeFileSync(manager.statePath, JSON.stringify(state));
+    expect((await handleOrchRunRequestFinalConclusions({ project_root: root, run_id: id })).ready_for_final_conclusions).toBe(false);
   });
 });

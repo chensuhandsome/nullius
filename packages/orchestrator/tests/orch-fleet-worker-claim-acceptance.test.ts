@@ -5,8 +5,10 @@ import { readFleetWorkers } from '../src/orch-tools/fleet-worker-store.js';
 import { handleOrchFleetWorkerSetClaimAcceptance } from '../src/orch-tools/fleet-worker-claim-acceptance.js';
 import { OrchFleetWorkerSetClaimAcceptanceSchema } from '../src/orch-tools/schemas.js';
 import {
+  admittedRoot,
   baseState,
   cleanupTmpDirs,
+  makeAliasedTmpDir,
   makeTmpDir,
   writeLedger,
   writeQueue,
@@ -87,7 +89,7 @@ describe('orch_fleet_worker_set_claim_acceptance', () => {
   });
 
   it('fails closed when the worker is unknown or the registry is invalid', async () => {
-    const missingWorkerProjectRoot = makeTmpDir();
+    const missingWorkerProjectRoot = makeAliasedTmpDir();
     writeProject(missingWorkerProjectRoot);
     writeWorkers(missingWorkerProjectRoot, {
       schema_version: 1,
@@ -103,10 +105,10 @@ describe('orch_fleet_worker_set_claim_acceptance', () => {
       note: 'maintenance window',
     }))).rejects.toMatchObject({
       code: 'INVALID_PARAMS',
-      data: { worker_id: 'worker-missing', project_root: missingWorkerProjectRoot },
+      data: { worker_id: 'worker-missing', project_root: admittedRoot(missingWorkerProjectRoot) },
     });
 
-    const invalidRegistryProjectRoot = makeTmpDir();
+    const invalidRegistryProjectRoot = makeAliasedTmpDir();
     writeProject(invalidRegistryProjectRoot);
     writeWorkers(invalidRegistryProjectRoot, '{not-valid-json\n');
     await expect(handleOrchFleetWorkerSetClaimAcceptance(OrchFleetWorkerSetClaimAcceptanceSchema.parse({
@@ -117,7 +119,7 @@ describe('orch_fleet_worker_set_claim_acceptance', () => {
       note: 'maintenance window',
     }))).rejects.toMatchObject({
       code: 'INVALID_PARAMS',
-      data: { fleet_workers_path: path.join(invalidRegistryProjectRoot, '.nullius', 'fleet_workers.json') },
+      data: { fleet_workers_path: path.join(admittedRoot(invalidRegistryProjectRoot), '.nullius', 'fleet_workers.json') },
     });
   });
 });

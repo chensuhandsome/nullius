@@ -31,6 +31,9 @@ time.sleep({delay!r})
 behavior = {behavior!r}
 if behavior == 'fail':
     sys.exit(3)
+elif behavior == 'nonempty-fail':
+    out.write_text('Original failed output; retain these bytes.')
+    sys.exit(3)
 elif behavior == 'empty':
     out.write_text('')
 elif behavior == 'two-phase' and '.phase1.' in out.name:
@@ -85,6 +88,22 @@ def test_outer_fallback_shares_total_two_call_budget(launcher, monkeypatch, tmp_
     assert code == 2
     assert [call['backend'] for call in calls] == ['codex', 'gemini']
     assert meta['agents'][0]['failure_reason'] == 'attempt_budget_exhausted'
+
+
+def test_successful_fallback_keeps_failed_original_and_gets_its_own_observation(launcher, monkeypatch, tmp_path):
+    primary = runner(tmp_path, 'codex', 'nonempty-fail')
+    fallback = runner(tmp_path, 'gemini', 'ready')
+    code, meta, calls = run(launcher, monkeypatch, tmp_path, primary, extra=['--max-attempts', '2'], fallback=fallback)
+    assert code == 0 and len(calls) == 2
+    first, second = [Path(call['args'][call['args'].index('--out') + 1]) for call in calls]
+    assert first != second
+    assert first.read_text() == 'Original failed output; retain these bytes.'
+    assert second.read_text() == 'VERDICT: READY\n'
+    assert Path(meta['agents'][0]['out']) == second
+    import runtime_capture_observation
+    from hashlib import sha256
+    hashes = [sha256((tmp_path / name).read_bytes()).hexdigest() for name in ('system.md', 'prompt.md')]
+    runtime_capture_observation.verify_capture_observation(None, second, hashes, str(Path.cwd()))
 
 
 def test_two_phase_uses_one_seat_budget(launcher, monkeypatch, tmp_path):

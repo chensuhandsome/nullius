@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from assessment_fixture import SUMMARY, assessed_comparison, transport_for
 
 import pytest
 
@@ -298,11 +299,10 @@ def test_native_backend_alias_cannot_fake_cross_family(monkeypatch):
     )
     row = out["matrix"][0]
     assert row["families"] == ["gpt"]          # one physical family, not ["codex", "gpt"]
-    assert row["converged"] is False           # a family cannot self-certify cross-family
-    assert row["native_dropped"] == []         # the alias attributed cleanly, nothing dropped
-    # Auto-exclusion held: the gate never shelled out a derivation or tie-break to the
-    # host's own family; only comparator-panel calls may appear.
-    assert not any("derive" in t or "tiebreak" in t for t in tags), tags
+    assert row["converged"] is True and row["cross_family_confirmations"] == 1
+    assert row["independent_confirmations"] == 2  # two observed same-family executions, no native credit
+    assert row["native_dropped"] == ["gpt"] and row["native_seeded"] == 0
+    assert sum("derive" in t for t in tags) == 2
 
 
 def test_unattributable_native_tag_is_dropped_visibly(monkeypatch):
@@ -331,7 +331,7 @@ def test_unattributable_native_tag_is_dropped_visibly(monkeypatch):
     assert row["native_dropped"] == ["opencode"]
     assert row["native_seeded"] == 0
     assert row["families"] == ["glm"]          # never ["glm", "opencode"]
-    assert row["converged"] is False
+    assert row["converged"] is True  # two assessed fresh lanes; one family is a limitation
     assert out["family_pool"] == ["glm"]       # the dropped tag does not pad the pool
 
 
@@ -363,7 +363,7 @@ def test_native_tag_of_unavailable_family_is_dropped_visibly(monkeypatch):
     row = out["matrix"][0]
     assert row["native_dropped"] == ["gem"]
     assert row["families"] == ["glm"]
-    assert row["converged"] is False
+    assert row["converged"] is True  # two assessed fresh lanes; one family is a limitation
     assert out["family_pool"] == ["glm"]
 
 
@@ -378,12 +378,12 @@ def test_pick_next_spec_uses_roster_families():
 def _mk_run(answer="42"):
     def run(spec, system, prompt, tag):
         if "compare" in tag:
-            return json.dumps({
+            return json.dumps(assessed_comparison({
                 "majority_answer": answer, "majority_size": 2, "majority_indices": [0, 1],
                 "all_equivalent": True, "outliers": "none",
                 "correct_answer_adjudicated": answer, "adjudicated_matches_majority": True,
-            })
-        return json.dumps({"canonical_answer": answer, "derivation_summary": "s", "confidence": "high"})
+            }, prompt))
+        return json.dumps({"canonical_answer": answer, "derivation_summary": SUMMARY, "derivation": SUMMARY, "confidence": "high"})
     return run
 
 
@@ -429,7 +429,7 @@ def test_run_gate_below_minimum_is_labeled(monkeypatch):
         run=_mk_run(),
     )
     # One roster family: R1 cannot be satisfied — the claim honestly stays unconverged.
-    assert out["converged"] == 0
+    assert out["converged"] == 1  # family diversity is reported separately from independence
     info = out["independence"]
     assert info["level"] == "single_family"
     assert info["participating_families"] == ["glm"]

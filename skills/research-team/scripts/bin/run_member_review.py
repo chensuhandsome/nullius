@@ -15,6 +15,7 @@ import os
 import re
 import shlex
 import subprocess
+import uuid
 import sys
 from pathlib import Path
 from typing import Any
@@ -22,8 +23,11 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from review_paths import is_forbidden_review_path
+from source_inputs import local_source_closure
 from audit_interceptor import AuditInterceptor  # type: ignore
 from member_evidence import (  # type: ignore
+    artifact_ref,
+    record_original_stage,
     finalize_member_evidence,
     load_evidence,
     log_command_run,
@@ -43,6 +47,7 @@ from workspace_isolator import (  # type: ignore
     project_path_from_workspace,
     sync_workspace_path,
 )
+import runtime_capture_observation
 
 
 def _parse_args() -> argparse.Namespace:
@@ -64,6 +69,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--out-report", type=Path, required=True, help="Member report output path.")
     p.add_argument("--out-evidence", type=Path, required=True, help="Evidence JSON output path.")
     p.add_argument("--max-files", type=int, default=8, help="Max file reads to execute in full_access.")
+    p.add_argument("--max-writes", type=int, default=32, help="Max audited exact UTF-8 source writes inside own independent prefix.")
     p.add_argument("--max-commands", type=int, default=6, help="Max commands to execute in full_access.")
     p.add_argument("--max-network", type=int, default=4, help="Max network fetches to execute in full_access.")
     p.add_argument("--max-file-chars", type=int, default=20000, help="Max chars to include per file read in response.")
@@ -78,7 +84,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
+    return path.read_bytes().decode("utf-8")
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -265,18 +271,25 @@ def _sanitize_env(env: dict[str, str]) -> dict[str, str]:
     return {k: v for k, v in env.items() if not _SECRET_ENV_RE.search(k)}
 
 
-def _run_shell(parts: list[str], cwd: Path, timeout: int) -> tuple[int, bytes]:
+def _run_shell(parts: list[str], cwd: Path, timeout: int, *, episode: object | None = None, operation_index: int = 0) -> tuple[int, bytes]:
     """Run *parts* as a subprocess with shell=False (no shell interpolation)."""
-    proc = subprocess.run(
+    pending = runtime_capture_observation._member_prepare_process(episode, f"command[{operation_index}]", parts, [], cwd=cwd) if episode is not None else None
+    proc = subprocess.Popen(
         parts,
         cwd=str(cwd),
-        timeout=timeout,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        check=False,
         env=_sanitize_env(dict(os.environ)),
     )
-    return proc.returncode, proc.stdout
+    if episode is not None:
+        runtime_capture_observation._member_bind_process(episode, pending, proc)
+    try:
+        output, _ = proc.communicate(timeout=timeout)
+    except BaseException:
+        proc.kill(); proc.communicate(); raise
+    if episode is not None:
+        runtime_capture_observation._member_finish_process(episode, pending, proc, output)
+    return proc.returncode, output
 
 
 def _run_runner(
@@ -294,6 +307,9 @@ def _run_runner(
     api_base_url: str = "",
     api_key_env: str = "",
     reasoning_effort: str = "",
+    invocation: dict[str, Any] | None = None,
+    episode: object | None = None,
+    stage: str = "",
 ) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd: list[str] = ["bash", str(runner)]
@@ -326,7 +342,18 @@ def _run_runner(
         cmd += ["--api-base-url", api_base_url]
     if runner_kind != "codex" and api_key_env:
         cmd += ["--api-key-env", api_key_env]
-    proc = subprocess.run(cmd, check=False)
+    before = {str(p): sha256_file(p) for p in (system, prompt, runner)}
+    out.unlink(missing_ok=True)
+    pending = runtime_capture_observation._member_prepare_process(episode, stage, cmd, [system, prompt, runner], output=out) if episode is not None else None
+    proc = subprocess.Popen(cmd)
+    if episode is not None:
+        runtime_capture_observation._member_bind_process(episode, pending, proc)
+    proc.wait()
+    if episode is not None:
+        runtime_capture_observation._member_finish_process(episode, pending, proc)
+    if invocation is not None:
+        invocation.update(argv=cmd, exit_code=proc.returncode, input_sha256={"system": before[str(system)], "prompt": before[str(prompt)], "runner": before[str(runner)]},
+                          inputs_unchanged=all(p.is_file() and sha256_file(p) == before[str(p)] for p in (system, prompt, runner)))
     return proc.returncode
 
 
@@ -345,6 +372,9 @@ def _run_runner_once(
     api_base_url: str = "",
     api_key_env: str = "",
     reasoning_effort: str = "",
+    invocation: dict[str, Any] | None = None,
+    episode: object | None = None,
+    stage: str = "",
 ) -> tuple[int, str]:
     m = (model or "").strip()
     use_fast = runner_kind == "claude" and bool(m)
@@ -357,6 +387,9 @@ def _run_runner_once(
         model=m,
         tools=tools,
         output_format=output_format,
+        invocation=invocation,
+        episode=episode,
+        stage=stage,
         runner_max_retries=(fast_retry_max if use_fast else None),
         runner_sleep_secs=(fast_retry_sleep if use_fast else None),
         api_base_url=api_base_url,
@@ -377,24 +410,25 @@ def _build_prompt_for_runner(runner_kind: str, system: Path, user_prompt: str, o
 
 
 def _format_snippet(text: str, limit: int) -> str:
-    if limit <= 0:
-        return ""
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "\n\n...(truncated)...\n"
+    if limit < 0 or len(text) > limit:
+        raise ValueError("unavailable: complete proxy material exceeds configured visibility budget; no truncation")
+    return text
 
 
-def _parse_requests(obj: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+def _parse_requests(obj: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     if not isinstance(obj, dict):
         raise ValueError("requests JSON must be an object")
     req = obj.get("requests", obj)
     if not isinstance(req, dict):
         raise ValueError("requests JSON must be an object (or contain 'requests' object)")
     files = req.get("files_read", [])
+    writes = req.get("files_written", [])
     cmds = req.get("commands_run", [])
     net = req.get("network_queries", [])
     if files is None:
         files = []
+    if not isinstance(writes, list) or not all(isinstance(x, dict) and isinstance(x.get("path"), str) and isinstance(x.get("content"), str) and isinstance(x.get("purpose"), str) for x in writes):
+        raise ValueError("files_written must contain typed path/content/purpose strings")
     if cmds is None:
         cmds = []
     if net is None:
@@ -405,7 +439,7 @@ def _parse_requests(obj: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]
         raise ValueError("commands_run must be a list of objects")
     if not isinstance(net, list) or not all(isinstance(x, dict) for x in net):
         raise ValueError("network_queries must be a list of objects")
-    return files, cmds, net
+    return files, writes, cmds, net
 
 
 def _extract_convention_mappings(report_text: str) -> list[dict[str, Any]]:
@@ -445,7 +479,7 @@ def main() -> int:
     system = args.system.resolve()
     runner = args.runner.resolve()
     run_dir = args.run_dir.resolve()
-    member_run_dir = (run_dir / member_id).resolve()
+    member_run_dir = (run_dir / member_id / ("episode-" + uuid.uuid4().hex)).resolve()
     out_report = args.out_report.resolve()
     out_evidence = args.out_evidence.resolve()
 
@@ -503,6 +537,19 @@ def main() -> int:
             return 2
         return 0
 
+    # Archive the complete original material actually passed to both invocations.
+    member_run_dir.mkdir(parents=True, exist_ok=True)
+    originals = member_run_dir / "originals"
+    originals.mkdir(parents=True, exist_ok=True)
+    for name, source in (("packet.txt", packet), ("system.txt", system), ("runner.txt", runner)):
+        target = originals / name
+        target.write_bytes(source.read_bytes())
+        log_output_produced(evidence, _safe_relpath(target, project_root), sha256_file(target), f"original {name}")
+    packet, system = originals / "packet.txt", originals / "system.txt"
+    evidence["original_transport"] = {"version": 1, "packet": artifact_ref(packet, project_root),
+                                      "runner": artifact_ref(originals / "runner.txt", project_root), "stages": {}}
+    episode = runtime_capture_observation._begin_member_episode(project_root, member_id, [packet, system, originals / "runner.txt"])
+    save_evidence(out_evidence, evidence)
     # full_access: requests -> execute -> final report.
 
     # Initialise audit interceptor whenever workspace isolation is enabled (workspace_id set).
@@ -528,20 +575,22 @@ def main() -> int:
         "Output contract (STRICT): output JSON only, no prose, no Markdown.\n"
         "JSON schema (minimal):\n"
         "{\n"
+        '  "files_written": [{"path": "...", "content": "complete original UTF-8 source", "purpose": "..."}],\n'
         '  "files_read": [{"path": "...", "anchor_or_line": "...", "purpose": "..."}],\n'
-        '  "commands_run": [{"command": "...", "cwd": ".", "purpose": "...", "timeout_secs": 600, "expected_outputs": ["..."]}],\n'
+        '  "commands_run": [{"command": "...", "cwd": ".", "purpose": "...", "timeout_secs": 600, "input_files": ["raw-input-path"], "expected_outputs": ["..."]}],\n'
         '  "network_queries": [{"query_or_url": "https://...", "justification": "...", "downloaded_to": "references/..."}]\n'
         "}\n"
         "\n"
-        f"Limits: files_read<=%d, commands_run<=%d, network_queries<=%d.\n"
+        f"Limits: files_read<=%d, files_written<=%d, commands_run<=%d, network_queries<=%d.\n"
         "Important constraints:\n"
         "- Do not request executor reports, adjudications, logs, scratch or workspaces from this or any prior run; only your declared output prefix is accessible.\n"
         f"- Prefer producing an independent reproduction script under artifacts/runs/{safe_tag}/research_team/{member_id}/independent/ and at least one output file,\n"
-        "  and list those output paths in expected_outputs.\n"
+        "  and list those output paths in expected_outputs. Use files_written for your complete source; writes run before reads/commands.\n"
+        "- Writes must be inside your independent/ prefix. Commands are literal argv: no pipes, redirection, substitutions or inline -c.\n"
         "\n"
         "Team packet follows.\n"
         "----\n"
-        % (args.max_files, args.max_commands, args.max_network)
+        % (args.max_files, args.max_writes, args.max_commands, args.max_network)
     ) + packet_txt
 
     req_prompt_path = member_run_dir / f"{safe_tag}_requests_prompt.txt"
@@ -557,7 +606,11 @@ def main() -> int:
     if _api_key_env_name and _api_key_env_name in os.environ and _api_key_env_name not in _saved_secrets:
         _saved_secrets[_api_key_env_name] = os.environ[_api_key_env_name]
 
+    request_invocation: dict[str, Any] = {}
     code, model_used = _run_runner_once(
+        invocation=request_invocation,
+        episode=episode,
+        stage="requests",
         runner_kind=args.runner_kind,
         runner=runner,
         system=system,
@@ -570,6 +623,8 @@ def main() -> int:
         api_key_env=args.api_key_env,
         reasoning_effort=args.reasoning_effort,
     )
+    record_original_stage(evidence, "requests", request_invocation, system, req_prompt_path, req_out_path, project_root)
+    save_evidence(out_evidence, evidence)
     if code != 0:
         print(f"ERROR: runner failed in requests stage (exit {code})", file=sys.stderr)
         return 2
@@ -584,15 +639,21 @@ def main() -> int:
     # Parse requests.
     try:
         req_obj = _extract_json_anywhere(_read_text(req_out_path))
-        files_req, cmds_req, net_req = _parse_requests(req_obj)
+        files_req, writes_req, cmds_req, net_req = _parse_requests(req_obj)
     except Exception as e:
         print("ERROR: failed to parse member requests JSON", file=sys.stderr)
         print(f"  {e}", file=sys.stderr)
         return 2
 
-    files_req = files_req[: args.max_files]
-    cmds_req = cmds_req[: args.max_commands]
-    net_req = net_req[: args.max_network]
+    pending = []
+    for name, requests, limit in (("files_written", writes_req, args.max_writes), ("files_read", files_req, args.max_files), ("commands_run", cmds_req, args.max_commands), ("network_queries", net_req, args.max_network)):
+        if limit < 0 or len(requests) > limit:
+            pending.extend({"operation": name, "request_index": index, "status": "pending", "reason": "configured operation budget exceeded"} for index in range(len(requests)))
+    if pending:
+        evidence["original_transport"]["pending_operations"] = pending
+        save_evidence(out_evidence, evidence)
+        print("ERROR: complete operation requests exceed configured budget; no truncation", file=sys.stderr)
+        return 2
 
     response_lines: list[str] = []
     response_lines.append(f"# Full-access proxy results — {member_id}")
@@ -600,6 +661,49 @@ def main() -> int:
     response_lines.append(f"- Tag: `{tag}`")
     response_lines.append(f"- Workspace: `{workspace_root}`")
     response_lines.append("")
+
+    # Materialize only exact member-authored source bytes, before reads/commands.
+    evidence["original_transport"]["construction_refs"] = []
+    if writes_req:
+        response_lines.append("## Files Written")
+        prefix = f"artifacts/runs/{safe_tag}/research_team/{member_id}/independent/"
+        for i, request in enumerate(writes_req):
+            try:
+                resolved = _resolve_under(workspace_root, request["path"])
+                rel = logical_project_relpath(resolved, workspace_root, project_root)
+                if not rel.startswith(prefix) or _is_forbidden_path(member_id, safe_tag, rel):
+                    raise ValueError("source write is outside own independent prefix")
+                data = request["content"].encode("utf-8")
+                destination = (project_root / rel).resolve()
+                if (not destination.is_relative_to(project_root) or not destination.relative_to(project_root).as_posix().startswith(prefix)):
+                    raise ValueError("project source destination is outside own independent prefix")
+                if destination.exists() and (not destination.is_file() or destination.read_bytes() != data):
+                    raise ValueError("existing project source differs; refusing overwrite")
+                resolved.parent.mkdir(parents=True, exist_ok=True)
+                created = not resolved.exists()
+                if created:
+                    with resolved.open("xb") as file: file.write(data)
+                elif not resolved.is_file() or resolved.read_bytes() != data:
+                    raise ValueError("existing original source differs; refusing overwrite")
+                if workspace_root != project_root:
+                    sync_workspace_path(resolved, workspace_root, project_root)
+                snapshot = originals / f"source_write_{i}.txt"
+                snapshot.write_bytes(data)
+                log_output_produced(evidence, _safe_relpath(snapshot, project_root), sha256_bytes(data), "complete original model source write")
+                log_output_produced(evidence, rel, sha256_bytes(data), request["purpose"])
+                evidence["original_transport"]["construction_refs"].append({
+                    "kind": "model_source_write", "request_index": i, "path": rel,
+                    "sha256": sha256_bytes(data), "size_bytes": len(data), "created": created,
+                    "origin_stage": "requests", "source_ref": artifact_ref(req_out_path, project_root),
+                    "raw_input_ref": artifact_ref(snapshot, project_root), "purpose": request["purpose"]})
+                runtime_capture_observation._member_files(episode, f"source_write[{i}]", [snapshot, resolved, destination], {"created": created})
+                if _audit_interceptor is not None:
+                    _audit_interceptor.record("file_write", rel, request["content"])
+                response_lines.append(f"- files_written[{i}]: `{rel}` (sha256={sha256_bytes(data)}, bytes={len(data)}, created={created})")
+            except (OSError, ValueError, UnicodeError) as error:
+                response_lines.append(f"- files_written[{i}]: (denied/unavailable) {error}")
+        response_lines.append("")
+        save_evidence(out_evidence, evidence)
 
     # Execute file reads.
     if files_req:
@@ -617,10 +721,18 @@ def main() -> int:
                 if _is_forbidden_path(member_id, safe_tag, rel):
                     response_lines.append(f"- files_read[{i}]: (denied) forbidden path: `{rel}`")
                     continue
-                txt = _read_text(resolved)
+                data = resolved.read_bytes()
+                txt = data.decode("utf-8")
+                raw_read = originals / f"file_read_{i}.txt"
+                raw_read.write_bytes(data)
+                log_output_produced(evidence, _safe_relpath(raw_read, project_root), sha256_bytes(data), "complete original proxy file read")
                 log_file_read(evidence, rel, anchor, purpose)
+                evidence["files_read"][-1].update(sha256=sha256_bytes(data), size_bytes=len(data),
+                    raw_input_ref=artifact_ref(raw_read, project_root), request_index=i,
+                    requested_path=path_s, visible_chars=len(txt))
+                runtime_capture_observation._member_files(episode, f"file_read[{i}]", [raw_read, resolved])
                 if _audit_interceptor is not None:
-                    _tc = _audit_interceptor.record("file_read", rel, txt[:4096])
+                    _tc = _audit_interceptor.record("file_read", rel, txt)
                     _items = evidence.get("files_read", [])
                     if _items and isinstance(_items[-1], dict):
                         _items[-1]["tc_id"] = _tc
@@ -636,6 +748,7 @@ def main() -> int:
                 response_lines.append("```")
                 response_lines.append("")
             except Exception as e:
+                evidence["original_transport"].setdefault("pending_operations", []).append({"operation":"files_read", "request_index":i, "status":"unavailable", "reason":str(e)})
                 response_lines.append(f"- files_read[{i}]: (error) {path_s!r}: {e}")
         response_lines.append("")
 
@@ -666,6 +779,7 @@ def main() -> int:
                     dl_abs = None
                     dl_rel = ""
             log_network_query(evidence, url, justification, dl_rel)
+            evidence["network_queries"][-1]["request_index"] = i
             if _audit_interceptor is not None:
                 _tc = _audit_interceptor.record("network_fetch", url, dl_rel)
                 _nq_items = evidence.get("network_queries", [])
@@ -761,21 +875,58 @@ def main() -> int:
                 response_lines.append(f"- commands_run[{i}]: (error) invalid cwd {cwd_s!r}: {e}")
                 continue
 
+            command_inputs = []
+            direct_inputs = []
+            for token in cmd_parts:
+                candidate = (cwd_abs / token).resolve()
+                try:
+                    local_file = candidate.is_file() and candidate.is_relative_to(workspace_root)
+                except OSError:
+                    # A literal command value (for example full generated-source
+                    # bytes) is not a filename. Preserve it in the original argv.
+                    local_file = False
+                if local_file:
+                    direct_inputs.append(candidate)
+            try:
+                declared = cr.get("input_files", [])
+                if not isinstance(declared, list) or not all(isinstance(x, str) for x in declared):
+                    raise ValueError("input_files must be a complete list of path strings")
+                for value in declared:
+                    candidate = (cwd_abs / value).resolve()
+                    if not candidate.is_relative_to(workspace_root) or not candidate.is_file():
+                        raise ValueError("declared runtime input is missing or outside workspace")
+                    direct_inputs.append(candidate)
+                complete_inputs = local_source_closure(direct_inputs, workspace_root, cwd=cwd_abs)
+            except (OSError, ValueError, SyntaxError, UnicodeError) as error:
+                response_lines.append(f"- commands_run[{i}]: (unavailable) complete input closure: {error}")
+                continue
+            for j, candidate in enumerate(complete_inputs):
+                data = candidate.read_bytes()
+                frozen = originals / f"cmd_{i}_input_{j}.txt"
+                frozen.write_bytes(data)
+                log_output_produced(evidence, _safe_relpath(frozen, project_root), sha256_bytes(data), "complete original proxy command input")
+                command_inputs.append({"path": logical_project_relpath(candidate, workspace_root, project_root),
+                    "sha256": sha256_bytes(data), "raw_input_ref": artifact_ref(frozen, project_root)})
+                runtime_capture_observation._member_files(episode, f"command_input[{i},{j}]", [frozen, candidate])
             out_log = member_run_dir / f"cmd_{i}.log"
             try:
-                exit_code, out_bytes = _run_shell(cmd_parts, cwd=cwd_abs, timeout=timeout_i)
+                exit_code, out_bytes = _run_shell(cmd_parts, cwd=cwd_abs, timeout=timeout_i, episode=episode, operation_index=i)
             except subprocess.TimeoutExpired:
                 exit_code = 124
                 out_bytes = b"TIMEOUT\n"
-            _write_text(out_log, out_bytes.decode("utf-8", errors="replace"))
+            out_log.parent.mkdir(parents=True, exist_ok=True)
+            out_log.write_bytes(out_bytes)
+            runtime_capture_observation._member_files(episode, f"command_output[{i}]", [out_log])
             out_hash = sha256_file(out_log)
-            member_artifacts_ws = workspace_root / "artifacts" / "runs" / safe_tag / "research_team" / member_id
-            if member_artifacts_ws.exists():
+            # Only scientific outputs belong to the workspace. The parent also
+            # contains immutable producer episodes in the canonical layout.
+            member_artifacts_ws = workspace_root / "artifacts" / "runs" / safe_tag / "research_team" / member_id / "independent"
+            if member_artifacts_ws.exists() and workspace_root != project_root:
                 sync_workspace_path(
                     member_artifacts_ws,
                     workspace_root,
                     project_root,
-                    replace_tree=True,
+                    replace_tree=False,
                 )
             log_command_run(
                 evidence,
@@ -785,8 +936,9 @@ def main() -> int:
                 out_hash,
                 _safe_relpath(out_log, project_root),
             )
+            evidence["commands_run"][-1].update(request_index=i, requested_cwd=cwd_s, input_files=command_inputs)
             if _audit_interceptor is not None:
-                _tc = _audit_interceptor.record("command_run", cmd, out_bytes.decode("utf-8", errors="replace")[:4096])
+                _tc = _audit_interceptor.record("command_run", cmd, out_bytes.decode("utf-8", errors="replace"))
                 _cr_items = evidence.get("commands_run", [])
                 if _cr_items and isinstance(_cr_items[-1], dict):
                     _cr_items[-1]["tc_id"] = _tc
@@ -799,7 +951,12 @@ def main() -> int:
             response_lines.append(f"- Output log: `{_safe_relpath(out_log, project_root)}` (sha256={out_hash})")
             response_lines.append("")
             response_lines.append("```text")
-            response_lines.append(_format_snippet(out_bytes.decode('utf-8', errors='replace'), args.max_cmd_output_chars).rstrip())
+            try:
+                visible_output = _format_snippet(out_bytes.decode('utf-8', errors='replace'), args.max_cmd_output_chars)
+            except ValueError as error:
+                evidence["original_transport"].setdefault("pending_operations", []).append({"operation": "commands_run", "request_index": i, "status": "unavailable", "reason": str(error)})
+                visible_output = "Complete command output unavailable within configured visibility budget; original bytes retained in the output log."
+            response_lines.append(visible_output.rstrip())
             response_lines.append("```")
             if expected:
                 response_lines.append("")
@@ -832,6 +989,19 @@ def main() -> int:
     _write_text(response_path, "\n".join(response_lines).rstrip() + "\n")
     log_output_produced(evidence, _safe_relpath(response_path, project_root), sha256_file(response_path), "full-access proxy results")
 
+    evidence["original_transport"]["proxy_input"] = artifact_ref(response_path, project_root)
+    runtime_capture_observation._member_files(episode, "proxy_results", [response_path])
+
+    omitted = []
+    for name, requested, recorded in (("files_written", writes_req, evidence["original_transport"].get("construction_refs", [])), ("files_read", files_req, evidence["files_read"]), ("commands_run", cmds_req, evidence["commands_run"]), ("network_queries", net_req, evidence["network_queries"])):
+        done = {item.get("request_index") for item in recorded}
+        omitted.extend({"operation":name,"request_index":i,"status":"unavailable","reason":"requested operation was not completed"} for i in range(len(requested)) if i not in done)
+    evidence["original_transport"].setdefault("pending_operations", []).extend(omitted)
+    if evidence["original_transport"]["pending_operations"]:
+        save_evidence(out_evidence, evidence)
+        print("ERROR: requested proxy operation unavailable; member episode not admissible", file=sys.stderr)
+        return 2
+
     # Final report prompt.
     final_user_prompt = (
         "MODE: FINAL_REPORT\n"
@@ -856,12 +1026,17 @@ def main() -> int:
     _build_prompt_for_runner(args.runner_kind, system, final_user_prompt, final_prompt_path)
     # Temporarily restore secret env vars so the final runner call can authenticate.
     os.environ.update(_saved_secrets)
+    final_invocation: dict[str, Any] = {}
+    original_final_report = member_run_dir / "final_original_report.md"
     code, _ = _run_runner_once(
+        invocation=final_invocation,
+        episode=episode,
+        stage="final",
         runner_kind=args.runner_kind,
         runner=runner,
         system=system,
         prompt=final_prompt_path,
-        out=out_report,
+        out=original_final_report,
         model=args.model,
         tools=args.tools,
         output_format=args.output_format,
@@ -869,6 +1044,8 @@ def main() -> int:
         api_key_env=args.api_key_env,
         reasoning_effort=args.reasoning_effort,
     )
+    record_original_stage(evidence, "final", final_invocation, system, final_prompt_path, original_final_report, project_root)
+    save_evidence(out_evidence, evidence)
     # Pop secrets again — final AI call is done.
     for _k in list(_saved_secrets):
         os.environ.pop(_k, None)
@@ -876,6 +1053,9 @@ def main() -> int:
         print(f"ERROR: runner failed in final stage (exit {code})", file=sys.stderr)
         return 2
 
+    out_report.parent.mkdir(parents=True, exist_ok=True)
+    out_report.write_bytes(original_final_report.read_bytes())
+    log_output_produced(evidence, _safe_relpath(original_final_report, project_root), sha256_file(original_final_report), "member report")
     if out_report.is_file():
         log_output_produced(evidence, _safe_relpath(out_report, project_root), sha256_file(out_report), "member report")
         # Convention mappings are optional; attach if present.
@@ -891,6 +1071,17 @@ def main() -> int:
         for it in issues:
             print(f"{it.level}: {it.message}", file=sys.stderr)
         return 2
+
+    observation_path = member_run_dir / "runtime_member_episode.json"
+    closure = [(project_root / item["path"]).resolve() for item in evidence.get("outputs_produced", [])]
+    try:
+        runtime_capture_observation._finish_member_episode(episode, evidence, observation_path, closure)
+    except (ValueError, OSError) as error:
+        print(f"UNAVAILABLE: member producer observation: {error}", file=sys.stderr)
+        return 2
+    evidence["original_transport"]["runtime_observation"] = artifact_ref(observation_path, project_root)
+    save_evidence(out_evidence, evidence)
+    save_evidence(member_run_dir / "evidence_original.json", evidence)
 
     # Also hash the evidence file itself for provenance.
     _ = sha256_file(out_evidence)

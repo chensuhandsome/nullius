@@ -10,9 +10,11 @@ import {
   OrchFleetWorkerUnregisterSchema,
 } from '../src/orch-tools/schemas.js';
 import {
+  admittedRoot,
   baseState,
   buildLeaseClaim,
   cleanupTmpDirs,
+  makeAliasedTmpDir,
   makeTmpDir,
   writeLedger,
   writeQueue,
@@ -284,7 +286,7 @@ describe('orch_fleet_worker_poll', () => {
   });
 
   it('fails closed when the worker registry or queue file is invalid', async () => {
-    const invalidWorkersProjectRoot = makeTmpDir();
+    const invalidWorkersProjectRoot = makeAliasedTmpDir();
     writeProject(invalidWorkersProjectRoot);
     writeWorkers(invalidWorkersProjectRoot, '{not-valid-json\n');
 
@@ -293,10 +295,10 @@ describe('orch_fleet_worker_poll', () => {
       worker_id: 'worker-1',
     }))).rejects.toMatchObject({
       code: 'INVALID_PARAMS',
-      data: { fleet_workers_path: path.join(invalidWorkersProjectRoot, '.nullius', 'fleet_workers.json') },
+      data: { fleet_workers_path: path.join(admittedRoot(invalidWorkersProjectRoot), '.nullius', 'fleet_workers.json') },
     });
 
-    const schemaInvalidWorkersProjectRoot = makeTmpDir();
+    const schemaInvalidWorkersProjectRoot = makeAliasedTmpDir();
     writeProject(schemaInvalidWorkersProjectRoot);
     writeWorkers(schemaInvalidWorkersProjectRoot, {
       schema_version: 99,
@@ -309,12 +311,12 @@ describe('orch_fleet_worker_poll', () => {
     }))).rejects.toMatchObject({
       code: 'INVALID_PARAMS',
       data: {
-        fleet_workers_path: path.join(schemaInvalidWorkersProjectRoot, '.nullius', 'fleet_workers.json'),
+        fleet_workers_path: path.join(admittedRoot(schemaInvalidWorkersProjectRoot), '.nullius', 'fleet_workers.json'),
         errors: [{ code: 'FLEET_WORKERS_SCHEMA_ERROR' }],
       },
     });
 
-    const invalidQueueProjectRoot = makeTmpDir();
+    const invalidQueueProjectRoot = makeAliasedTmpDir();
     writeProject(invalidQueueProjectRoot);
     writeQueue(invalidQueueProjectRoot, '{not-valid-json\n');
     await expect(handleOrchFleetWorkerPoll(OrchFleetWorkerPollSchema.parse({
@@ -322,7 +324,7 @@ describe('orch_fleet_worker_poll', () => {
       worker_id: 'worker-1',
     }))).rejects.toMatchObject({
       code: 'INVALID_PARAMS',
-      data: { fleet_queue_path: `${invalidQueueProjectRoot}/.nullius/fleet_queue.json` },
+      data: { fleet_queue_path: `${admittedRoot(invalidQueueProjectRoot)}/.nullius/fleet_queue.json` },
     });
   });
 

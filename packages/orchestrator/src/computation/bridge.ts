@@ -2,7 +2,7 @@ import { assertExecutionRunDirectory } from '../run-paths.js';
 import { ensureA3Approval } from './approval.js';
 import { prepareManifest } from './manifest.js';
 import { compileExecutionPlan, type StagedIdeaSurface } from './execution-plan.js';
-import { executionPlanArtifactPath, executionPlanRelativePath, materializeExecutionPlan } from './materialize-execution-plan.js';
+import { executionPlanArtifactPath, executionPlanRelativePath, keepStagedCreatedAt, materializeExecutionPlan } from './materialize-execution-plan.js';
 import { sha256File, toPosixRelative, writeJsonAtomic } from './io.js';
 import { type ExecuteComputationManifestResult, type PlannedExecutionResult, type PreparedManifest } from './types.js';
 import { StateManager } from '../state-manager.js';
@@ -79,7 +79,7 @@ export async function bridgeStagedIdeaToComputation(
     methodSpec: input.stagedIdea.hints?.method_spec ?? null,
   });
   const planPath = executionPlanArtifactPath(input.runDir);
-  writeJsonAtomic(planPath, executionPlan);
+  writeJsonAtomic(planPath, keepStagedCreatedAt(planPath, executionPlan));
   const prepared = prepareManifest({
     dryRun: input.dryRun,
     manifestPath,

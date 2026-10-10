@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { invalidParams, type ComputationManifestV1, type ExecutionPlanV1 } from '@nullius/shared';
+import { invalidParams, sortKeysRecursive, type ComputationManifestV1, type ExecutionPlanV1 } from '@nullius/shared';
 import { utcNowIso } from '../util.js';
 import { sanitizeRelativePath } from './path-safety.js';
 import { ensureDir, toPosixRelative, writeJsonAtomic, writeTextAtomic } from './io.js';
@@ -211,6 +211,37 @@ function parseProviderBackedMethodBundle(methodSpec: Record<string, unknown>): P
   return { files, phases, title, description };
 }
 
+/** True only for a timestamp in exactly the form `utcNowIso` writes, naming a real instant. */
+function isUtcSecondTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const instant = new Date(value);
+  return !Number.isNaN(instant.getTime()) && instant.toISOString().replace(/\.\d{3}Z$/, 'Z') === value;
+}
+
+/**
+ * `fresh` carrying the creation time of the artifact already staged at
+ * `filePath` when their content is otherwise identical. An A3 approval binds
+ * the exact staged bytes, so planning again from unchanged inputs must
+ * reproduce them; a new timestamp alone would void the approval. Any change
+ * in content, or a staged timestamp not in the form planning writes, still
+ * yields a newly stamped artifact.
+ */
+export function keepStagedCreatedAt<T extends { created_at?: string }>(filePath: string, fresh: T): T {
+  let staged: unknown;
+  try {
+    staged = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  } catch {
+    return fresh;
+  }
+  if (!staged || typeof staged !== 'object' || Array.isArray(staged)) return fresh;
+  const { created_at: stagedAt, ...stagedContent } = staged as Record<string, unknown>;
+  const { created_at: _freshAt, ...content } = fresh;
+  return isUtcSecondTimestamp(stagedAt)
+    && JSON.stringify(sortKeysRecursive(stagedContent)) === JSON.stringify(sortKeysRecursive(content))
+    ? { ...fresh, created_at: stagedAt }
+    : fresh;
+}
+
 function materializeProviderBackedManifest(
   runDir: string,
   executionPlan: ExecutionPlanV1,
@@ -219,7 +250,7 @@ function materializeProviderBackedManifest(
   const computationDir = path.join(runDir, 'computation');
   writeProviderFiles(computationDir, bundle.files);
   const tools = new Set(bundle.phases.map(phase => phase.tool));
-  const manifest = assertComputationManifestValid({
+  const fresh = assertComputationManifestValid({
     schema_version: 1,
     title: executionPlan.objective,
     description: bundle.description
@@ -259,6 +290,7 @@ function materializeProviderBackedManifest(
     created_at: utcNowIso(),
   });
   const manifestPath = path.join(computationDir, 'manifest.json');
+  const manifest = keepStagedCreatedAt(manifestPath, fresh);
   writeJsonAtomic(manifestPath, manifest);
   return { manifestPath, manifest };
 }

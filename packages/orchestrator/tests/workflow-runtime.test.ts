@@ -275,6 +275,126 @@ describe('workflow runtime diagnostics', () => {
     ]);
   });
 
+  it('lets a dispatch observer see copies of the request and response and dispatch exactly once', async () => {
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const request = makeRequest();
+    const result = await executeWorkflowRuntimeRequest(request, {
+      workflowToolCaller: {
+        callTool: async (name, args) => {
+          calls.push({ name, args });
+          return {
+            ok: true,
+            isError: false,
+            rawText: '{"uri":"hep://runs/RUN-1/artifact/critical_analysis.json"}',
+            json: { uri: 'hep://runs/RUN-1/artifact/critical_analysis.json' },
+            errorCode: null,
+          };
+        },
+      },
+      aroundDispatch: async (dispatch, observed) => {
+        expect(observed).toEqual(request);
+        expect(observed).not.toBe(request);
+        const response = await dispatch();
+        expect(response.json).toEqual({ uri: 'hep://runs/RUN-1/artifact/critical_analysis.json' });
+        await expect(dispatch()).rejects.toThrow(/already dispatched once/);
+      },
+    });
+
+    expect(calls).toEqual([{ name: request.tool, args: request.params }]);
+    expect(result).toMatchObject({
+      status: 'completed',
+      canonical_artifact_uri: 'hep://runs/RUN-1/artifact/critical_analysis.json',
+    });
+  });
+
+  it('dispatches and normalizes exactly what the transport saw and returned, whatever the observer or caller mutates', async () => {
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const request = makeRequest();
+    const compiled = structuredClone(request);
+    const result = await executeWorkflowRuntimeRequest(request, {
+      workflowToolCaller: {
+        callTool: async (name, args) => {
+          calls.push({ name, args });
+          return {
+            ok: true,
+            isError: false,
+            rawText: '{"uri":"hep://runs/RUN-1/artifact/critical_analysis.json"}',
+            json: { uri: 'hep://runs/RUN-1/artifact/critical_analysis.json' },
+            errorCode: null,
+          };
+        },
+      },
+      aroundDispatch: async (dispatch, observed) => {
+        observed.tool = ORCH_RUN_APPROVE;
+        observed.params.recid = 'substituted';
+        request.tool = ORCH_RUN_APPROVE;
+        request.params.recid = 'substituted';
+        const response = await dispatch();
+        response.ok = false;
+        response.isError = true;
+        response.rawText = 'fabricated';
+        (response.json as { uri: string }).uri = 'hep://runs/RUN-1/artifact/fabricated.json';
+      },
+    });
+
+    expect(calls).toEqual([{ name: compiled.tool, args: compiled.params }]);
+    expect(result).toMatchObject({
+      status: 'completed',
+      canonical_artifact_uri: 'hep://runs/RUN-1/artifact/critical_analysis.json',
+    });
+  });
+
+  it('refuses an observer that returns without dispatching and closes dispatch once the observer settles', async () => {
+    let calls = 0;
+    const workflowToolCaller = {
+      callTool: async () => {
+        calls += 1;
+        return { ok: true, isError: false, rawText: '{}', json: {}, errorCode: null };
+      },
+    };
+    let retained: (() => Promise<unknown>) | null = null;
+    const result = await executeWorkflowRuntimeRequest(makeRequest(), {
+      workflowToolCaller,
+      aroundDispatch: async dispatch => {
+        retained = dispatch;
+      },
+    });
+    expect(result.status).toBe('failed');
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({ code: 'tool_call_failed', message: expect.stringContaining('returned without dispatching') }),
+    ]);
+    await expect(retained!()).rejects.toThrow(/can no longer be dispatched/);
+    expect(calls).toBe(0);
+  });
+
+  it('keeps a transport failure behind an unawaited dispatch from surfacing as an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const result = await executeWorkflowRuntimeRequest(makeRequest(), {
+        workflowToolCaller: {
+          callTool: async () => {
+            await new Promise(resolve => setTimeout(resolve, 5));
+            throw new Error('transport closed');
+          },
+        },
+        aroundDispatch: async dispatch => {
+          void dispatch();
+          throw new Error('observer halted after firing');
+        },
+      });
+      expect(result.status).toBe('failed');
+      expect(result.diagnostics).toEqual([
+        expect.objectContaining({ message: 'observer halted after firing' }),
+      ]);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   it('classifies unsupported tool execution as skipped when degrade_mode=skip_with_reason', async () => {
     const result = await executeWorkflowRuntimeRequest(
       makeRequest({ degrade_mode: 'skip_with_reason' }),

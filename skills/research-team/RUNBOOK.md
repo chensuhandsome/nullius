@@ -24,7 +24,7 @@ export SKILL_DIR="${SKILL_DIR:-$(for r in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" 
 bash "${SKILL_DIR}/scripts/bin/run_team_cycle.sh" \
   --tag 20260502T023000Z-m0-topic \
   --notes research_contract.md \
-  --out-dir team \
+  --out-dir artifacts \
   --member-a-system prompts/_system_member_a.txt \
   --member-b-system prompts/_system_member_b.txt \
   --preflight-only
@@ -36,7 +36,7 @@ bash "${SKILL_DIR}/scripts/bin/run_team_cycle.sh" \
 bash "${SKILL_DIR}/scripts/bin/run_team_cycle.sh" \
   --tag 20260502T023000Z-m0-topic \
   --notes research_contract.md \
-  --out-dir team \
+  --out-dir artifacts \
   --member-a-system prompts/_system_member_a.txt \
   --member-b-system prompts/_system_member_b.txt \
   --auto-tag
@@ -48,7 +48,7 @@ bash "${SKILL_DIR}/scripts/bin/run_team_cycle.sh" \
 bash "${SKILL_DIR}/scripts/bin/run_team_cycle.sh" \
   --tag 20260502T023000Z-m0-topic \
   --notes research_contract.md \
-  --out-dir team \
+  --out-dir artifacts \
   --member-a-system prompts/_system_member_a.txt \
   --member-b-system prompts/_system_member_b.txt \
   --member-b-runner-kind claude \
@@ -66,7 +66,7 @@ bash "${SKILL_DIR}/scripts/bin/run_draft_cycle.sh" \
   --tag D0-r1 \
   --tex main.tex \
   --bib references.bib \
-  --out-dir team \
+  --out-dir artifacts \
   --preflight-only
 ```
 
@@ -77,7 +77,7 @@ bash "${SKILL_DIR}/scripts/bin/run_draft_cycle.sh" \
   --tag D0-r1 \
   --tex main.tex \
   --bib references.bib \
-  --out-dir team \
+  --out-dir artifacts \
   --member-a-system prompts/_system_draft_member_a.txt \
   --member-b-system prompts/_system_draft_member_b.txt \
   --member-c-system prompts/_system_draft_member_c_leader.txt \

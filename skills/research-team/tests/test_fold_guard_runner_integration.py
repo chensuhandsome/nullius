@@ -4,8 +4,11 @@
 The unit tests prove check_adjudication_completeness.py's verdicts; these
 prove the runner actually consumes them: a converged cycle with recorded
 Minor Issues keeps its convergence record but withholds the automatic
-plan/claim fold and writes the pending marker, while a converged cycle with
-zero minors folds exactly as before. Deterministic stub runners only.
+plan/claim fold and writes the pending marker; a converged cycle with zero
+minors folds only once the result registration gate passes — on a project
+without a nullius launcher current whole-notebook acceptance is unavailable, so
+the gate reports `error` and the fold is withheld rather than exempted.
+Deterministic stub runners only.
 """
 
 from __future__ import annotations
@@ -140,7 +143,7 @@ def _run_full_cycle(root: Path, tag: str, stub: Path) -> subprocess.CompletedPro
         "bash", str(RUN_TEAM),
         "--tag", tag,
         "--notes", "research_contract.md",
-        "--out-dir", "team",
+        "--out-dir", "artifacts",
         "--member-a-system", "prompts/_system_member_a.txt",
         "--member-b-system", "prompts/_system_member_b.txt",
         "--member-a-runner-kind", "codex",
@@ -160,7 +163,7 @@ def test_converged_with_minors_withholds_fold_and_writes_marker(
     proc = _run_full_cycle(project, tag, stub)
     assert proc.returncode == 0, f"cycle should converge; log:\n{proc.stderr[-3000:]}"
 
-    run_dir = project / "team" / "runs" / tag
+    run_dir = project / "artifacts" / "runs" / tag / "research_team"
     gate_verdict = json.loads(
         (run_dir / f"{tag}_dispositions_gate.json").read_text(encoding="utf-8")
     )
@@ -175,25 +178,34 @@ def test_converged_with_minors_withholds_fold_and_writes_marker(
     assert tag not in plan_text
 
 
-def test_converged_without_minors_folds_as_before(project: Path, tmp_path: Path) -> None:
+def test_converged_without_launcher_withholds_fold_as_unavailable(
+    project: Path, tmp_path: Path
+) -> None:
     stub = _make_stub(tmp_path, "stub_clean.sh", minors=False)
     tag = "20260731T000000Z-m0-fg-clean-r1"
     proc = _run_full_cycle(project, tag, stub)
     assert proc.returncode == 0, f"cycle should converge; log:\n{proc.stderr[-3000:]}"
 
-    run_dir = project / "team" / "runs" / tag
+    run_dir = project / "artifacts" / "runs" / tag / "research_team"
     gate_verdict = json.loads(
         (run_dir / f"{tag}_dispositions_gate.json").read_text(encoding="utf-8")
     )
     assert gate_verdict["status"] == "pass"
-    # No launcher in this fixture: the registration gate SKIPs, so the fold
-    # proceeds exactly as before on non-nullius projects.
+    # No launcher in this fixture: current whole-notebook acceptance cannot be
+    # read, so the registration gate reports the input as unavailable (error,
+    # not skip) and the automatic fold is withheld — a missing launcher never
+    # grants an exemption.
     registration_verdict = json.loads(
         (run_dir / f"{tag}_registration_gate.json").read_text(encoding="utf-8")
     )
-    assert registration_verdict["status"] == "skip"
-    assert not (run_dir / f"{tag}_dispositions_pending.md").exists()
-    assert "fold pending" not in proc.stderr
+    assert registration_verdict["status"] == "error"
+    assert "launcher" in registration_verdict["reason"]
+    marker = run_dir / f"{tag}_dispositions_pending.md"
+    assert marker.is_file(), "unavailable registration input must withhold the fold"
+    assert "result registration gate: PENDING" in marker.read_text(encoding="utf-8")
+    assert "fold pending" in proc.stderr
+    plan_text = (project / "research_plan.md").read_text(encoding="utf-8")
+    assert tag not in plan_text
 
 
 def test_launcher_project_zero_minors_withholds_fold_until_registration(
@@ -220,7 +232,7 @@ def test_launcher_project_zero_minors_withholds_fold_until_registration(
     proc = _run_full_cycle(project, tag, stub)
     assert proc.returncode == 0, f"cycle should converge; log:\n{proc.stderr[-3000:]}"
 
-    run_dir = project / "team" / "runs" / tag
+    run_dir = project / "artifacts" / "runs" / tag / "research_team"
     registration_verdict = json.loads(
         (run_dir / f"{tag}_registration_gate.json").read_text(encoding="utf-8")
     )

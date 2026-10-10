@@ -139,7 +139,7 @@ def _run_cycle(root: Path, tag: str, *, preflight_only: bool = True) -> subproce
         "--notes",
         "research_contract.md",
         "--out-dir",
-        "team",
+        "artifacts",
         "--member-a-system",
         "prompts/_system_member_a.txt",
         "--member-b-system",
@@ -167,7 +167,7 @@ def _persisted_verdict(root: Path, tag: str) -> dict:
     # Assumes safe_tag == tag: every tag used in this module is chosen from
     # the runner's already-sanitized alphabet, so the run dir is named by the
     # tag verbatim.
-    verdict_path = root / "team" / "runs" / tag / f"{tag}_delegation_budget_gate.json"
+    verdict_path = root / "artifacts" / "runs" / tag / "research_team" / f"{tag}_delegation_budget_gate.json"
     assert verdict_path.is_file(), f"machine verdict not persisted at {verdict_path}"
     return json.loads(verdict_path.read_text(encoding="utf-8"))
 
@@ -215,30 +215,43 @@ def test_required_with_no_contract_fails_preflight(project: Path) -> None:
     assert any("NO_CONTRACTS_FOUND" in r for r in verdict["reasons"])
 
 
-def test_symlinked_config_brakes_on_target_tree_contract(project: Path) -> None:
-    """The runner resolves the discovered config path once: with a symlinked
-    config, PROJECT_ROOT derives from the RESOLVED parent, so an invalid
-    contract under the symlink TARGET's tree must brake preflight (a lexical
-    parent would scan the link directory's empty tree and pass)."""
+def test_symlinked_config_does_not_relocate_the_project_root(project: Path) -> None:
+    """The runner derives PROJECT_ROOT from the notebook's (resolved) tree and
+    passes it to the gate explicitly, so the physical location of a symlinked
+    config never relocates the scan: a contract that sits only beside the
+    symlink target is not a project contract and is not scanned, while an
+    invalid contract under the project's own delegations directory brakes
+    preflight even though the config file lives elsewhere. The config itself is
+    still read through the resolved symlink (its `delegation_budget` block is
+    honoured)."""
     shared = project.parent / "shared_target"
     shared.mkdir()
     real_cfg = shared / "research_team_config.json"
     (project / "research_team_config.json").rename(real_cfg)
     (project / "research_team_config.json").symlink_to(real_cfg)
     bad = {"contract_version": 1, "delegation_id": "x"}
+
+    # 1) A contract beside the symlink target only: not under the project root,
+    #    so nothing is scanned and preflight does not brake on it.
     _write(shared / "team" / "delegations" / "bad.json", json.dumps(bad))
     tag = "20260719T000000Z-m0-it-symlink-r1"
     proc = _run_preflight(project, tag)
-    assert proc.returncode == 1, (
-        f"preflight should brake on the symlink target's bad contract; log:\n{proc.stderr[-2000:]}"
+    assert proc.returncode == 0, (
+        f"a contract outside the project root must not be scanned; log:\n{proc.stderr[-2000:]}"
     )
-    # The runner's --out-dir is cwd-relative, so the verdict persists under
-    # the project tree even though the scanned delegations live in shared/.
+    assert "SKIP (no delegation contracts found" in proc.stderr
+
+    # 2) The same invalid contract under the project's own delegations
+    #    directory brakes preflight, with the config still read via the symlink.
+    _write(project / "team" / "delegations" / "bad.json", json.dumps(bad))
+    tag = "20260719T000000Z-m0-it-symlink-r2"
+    proc = _run_preflight(project, tag)
+    assert proc.returncode == 1, (
+        f"preflight should brake on the project's bad contract; log:\n{proc.stderr[-2000:]}"
+    )
     verdict = _persisted_verdict(project, tag)
     assert verdict["status"] == "fail"
     assert any("MISSING_TIME_BOX" in r for r in verdict["reasons"])
-
-
 def test_complete_contract_passes_preflight(project: Path) -> None:
     _write(
         project / "team" / "delegations" / "good.json",

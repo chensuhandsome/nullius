@@ -4,12 +4,129 @@ Notable changes to nullius. The format follows
 [Keep a Changelog](https://keepachangelog.com/). The project is **pre-1.0**: all
 workspace packages move in lockstep on a single `0.x` version, breaking changes may
 occur in any `0.x` release, and there is no API-stability promise yet. Dated, tagged
-releases begin at the first published release; until then the current development
-version is the lockstep number below.
+releases begin with 0.6.0, the first release archived on Zenodo; `CITATION.cff` names
+the version to cite.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-10
+
+First archived release. Nullius is positioned as an evidence-first harness for
+agent-assisted research; this release gathers everything since 0.5.0 (the lockstep
+version was never tagged). Headline themes: result traceability from run to commit,
+a machine-enforced closeout discipline for notebooks and results, fail-closed review
+and delegation contracts, and consolidated run authority under one canonical
+`artifacts/runs/<run_id>/` layout.
+
 ### Added
+- **Repository positioning, citation, and license.** The identity sentence on every
+  public surface (READMEs, positioning document, status page, root package
+  description, and the front-door wording lock) now reads "an evidence-first harness
+  for agent-assisted research"; "monorepo" remains only where it describes the
+  repository layout. A Citation section in both READMEs and a root `CITATION.cff`
+  support "Cite this repository" and Zenodo archiving. The MIT license that
+  `package.json` and the README had declared is now present as a `LICENSE` file.
+- **Result traceability (`nullius trace`, `nullius result`, `nullius current`).** Every
+  run binds to the exact code state at launch through origin stamps written at every
+  mandatory machine moment (computation front door, team-cycle run creation, result
+  registration at convergence); an append-only validity ledger records `void` /
+  `supersede` / `reinstate` rulings with normalized, existence-checked run ids; a
+  results registry (`nullius result set-current`) names the producing run per headline
+  result; `nullius current` renders the whole current-version answer as prose.
+  Exploratory runs are organized into code-state episodes and slug-stem families.
+- **Attempt/run separation.** A run id is an experiment slot; each execution is an
+  attempt with its own launch-time code capture. Resultless crashes retry under the
+  same id through one atomic ledger event; anything that delivered never takes the
+  cheap path.
+- **Browsable run index.** A machine-owned `RUN_INDEX` block in `project_index.md`
+  renders the ledger per slug family (counts, validity split, latest run, starred
+  current results with verdicts), refreshed by every ledger-writing verb and adoptable
+  via `nullius index sync`; its honesty footer reports conflicting stamps, chain
+  defects, and vanished directories unconditionally.
+- **Notebook discipline, machine layer.** A managed current-state block in the
+  research notebook (`nullius notebook sync`), drift detection between notebook and
+  registered results, and dead-link confirmation; `nullius notebook check` reports
+  structural links and current full-text content review separately.
+- **Human notebook integration at result closeout.** Scientific result closeout now
+  requires the human notebook to be updated and an executed whole-notebook review
+  (`nullius notebook review`) accepted; automatic tables, links, and checklists cannot
+  supply that verdict. Review inputs are bound completely (notebook intervals, original
+  dependencies, capacity and execution limits) and reproduction evidence must be blind,
+  separately constructed, and separately executed; historical evidence stays readable
+  without granting current acceptance.
+- **`nullius release`** exports a public code snapshot with pinned bookkeeping,
+  excluding run products and internal notes.
+- **Decision ledger** (`nullius decision record|pending|land|list`): conversational
+  decisions and open questions recorded with branch-safe minted ids, landed to durable
+  `D<n>` ids on the trunk; open questions stay counted in every status receipt.
+- **Launch authorization gate (A3) for production compute** (research-harness): a
+  frozen plan hash, hash-bound review verdicts, and an exact environment fingerprint
+  must agree before a large production run may start; voided verdicts neither count
+  nor veto.
+- **Delegation budget contract** (research-team / research-harness): every delegated
+  workstream declares a tolerance ceiling with its anchor, a time box, an attempt cap,
+  a scope negative list, and a memory estimate (measured dry-run peak RSS for compute
+  launches, or a declared cap for short bounded workstreams); the gate fails closed on
+  missing or malformed fields.
+- **Verification granularity reform** (research-team): severity-graded convergence
+  with mandatory dispositions, two retry regimes with bounded rounds and stall
+  detection, delta-scoped confirmation rounds bound to a baseline, scoped cross-family
+  review, and a fold-boundary disposition gate wired into the cycle runner; reviewer
+  unavailability is a dispatch failure, not a consumed round. The follow-up
+  process-audit batches add candidate-commit binding (OID pinning, range refusal,
+  artifact byte comparison), review-lane independence accounting (credit decided from
+  the resolved post-fallback backend; failed lanes hold no comparison seat), a
+  machine-enforced bounded-rounds brake, and delegations-directory hygiene.
+- **Verification provenance and hep-calc handoffs** hardened across the orchestrator,
+  shared contracts, schemas, and the `hep-calc` skill.
+- **Literature bibliography reconciliation**: literature identity provenance and a
+  trace gate shared by research-team, idea-posterior, and literature-workflows.
+- **File-mode projects as first-class citizens** (`nullius init --mode=engine|file`):
+  projects whose work is executed by hand or by external runners declare that mode,
+  keep status receipts honest about an idle engine, and record decisions made in
+  conversation in the ledger described below.
+- **Event-to-workflow verification routing**: the scaffold's `AGENTS.md` carries a
+  domain-agnostic table from observable research events to the verification workflow
+  each one triggers.
+- **Source-transcription fidelity** (review-swarm): candidate-withheld source
+  extraction, an input manifest with SHA-256 digests, and a review-freshness gate.
+- **Idea lifecycle state machine**: a first-class state enum with legal-transition
+  validation, entry preconditions wired to the close-prior gate, and single-writer
+  posterior derivation; idea-allocation and idea-posterior follow the machine's states.
+- **skill `literature-to-package`**: turn a literature survey into the verified initial
+  framework of a software package (skeleton, typed API stubs, equation inventory,
+  conventions table, frozen reference values).
+- **Cross-family review by construction**: review-swarm, derivation-verify, and
+  paper-reviser stop hard-coding a claude+gemini pair and frame reviewers as "the
+  host's own family plus a different family"; Kimi Code is a first-class runner and a
+  supported skills-market host.
+- **Reuse-or-deviate gate and review-verification contract clauses**: per-asset
+  reuse-or-deviate decisions, independent recomputation from blind inputs with the
+  probed axes recorded, and discriminating power computed before a check is trusted.
+- **Figure-hygiene display-acceptance gate**: durable or outward-facing figures are
+  refused until every plotted quantity is bound to a verification verdict and an
+  all-component human-review overview is archived; continuity, knob-threading,
+  optimization-equivalence, and post-correction-recomputation gates join the
+  numerical-reliability contract, each with an anti-drift lock.
+- **Verification-methodology lessons in the skills**: a transcription-audit axis,
+  certified-domain discipline, defect impact maps with identity controls, fail-closed
+  display substitution, and the knob-invariance blind spot (analytic-layer decisions
+  invisible to discretization axes) are now operationalized in research-integrity and
+  numerical-reliability-gate.
+- **Citation-verification hardening**: `citation-triangulation` gains a one-command
+  record fetch (`fetch_citation_records.py`), fail-closed identity checks,
+  relation-aware title folding, and a book path; `claim-grounding` treats attribution
+  and priority claims as their own claim type; `hep-mcp` makes author-list truncation
+  explicit in every paper view and author omissions are preserved rather than
+  silently completed.
+- **Portable installations.** Skills compose with the project, literature, and idea
+  MCP services through the installed runtime; per-user paths and credentials stay out
+  of distributed payloads, sensitive files are rejected during installation, and
+  runtime configuration lives in a host-private `runtime.json`.
+- **Delegated agent runtime hardening**: attempts recorded as `not_started` /
+  `outcome_unknown` / `committed`, unknown side effects stop for reconciliation,
+  committed MCP results replayed without re-dispatch, exact delegation stopping
+  predicates, and separate journal namespaces for direct and team runs.
 - **Idea-engine: grounding-audit write path and scoped provenance correction**
   (RPC contract 2.1.0). `node.set_grounding_audit` becomes the only sanctioned
   write path for node grounding-audit records — it stores the result of an
@@ -166,7 +283,58 @@ version is the lockstep number below.
   misleading schema error; `build_pack.py` fails closed on unknown dedup
   decisions, misaligned report indexes, and overrides that match nothing.
 
+### Changed
+- **Run authority consolidated.** All newly created managed runs live under
+  `artifacts/runs/<run_id>/`, with team and draft executor payloads in
+  `research_team/` beneath the run. The team runner refuses any `--out-dir` other
+  than the project's `artifacts` directory; the research-team RUNBOOK, project-map
+  template, and prompt generators now say `--out-dir artifacts`. Historical
+  `team/runs/<run_id>/` remains read-only evidence: listed, indexed, linked, and
+  exported in place, never migrated or rewritten, and no new execution may reuse a
+  historical id.
+- **Project root is derived from the notebook's tree**, not from the physical location
+  of a (possibly symlinked) team config; the config is still read through the resolved
+  symlink.
+- **Registration gate on projects without a launcher** reports current acceptance as
+  unavailable and withholds the automatic fold instead of skipping; a missing launcher
+  never grants an exemption.
+- **Workflow recovery**: dispatch outcomes are persisted; pause, approval, and user
+  constraints survive recovery; incomplete model output is rejected; call and deadline
+  budgets are shared across retries; INSPIRE project context matches the advertised
+  schema. Native computation binds an enabled A3 approval to
+  the manifest, scripts, declared inputs, resolved executable bytes, environment, and
+  policy; same-run continuation in place is unsupported.
+- **Harness lightening** (two waves): delegation weight tiers, a science-object stall
+  clock across run roots, violation quarantine that never destroys computation,
+  health-aware same-tag resume, and a round-advance guard. The OMX salvage batch adds
+  a manifest failure policy (`on_failure fail-fast|continue`) with fail-closed step
+  gates and characterization locks for six previously untested live gate scripts.
+- **Idea layer**: lifecycle demotion marks the posterior stale atomically, `rank.compute`
+  is store-state aware, batched evidence-event RPCs, the Mutation operator family, a
+  research-report contract, durable idea-card revision, citation-identity grounding,
+  bound symbolic post-processing, and an interactive reader-surface validation
+  contract; Gaia packages render without upstream Mermaid and SDK references are
+  shared by version.
+- **Version surfaces** move in lockstep to 0.6.0 (all workspace packages, the Python
+  project-contracts package, MCP server descriptors, the compatibility matrix, and the
+  skills-market catalog ranges).
+
 ### Fixed
+- **Forty-nine test regressions** introduced by the run-authority consolidation
+  (canonical project roots, plan timestamps, raw dispatch) are fixed at the source in
+  the CLI run path, execution-plan materialization, path safety, verification, and the
+  workflow runtime; eight research-team runner integration tests are brought onto the
+  current contract.
+- **Trace verbs** normalize path-shaped run ids, refuse ids neither disk nor ledger
+  knows (nearest real ids named), and print the post-write validity, so a misaddressed
+  `void` can no longer strand a run silently; control-plane paths under `.nullius/` and
+  the project's own `backups/` no longer demote stamp honesty.
+- **Atomic writes** across parents satisfy the durability contract (quarantine moves).
+- **project-mcp** enforces harness invocation before dispatch and stops the whole
+  process group on timeout.
+- **Dead TeX label/reference/figure extractor** repaired (broken raw-string regexes had
+  disabled that preflight); markdown-hygiene no longer flags code-labelled links as
+  bare references; julia-perf suites load under Julia 1.12 world-age semantics.
 - **Pairwise judge panel: votes are bound to the exact rendering they answered,
   and independence claims are mechanically backed.** Two review-driven lanes
   (six rounds and a three-round follow-up of dual cross-family review; ~19

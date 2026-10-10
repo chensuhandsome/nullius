@@ -81,7 +81,7 @@
       "type": "tool-pack",
       "repo": "nullius/nullius",
       "channel": "beta",
-      "version": "0.5.0"
+      "version": "0.6.0"
     },
     "hep-mcp-usage": {
       "type": "skill-pack",
@@ -90,7 +90,7 @@
       "version": "0.1.0",
       "source_path": "skills/hep-mcp-usage/SKILL.md",
       "depends_on": {
-        "hep-mcp": ">=0.5.0 <0.6.0"
+        "hep-mcp": ">=0.6.0 <0.7.0"
       }
     },
     "idea-allocation": {
@@ -170,7 +170,7 @@
       "channel": "dev",
       "version": "0.1.0",
       "depends_on": {
-        "hep-mcp": ">=0.5.0 <0.6.0"
+        "hep-mcp": ">=0.6.0 <0.7.0"
       }
     },
     "markdown-hygiene": {
@@ -208,7 +208,7 @@
       "version": "0.1.0",
       "source_path": "skills/pdg-lookup/SKILL.md",
       "depends_on": {
-        "hep-mcp": ">=0.5.0 <0.6.0"
+        "hep-mcp": ">=0.6.0 <0.7.0"
       }
     },
     "physics-diagrams": {
@@ -232,7 +232,7 @@
       "version": "0.1.0",
       "source_path": "skills/research-harness/SKILL.md",
       "depends_on": {
-        "hep-mcp": ">=0.5.0 <0.6.0",
+        "hep-mcp": ">=0.6.0 <0.7.0",
         "markdown-hygiene": ">=0.1.0 <0.2.0",
         "numerical-reliability-gate": ">=0.1.0 <0.2.0",
         "research-integrity": ">=0.1.0 <0.2.0",
@@ -286,7 +286,7 @@
       "version": "0.1.0",
       "source_path": "skills/zotero-import/SKILL.md",
       "depends_on": {
-        "hep-mcp": ">=0.5.0 <0.6.0"
+        "hep-mcp": ">=0.6.0 <0.7.0"
       }
     }
   },

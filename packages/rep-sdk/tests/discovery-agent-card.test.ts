@@ -86,7 +86,7 @@ describe('agent card discovery helpers', () => {
       capabilities: [...LIVE_IDEA_ENGINE_DISCOVERY_CAPABILITIES],
       domain: 'theory',
       agent_name: 'Idea Engine',
-      agent_version: '0.5.0',
+      agent_version: '0.6.0',
       supported_check_domains: ['ward', 'cross-check'],
     });
   });

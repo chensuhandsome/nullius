@@ -1,6 +1,6 @@
 # Project Status Report (front-door rebaseline)
 
-**Date**: 2026-06-26
+**Date**: 2026-10-10
 **Status**: Active local-first, evidence-first harness for agent-assisted research (one pnpm workspace)
 **Root framing**: Domain-neutral substrate + control plane; HEP is the current most mature provider family, not the root identity
 
@@ -11,10 +11,12 @@ Native computation binds an enabled A3 approval to the current manifest, scripts
 
 ## QA snapshot
 
-- Closeout baseline: `main` at `ecd9faa8`
+- Closeout baseline: the 0.6.0 release candidate (`main` after `e917ed32` plus the release branch)
 - `pnpm -r build` ✅
-- `pnpm -r test` ✅
+- `pnpm -r test` ✅ (13 packages; orchestrator 1396, hep-mcp 748, shared 544 tests)
 - `pnpm -r lint` ✅
+- all 19 `pnpm check:*` anti-drift locks ✅
+- CI pytest groups (project-contracts, research-team, idea-posterior, citation-triangulation, figure-hygiene, idea-generation, literature-to-package, research-harness, review-swarm) ✅
 - `pnpm --filter @nullius/hep-mcp docs:tool-counts:check` ✅
 - `standard=75`, `full=82`
 - `HEP_ENABLE_ZOTERO=0` → `standard=66`, `full=73`

@@ -7,7 +7,7 @@ import type { Context } from './policy.js';
 
 const adapter = new ProjectAdapter(process.env.NULLIUS_PROJECT_ROOT ?? '');
 process.chdir(adapter.root);
-const server = new Server({ name: 'nullius-project-mcp', version: '0.5.0' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'nullius-project-mcp', version: '0.6.0' }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: adapter.listTools() }));
 server.setRequestHandler(CallToolRequestSchema, async request => {
   const supportsSampling = Boolean(server.getClientCapabilities()?.sampling);

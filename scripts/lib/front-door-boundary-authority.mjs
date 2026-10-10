@@ -142,7 +142,7 @@ export const FRONT_DOOR_SNIPPETS = [
       '**Root framing**: Domain-neutral substrate + control plane; HEP is the current most mature provider family, not the root identity',
 	      '**Main generic lifecycle + native TS computation + workflow-plan entrypoint**: `nullius` CLI for external project roots and `.nullius/` state',
 	      '**Runtime project handshake**: `nullius init` writes `.nullius/HARNESS`',
-	      '- Closeout baseline: `main` at `ecd9faa8`',
+	      '- Closeout baseline: the 0.6.0 release candidate (`main` after `e917ed32` plus the release branch)',
       '- **Recommended public stateful literature workflow entrypoint**: `nullius workflow-plan` (requires an initialized external project root; resolves recipes directly via `@nullius/literature-workflows`; persists `.nullius/state.json#/plan` and derives `.nullius/plan.md`)',
       '- **Native TS run slice**: `nullius run` (requires an initialized external project root; runs prepared `computation/manifest.json` natively for `--workflow-id computation`, and also advances dependency-satisfied persisted workflow-plan steps through the same front door)',
       'the idea-engine search/eval runtime is archived; `@nullius/idea-mcp` remains campaign-lifecycle oriented on explicit external data roots',

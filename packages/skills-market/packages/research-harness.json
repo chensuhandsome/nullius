@@ -13,7 +13,7 @@
   ],
   "source_path": "skills/research-harness/SKILL.md",
   "depends_on": {
-    "hep-mcp": ">=0.5.0 <0.6.0",
+    "hep-mcp": ">=0.6.0 <0.7.0",
     "markdown-hygiene": ">=0.1.0 <0.2.0",
     "numerical-reliability-gate": ">=0.1.0 <0.2.0",
     "research-integrity": ">=0.1.0 <0.2.0",

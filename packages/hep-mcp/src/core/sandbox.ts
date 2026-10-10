@@ -32,8 +32,12 @@ const DEFAULT_MAX_FILE_COUNT = 10_000;
  * Returns the resolved absolute path within destDir, or throws.
  */
 function validateEntryPath(entryName: string, destDir: string): string {
-  // Reject entries with '..' anywhere in the name
-  if (entryName.includes('..')) {
+  // Reject a parent-directory segment under either separator convention, even one
+  // that would resolve back inside destDir, and any other segment made only of
+  // dots and spaces: Windows trims trailing dots and spaces, so `...` or `.. ` may
+  // be read as `..` there. A name that merely begins with two dots (`..notes.md`,
+  // `figs/..hidden/x.png`) is an ordinary name.
+  if (entryName.split(/[\\/]/).some(segment => segment !== '.' && /^[. ]+$/.test(segment))) {
     throw new ZipSafetyError(`Directory traversal detected in entry name: ${entryName}`);
   }
 

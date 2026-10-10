@@ -26,9 +26,11 @@ function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+// Exact escape test: the parent itself, a path through the parent, or another
+// root. A name that merely begins with two dots (`..downloads`) stays inside.
 function isPathInside(parent: string, candidate: string): boolean {
   const rel = path.relative(parent, candidate);
-  return !rel.startsWith('..') && !path.isAbsolute(rel);
+  return !(rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel));
 }
 
 function guardPath(parentDir: string, candidatePath: string, what: string): string {

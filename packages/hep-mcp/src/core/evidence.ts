@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 import { latexParser } from 'latex-utensils';
 import { invalidParams, notFound, writeBytesAtomicDurable, writeJsonAtomicDurable } from '@nullius/shared';
 import pLimit from 'p-limit';
-import { resolvePathWithinParent } from '../data/pathGuard.js';
+import { isPathInside, resolvePathWithinParent } from '../data/pathGuard.js';
 import { getProject, updateProjectUpdatedAt } from './projects.js';
 import {
   getProjectPaperDir,
@@ -259,7 +259,7 @@ function mapLocatorToCatalogLocator(
 ): LatexLocatorV1 {
   const mapped = mapLocatorToSource(locator, sourceMap, getFileContent);
   const rel = path.relative(latexExtractedDir, mapped.file);
-  if (rel.startsWith('..')) {
+  if (!isPathInside(latexExtractedDir, mapped.file)) {
     throw new Error(`Mapped locator points outside extracted LaTeX dir: ${mapped.file}`);
   }
   return {
@@ -304,14 +304,14 @@ function copyProjectFiles(params: {
 
   let copied = 0;
   let mainTexRel = path.relative(baseDir, sourceMainTexPath);
-  if (mainTexRel.startsWith('..')) {
+  if (!isPathInside(baseDir, sourceMainTexPath)) {
     mainTexRel = path.basename(sourceMainTexPath);
     warnings.push('main_tex_path is outside inferred baseDir; flattening to basename');
   }
 
   for (const file of files) {
     const rel = path.relative(baseDir, file.path);
-    if (rel.startsWith('..')) {
+    if (!isPathInside(baseDir, file.path)) {
       warnings.push(`skipped file outside baseDir: ${file.path}`);
       continue;
     }

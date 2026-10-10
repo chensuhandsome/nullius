@@ -31,6 +31,7 @@ import * as path from 'node:path';
 
 import { ARXIV_ID_REGEX } from '@nullius/arxiv-mcp/tooling';
 
+import { admitProjectRoot, resolveAdminHepDataRoot } from '../data/dataDir.js';
 import {
   cacheEntryPaths,
   computeCacheKey,
@@ -234,15 +235,13 @@ export async function prunePaperCache(opts: PruneOptions): Promise<PruneReport> 
         'Calling with an empty list would mark every cache entry as orphan, which is almost certainly not what you want.',
     );
   }
-  const projectRoots = opts.project_roots.map(r => path.resolve(r));
+  const projectRoots = opts.project_roots.map(r => admitProjectRoot(r));
   const cacheRoot = getPapersCacheRoot();
 
   // 1. Build the live set of canonical identifiers across all supplied project roots.
   const referencedBy = new Map<string, Set<string>>(); // canonical_id → project_roots that reference it
   for (const projectRoot of projectRoots) {
-    const hepDataRoot = opts.hep_data_root
-      ? path.resolve(opts.hep_data_root)
-      : path.join(projectRoot, 'artifacts', 'hep-mcp');
+    const hepDataRoot = resolveAdminHepDataRoot(projectRoot, opts.hep_data_root);
     const refs = collectProjectReferences(projectRoot, hepDataRoot);
     for (const [canonicalId, refRoot] of refs.entries()) {
       const existing = referencedBy.get(canonicalId);

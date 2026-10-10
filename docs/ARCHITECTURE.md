@@ -72,7 +72,7 @@ Front-door surface classification lives in `meta/front_door_authority_map_v1.jso
 
 ### 5.1 `HEP_DATA_DIR`
 
-`packages/hep-mcp/src/data/dataDir.ts` resolves the HEP data root in this order: explicit tool-call `project_root` for an initialized nullius project (`<project_root>/artifacts/hep-mcp`), then `HEP_DATA_DIR`, then scratch fallback `~/.nullius/hep-mcp`.
+`packages/hep-mcp/src/data/dataDir.ts` resolves the HEP data root in this order: explicit tool-call `project_root` for an initialized nullius project (`<project_root>/artifacts/hep-mcp`), then `HEP_DATA_DIR`, then scratch fallback `~/.nullius/hep-mcp`. A `project_root` is admitted in canonical, external form like every other front door; the project-local directories a call uses must be real directories (for ordinary tool calls a symlink on `artifacts/`, `artifacts/hep-mcp/` or its `pdg/` directory is refused; admin tools check the data root they actually select), and caller paths compared with the data root may spell the project through an alias of its root.
 
 ```text
 <resolved HEP data root>/

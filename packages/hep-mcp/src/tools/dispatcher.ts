@@ -35,7 +35,7 @@ import type {
 import type { OutputFormat, SearchResultData } from '../utils/formatters.js';
 import { formatSearchResultMarkdown, formatPaperListMarkdown } from '../utils/formatters.js';
 import { compactPapersInResult, compactPaperSummary } from '../utils/compactPaper.js';
-import { getDataDir, getDataRootInfo, withHepDataRoot } from '../data/dataDir.js';
+import { getDataDir, getDataRootInfo, projectPdgDataDir, withHepDataRoot } from '../data/dataDir.js';
 import { resolvePathWithinParent } from '../data/pathGuard.js';
 import { writeRunJsonArtifact } from '../core/citations.js';
 import { getRun } from '../core/runs.js';
@@ -63,7 +63,7 @@ function projectRootArg(args: Record<string, unknown>): unknown {
 
 function resolvedPdgDataDirForCurrentHepRoot(): string {
   const root = getDataRootInfo();
-  if (root.source === 'project_root') return `${root.path}/pdg`;
+  if (root.source === 'project_root') return projectPdgDataDir(root.project_root!);
 
   const explicit = process.env.PDG_DATA_DIR;
   if (explicit && explicit.trim().length > 0) return explicit;
@@ -576,6 +576,12 @@ export async function handleToolCall(
     verifyHarnessInvocationMarker(process.cwd(), {
       toolIsStateTouching: isStateTouchingHepMcp(name, args),
     });
+    // Tools that resolve their own data root are not wrapped in the per-call
+    // HEP/PDG data root, so an outer call's root cannot refuse them. An outer
+    // call's scope stays visible to code that reads it; their handlers do not.
+    if (getToolSpec(name)?.resolvesOwnDataRoot) {
+      return await handleToolCallInResolvedDataRoot(name, args, mode, ctx);
+    }
     return await withHepDataRoot(projectRootArg(args), () =>
       withPdgDataDir(resolvedPdgDataDirForCurrentHepRoot(), () =>
         handleToolCallInResolvedDataRoot(name, args, mode, ctx)

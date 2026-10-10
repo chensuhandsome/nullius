@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 
 import { INSPIRE_API_URL } from '@nullius/shared';
 
-import { getDataDir, getDataRootInfo, getDownloadsDir } from '../../data/dataDir.js';
+import { getDataDir, getDataRootInfo, getDownloadsDir, projectPdgDataDir } from '../../data/dataDir.js';
 import { getToolUsageSnapshot } from './toolUsageTelemetry.js';
 import { getTools, type ToolExposureMode } from '../registry.js';
 
@@ -81,7 +81,7 @@ function expandTilde(p: string): string {
 
 function getPdgDataDir(): string {
   const root = getDataRootInfo();
-  if (root.source === 'project_root') return path.join(root.path, 'pdg');
+  if (root.source === 'project_root') return projectPdgDataDir(root.project_root!);
 
   const explicit = process.env.PDG_DATA_DIR;
   if (explicit && explicit.trim().length > 0) {

@@ -3,10 +3,12 @@
  *
  * Per the 2026-05-23 P3-C-redesign code audit, hep-mcp's dispatcher wraps
  * every tool call with `withHepDataRoot(projectRootArg(args), ...)` AND
- * `withPdgDataDir(resolvedPdgDataDirForCurrentHepRoot(), ...)`
- * (`src/tools/dispatcher.ts:574-576`). This means even tools that look like
- * generic provider queries may write project-keyed paths when a `project_root`
- * arg is supplied.
+ * `withPdgDataDir(resolvedPdgDataDirForCurrentHepRoot(), ...)` (see
+ * `handleToolCall` in `src/tools/dispatcher.ts`), except tools whose spec sets
+ * `resolvesOwnDataRoot` (the hep_admin_* tools that admit their own project
+ * roots); those are classified as always state-touching below. This means even
+ * tools that look like generic provider queries may write project-keyed paths
+ * when a `project_root` arg is supplied.
  *
  * Three buckets per tool — verified by reading each handler:
  *

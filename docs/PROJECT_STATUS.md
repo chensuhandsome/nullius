@@ -1,7 +1,7 @@
 # Project Status Report (front-door rebaseline)
 
 **Date**: 2026-06-26
-**Status**: Active local-first, evidence-first monorepo
+**Status**: Active local-first, evidence-first harness for agent-assisted research (one pnpm workspace)
 **Root framing**: Domain-neutral substrate + control plane; HEP is the current most mature provider family, not the root identity
 
 ---

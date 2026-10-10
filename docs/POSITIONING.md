@@ -9,8 +9,8 @@ English | [中文](./POSITIONING_zh.md)
 
 ## 1. What Nullius is
 
-A domain-neutral, evidence-first research monorepo for **agent-assisted
-research workflows**. The control plane (`nullius` CLI + `orch_*`
+An evidence-first harness for **agent-assisted research**, domain-neutral
+by construction and shipped as one repository. The control plane (`nullius` CLI + `orch_*`
 MCP) is the durable lifecycle authority for external project roots;
 provider packages and skills are bounded operators that the control
 plane composes. HEP is the current most mature use case, not the

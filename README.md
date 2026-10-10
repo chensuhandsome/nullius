@@ -5,7 +5,7 @@ English | [中文](./docs/README_zh.md)
 > **Nullius in verba** — "take nobody's word for it."
 > The Royal Society's motto is both the source of this repo's name and its operating rule: no result stands on authority — a conclusion enters the durable record only after independent re-derivation, clean-room reproduction, and adversarial review.
 
-Nullius is a domain-neutral, evidence-first research monorepo. Today it combines a generic lifecycle/control-plane package, local MCP provider packages, and checked-in workflow recipes that can be consumed through `nullius workflow-plan` or internal agent clients. The root is that domain-neutral substrate and control plane; HEP is the most mature provider family and strongest end-to-end workflow example built on it.
+Nullius is an evidence-first harness for agent-assisted research. It gives AI coding agents (Codex, Claude Code, OpenCode, and similar) a lifecycle and control plane for external research projects, plus checked-in skills that admit a durable result only after independent re-derivation, numerical convergence checks, source-grounded citation verification, and cross-model adversarial review; it is domain-neutral by construction. The repository is one pnpm workspace that combines the `nullius` CLI and control-plane package, research skills under `skills/`, local MCP provider packages, and workflow recipes consumed through `nullius workflow-plan` or agent clients. The root is that domain-neutral substrate and control plane; HEP is the most mature provider family and strongest end-to-end workflow example built on it.
 
 
 Native computation binds an enabled A3 approval to the current manifest, scripts, declared input and dependency files, resolved executable bytes, production environment and approval policy. Missing packets, unbound historical approvals and changed inputs require fresh root approval before dispatch; a step-only A3 mismatch fails closed without creating a root request. A requested pause lets the current direct child return, preserves its step evidence and stops the run as paused, including after the last step. Native continuation in place is unsupported: same-run execution and `resume --force` refuse without changing the paused attempt; a new separately approved run is a distinct execution. `execution_status.json` persists one absolute deadline covering preflight, later direct children and local outcome publication; retries keep that deadline, and each child receives the smaller remaining or step limit. Hard CPU, memory and disk constraints are rejected during preparation. These limits do not supervise arbitrary descendants or remote jobs. Canonical state writes compare the caller's read snapshot under a short exclusive lock before appending combined events; stale snapshots refuse, and stale locks require quiescent manual repair. CLI and project transport share canonical external-root admission, including uncreated paths beneath existing symlink ancestors.
@@ -300,6 +300,20 @@ For front-door drift, start with:
 - `packages/hep-mcp/tests/docs/docToolDrift.test.ts`
 - `pnpm --filter @nullius/hep-mcp docs:tool-counts:check`
 - `pnpm --filter @nullius/hep-mcp test -- tests/docs/docToolDrift.test.ts`
+
+## Citation
+
+If Nullius contributed to your work, please cite the version you used. Every GitHub release is archived on Zenodo and receives its own DOI; the DOI for the current release is recorded in [`CITATION.cff`](./CITATION.cff) (GitHub renders it under "Cite this repository"). Until the first archived release is published, cite the repository directly:
+
+```bibtex
+@software{nullius,
+  author  = {Guo, Feng-Kun},
+  title   = {Nullius: an evidence-first harness for agent-assisted research},
+  year    = {2026},
+  version = {0.6.0},
+  url     = {https://github.com/fkguo/nullius}
+}
+```
 
 ## License
 

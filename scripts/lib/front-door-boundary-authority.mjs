@@ -33,7 +33,7 @@ export const FRONT_DOOR_SNIPPETS = [
   {
     relPath: 'README.md',
     snippets: [
-      'Nullius is a domain-neutral, evidence-first research monorepo.',
+      'Nullius is an evidence-first harness for agent-assisted research.',
       '- `nullius` remains the stateful CLI front door for initialized external project roots. Use it for lifecycle state, bounded execution, `workflow-plan`, verification, higher-conclusion gating, main-report structural validation, proposal decisions, and the conversational decision ledger.',
       '- `orch_*` remains the MCP/operator counterpart of that same control plane. It is a host-facing bridge for the control plane, not a competing product identity and not a replacement for the CLI.',
       '- `openalex_*`, `arxiv_*`, `hepdata_*`, `pdg_*`, and `zotero_*` remain bounded atomic MCP operators. They stay MCP-first because they are schema-driven provider atoms, not stateful workflow shells that need mass CLI mirroring.',
@@ -87,7 +87,7 @@ export const FRONT_DOOR_SNIPPETS = [
   {
     relPath: 'docs/README_zh.md',
     snippets: [
-      'Nullius 是一个面向理论研究的 domain-neutral、evidence-first monorepo。',
+      'Nullius 是一个面向 agent 辅助科研的 evidence-first harness。',
       '- `nullius` 继续作为已初始化外部 project root 的 stateful CLI front door。lifecycle state、bounded execution、`workflow-plan`、verification、更高结论 gate、主报告结构校验、proposal decisions 与 conversational decision ledger 都从这里进入。',
       '- `orch_*` 继续作为同一 control plane 的 MCP/operator counterpart。它是 control plane 的 host-facing bridge，不是另一个产品身份，也不是对 CLI 的替代。',
       '- `openalex_*`、`arxiv_*`、`hepdata_*`、`pdg_*`、`zotero_*` 继续作为 bounded atomic MCP operators。它们保持 MCP-first，因为这些 surface 是 schema-driven provider atoms，而不是需要整套 CLI 镜像的 stateful workflow shell。',
@@ -288,8 +288,8 @@ export const FRONT_DOOR_SNIPPETS = [
 ];
 
 export const REQUIRED_PACKAGE_DESCRIPTION_SNIPPETS = [
-  'Nullius ecosystem monorepo',
-  'control-plane',
+  'Nullius: an evidence-first harness for agent-assisted research',
+  'control plane',
   'provider packages',
 ];
 

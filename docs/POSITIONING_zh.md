@@ -9,8 +9,8 @@ surface 层面的保证。
 
 ## 1. Nullius 是什么
 
-一个 domain-neutral、evidence-first 的研究 monorepo，面向 **agent-assisted
-research workflow**。control plane（`nullius` CLI + `orch_*` MCP）是
+一个面向 **agent 辅助科研** 的 evidence-first harness，设计上 domain-neutral，
+以单一仓库交付。control plane（`nullius` CLI + `orch_*` MCP）是
 外部 project root 的长期 lifecycle 权威；provider 包与 skill 是受限算子，
 由 control plane 组合。HEP 是当前最成熟的使用场景，**不是**域边界 — 见 §2。
 

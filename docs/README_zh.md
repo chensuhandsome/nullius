@@ -5,7 +5,7 @@
 > **Nullius in verba**——"勿轻信任何人的断言"。
 > 这句皇家学会会训既是本仓库得名的由来，也是它的运行规则：任何结果都不因权威而成立——结论只有经过独立重推导、干净环境复现与对抗性评审，才允许写入长期记录。
 
-Nullius 是一个面向理论研究的 domain-neutral、evidence-first monorepo。当前仓库把通用 lifecycle/control-plane 包、本地 MCP provider 包，以及可被 agent client 或 shell 入口消费的 checked-in workflow recipes 放在同一个工作台里。root 就是这个 domain-neutral 基座与 control plane；HEP 是在其上构建的、目前最成熟的 provider family 与最强的端到端 workflow 示例。
+Nullius 是一个面向 agent 辅助科研的 evidence-first harness。它为 AI 编码 agent（Codex、Claude Code、OpenCode 等）提供外部研究项目的生命周期与 control plane，并以 checked-in skills 规定：长期结果只有经过独立重推导、数值收敛检查、有出处的引文核验与跨模型对抗评审才被接纳；整体设计 domain-neutral。仓库本身是一个 pnpm workspace，包含 `nullius` CLI 与 control-plane 包、`skills/` 下的研究 skills、本地 MCP provider 包，以及可通过 `nullius workflow-plan` 或 agent client 消费的 workflow recipes。root 就是这个 domain-neutral 基座与 control plane；HEP 是在其上构建的、目前最成熟的 provider family 与最强的端到端 workflow 示例。
 
 
 原生计算将启用的 A3 审批绑定到当前 manifest、脚本、声明的输入与依赖文件、解析后的可执行文件字节、生产环境和审批策略。packet 缺失、历史审批没有内容绑定或输入发生变化时，必须在派发前申请新的根审批；仅有步骤级 A3 而绑定失效时直接拒绝，不创建根审批请求。暂停请求允许当前直接子进程返回，保留该步骤证据，并将整体运行保持为 paused；最后一步也适用。原生计算不支持原地续行：同一运行重入和 `resume --force` 均在修改暂停产物前拒绝；另行审批的新运行是独立执行。`execution_status.json` 持久化一个覆盖 preflight、后续直接子进程与本地结果发布的绝对截止时间，重试不重置，每个子进程使用剩余总预算与步骤上限的较小值。硬 CPU、内存和磁盘约束在 preparation 阶段拒绝；这些限制不负责任意后代进程或远程作业。规范状态写入在短独占锁内比较调用者的读取快照，比较通过后才追加组合事件；过期快照拒绝，过期锁须在写入者停止后人工修复。CLI 与项目传输共用外部根目录准入，并解析未创建路径的已存在软链接祖先。
@@ -300,6 +300,20 @@ HEP 项目与 run 保存领域输入和产物目录，通用生命周期与审�
 - `packages/hep-mcp/tests/docs/docToolDrift.test.ts`
 - `pnpm --filter @nullius/hep-mcp docs:tool-counts:check`
 - `pnpm --filter @nullius/hep-mcp test -- tests/docs/docToolDrift.test.ts`
+
+## 引用
+
+如果 Nullius 对你的工作有所帮助，请引用你实际使用的版本。每个 GitHub Release 都会自动归档到 Zenodo 并获得独立 DOI；当前 Release 的 DOI 记录在 [`CITATION.cff`](../CITATION.cff) 中（GitHub 会在仓库页 "Cite this repository" 处渲染）。在首个归档 Release 发布之前，可直接引用仓库：
+
+```bibtex
+@software{nullius,
+  author  = {Guo, Feng-Kun},
+  title   = {Nullius: an evidence-first harness for agent-assisted research},
+  year    = {2026},
+  version = {0.6.0},
+  url     = {https://github.com/fkguo/nullius}
+}
+```
 
 ## License
 

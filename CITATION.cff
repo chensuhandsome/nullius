@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If Nullius contributed to your work, please cite it using the metadata below. Each GitHub release is archived on Zenodo; prefer the DOI of the exact version you used."
+type: software
+title: "Nullius: an evidence-first harness for agent-assisted research"
+authors:
+  - family-names: Guo
+    given-names: Feng-Kun
+version: 0.6.0
+repository-code: "https://github.com/fkguo/nullius"
+license: MIT
+keywords:
+  - research harness
+  - agent-assisted research
+  - reproducibility
+  - verification
+  - scientific computing
+abstract: >-
+  Nullius is an evidence-first harness for agent-assisted research. It gives AI
+  coding agents a lifecycle and control plane for external research projects,
+  together with checked-in skills that admit a durable result only after
+  independent re-derivation, numerical convergence checks, source-grounded
+  citation verification, and cross-model adversarial review.

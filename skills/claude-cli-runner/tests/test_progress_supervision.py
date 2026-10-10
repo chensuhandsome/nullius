@@ -15,19 +15,40 @@ RUNNER = ROOT / 'scripts/run_claude.sh'
 FAKE = r'''import json, os, subprocess, sys, time
 from pathlib import Path
 sys.stdin.read()
+if os.environ.get('SYSTEM_ARG_PATH'):
+    Path(os.environ['SYSTEM_ARG_PATH']).write_bytes(sys.argv[sys.argv.index('--system-prompt')+1].encode())
 mode = os.environ['CAPTURE_CASE']
 Path(os.environ['STARTED']).write_text(str(os.getpid()))
 def emit(obj):
     print(json.dumps(obj), flush=True)
+blocks = set()
+answer = ''
+final_text = '{"verdict":"PASS","blocking_issues":[],"summary":"done"}'
 def delta(text, thinking=False, uuid=None):
-    obj = {'type':'stream_event', 'event':{'type':'content_block_delta', 'index':0,
+    global answer
+    index = 1 if thinking else 0
+    if not blocks:
+        emit({'type':'stream_event','event':{'type':'message_start','message':{'id':'body'}}})
+    if index not in blocks:
+        emit({'type':'stream_event','event':{'type':'content_block_start','index':index,
+              'content_block':{'type':'thinking' if thinking else 'text','text':''} }})
+        blocks.add(index)
+    if not thinking:
+        answer += text
+    obj = {'type':'stream_event', 'event':{'type':'content_block_delta', 'index':index,
          'delta':{'type':'thinking_delta','thinking':text} if thinking else {'type':'text_delta','text':text}}}
     if uuid is not None:
         obj['uuid'] = uuid
     emit(obj)
 def result():
+    if blocks:
+        for index in sorted(blocks):
+            emit({'type':'stream_event','event':{'type':'content_block_stop','index':index}})
+        emit({'type':'stream_event','event':{'type':'message_stop'}})
+    if answer != final_text and answer:
+        emit({'type':'assistant','message':{'id':'final','content':[{'type':'text','text':final_text}]}})
     emit({'type':'result', 'subtype':'success', 'is_error':False, 'session_id':'fake-session',
-          'result':'{"verdict":"PASS","blocking_issues":[],"summary":"done"}'})
+          'result':final_text})
 if mode == 'buffered':
     time.sleep(.6)
     sys.stdout.write('legacy stdout\n')
@@ -43,7 +64,7 @@ if mode == 'hung':
 emit({'type':'system','subtype':'init','model':'named-one'})
 if mode == 'healthy':
     for i in range(6):
-        delta('token'+str(i))
+        delta(final_text[i*len(final_text)//6:(i+1)*len(final_text)//6])
         delta('PRIVATE_REASONING_'+str(i), thinking=True)
         time.sleep(.1)
     result()
@@ -54,12 +75,12 @@ elif mode == 'hard_progress':
     result()
 elif mode == 'duplicates':
     for i in range(100):
-        delta('same')
+        delta('same', uuid='duplicate-event')
         emit({'type':'system','subtype':'heartbeat'})
         time.sleep(.03)
-elif mode == 'distinct_repeated_text':
+elif mode in ('distinct_repeated_text','unidentified_repeated_text'):
     for i in range(6):
-        delta('same', uuid='event-'+str(i))
+        delta('same', uuid='event-'+str(i) if mode=='distinct_repeated_text' else None)
         time.sleep(.1)
     result()
 elif mode == 'same_id_replays':
@@ -121,7 +142,9 @@ def setup(tmp_path, case, extra=()):
     out = tmp_path / 'answer'
     env = os.environ.copy()
     env.update(PATH=str(bindir)+os.pathsep+env.get('PATH',''), CAPTURE_CASE=case,
-               STARTED=str(tmp_path/'started'), MARKER=str(tmp_path/'marker'))
+               STARTED=str(tmp_path/'started'), MARKER=str(tmp_path/'marker'),
+               http_proxy='http://127.0.0.1:7890', https_proxy='http://127.0.0.1:7890',
+               HTTP_PROXY='http://127.0.0.1:7890', HTTPS_PROXY='http://127.0.0.1:7890')
     cmd = ['bash',str(RUNNER),'--prompt-file',str(prompt),'--system-prompt-file',str(system),
            '--out',str(out),'--max-retries','1','--expected-secs','.1', *extra]
     return cmd, env, out
@@ -180,8 +203,9 @@ def test_duplicate_events_and_heartbeats_do_not_advance(tmp_path):
     assert not out.exists()
 
 
-def test_distinct_event_ids_advance_even_when_text_repeats(tmp_path):
-    proc, out = run(tmp_path, 'distinct_repeated_text', ['--live-capture','--inactivity-secs','.15','--inactivity-grace-secs','.15'])
+@pytest.mark.parametrize('case', ['distinct_repeated_text','unidentified_repeated_text'])
+def test_distinct_event_ids_advance_even_when_text_repeats(tmp_path, case):
+    proc, out = run(tmp_path, case, ['--live-capture','--inactivity-secs','.15','--inactivity-grace-secs','.15'])
     assert proc.returncode == 0, proc.stderr
     assert progress(out)['advancing_events'] == 6
     assert progress(out)['answer_chars'] == 24
@@ -338,3 +362,13 @@ def test_live_capture_does_not_mirror_private_events_into_ambient_legacy_logs(tm
     assert list(ambient.glob('*')) == []
     root, _ = receipt(out)
     assert 'PRIVATE_REASONING' in (root/'attempt_1.events.jsonl').read_text()
+
+@pytest.mark.parametrize('ending',['\n','\r\n','\n\n'])
+def test_actual_system_prompt_argv_preserves_original_terminal_newlines(tmp_path,ending):
+    cmd,env,out=setup(tmp_path,'silent_stream',['--live-capture'])
+    original=('Neutral original system λ'+ending).encode()
+    (tmp_path/'system').write_bytes(original)
+    captured=tmp_path/'actual-system-argv';env['SYSTEM_ARG_PATH']=str(captured)
+    proc=subprocess.run(cmd,env=env,capture_output=True,text=True,timeout=8)
+    assert proc.returncode==0,proc.stderr
+    assert captured.read_bytes()==original

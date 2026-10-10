@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 _LIVE: dict[int, tuple[object, subprocess.Popen]] = {}
+from complete_assistant_text import validate_stream_report
+
 _DOMAIN = b"nullius-runtime-capture-observation\x00"
 _MEMBER_DOMAIN = b"nullius-runtime-member-episode\x00"
 _MEMBER_EPISODES: dict[int, dict] = {}
@@ -288,6 +290,11 @@ def _successful_budget(budget: dict, hashes: list[str]) -> None:
         raise ValueError("unavailable: capture is not the successful complete original request")
 
 
+def _unchanged_original_request(state: dict) -> None:
+    if [_identity(p) for p in state["input_paths"]] != list(state["inputs"].values()):
+        raise ValueError("unavailable: original request changed during invocation")
+
+
 def _finish(state: dict | None, proc: subprocess.Popen) -> dict | None:
     """Called only after the actual bound process has been reaped successfully."""
     if state is None:
@@ -298,10 +305,9 @@ def _finish(state: dict | None, proc: subprocess.Popen) -> dict | None:
     if proc.returncode != 0 or proc.poll() != 0:
         return None
     hashes = [entry["sha256"] for entry in state["inputs"].values()]
-    if [_identity(p) for p in state["input_paths"]] != list(state["inputs"].values()):
-        raise ValueError("unavailable: original request changed during invocation")
+    _unchanged_original_request(state)
     current = set(Path(str(state["output"]) + ".attempts").glob("run.*")) - state["prior"]
-    report = state["output"].read_text(encoding="utf-8")
+    report = state["output"].read_bytes().decode("utf-8")
     if not report.strip():
         return None
     if len(current) > 1:
@@ -316,11 +322,10 @@ def _finish(state: dict | None, proc: subprocess.Popen) -> dict | None:
             raise ValueError("unavailable: capture already contains an authored observation")
         _successful_budget(budget, hashes)
         files = _capture_files(root)
-        results = [json.loads((root / name).read_text(encoding="utf-8")) for name in files if name.endswith(".events.result.json")]
-        if not any(r.get("type") == "result" and r.get("is_error") is False and isinstance(r.get("result"), str) and r["result"].strip() == report.strip() for r in results):
-            raise ValueError("unavailable: captured result differs from current report")
+        complete_output = validate_stream_report(root, report)
         capture = {"budget_relative": str(receipt.relative_to(state["output"].parent)),
-                   "budget_sha256": hashlib.sha256(_canonical(budget)).hexdigest(), "files": files}
+                   "budget_sha256": hashlib.sha256(_canonical(budget)).hexdigest(), "files": files,
+                   "complete_output": complete_output}
     payload = {"kind": "runtime_capture_observation", "observation_id": str(uuid.uuid4()),
                "issued_at": datetime.now(timezone.utc).isoformat(), "process_id": proc.pid,
                "process_exit_code": proc.returncode, "request": state["inputs"],
@@ -396,4 +401,7 @@ def verify_capture_observation(budget_path: Path | None, report_path: Path, inpu
             raise ValueError("unavailable: runtime observation budget mismatch")
         if _capture_files(budget_path.parent) != capture["files"]:
             raise ValueError("unavailable: runtime observation captured/report bytes mismatch")
-    return {"valid": True, "capacity_policy": policy, "observation_id": payload["observation_id"], "request": payload["request"], "report": payload["report"], "working_directory": payload["working_directory"]}
+        if "complete_output" in capture:
+            if validate_stream_report(budget_path.parent, report_path.read_bytes().decode("utf-8")) != capture["complete_output"]:
+                raise ValueError("unavailable: original complete-output binding mismatch")
+    return {"valid": True, "capacity_policy": policy, "observation_id": payload["observation_id"], "request": payload["request"], "report": payload["report"], "working_directory": payload["working_directory"], "complete_output": capture.get("complete_output") if capture else None}

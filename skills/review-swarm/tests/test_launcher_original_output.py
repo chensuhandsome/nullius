@@ -28,7 +28,7 @@ out=Path(a.out)
 ''' + f'body={body!r}\nout.write_bytes(body.encode("utf8"))\n' + ('''
 root=Path(str(out)+'.attempts')/'run.current';root.mkdir(parents=True)
 budget={'status':'completed','runner_exit_code':0,'input_sha256':[hashlib.sha256(Path(x).read_bytes()).hexdigest() for x in (a.system_prompt_file,a.prompt_file)],'attempts':[{'status':'exited','exit_code':0}]}
-event={'type':'result','is_error':False,'result':body,'usage':{'input_tokens':31,'output_tokens':11}}
+event={'type':'result','subtype':'success','is_error':False,'result':body,'usage':{'input_tokens':31,'output_tokens':11}}
 (root/'budget.json').write_text(json.dumps(budget))
 (root/'attempt_1.events.result.json').write_text(json.dumps(event))
 (root/'attempt_1.events.jsonl').write_text(json.dumps(event)+'\\n')

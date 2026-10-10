@@ -14,6 +14,7 @@ _CAPTURE_BIN = Path(__file__).resolve().parents[3] / "review-swarm/scripts/bin"
 if str(_CAPTURE_BIN) not in sys.path:
     sys.path.insert(0, str(_CAPTURE_BIN))
 from runtime_capture_observation import verify_capture_observation
+from complete_assistant_text import validate_stream_report
 
 PROTOCOL_RESERVE = 8192
 OUTPUT_RESERVE = 32768
@@ -65,11 +66,16 @@ def validate_request_capacity(system: str, prompt: str, invocation: dict, budget
                     or not any(isinstance(a, dict) and a.get("status") == "exited" and type(a.get("exit_code")) is int and a["exit_code"] == 0 for a in attempts)):
                 raise ValueError("unavailable: capacity receipt is not the exact successful original request")
     original_hashes = sorted(hashlib.sha256(text.encode("utf-8")).hexdigest() for text in (system, prompt))
-    verify_capture_observation(receipt_path, output, original_hashes,
+    observation = verify_capture_observation(receipt_path, output, original_hashes,
         str(expected_working_directory) if expected_working_directory is not None else None,
         expected_context_tokens=budgets["context_tokens"])
     event_files = list(capture_root.glob("*.events.jsonl")) if capture_root else []
-    result_files = list(capture_root.glob("*.events.result.json")) if capture_root else []
+    result_files = []
+    if capture_root is not None:
+        complete = validate_stream_report(capture_root, output.read_bytes().decode("utf-8"))
+        if observation.get("complete_output") != complete:
+            raise ValueError("unavailable: complete output is not bound by the original runtime observation")
+        result_files = [capture_root / complete["terminal"]]
     for file in event_files:
         for line in file.read_text(encoding="utf-8").splitlines():
             try:
@@ -82,8 +88,6 @@ def validate_request_capacity(system: str, prompt: str, invocation: dict, budget
         event = json.loads(file.read_text(encoding="utf-8"))
         if event.get("type") != "result" or event.get("is_error") is not False:
             continue
-        if not isinstance(event.get("result"), str) or event["result"].strip() != output.read_text(encoding="utf-8").strip():
-            raise ValueError("unavailable: captured result does not bind the actual current output")
         usage = event.get("usage", {})
         fields = [usage.get(k, 0) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")]
         emitted = usage.get("output_tokens", 0)

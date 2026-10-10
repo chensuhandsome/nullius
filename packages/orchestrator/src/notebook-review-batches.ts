@@ -256,6 +256,12 @@ export function assessNotebookRequestCapacity(runDir: string, runId: string, cap
       || !budget.attempts?.some((attempt: any) => attempt.status === 'exited' && attempt.exit_code === 0)) throw new NotebookRequestCapacityError('captured token usage is not bound to the exact successful original request');
     captureDir = path.dirname(path.resolve(receipt));
   }
+  const completeOutput = observed.complete_output;
+  if (captureDir && (!obj(completeOutput) || typeof completeOutput.terminal !== 'string' || typeof completeOutput.events !== 'string'
+    || !capturedRefs.some(ref => resolveVerifiedRunArtifact(runDir, runId, ref, 'complete original terminal').filePath === path.join(captureDir!, completeOutput.terminal))
+    || !capturedRefs.some(ref => resolveVerifiedRunArtifact(runDir, runId, ref, 'complete original events').filePath === path.join(captureDir!, completeOutput.events)))) {
+    throw new NotebookRequestCapacityError('complete original output is not bound to frozen runtime capture evidence');
+  }
   let measured: { input_tokens: number; output_tokens: number } | undefined;
   for (const ref of capturedRefs) {
     const captured = resolveVerifiedRunArtifact(runDir, runId, ref, 'batch token evidence');
@@ -266,10 +272,10 @@ export function assessNotebookRequestCapacity(runDir: string, runId: string, cap
         if (event.type === 'system' && /compact/.test(event.subtype ?? '')) throw new NotebookRequestCapacityError('backend compacted original review context; original-text coverage is unavailable');
       }
     }
-    if (!captured.filePath.endsWith('.events.result.json')) continue;
+    if (captured.filePath !== path.join(captureDir, completeOutput.terminal)) continue;
     const event = JSON.parse(captured.bytes.toString('utf8')); const usage = event.usage;
     if (event.type !== 'result' || event.is_error !== false) continue;
-    if (typeof event.result !== 'string' || event.result.trim() !== raw.bytes.toString('utf8').trim()) throw new NotebookRequestCapacityError('captured capacity result differs from the executed original report');
+    if (typeof event.result !== 'string' || digest(Buffer.from(event.result, 'utf8')) !== completeOutput.terminal_text_sha256) throw new NotebookRequestCapacityError('captured capacity terminal differs from the complete original output binding');
     if (!obj(usage)) continue;
     const counts = [usage.input_tokens, usage.cache_creation_input_tokens ?? 0, usage.cache_read_input_tokens ?? 0, usage.output_tokens];
     if (counts.every(n => Number.isSafeInteger(n) && n >= 0) && counts[0] + counts[1] + counts[2] > 0 && counts[3] > 0) {

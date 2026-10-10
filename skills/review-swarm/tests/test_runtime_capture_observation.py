@@ -29,7 +29,7 @@ def observed(tmp_path, capture=True, exit_code=0, context_tokens=None):
     receipt = root / "budget.json"
     budget = {"status":"completed", "runner_exit_code":0, "input_sha256":hashes,
               "attempts":[{"status":"exited","exit_code":0}], "complete_budget_field":"original"}
-    result = {"type":"result","is_error":False,"result":"Original full report λ\n", "usage":{"input_tokens":17,"output_tokens":4}}
+    result = {"type":"result","subtype":"success","is_error":False,"result":"Original full report λ\n", "usage":{"input_tokens":17,"output_tokens":4}}
     script = project / "runner.py"
     code = 'from pathlib import Path\nimport sys\n'
     code += f'Path({str(output)!r}).write_text({result["result"]!r})\n'

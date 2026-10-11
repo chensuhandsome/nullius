@@ -456,6 +456,29 @@ describe('inspire_search export mode refuses parameters that do not apply', () =
   });
 });
 
+describe('a removed include_explanation argument is refused rather than silently dropped', () => {
+  it('hep_project_query_evidence with include_explanation fails instead of returning plain lexical hits', async () => {
+    const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-explain-')));
+    try {
+      const projectRoot = makeProjectRoot(tmpDir);
+      const alias = path.join(tmpDir, 'alias');
+      fs.symlinkSync(projectRoot, alias, 'dir');
+      const created = await handleToolCall('hep_project_create', { project_root: alias, name: 'explain' });
+      const projectId = (JSON.parse(created.content[0]!.text) as { project_id: string }).project_id;
+      const plain = await handleToolCall('hep_project_query_evidence', { project_root: alias, project_id: projectId, query: 'x' });
+      expect(plain.isError).toBeFalsy();
+      const result = await handleToolCall('hep_project_query_evidence', {
+        project_root: alias, project_id: projectId, query: 'x', include_explanation: true,
+      });
+      const error = errorOf(result);
+      expect(error.code).toBe('INVALID_PARAMS');
+      expect(error.message).toMatch(/include_explanation is no longer supported/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('a run_id argument is refused rather than silently dropped', () => {
   it.each([
     ['inspire_search', { query: 't:x', run_id: 'run_abc' }],

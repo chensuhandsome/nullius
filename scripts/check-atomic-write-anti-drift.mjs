@@ -145,31 +145,6 @@ const BOUND_CALL_EXCEPTIONS = [
     line: "const out = fs.createWriteStream(catalogPath, { encoding: 'utf-8' });",
     reason: 'evidence catalog writer; the evidence tools are scheduled for removal',
   },
-  {
-    path: 'packages/hep-mcp/src/core/hep/measurements.ts',
-    line: "const out = fs.createWriteStream(outPath, { encoding: 'utf-8' });",
-    reason: 'run-artifact writer; hep-mcp run-artifact paths are being rewritten in a separate change',
-  },
-  {
-    path: 'packages/hep-mcp/src/core/inspire/resolveIdentifiers.ts',
-    line: "const out = fs.createWriteStream(mappingPath, { encoding: 'utf-8' });",
-    reason: 'run-artifact writer; hep-mcp run-artifact paths are being rewritten in a separate change',
-  },
-  {
-    path: 'packages/hep-mcp/src/core/inspire/searchExport.ts',
-    line: "const out = fs.createWriteStream(exportPath, { encoding: 'utf-8' });",
-    reason: 'run-artifact writer; hep-mcp run-artifact paths are being rewritten in a separate change',
-  },
-  {
-    path: 'packages/hep-mcp/src/core/writing/latexCompileGate.ts',
-    line: "const stdoutStream = fs.createWriteStream(stdoutPath, { flags: 'w' });",
-    reason: 'run-artifact log stream; hep-mcp run-artifact paths are being rewritten in a separate change',
-  },
-  {
-    path: 'packages/hep-mcp/src/core/writing/latexCompileGate.ts',
-    line: "const stderrStream = fs.createWriteStream(stderrPath, { flags: 'w' });",
-    reason: 'run-artifact log stream; hep-mcp run-artifact paths are being rewritten in a separate change',
-  },
 ];
 
 function escapeRegExp(text) {

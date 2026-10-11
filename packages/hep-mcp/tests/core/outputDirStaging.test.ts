@@ -16,6 +16,7 @@ const closeFault = vi.hoisted(() => ({ armed: false }));
 const fstatFault = vi.hoisted(() => ({ armed: false }));
 const linkFault = vi.hoisted(() => ({ failOnCall: 0, calls: 0, before: (() => {}) as () => void }));
 const unlinkFault = vi.hoisted(() => ({ failNext: 0 }));
+const writeFault = vi.hoisted(() => ({ armed: false }));
 vi.mock('fs', async importOriginal => {
   const actual = await importOriginal<typeof import('fs')>();
   const closeSync = (fd: number): void => {
@@ -47,7 +48,14 @@ vi.mock('fs', async importOriginal => {
     }
     actual.unlinkSync(target);
   };
-  const patched = { closeSync, fstatSync, linkSync, unlinkSync };
+  const writeSync = ((fd: number, ...rest: any[]) => {
+    if (writeFault.armed) {
+      writeFault.armed = false;
+      throw Object.assign(new Error('simulated write failure'), { code: 'ENOSPC' });
+    }
+    return (actual.writeSync as any)(fd, ...rest);
+  }) as typeof actual.writeSync;
+  const patched = { closeSync, fstatSync, linkSync, unlinkSync, writeSync };
   return { ...actual, ...patched, default: { ...actual, ...patched } };
 });
 
@@ -66,6 +74,7 @@ describe('output staging files are created exclusively', () => {
     linkFault.calls = 0;
     linkFault.before = () => {};
     unlinkFault.failNext = 0;
+    writeFault.armed = false;
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-staging-')));
     const projectRoot = makeProjectRoot(tmpDir);
     alias = path.join(tmpDir, 'alias');
@@ -109,7 +118,8 @@ describe('output staging files are created exclusively', () => {
     });
   });
 
-  it('reports the files it could not remove when publishing fails, instead of claiming all or none', async () => {
+  // Root ignores directory permissions, so this case cannot be built there.
+  it.skipIf(process.getuid?.() === 0)('reports the files it could not remove when publishing fails, instead of claiming all or none', async () => {
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('stuck');
       const batch = new OutputBatch(out);
@@ -128,13 +138,14 @@ describe('output staging files are created exclusively', () => {
     });
   });
 
-  it('names the staging files it could not remove when a call is discarded, keeping the original error', async () => {
+  // Root ignores directory permissions, so this case cannot be built there.
+  it.skipIf(process.getuid?.() === 0)('names the staging files it could not remove when a call is discarded, keeping the original error', async () => {
     const { McpError } = await import('@nullius/shared');
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('kept');
       const batch = new OutputBatch(out);
       batch.json('a.json', { x: 1 });
-      batch.stream('b.jsonl', 'application/x-ndjson');
+      batch.openFile('b.jsonl', 'application/x-ndjson');
       fs.chmodSync(out.dir, 0o555);
       try {
         const reported = batch.discard(new McpError('INVALID_PARAMS', 'the original failure', { detail: 1 })) as InstanceType<typeof McpError>;
@@ -215,19 +226,35 @@ describe('output staging files are created exclusively', () => {
     });
   });
 
-  it('reports a streamed staging file that a stream error could not remove, when the call is discarded', async () => {
+  it('throws a failed piecewise write at once and removes its staging file', async () => {
     await withHepDataRoot(alias, async () => {
-      const out = resolveOutputDir('stream-kept');
+      const out = resolveOutputDir('midway');
       const batch = new OutputBatch(out);
-      const file = batch.stream('records.jsonl', 'application/x-ndjson');
-      // Every removal attempt fails: the stream's error handler, finish, and discard.
+      const file = batch.openFile('records.jsonl', 'application/x-ndjson');
+      file.write('{"a":1}\n');
+      writeFault.armed = true;
+      expect(() => file.write('{"b":2}\n')).toThrow('simulated write failure');
+      expect(() => file.finish()).toThrow(/already finished or discarded/);
+      expect(fs.readdirSync(out.dir)).toEqual([]);
+      const cause = new Error('cause');
+      expect(batch.discard(cause)).toBe(cause);
+    });
+  });
+
+  it('reports a piecewise file whose staging file a failed write could not remove, when the call is discarded', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('write-file-kept');
+      const batch = new OutputBatch(out);
+      const file = batch.openFile('records.jsonl', 'application/x-ndjson');
+      // Every removal attempt fails: the write's own cleanup and discard.
       unlinkFault.failNext = 100;
       try {
-        file.stream.destroy(new Error('simulated disk full'));
-        const thrown = await file.finish().then(() => null, (e: unknown) => e);
-        expect((thrown as Error).message).toBe('simulated disk full');
+        writeFault.armed = true;
+        let thrown: unknown;
+        try { file.write('{"a":1}\n'); } catch (error) { thrown = error; }
+        expect((thrown as Error).message).toBe('simulated write failure');
         const reported = batch.discard(thrown) as Error & { data?: { staging_left?: string[] } };
-        expect(reported.message).toMatch(/^simulated disk full; staging files could not be removed/);
+        expect(reported.message).toMatch(/^simulated write failure; staging files could not be removed/);
         expect(reported.data?.staging_left).toHaveLength(1);
       } finally {
         unlinkFault.failNext = 0;

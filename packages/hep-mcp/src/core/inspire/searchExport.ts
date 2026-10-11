@@ -205,8 +205,8 @@ export async function hepInspireSearchExport(params: {
   });
 
   try {
-    const exportFile = batch.stream(exportName, outputFormat === 'jsonl' ? 'application/x-ndjson' : 'application/json');
-    const out = exportFile.stream;
+    const exportFile = batch.openFile(exportName, outputFormat === 'jsonl' ? 'application/x-ndjson' : 'application/json');
+    const out = exportFile;
     let wroteAny = false;
 
     const writeItem = (paper: unknown) => {
@@ -293,7 +293,7 @@ export async function hepInspireSearchExport(params: {
       out.write('\n]\n');
     }
 
-    const exportRef = await exportFile.finish();
+    const exportRef = exportFile.finish();
     const total = largestTotal;
     const hasMore = total > exported;
     // A next-page URL continues the export only if this export ended on a

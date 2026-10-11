@@ -152,7 +152,8 @@ describe('output_dir lies inside the admitted project root, through real directo
     expect(errorOf(result).code).toBe('INVALID_PARAMS');
     expect(api.search).not.toHaveBeenCalled();
     expect(api.getPaper).not.toHaveBeenCalled();
-    expect(fs.existsSync(path.join(tmpDir, 'escape.jsonl'))).toBe(false);
+    // '../escape.jsonl' under output_dir 'out' would land in the project root.
+    expect(fs.existsSync(path.join(projectRoot, 'escape.jsonl'))).toBe(false);
   });
 
   it('refuses the project root itself spelled through the alias', async () => {
@@ -177,6 +178,7 @@ describe('output_dir lies inside the admitted project root, through real directo
       meta_artifact_name: 'map_meta.json',
     }));
     expect(error.message).toMatch(/symbolic link/);
+    expect(api.getPaper).not.toHaveBeenCalled();
     expect(fs.readFileSync(victim, 'utf-8')).toBe('original\n');
   });
 
@@ -235,28 +237,17 @@ describe('output files are checked again at write time and streamed outputs fail
     expect(fs.readdirSync(outside)).toEqual([]);
   });
 
-  it('refuses a streamed output in a directory it cannot write, with no residue', async () => {
+  // Root ignores directory permissions, so the read-only-directory case cannot be built there.
+  it.skipIf(process.getuid?.() === 0)('refuses a piecewise output in a directory it cannot write, with no residue', async () => {
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('locked');
       const batch = new OutputBatch(out);
       fs.chmodSync(out.dir, 0o555);
       try {
-        expect(() => batch.stream('records.jsonl', 'application/x-ndjson')).toThrow(expect.objectContaining({ code: 'EACCES' }));
+        expect(() => batch.openFile('records.jsonl', 'application/x-ndjson')).toThrow(expect.objectContaining({ code: 'EACCES' }));
       } finally {
         fs.chmodSync(out.dir, 0o755);
       }
-      expect(temporaryFiles(out.dir)).toEqual([]);
-      expect(fs.existsSync(path.join(out.dir, 'records.jsonl'))).toBe(false);
-    });
-  });
-
-  it('rejects finish and removes the staging file when a write fails midway', async () => {
-    await withHepDataRoot(alias, async () => {
-      const out = resolveOutputDir('midway');
-      const file = new OutputBatch(out).stream('records.jsonl', 'application/x-ndjson');
-      file.stream.write('{"a":1}\n');
-      file.stream.destroy(new Error('simulated disk full'));
-      await expect(file.finish()).rejects.toThrow('simulated disk full');
       expect(temporaryFiles(out.dir)).toEqual([]);
       expect(fs.existsSync(path.join(out.dir, 'records.jsonl'))).toBe(false);
     });
@@ -266,9 +257,9 @@ describe('output files are checked again at write time and streamed outputs fail
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('final');
       const batch = new OutputBatch(out);
-      const file = batch.stream('records.jsonl', 'application/x-ndjson');
-      file.stream.write('{"a":1}\n');
-      await file.finish();
+      const file = batch.openFile('records.jsonl', 'application/x-ndjson');
+      file.write('{"a":1}\n');
+      file.finish();
       fs.mkdirSync(path.join(out.dir, 'records.jsonl'));
       await expect(batch.publish()).rejects.toThrow(/non-file entry/);
       expect(temporaryFiles(out.dir)).toEqual([]);
@@ -293,19 +284,21 @@ describe('output files are checked again at write time and streamed outputs fail
     expect(fs.readdirSync(outside)).toEqual([]);
   });
 
-  it('does not keep, publish or delete through a swapped directory when a stream finishes', async () => {
+  it('does not publish or delete through a directory swapped for a symlink after the file was written', async () => {
     const outside = path.join(tmpDir, 'outside');
     fs.mkdirSync(outside);
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('swap');
-      const file = new OutputBatch(out).stream('records.jsonl', 'application/x-ndjson');
-      file.stream.write('{"a":1}\n');
+      const batch = new OutputBatch(out);
+      const file = batch.openFile('records.jsonl', 'application/x-ndjson');
+      file.write('{"a":1}\n');
+      file.finish();
       const temp = temporaryFiles(out.dir)[0]!;
       const moved = path.join(tmpDir, 'swap-moved');
       fs.renameSync(out.dir, moved);
       fs.symlinkSync(outside, out.dir, 'dir');
       fs.writeFileSync(path.join(outside, temp), 'sentinel');
-      await expect(file.finish()).rejects.toThrow(/replaced or is unknown/);
+      await expect(batch.publish()).rejects.toThrow(/symbolic link/);
       // The same-named file behind the symlink is untouched; the real
       // staging file stays where it was created.
       expect(fs.readFileSync(path.join(outside, temp), 'utf-8')).toBe('sentinel');
@@ -314,62 +307,65 @@ describe('output files are checked again at write time and streamed outputs fail
     });
   });
 
-  it('never keeps or deletes a same-named file in a real directory that replaced the output directory', async () => {
+  it('never publishes or deletes a same-named file in a real directory that replaced the output directory', async () => {
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('replaced');
-      const file = new OutputBatch(out).stream('records.jsonl', 'application/x-ndjson');
-      file.stream.write('{"genuine":true}\n');
+      const batch = new OutputBatch(out);
+      const file = batch.openFile('records.jsonl', 'application/x-ndjson');
+      file.write('{"genuine":true}\n');
+      file.finish();
       const temp = temporaryFiles(out.dir)[0]!;
       const moved = path.join(tmpDir, 'replaced-moved');
       fs.renameSync(out.dir, moved);
       fs.mkdirSync(out.dir);
       fs.writeFileSync(path.join(out.dir, temp), '{"stale":true}\n');
-      await expect(file.finish()).rejects.toThrow(/replaced or is unknown/);
+      await expect(batch.publish()).rejects.toThrow(/staged output file was replaced/);
       expect(fs.existsSync(path.join(out.dir, 'records.jsonl'))).toBe(false);
       expect(fs.readFileSync(path.join(out.dir, temp), 'utf-8')).toBe('{"stale":true}\n');
       expect(fs.existsSync(path.join(moved, temp))).toBe(true);
     });
   });
 
-  it('leaves no staging file when discarded right after the stream was created or while writing', async () => {
+  it('leaves no staging file when discarded right after opening or while writing', async () => {
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('early');
       const first = new OutputBatch(out);
-      first.stream('records.jsonl', 'application/x-ndjson');
+      first.openFile('records.jsonl', 'application/x-ndjson');
       expect(temporaryFiles(out.dir)).toHaveLength(1);
       first.discard();
       expect(temporaryFiles(out.dir)).toEqual([]);
       const second = new OutputBatch(out);
-      second.stream('records.jsonl', 'application/x-ndjson').stream.write('{"a":1}\n');
+      second.openFile('records.jsonl', 'application/x-ndjson').write('{"a":1}\n');
       second.discard();
-      await new Promise(resolve => setTimeout(resolve, 50));
-      expect(temporaryFiles(out.dir)).toEqual([]);
       expect(fs.readdirSync(out.dir)).toEqual([]);
     });
   });
 
-  it('rejects finish on a discarded stream at once instead of waiting forever', async () => {
+  it('refuses to write or finish a file of a discarded call', async () => {
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('gone');
       const batch = new OutputBatch(out);
-      const file = batch.stream('records.jsonl', 'application/x-ndjson');
-      file.stream.write('{"a":1}\n');
+      const file = batch.openFile('records.jsonl', 'application/x-ndjson');
+      file.write('{"a":1}\n');
       batch.discard();
-      await expect(file.finish()).rejects.toThrow(/discarded before it finished/);
+      expect(() => file.write('{"b":2}\n')).toThrow(/already finished or discarded/);
+      expect(() => file.finish()).toThrow(/already finished or discarded/);
       expect(temporaryFiles(out.dir)).toEqual([]);
     });
   });
 
-  it('publishes a streamed file and leaves no staging file', async () => {
+  it('publishes a piecewise-written file and leaves no staging file', async () => {
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('ok');
       const batch = new OutputBatch(out);
-      const file = batch.stream('records.jsonl', 'application/x-ndjson');
-      file.stream.write('{"a":1}\n');
-      await file.finish();
+      const file = batch.openFile('records.jsonl', 'application/x-ndjson');
+      file.write('{"a":1}\n');
+      file.write('{"b":2}\n');
+      file.finish();
+      expect(() => file.write('late')).toThrow(/already finished or discarded/);
       expect(fs.existsSync(path.join(out.dir, 'records.jsonl'))).toBe(false);
       await batch.publish();
-      expect(fs.readFileSync(path.join(out.dir, 'records.jsonl'), 'utf-8')).toBe('{"a":1}\n');
+      expect(fs.readFileSync(path.join(out.dir, 'records.jsonl'), 'utf-8')).toBe('{"a":1}\n{"b":2}\n');
       expect(temporaryFiles(out.dir)).toEqual([]);
     });
   });
@@ -520,6 +516,7 @@ describe('identifier resolution does not turn a refused write into a per-identif
 
     const result = await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids', identifiers: ['123'] });
     expect(errorOf(result).code).toBe('UNSAFE_FS');
+    expect(api.getPaper).not.toHaveBeenCalled();
     expect(fs.readFileSync(victim, 'utf-8')).toBe('original');
   });
 

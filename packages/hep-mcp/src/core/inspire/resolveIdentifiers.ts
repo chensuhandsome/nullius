@@ -282,8 +282,8 @@ export async function hepInspireResolveIdentifiers(params: {
   };
 
   try {
-    const mappingFile = batch.stream(mappingName, 'application/x-ndjson');
-    const out = mappingFile.stream;
+    const mappingFile = batch.openFile(mappingName, 'application/x-ndjson');
+    const out = mappingFile;
 
     for (const input of identifiers) {
       const classified = classifyIdentifier(input);
@@ -339,7 +339,7 @@ export async function hepInspireResolveIdentifiers(params: {
       out.write(`${JSON.stringify(item)}\n`);
     }
 
-    artifacts.push(await mappingFile.finish());
+    artifacts.push(mappingFile.finish());
 
     const externalApiCallsRef = batch.json(indexName, {
       version: 1,

@@ -433,105 +433,75 @@ export class OutputBatch {
   }
 
   /**
-   * A streamed output file, staged like the others. The staging file is
-   * created (exclusively) and identified before the stream exists, so it can
-   * be removed at any moment, whatever the stream is doing. A stream error
-   * while writing or finishing is held until `finish`, which then rejects
-   * with it; on every failure path the staging file is removed under the
-   * identity rule.
+   * An output file written piece by piece, staged like the others. The
+   * staging file is created exclusively and identified before anything is
+   * written, and every piece is written synchronously to that descriptor,
+   * so a write error is thrown by `write` itself. `finish` flushes and
+   * closes the file and stages it for publication. A failed write or finish
+   * removes the staging file (a failed removal leaves it tracked, and
+   * `discard` reports it); the file cannot be written or finished again.
    */
-  stream(name: string, mimeType: string): { stream: fs.WriteStream; finish: () => Promise<OutputArtifactRef> } {
+  openFile(name: string, mimeType: string): { write: (text: string) => void; finish: () => OutputArtifactRef } {
     const target = this.claim(name);
     const temp = stagingPath(target);
     const fd = fs.openSync(temp, 'wx');
-    let created: FileIdentity;
+    let identity: FileIdentity;
     try {
       const stat = fs.fstatSync(fd);
-      created = { dev: stat.dev, ino: stat.ino };
+      identity = { dev: stat.dev, ino: stat.ino };
     } catch (error) {
       // Identity unknown: the file is closed but never deleted, and its path is reported.
       try { fs.closeSync(fd); } catch { /* the fstat failure is reported */ }
       throw unidentifiedStagingError(this.out, temp, error);
     }
-    this.stagingFiles.set(temp, { name, identity: created });
-    let failure: unknown = null;
-    let aborted = false;
-    // A removal that fails leaves the file tracked; discard reports it.
-    const removeTemp = (): void => { this.removeStaging(temp); };
-    const stream = fs.createWriteStream(temp, { fd, encoding: 'utf-8' });
+    this.stagingFiles.set(temp, { name, identity });
+    let open = true;
+    const close = (): unknown => {
+      if (!open) return null;
+      open = false;
+      try {
+        fs.closeSync(fd);
+        return null;
+      } catch (error) {
+        return error;
+      }
+    };
     const abort = (): void => {
-      aborted = true;
       this.unfinished.delete(abort);
-      try { stream.destroy(); } catch { /* best effort */ }
-      removeTemp();
+      close();
+      this.removeStaging(temp);
     };
     this.unfinished.add(abort);
-    // Listen from the start: an error while the caller is still producing
-    // bytes must neither go unhandled nor leave the staging file behind.
-    stream.on('error', error => {
-      failure ??= error;
-      removeTemp();
-    });
-    const finish = (): Promise<OutputArtifactRef> => new Promise<OutputArtifactRef>((resolve, reject) => {
-      const fail = (error: unknown): void => {
-        this.unfinished.delete(abort);
-        removeTemp();
-        reject(error);
-      };
+    const notOpen = (): Error => new Error('Internal: this output file was already finished or discarded');
+    const write = (text: string): void => {
+      if (!open) throw notOpen();
+      try {
+        const buffer = Buffer.from(text, 'utf-8');
+        let offset = 0;
+        while (offset < buffer.length) offset += fs.writeSync(fd, buffer, offset, buffer.length - offset);
+      } catch (error) {
+        abort();
+        throw error;
+      }
+    };
+    const finish = (): OutputArtifactRef => {
+      if (!open) throw notOpen();
+      let failure: unknown = null;
+      try {
+        fs.fsyncSync(fd);
+      } catch (error) {
+        failure = error;
+      }
+      failure ??= close();
+      this.unfinished.delete(abort);
       if (failure !== null) {
-        fail(failure);
-        return;
+        this.removeStaging(temp);
+        throw failure;
       }
-      // A discarded stream never finishes; say so instead of waiting forever.
-      if (aborted) {
-        fail(new Error('Internal: this output stream was discarded before it finished'));
-        return;
-      }
-      // A stream destroyed by an error reports that error once it has closed.
-      if (stream.destroyed) {
-        const settle = (): void => fail(failure ?? new Error('Internal: this output stream closed before it finished'));
-        if (stream.closed) settle();
-        else stream.once('close', settle);
-        return;
-      }
-      stream.once('error', fail);
-      stream.once('finish', () => {
-        stream.off('error', fail);
-        let flushFailure: unknown = null;
-        try {
-          // Flush the file this stream wrote (checked by identity).
-          const readFd = fs.openSync(temp, 'r');
-          try {
-            const stat = fs.fstatSync(readFd);
-            if (stat.dev !== created.dev || stat.ino !== created.ino) {
-              throw unsafeFs('staged output file was replaced or is unknown; refusing to keep it', {
-                project_root: this.out.projectRoot,
-                path: temp,
-              });
-            }
-            fs.fsyncSync(readFd);
-          } catch (error) {
-            flushFailure = error;
-          }
-          try {
-            fs.closeSync(readFd);
-          } catch (error) {
-            flushFailure ??= error;
-          }
-        } catch (error) {
-          flushFailure ??= error;
-        }
-        if (flushFailure !== null) {
-          fail(flushFailure);
-          return;
-        }
-        this.unfinished.delete(abort);
-        this.staged.push({ name, temp, target, identity: created });
-        resolve(outputArtifactRef(this.out, name, mimeType));
-      });
-      stream.end();
-    });
-    return { stream, finish };
+      this.staged.push({ name, temp, target, identity });
+      return outputArtifactRef(this.out, name, mimeType);
+    };
+    return { write, finish };
   }
 
   /**
@@ -541,7 +511,7 @@ export class OutputBatch {
    * `discard`), built after that last cleanup attempt.
    */
   async publish(): Promise<void> {
-    if (this.unfinished.size > 0) throw new Error('Internal: an output stream of this call was not finished');
+    if (this.unfinished.size > 0) throw new Error('Internal: an output file of this call was not finished');
     if (this.closed) throw new Error('Internal: this output batch was already published or discarded');
     this.closed = true;
     const published: StagedFile[] = [];
@@ -579,9 +549,18 @@ export class OutputBatch {
           staging_paths: stagingLeft.map(file => projectRelative(this.out, file.temp)),
         });
       }
-      // Make the new directory entries durable: one flush per directory.
-      const oneFilePerDirectory = new Map(this.staged.map(file => [path.dirname(file.target), file.target]));
-      for (const target of oneFilePerDirectory.values()) fsyncParentDirectoryDurable(target);
+      // Make the new entries durable: flush every directory from the
+      // project root down to each published file, so directories created
+      // on the way (output_dir itself, external_api/) are recorded in
+      // their parents too. One flush per directory.
+      const directories = new Set<string>();
+      for (const file of this.staged) {
+        for (let dir = path.dirname(file.target); ; dir = path.dirname(dir)) {
+          directories.add(dir);
+          if (dir === this.out.projectRoot || !isPathInside(this.out.projectRoot, dir)) break;
+        }
+      }
+      for (const dir of directories) fsyncParentDirectoryDurable(path.join(dir, '.flush'));
     } catch (error) {
       for (const file of published) {
         if (!removeIfSame(this.out, file.name, file.target, file.identity)) {

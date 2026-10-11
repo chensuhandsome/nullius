@@ -285,7 +285,7 @@ async function performCachedCall<T>(
       operation,
       request_hash: requestHash,
       request,
-      response: raw,
+      response: raw ?? null,
     };
 
     try {

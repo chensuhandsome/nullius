@@ -1029,6 +1029,54 @@ def test_check_staged_flags_a_run_root_behind_a_symlinked_ancestor(tmp_path, mon
     assert run_main(["check", "--staged"], repo, monkeypatch) == rs.EXIT_OK
 
 
+@pytest.mark.parametrize("where", ["main_checkout", "linked_worktree", "worktree_private_git_dir",
+                                   "common_git_dir", "outside"])
+@pytest.mark.parametrize("how", ["policy", "option"])
+def test_a_store_inside_any_checkout_is_refused(tmp_path, monkeypatch, where, how):
+    repo = make_repo(tmp_path)
+    wt = tmp_path / "wt"
+    sh("git", "worktree", "add", "-q", "-b", "side", str(wt), cwd=repo)
+    store = {"main_checkout": repo / "kept-store",
+             "linked_worktree": wt / "kept-store",
+             "worktree_private_git_dir": repo / ".git" / "worktrees" / "wt" / "kept-store",
+             "common_git_dir": repo / ".git" / "kept-store",
+             "outside": tmp_path / "kept-store"}[where]
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 40))
+    argv = ["stow", str(run)]
+    if how == "policy":
+        (repo / ".nullius" / "storage_policy.json").write_text(json.dumps(
+            {"schema": rs.POLICY_SCHEMA, "bulk_threshold_bytes": THRESHOLD, "store_root": str(store)}))
+    else:
+        argv += ["--store", str(store)]
+    expected = rs.EXIT_OK if where in ("common_git_dir", "outside") else rs.EXIT_ERROR
+    assert run_main(argv, repo, monkeypatch) == expected
+    assert store.exists() == (expected == rs.EXIT_OK)
+    if expected == rs.EXIT_ERROR:
+        assert stat.S_IMODE((run / "a.bin").stat().st_mode) & 0o200 and not (run / rs.MANIFEST_NAME).exists()
+
+
+@pytest.mark.parametrize("state", ["staged_new", "committed_then_changed", "committed_then_changed_and_staged"])
+def test_stow_refuses_bulk_files_the_next_commit_would_add(tmp_path, monkeypatch, capsys, state):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 41))
+    sh("git", "add", "-A", cwd=repo)
+    if state != "staged_new":
+        sh("git", "commit", "-q", "-m", "bulk", cwd=repo)
+        (run / "a.bin").write_bytes(blob(THRESHOLD, 42))
+        if state == "committed_then_changed_and_staged":
+            sh("git", "add", "-A", cwd=repo)
+    (run / "b.bin").write_bytes(blob(THRESHOLD, 43))  # an untracked candidate is not stowed either
+    capsys.readouterr()
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert "\n  a.bin\n" in capsys.readouterr().err, "the uncommitted file is named"
+    assert not (run / rs.MANIFEST_NAME).exists() and not (run / ".gitignore").exists()
+    assert stat.S_IMODE((run / "a.bin").stat().st_mode) & 0o200 and stat.S_IMODE((run / "b.bin").stat().st_mode) & 0o200
+
+
 # ------------------------------------------------------- verify / materialize
 
 def test_verify_reports_every_state(tmp_path, monkeypatch, capsys):

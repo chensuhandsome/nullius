@@ -51,10 +51,12 @@ Subcommands
 
 Exit codes: 0 clean; 1 findings (strict-check violations, verification or
 restore problems, a stow refused because recorded outputs changed or are
-unavailable, an ignore rule that re-includes a stowed file); 2 usage or
+unavailable or because bulk files are staged or changed but not committed,
+an ignore rule that re-includes a stowed file); 2 usage or
 environment errors and inputs refused before any change (unrecordable file
 names, damaged ignore-block markers, a run directory inside or around another
-stowed run, a malformed manifest or policy). POSIX (macOS/Linux) only.
+stowed run, a malformed manifest or policy, a store inside a checkout).
+POSIX (macOS/Linux) only.
 Nothing here deletes data: a damaged store object is renamed aside, never
 removed, and run files are never replaced (stow only makes them read-only).
 
@@ -269,11 +271,33 @@ class Repo:
 
     def store(self, override: "str | None" = None) -> Path:
         if override:
-            return Path(override).expanduser().resolve()
-        configured = self.policy.get("store_root")
-        if configured:
-            return Path(configured).expanduser().resolve()
-        return self.common_dir.joinpath(*STORE_SUBPATH)
+            store = Path(override).expanduser().resolve()
+        elif self.policy.get("store_root"):
+            store = Path(self.policy["store_root"]).expanduser().resolve()
+        else:
+            return self.common_dir.joinpath(*STORE_SUBPATH)
+        self.check_store_location(store)
+        return store
+
+    def worktree_paths(self) -> "list[Path]":
+        out = git_text(["worktree", "list", "--porcelain"], self.toplevel)
+        return [Path(os.path.realpath(line[len("worktree "):])) for line in out.splitlines()
+                if line.startswith("worktree ")]
+
+    def check_store_location(self, store: Path) -> None:
+        """A store must outlive every checkout: it lies in the repository's
+        common git directory (not in a linked worktree's private part) or
+        outside every checkout. Inside a checkout, `git worktree remove` would
+        delete it, or a plain `git add` would commit it."""
+        real = Path(os.path.realpath(store))
+        common = Path(os.path.realpath(self.common_dir))
+        if inside_of(real, common) and not inside_of(real, common / "worktrees"):
+            return
+        holders = [w for w in [*self.worktree_paths(), common / "worktrees"] if inside_of(real, w)]
+        if holders:
+            raise StorageError(f"content store {store} lies inside {holders[0]}, which a worktree removal or a "
+                               "commit would take with it; use a path outside every checkout (or the default "
+                               "store in the common git directory)")
 
     def rel(self, path: Path) -> str:
         """Repository-relative path; the final component is never followed,
@@ -663,6 +687,20 @@ def blob_ids(repo: Repo, args: "list[str]") -> "dict[str, str]":
     return found
 
 
+def committed_and_pending(repo: Repo, pathspecs: "list[str]") -> "tuple[set[str], set[str]]":
+    """Split tracked paths into committed ones (HEAD holds exactly the staged
+    and checked-out bytes) and pending ones (the next commit would add bytes:
+    newly staged, staged changes, or changes in the working tree)."""
+    tracked = repo.tracked(pathspecs)
+    if not tracked:
+        return set(), set()
+    head = blob_ids(repo, ["ls-tree", "-r", "-z", "HEAD", "--", *pathspecs])
+    index = blob_ids(repo, ["ls-files", "--stage", "-z", "--", *pathspecs])
+    modified = set(git_z(["diff", "--name-only", "-z", "--", *pathspecs], repo.toplevel))
+    committed = {p for p in tracked if p in head and head[p] == index.get(p) and p not in modified}
+    return committed, tracked - committed
+
+
 def staged_bulk(repo: Repo, threshold: int) -> "list[dict]":
     # git cannot stage a file behind a symbolic link; such roots are reported separately.
     symlinked = repo.symlinked_run_roots()
@@ -704,13 +742,8 @@ def working_tree_bulk(repo: Repo, threshold: int, store: Path) -> "dict[str, lis
                                         "nested_repositories": []}
     if not roots:
         return classes
-    tracked = repo.tracked(roots)
+    committed, pending = committed_and_pending(repo, roots)
     untracked = repo.untracked(roots)
-    # Tracked bulk is already in history only when HEAD holds exactly the
-    # staged and checked-out bytes; anything else the next commit would add.
-    head = blob_ids(repo, ["ls-tree", "-r", "-z", "HEAD", "--", *roots])
-    index = blob_ids(repo, ["ls-files", "--stage", "-z", "--", *roots])
-    modified = set(git_z(["diff", "--name-only", "-z", "--", *roots], repo.toplevel))
     stowed = manifests_under(repo)
     # Every recorded entry is checked by full hash, whatever its current size:
     # a stowed output that changed, shrank, vanished, lost its store copy, or
@@ -737,9 +770,10 @@ def working_tree_bulk(repo: Repo, threshold: int, store: Path) -> "dict[str, lis
                 if is_storage_record(rel):
                     continue
                 record = {"path": rel, "size": st.st_size}
-                if rel in tracked:
-                    committed = rel in head and head[rel] == index.get(rel) and rel not in modified
-                    classes["tracked" if committed else "pending"].append(record)
+                if rel in committed:
+                    classes["tracked"].append(record)
+                elif rel in pending:
+                    classes["pending"].append(record)
                 elif rel in untracked:
                     classes["untracked"].append(record)
                 elif rel in stowed:
@@ -875,7 +909,7 @@ def cmd_stow(args) -> int:
     run_dir = resolve_run_dir(repo, args.run_dir)
     threshold = resolve_threshold(repo, args.threshold)
     store = repo.store(args.store)
-    tracked = repo.tracked([repo.rel(run_dir)])
+    committed, pending = committed_and_pending(repo, [repo.rel(run_dir)])
     manifest = load_manifest(run_dir) or {"schema": MANIFEST_SCHEMA, "entries": []}
     entries = {e["path"]: e for e in manifest["entries"]}
     folded = {k.casefold() for k in entries} if repo.ignorecase else set()
@@ -893,7 +927,7 @@ def cmd_stow(args) -> int:
             restore.append(rel_run)  # good bytes in place, store copy lost: store again
 
     # 2. New bulk candidates.
-    candidates, legacy, unexpressible = [], [], []
+    candidates, legacy, uncommitted, unexpressible = [], [], [], []
     for dirpath, dirnames, filenames in os.walk(run_dir, followlinks=False, onerror=walk_error):
         for name in sorted(filenames):
             full = Path(dirpath) / name
@@ -903,8 +937,11 @@ def cmd_stow(args) -> int:
             st = full.lstat()
             if not stat.S_ISREG(st.st_mode) or st.st_size < threshold:
                 continue
-            if repo.rel(full) in tracked:
+            if repo.rel(full) in committed:
                 legacy.append({"path": rel_run, "size": st.st_size})
+                continue
+            if repo.rel(full) in pending:
+                uncommitted.append(rel_run)
                 continue
             problem = expressible_problem(rel_run)
             if problem:
@@ -918,6 +955,14 @@ def cmd_stow(args) -> int:
         for rel_run, status in conflicts:
             print(f"  {status:>14}  {rel_run}", file=sys.stderr)
         return EXIT_FINDINGS
+    if uncommitted:
+        print("run-storage: these bulk files are staged or changed but not committed, so the next commit would "
+              "put them into history (nothing was changed). For a new file, `git rm --cached <path>` unstages it "
+              "(the file stays on disk), then stow again; a committed file that was changed is a changed result "
+              "and belongs in a new run:", file=sys.stderr)
+        for rel_run in uncommitted:
+            print(f"  {rel_run}", file=sys.stderr)
+        return EXIT_FINDINGS
     if unexpressible:
         print("run-storage: these file names cannot be recorded in a manifest or ignore rule; rename them "
               "and stow again (nothing was changed):", file=sys.stderr)
@@ -929,7 +974,7 @@ def cmd_stow(args) -> int:
     lines = [f"run-storage: {len(plan)} bulk file(s), {human(sum(sizes.values()))}, from {repo.rel(run_dir)} "
              f"into {store}"]
     if legacy:
-        lines.append(f"  {len(legacy)} bulk file(s) are already tracked in git and stay as they are "
+        lines.append(f"  {len(legacy)} bulk file(s) are already committed and stay as they are "
                      "(history is never rewritten here)")
     if args.dry_run:
         lines += [f"  would stow {human(sizes[r]):>12}  {r}" for r, _ in plan]

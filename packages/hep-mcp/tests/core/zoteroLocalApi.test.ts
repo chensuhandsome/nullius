@@ -12,7 +12,7 @@ vi.mock('../../src/api/client.js', () => ({
 const api = await import('../../src/api/client.js');
 
 import { handleToolCall } from '../../src/tools/index.js';
-import { readHepUri } from '../../src/core/uriReader.js';
+import { makeProjectRoot, readProjectFile } from '../support/hepProjectUri.js';
 
 function readFixtureJson<T>(fileName: string): T {
   const fixtureDir = new URL('../fixtures/core/m8/', import.meta.url);
@@ -86,29 +86,25 @@ describe('vNext: Zotero integration', () => {
     });
     vi.stubGlobal('fetch', fetchStub as any);
 
-    const projectRes = await handleToolCall('hep_project_create', { name: 'M8 Zotero', description: 'm8' });
-    const project = JSON.parse(projectRes.content[0].text) as { project_id: string };
-
-    const runRes = await handleToolCall('hep_run_create', { project_id: project.project_id });
-    const run = JSON.parse(runRes.content[0].text) as { run_id: string };
-
+    const projectRoot = makeProjectRoot(dataDir);
     const res = await handleToolCall('hep_import_from_zotero', {
-      run_id: run.run_id,
+      project_root: projectRoot,
+      output_dir: 'literature/zotero',
       item_keys: ['ITEM1234'],
       concurrency: 2,
     });
 
     expect(res.isError).not.toBe(true);
     const payload = JSON.parse(res.content[0].text) as {
-      artifacts: Array<{ name: string; uri: string }>;
+      artifacts: Array<{ name: string; path: string }>;
       summary: { resolved_recids: number };
     };
     expect(payload.summary.resolved_recids).toBe(1);
 
-    const mapUri = payload.artifacts.find(a => a.name === 'zotero_map_v1.json')?.uri;
-    expect(mapUri).toBeTruthy();
+    const mapPath = payload.artifacts.find(a => a.name === 'zotero_map_v1.json')?.path;
+    expect(mapPath).toBe('literature/zotero/zotero_map_v1.json');
 
-    const map = JSON.parse((readHepUri(mapUri!) as any).text) as any;
+    const map = JSON.parse(readProjectFile(projectRoot, mapPath!)) as any;
     expect(map.items).toHaveLength(1);
     expect(map.source.concurrency).toBe(2);
     expect(map.items[0].zotero_item_key).toBe('ITEM1234');

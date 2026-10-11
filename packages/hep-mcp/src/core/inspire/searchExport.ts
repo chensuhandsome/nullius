@@ -1,22 +1,22 @@
-import * as fs from 'fs';
 import { createHash } from 'crypto';
 
 import * as api from '../../api/client.js';
-import { writeRunJsonArtifact } from '../citations.js';
-import { BudgetTrackerV1, writeRunStepDiagnosticsArtifact } from '../diagnostics.js';
-import { getRun, type RunArtifactRef } from '../runs.js';
-import { getRunArtifactPath } from '../paths.js';
+import { BudgetTrackerV1, writeOutputDiagnosticsArtifact } from '../diagnostics.js';
 import { cachedExternalApiJsonCall } from '../cache/externalApiCache.js';
-import { createHepRunArtifactRef, makeHepRunArtifactUri, makeHepRunManifestUri } from '../runArtifactUri.js';
-import { startRunStep, completeRunStep } from '../zotero/runSteps.js';
+import {
+  openOutputStream,
+  outputArtifactRef,
+  resolveOutputDir,
+  writeOutputJson,
+  type OutputArtifactRef,
+} from '../outputDir.js';
 
 type SearchExportFormatV1 = 'jsonl' | 'json';
 
 export interface InspireSearchExportMetaV1 {
   version: 1;
   generated_at: string;
-  run_id: string;
-  project_id: string;
+  output_dir: string;
   query: string;
   sort?: string;
   page_size: number;
@@ -29,9 +29,9 @@ export interface InspireSearchExportMetaV1 {
   next_url?: string;
   warnings: string[];
   artifacts: {
-    export_uri: string;
-    meta_uri: string;
-    diagnostics_uri?: string;
+    export_path: string;
+    meta_path: string;
+    diagnostics_path: string;
   };
 }
 
@@ -44,39 +44,21 @@ function sha256Hex(input: string): string {
 }
 
 function makeArtifactNames(params: {
-  query: string;
-  sort?: string;
-  page_size: number;
-  max_results: number;
+  key_hash: string;
   output_format: SearchExportFormatV1;
   artifact_name?: string;
   meta_artifact_name?: string;
-}): { exportName: string; metaName: string } {
+}): { exportName: string; metaName: string; diagnosticsName: string } {
   const ext = params.output_format === 'jsonl' ? 'jsonl' : 'json';
-  if (params.artifact_name && params.meta_artifact_name) {
-    return { exportName: params.artifact_name, metaName: params.meta_artifact_name };
-  }
-
-  const material = JSON.stringify({
-    query: params.query,
-    sort: params.sort ?? null,
-    page_size: params.page_size,
-    max_results: params.max_results,
-    output_format: params.output_format,
-  });
-  const hash = sha256Hex(material).slice(0, 16);
   return {
-    exportName: params.artifact_name ?? `inspire_search_export_${hash}.${ext}`,
-    metaName: params.meta_artifact_name ?? `inspire_search_export_${hash}_meta.json`,
+    exportName: params.artifact_name ?? `inspire_search_export_${params.key_hash}.${ext}`,
+    metaName: params.meta_artifact_name ?? `inspire_search_export_${params.key_hash}_meta.json`,
+    diagnosticsName: `inspire_search_export_${params.key_hash}_diagnostics.json`,
   };
 }
 
 function preprocessQuery(query: string): string {
   return query.replace(/\ba:["']([^"']+)["']/gi, 'a:$1');
-}
-
-function artifactRef(runId: string, name: string, mimeType: string): RunArtifactRef {
-  return createHepRunArtifactRef(runId, name, mimeType);
 }
 
 type ExternalApiCallIndexItemV1 = {
@@ -86,12 +68,17 @@ type ExternalApiCallIndexItemV1 = {
   request_hash: string;
   cache_hit: boolean;
   cached_response_uri: string;
-  request_uri: string;
-  response_uri: string;
+  request_path: string;
+  response_path: string;
 };
 
+/**
+ * Export an INSPIRE search, page by page, into the caller's output directory:
+ * the records (jsonl/json), a meta record, a budget/warning record, and the
+ * external API requests and responses the export was built from.
+ */
 export async function hepInspireSearchExport(params: {
-  run_id: string;
+  output_dir: string;
   query: string;
   sort?: string;
   size: number;
@@ -104,12 +91,10 @@ export async function hepInspireSearchExport(params: {
     max_results_provided?: boolean;
   };
 }): Promise<{
-  run_id: string;
-  project_id: string;
-  manifest_uri: string;
-  artifacts: RunArtifactRef[];
-  export_uri: string;
-  meta_uri: string;
+  output_dir: string;
+  artifacts: OutputArtifactRef[];
+  export_path: string;
+  meta_path: string;
   summary: {
     total: number;
     exported: number;
@@ -119,12 +104,9 @@ export async function hepInspireSearchExport(params: {
     warnings: string[];
   };
 }> {
-  const runId = params.run_id;
-  const run = getRun(runId);
+  const output = resolveOutputDir(params.output_dir);
 
-  const { stepIndex, step } = await startRunStep(runId, 'inspire_search_export');
-
-  const artifacts: RunArtifactRef[] = [];
+  const artifacts: OutputArtifactRef[] = [];
   const warnings: string[] = [];
   const budget = new BudgetTrackerV1();
 
@@ -166,18 +148,18 @@ export async function hepInspireSearchExport(params: {
   });
   const exportKeyHash = sha256Hex(namingMaterial).slice(0, 16);
 
-  const { exportName, metaName } = makeArtifactNames({
-    query,
-    sort: params.sort,
-    page_size: pageSize,
-    max_results: maxResults,
+  const { exportName, metaName, diagnosticsName } = makeArtifactNames({
+    key_hash: exportKeyHash,
     output_format: outputFormat,
     artifact_name: params.artifact_name,
     meta_artifact_name: params.meta_artifact_name,
   });
 
-  const exportUri = makeHepRunArtifactUri(runId, exportName);
-  const metaUri = makeHepRunArtifactUri(runId, metaName);
+  const exportRef = outputArtifactRef(
+    output,
+    exportName,
+    outputFormat === 'jsonl' ? 'application/x-ndjson' : 'application/json'
+  );
 
   let exported = 0;
   let pagesFetched = 0;
@@ -186,8 +168,8 @@ export async function hepInspireSearchExport(params: {
   let truncatedMidPage = false;
   const externalApiCalls: ExternalApiCallIndexItemV1[] = [];
 
-  const exportPath = getRunArtifactPath(runId, exportName);
-  const out = fs.createWriteStream(exportPath, { encoding: 'utf-8' });
+  const exportFile = openOutputStream(output, exportName);
+  const out = exportFile.stream;
   let wroteAny = false;
 
   const writeItem = (paper: unknown) => {
@@ -208,7 +190,7 @@ export async function hepInspireSearchExport(params: {
 
     let pageRes = await (async () => {
       const cached = await cachedExternalApiJsonCall({
-        run_id: runId,
+        output,
         namespace: 'inspire',
         operation: 'search',
         request: { query, sort: params.sort ?? null, size: pageSize, page: 1 },
@@ -222,8 +204,8 @@ export async function hepInspireSearchExport(params: {
         request_hash: cached.request_hash,
         cache_hit: cached.cache_hit,
         cached_response_uri: cached.cached_response_uri,
-        request_uri: requestRef.uri,
-        response_uri: responseRef.uri,
+        request_path: requestRef.path,
+        response_path: responseRef.path,
       });
       return cached.response;
     })();
@@ -256,7 +238,7 @@ export async function hepInspireSearchExport(params: {
       const url = nextUrl;
       pageRes = await (async () => {
         const cached = await cachedExternalApiJsonCall({
-          run_id: runId,
+          output,
           namespace: 'inspire',
           operation: 'searchByUrl',
           request: { url },
@@ -270,8 +252,8 @@ export async function hepInspireSearchExport(params: {
           request_hash: cached.request_hash,
           cache_hit: cached.cache_hit,
           cached_response_uri: cached.cached_response_uri,
-          request_uri: requestRef.uri,
-          response_uri: responseRef.uri,
+          request_path: requestRef.path,
+          response_path: responseRef.path,
         });
         return cached.response;
       })();
@@ -283,32 +265,11 @@ export async function hepInspireSearchExport(params: {
       out.write('\n]\n');
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    try {
-      out.destroy();
-    } catch {
-      // ignore
-    }
-    try {
-      await completeRunStep({
-        runId,
-        stepIndex,
-        stepStart: step,
-        status: 'failed',
-        artifacts,
-        notes: message,
-      });
-    } catch {
-      // ignore secondary failures
-    }
+    exportFile.abort();
     throw err;
   }
 
-  await new Promise<void>((resolve, reject) => {
-    out.on('error', reject);
-    out.on('finish', resolve);
-    out.end();
-  });
+  await exportFile.commit();
 
   const hasMore = Boolean(nextUrl) && total > exported;
 
@@ -333,19 +294,13 @@ export async function hepInspireSearchExport(params: {
     budget.warn({ severity: 'warning', code: 'pagination_mid_page_truncation', message: msg });
   }
 
-  const exportRef = artifactRef(
-    runId,
-    exportName,
-    outputFormat === 'jsonl' ? 'application/x-ndjson' : 'application/json'
-  );
   artifacts.push(exportRef);
 
   const externalApiCallsName = `external_api_calls_inspire_search_export_${exportKeyHash}.json`;
-  const externalApiCallsRef = writeRunJsonArtifact(runId, externalApiCallsName, {
+  const externalApiCallsRef = writeOutputJson(output, externalApiCallsName, {
     version: 1,
     generated_at: nowIso(),
-    run_id: runId,
-    project_id: run.project_id,
+    output_dir: output.relative,
     calls: externalApiCalls,
     stats: {
       calls_total: externalApiCalls.length,
@@ -355,20 +310,18 @@ export async function hepInspireSearchExport(params: {
   });
   artifacts.push(externalApiCallsRef);
 
-  const diag = writeRunStepDiagnosticsArtifact({
-    run_id: runId,
-    project_id: run.project_id,
-    step: step.step,
-    step_index: stepIndex,
+  const diag = writeOutputDiagnosticsArtifact({
+    output,
+    operation: 'inspire_search_export',
+    artifact_name: diagnosticsName,
     ...budget.snapshot(),
   });
-  artifacts.push(diag.run, diag.project);
+  artifacts.push(diag.ref);
 
   const metaPayload: InspireSearchExportMetaV1 = {
     version: 1,
     generated_at: nowIso(),
-    run_id: runId,
-    project_id: run.project_id,
+    output_dir: output.relative,
     query,
     sort: params.sort,
     page_size: pageSize,
@@ -381,30 +334,20 @@ export async function hepInspireSearchExport(params: {
     next_url: hasMore ? nextUrl : undefined,
     warnings,
     artifacts: {
-      export_uri: exportUri,
-      meta_uri: metaUri,
-      diagnostics_uri: diag.run.uri,
+      export_path: exportRef.path,
+      meta_path: outputArtifactRef(output, metaName, 'application/json').path,
+      diagnostics_path: diag.ref.path,
     },
   };
 
-  const metaRef = writeRunJsonArtifact(runId, metaName, metaPayload);
+  const metaRef = writeOutputJson(output, metaName, metaPayload);
   artifacts.push(metaRef);
 
-  await completeRunStep({
-    runId,
-    stepIndex,
-    stepStart: step,
-    status: 'done',
-    artifacts,
-  });
-
   return {
-    run_id: runId,
-    project_id: run.project_id,
-    manifest_uri: makeHepRunManifestUri(runId),
+    output_dir: output.relative,
     artifacts,
-    export_uri: exportRef.uri,
-    meta_uri: metaRef.uri,
+    export_path: exportRef.path,
+    meta_path: metaRef.path,
     summary: {
       total,
       exported,

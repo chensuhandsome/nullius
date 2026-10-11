@@ -12,9 +12,10 @@
  *
  * Three buckets per tool — verified by reading each handler:
  *
- *   ALWAYS_STATE_TOUCHING        Always reads/writes a project-id or run-id
- *                                keyed path under `<hep_data_root>/`. Anchor
- *                                required regardless of args.
+ *   ALWAYS_STATE_TOUCHING        Always reads/writes a project-id keyed path
+ *                                under `<hep_data_root>/`, or writes into the
+ *                                caller's output_dir inside the project.
+ *                                Anchor required regardless of args.
  *
  *   VERIFY_IF_PROJECT_ROOT       Conditionally writes a project-keyed path
  *                                when `project_root` arg is present (via
@@ -39,11 +40,11 @@
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bucket 1: ALWAYS_STATE_TOUCHING
-// All hep_project_* / hep_run_* / hep_export_* / hep_import_* / hep_render_* /
-// hep_admin_* tools write to id-keyed paths under `<hep_data_root>/`. Plus
-// hep_inspire_search_export, hep_inspire_resolve_identifiers (require run_id).
-// Plus inspire_parse_latex / inspire_theoretical_conflicts (require run_id,
-// write run artifacts). Plus all idea-mcp tools (re-imported via composite).
+// All hep_project_* / hep_admin_* tools write to id-keyed paths under
+// `<hep_data_root>/`. hep_import_from_zotero, hep_inspire_search_export,
+// hep_inspire_resolve_identifiers, inspire_parse_latex and
+// inspire_theoretical_conflicts require output_dir and write into it inside
+// the project.
 // ─────────────────────────────────────────────────────────────────────────────
 const ALWAYS_STATE_TOUCHING = new Set<string>([
   // hep_project_*
@@ -52,23 +53,8 @@ const ALWAYS_STATE_TOUCHING = new Set<string>([
   'hep_project_list',
   'hep_project_build_evidence',
   'hep_project_query_evidence',
-  'hep_project_query_evidence_semantic',
   'hep_project_playback_evidence',
-  'hep_project_compare_measurements',
-  // hep_run_*
-  'hep_run_create',
-  'hep_run_read_artifact_chunk',
-  'hep_run_clear_manifest_lock',
-  'hep_run_stage_content',
-  'hep_run_ingest_skill_artifacts',
-  'hep_run_build_writing_evidence',
-  'hep_run_build_measurements',
-  'hep_run_build_citation_mapping',
-  // hep_render_/export_/import_*
-  'hep_render_latex',
-  'hep_export_project',
-  'hep_export_paper_scaffold',
-  'hep_import_paper_bundle',
+  // writes into output_dir
   'hep_import_from_zotero',
   // hep_inspire_*
   'hep_inspire_search_export',
@@ -78,7 +64,7 @@ const ALWAYS_STATE_TOUCHING = new Set<string>([
   'hep_admin_prune_paper_cache',
   'hep_admin_import_paper',
   'hep_admin_link_kb_notes',
-  // inspire_* tools that write run-keyed artifacts (require run_id):
+  // inspire_* tools that write into output_dir (required):
   'inspire_parse_latex',
   'inspire_theoretical_conflicts',
 ]);
@@ -88,9 +74,9 @@ const ALWAYS_STATE_TOUCHING = new Set<string>([
 // State-touching only when `project_root` / `project_roots` is in args.
 // ─────────────────────────────────────────────────────────────────────────────
 const VERIFY_IF_PROJECT_ROOT = new Set<string>([
-  // inspire_search: when run_id is in args, dispatches to hep_inspire_search_export
-  // which writes run-scoped artifacts. The run_id case is also caught here for
-  // safety (run_id implies project context).
+  // inspire_search: with output_dir it dispatches to hep_inspire_search_export,
+  // which writes into that directory inside the project (output_dir requires
+  // project_root, and is also caught here for safety).
   'inspire_search',
   // inspire_paper_source: content mode writes to `getDownloadsDir()` which is
   // re-rooted under `<project_root>/artifacts/hep-mcp/downloads/` when
@@ -106,7 +92,7 @@ const VERIFY_IF_PROJECT_ROOT = new Set<string>([
   'pdg_batch',
 ]);
 
-const PROJECT_ROOT_ARG_KEYS = ['project_root', 'project_roots', 'run_id'] as const;
+const PROJECT_ROOT_ARG_KEYS = ['project_root', 'project_roots', 'output_dir'] as const;
 
 function hasProjectRootArg(args: Record<string, unknown>): boolean {
   for (const key of PROJECT_ROOT_ARG_KEYS) {

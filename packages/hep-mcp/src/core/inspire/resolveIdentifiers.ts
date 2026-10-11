@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import { createHash } from 'crypto';
 import {
   extractRecidFromUrl,
@@ -8,12 +7,14 @@ import {
 } from '@nullius/shared';
 
 import * as api from '../../api/client.js';
-import { writeRunJsonArtifact } from '../citations.js';
-import { getRun, type RunArtifactRef } from '../runs.js';
-import { getRunArtifactPath } from '../paths.js';
 import { cachedExternalApiJsonCall } from '../cache/externalApiCache.js';
-import { makeHepRunArtifactUri, makeHepRunManifestUri } from '../runArtifactUri.js';
-import { startRunStep, completeRunStep } from '../zotero/runSteps.js';
+import {
+  openOutputStream,
+  outputArtifactRef,
+  resolveOutputDir,
+  writeOutputJson,
+  type OutputArtifactRef,
+} from '../outputDir.js';
 
 export type ResolveStatusV1 = 'matched' | 'not_found' | 'error';
 
@@ -32,16 +33,15 @@ export interface ResolveIdentifierItemV1 {
 export interface ResolveIdentifiersMetaV1 {
   version: 1;
   generated_at: string;
-  run_id: string;
-  project_id: string;
+  output_dir: string;
   total: number;
   matched: number;
   not_found: number;
   errors: number;
   warnings: string[];
   artifacts: {
-    mapping_uri: string;
-    meta_uri: string;
+    mapping_path: string;
+    meta_path: string;
   };
 }
 
@@ -134,22 +134,25 @@ type ExternalApiCallIndexItemV1 = {
   request_hash: string;
   cache_hit: boolean;
   cached_response_uri: string;
-  request_uri: string;
-  response_uri: string;
+  request_path: string;
+  response_path: string;
 };
 
+/**
+ * Resolve recids, arXiv ids and DOIs to INSPIRE recids, writing the mapping,
+ * a meta record and the external API requests and responses used into the
+ * caller's output directory.
+ */
 export async function hepInspireResolveIdentifiers(params: {
-  run_id: string;
+  output_dir: string;
   identifiers: string[];
   artifact_name?: string;
   meta_artifact_name?: string;
 }): Promise<{
-  run_id: string;
-  project_id: string;
-  manifest_uri: string;
-  artifacts: RunArtifactRef[];
-  mapping_uri: string;
-  meta_uri: string;
+  output_dir: string;
+  artifacts: OutputArtifactRef[];
+  mapping_path: string;
+  meta_path: string;
   summary: {
     total: number;
     matched: number;
@@ -159,9 +162,6 @@ export async function hepInspireResolveIdentifiers(params: {
     warnings: string[];
   };
 }> {
-  const runId = params.run_id;
-  const run = getRun(runId);
-
   const identifiers = params.identifiers.map(s => s.trim()).filter(Boolean);
   if (identifiers.length === 0) {
     throw invalidParams('identifiers cannot be empty', { identifiers: params.identifiers });
@@ -173,12 +173,11 @@ export async function hepInspireResolveIdentifiers(params: {
     meta_artifact_name: params.meta_artifact_name,
   });
 
-  const mappingUri = makeHepRunArtifactUri(runId, mappingName);
-  const metaUri = makeHepRunArtifactUri(runId, metaName);
+  const output = resolveOutputDir(params.output_dir);
+  const mappingRef = outputArtifactRef(output, mappingName, 'application/x-ndjson');
+  const metaPath = outputArtifactRef(output, metaName, 'application/json').path;
 
-  const { stepIndex, step } = await startRunStep(runId, 'inspire_resolve_identifiers');
-
-  const artifacts: RunArtifactRef[] = [];
+  const artifacts: OutputArtifactRef[] = [];
   const warnings: string[] = [];
   const externalApiCalls: ExternalApiCallIndexItemV1[] = [];
 
@@ -186,8 +185,8 @@ export async function hepInspireResolveIdentifiers(params: {
   let notFound = 0;
   let errors = 0;
 
-  const mappingPath = getRunArtifactPath(runId, mappingName);
-  const out = fs.createWriteStream(mappingPath, { encoding: 'utf-8' });
+  const mappingFile = openOutputStream(output, mappingName);
+  const out = mappingFile.stream;
 
   try {
     for (const input of identifiers) {
@@ -215,7 +214,7 @@ export async function hepInspireResolveIdentifiers(params: {
       try {
         if (classified.kind === 'recid') {
           const cached = await cachedExternalApiJsonCall({
-            run_id: runId,
+            output,
             namespace: 'inspire',
             operation: 'getPaper',
             request: { recid: classified.normalized },
@@ -229,8 +228,8 @@ export async function hepInspireResolveIdentifiers(params: {
             request_hash: cached.request_hash,
             cache_hit: cached.cache_hit,
             cached_response_uri: cached.cached_response_uri,
-            request_uri: requestRef.uri,
-            response_uri: responseRef.uri,
+            request_path: requestRef.path,
+            response_path: responseRef.path,
           });
           const paper = cached.response;
           item.recid = paper.recid ?? classified.normalized;
@@ -238,7 +237,7 @@ export async function hepInspireResolveIdentifiers(params: {
         } else if (classified.kind === 'doi' && classified.doi) {
           const doi = classified.doi;
           const cached = await cachedExternalApiJsonCall({
-            run_id: runId,
+            output,
             namespace: 'inspire',
             operation: 'getByDoi',
             request: { doi },
@@ -252,8 +251,8 @@ export async function hepInspireResolveIdentifiers(params: {
             request_hash: cached.request_hash,
             cache_hit: cached.cache_hit,
             cached_response_uri: cached.cached_response_uri,
-            request_uri: requestRef.uri,
-            response_uri: responseRef.uri,
+            request_path: requestRef.path,
+            response_path: responseRef.path,
           });
           const paper = cached.response;
           item.recid = paper.recid;
@@ -261,7 +260,7 @@ export async function hepInspireResolveIdentifiers(params: {
         } else if (classified.kind === 'arxiv' && classified.arxiv_id) {
           const arxivId = classified.arxiv_id;
           const cached = await cachedExternalApiJsonCall({
-            run_id: runId,
+            output,
             namespace: 'inspire',
             operation: 'getByArxiv',
             request: { arxiv_id: arxivId },
@@ -275,8 +274,8 @@ export async function hepInspireResolveIdentifiers(params: {
             request_hash: cached.request_hash,
             cache_hit: cached.cache_hit,
             cached_response_uri: cached.cached_response_uri,
-            request_uri: requestRef.uri,
-            response_uri: responseRef.uri,
+            request_path: requestRef.path,
+            response_path: responseRef.path,
           });
           const paper = cached.response;
           item.recid = paper.recid;
@@ -299,45 +298,18 @@ export async function hepInspireResolveIdentifiers(params: {
       out.write(`${JSON.stringify(item)}\n`);
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    try {
-      out.destroy();
-    } catch {
-      // ignore
-    }
-    try {
-      await completeRunStep({
-        runId,
-        stepIndex,
-        stepStart: step,
-        status: 'failed',
-        artifacts,
-        notes: message,
-      });
-    } catch {
-      // ignore
-    }
+    mappingFile.abort();
     throw err;
   }
 
-  await new Promise<void>((resolve, reject) => {
-    out.on('error', reject);
-    out.on('finish', resolve);
-    out.end();
-  });
-
-  artifacts.push({
-    name: mappingName,
-    uri: mappingUri,
-    mimeType: 'application/x-ndjson',
-  });
+  await mappingFile.commit();
+  artifacts.push(mappingRef);
 
   const indexName = `external_api_calls_inspire_resolve_identifiers_${sha256Hex(JSON.stringify({ identifiers }))?.slice(0, 16)}.json`;
-  const externalApiCallsRef = writeRunJsonArtifact(runId, indexName, {
+  const externalApiCallsRef = writeOutputJson(output, indexName, {
     version: 1,
     generated_at: nowIso(),
-    run_id: runId,
-    project_id: run.project_id,
+    output_dir: output.relative,
     calls: externalApiCalls,
     stats: {
       calls_total: externalApiCalls.length,
@@ -350,34 +322,23 @@ export async function hepInspireResolveIdentifiers(params: {
   const metaPayload: ResolveIdentifiersMetaV1 = {
     version: 1,
     generated_at: nowIso(),
-    run_id: runId,
-    project_id: run.project_id,
+    output_dir: output.relative,
     total: identifiers.length,
     matched,
     not_found: notFound,
     errors,
     warnings,
-    artifacts: { mapping_uri: mappingUri, meta_uri: metaUri },
+    artifacts: { mapping_path: mappingRef.path, meta_path: metaPath },
   };
 
-  const metaRef = writeRunJsonArtifact(runId, metaName, metaPayload);
+  const metaRef = writeOutputJson(output, metaName, metaPayload);
   artifacts.push(metaRef);
 
-  await completeRunStep({
-    runId,
-    stepIndex,
-    stepStart: step,
-    status: 'done',
-    artifacts,
-  });
-
   return {
-    run_id: runId,
-    project_id: run.project_id,
-    manifest_uri: makeHepRunManifestUri(runId),
+    output_dir: output.relative,
     artifacts,
-    mapping_uri: mappingUri,
-    meta_uri: metaRef.uri,
+    mapping_path: mappingRef.path,
+    meta_path: metaRef.path,
     summary: {
       total: identifiers.length,
       matched,

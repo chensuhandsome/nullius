@@ -102,14 +102,6 @@ vi.mock('../src/tools/research/paperClassifier.js', () => ({
   classifyPapers: vi.fn(),
 }));
 
-vi.mock('../src/core/citations.js', async () => {
-  const actual = await vi.importActual('../src/core/citations.js') as object;
-  return {
-    ...actual,
-    writeRunJsonArtifact: vi.fn(),
-  };
-});
-
 // Import after mocking
 const { handleToolCall } = await import('../src/tools/index.js');
 const api = await import('../src/api/client.js');
@@ -132,7 +124,7 @@ const stance = await import('../src/tools/research/stance/index.js');
 const cleanupDownloads = await import('../src/tools/research/cleanupDownloads.js');
 const validateBibliography = await import('../src/tools/research/validateBibliography.js');
 const paperClassifier = await import('../src/tools/research/paperClassifier.js');
-const citations = await import('../src/core/citations.js');
+const { makeProjectRoot, readProjectFile } = await import('./support/hepProjectUri.js');
 
 function getBibtexEntryKey(bibtex: string): string | null {
   const cleaned = bibtex.replace(/^\uFEFF/, '').trim();
@@ -154,41 +146,14 @@ function readTextBlock(result: { content: Array<{ type: string; text?: string }>
 describe('Tool Handlers (current exposure)', () => {
   let originalDataDirEnv: string | undefined;
   let dataDir: string;
+  let projectRoot: string;
 
   beforeEach(() => {
     originalDataDirEnv = process.env.HEP_DATA_DIR;
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hep-tools-test-'));
     process.env.HEP_DATA_DIR = dataDir;
+    projectRoot = makeProjectRoot(dataDir);
     vi.clearAllMocks();
-
-    vi.mocked(citations.writeRunJsonArtifact).mockImplementation((runId: string, artifactName: string, data: unknown) => {
-      const runArtifactsDir = path.join(dataDir, 'runs', runId, 'artifacts');
-      fs.mkdirSync(runArtifactsDir, { recursive: true });
-      fs.writeFileSync(path.join(runArtifactsDir, artifactName), JSON.stringify(data, null, 2), 'utf-8');
-      return {
-        name: artifactName,
-        uri: `hep://runs/${encodeURIComponent(runId)}/artifact/${encodeURIComponent(artifactName)}`,
-        mimeType: 'application/json',
-      };
-    });
-
-    fs.mkdirSync(path.join(dataDir, 'runs', 'run_test', 'artifacts'), { recursive: true });
-    fs.writeFileSync(
-      path.join(dataDir, 'runs', 'run_test', 'manifest.json'),
-      JSON.stringify(
-        {
-          run_id: 'run_test',
-          project_id: 'proj_test',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          status: 'pending',
-          steps: [],
-        },
-        null,
-        2
-      ),
-      'utf-8'
-    );
   });
 
   afterEach(() => {
@@ -244,7 +209,7 @@ describe('Tool Handlers (current exposure)', () => {
     expect(api.search).not.toHaveBeenCalled();
   });
 
-  it('inspire_search should export artifacts when run_id is provided', async () => {
+  it('inspire_search should export files when output_dir is provided', async () => {
     const papers = [
       { recid: '1', title: 'T1', authors: [] },
       { recid: '2', title: 'T2', authors: [] },
@@ -266,7 +231,8 @@ describe('Tool Handlers (current exposure)', () => {
 
     const res = await handleToolCall('inspire_search', {
       query: 't:qcd',
-      run_id: 'run_test',
+      project_root: projectRoot,
+      output_dir: 'out',
       size: 2,
       max_results: 10,
       output_format: 'jsonl',
@@ -275,13 +241,13 @@ describe('Tool Handlers (current exposure)', () => {
     expect(res.isError).not.toBe(true);
 
     const payload = JSON.parse(readTextBlock(res)) as {
-      export_uri: string;
-      meta_uri: string;
+      export_path: string;
+      meta_path: string;
       summary: { total: number; exported: number; pages_fetched: number };
     };
 
-    expect(payload.export_uri).toMatch(/^hep:\/\/runs\/run_test\/artifact\//);
-    expect(payload.meta_uri).toMatch(/^hep:\/\/runs\/run_test\/artifact\//);
+    expect(payload.export_path).toMatch(/^out\/inspire_search_export_[0-9a-f]{16}\.jsonl$/);
+    expect(payload.meta_path).toMatch(/^out\/inspire_search_export_[0-9a-f]{16}_meta\.json$/);
     expect(payload.summary.total).toBe(3);
     expect(payload.summary.exported).toBe(3);
     expect(payload.summary.pages_fetched).toBe(2);
@@ -777,13 +743,13 @@ describe('Tool Handlers (current exposure)', () => {
 
     await handleToolCall(
       'inspire_theoretical_conflicts',
-      { run_id: 'run_test', recids: ['1', '2'] },
+      { output_dir: 'out', recids: ['1', '2'] },
       'standard',
       { createMessage }
     );
 
     expect(theoreticalConflicts.performTheoreticalConflicts).toHaveBeenCalledWith(
-      { run_id: 'run_test', recids: ['1', '2'] },
+      { output_dir: 'out', recids: ['1', '2'] },
       { createMessage }
     );
   });
@@ -822,21 +788,23 @@ describe('Tool Handlers (current exposure)', () => {
     expect(payload.error).toContain('Could not resolve arXiv ID');
   });
 
-  it('inspire_parse_latex should require run_id', async () => {
+  it('inspire_parse_latex should require output_dir', async () => {
     const res = await handleToolCall('inspire_parse_latex', {
+      project_root: projectRoot,
       identifier: '123',
       components: ['sections'],
     } as any);
 
     expect(res.isError).toBe(true);
     const payload = JSON.parse(readTextBlock(res)) as {
-      error?: { code?: string; data?: { next_actions?: Array<{ tool?: string }> } };
+      error?: { code?: string; data?: { issues?: Array<{ path?: unknown[] }> } };
     };
     expect(payload.error?.code).toBe('INVALID_PARAMS');
-    expect(payload.error?.data?.next_actions?.map(a => a.tool)).toEqual(['hep_project_create', 'hep_run_create']);
+    expect(payload.error?.data?.issues?.some(issue => issue.path?.includes('output_dir'))).toBe(true);
+    expect(parseLatexContent.parseLatexContent).not.toHaveBeenCalled();
   });
 
-  it('inspire_parse_latex should write artifact and return uri+summary', async () => {
+  it('inspire_parse_latex should write its result into output_dir and return path+summary', async () => {
     vi.mocked(parseLatexContent.parseLatexContent).mockResolvedValueOnce({
       metadata: {
         title: 'T',
@@ -853,7 +821,8 @@ describe('Tool Handlers (current exposure)', () => {
     } as any);
 
     const res = await handleToolCall('inspire_parse_latex', {
-      run_id: 'run_test',
+      project_root: projectRoot,
+      output_dir: 'parsed',
       identifier: '123',
       components: ['sections'],
       options: { cross_validate: true, max_depth: 2 },
@@ -867,13 +836,15 @@ describe('Tool Handlers (current exposure)', () => {
     });
 
     const payload = JSON.parse(readTextBlock(res)) as {
-      uri?: string;
-      summary?: { artifact_name?: string; run_id?: string; counts?: Record<string, number> };
+      path?: string;
+      summary?: { artifact_name?: string; output_dir?: string; counts?: Record<string, number> };
     };
-    expect(payload.uri).toMatch(/^hep:\/\/runs\/run_test\/artifact\/parse_latex_[a-f0-9]{16}\.json$/);
+    expect(payload.path).toMatch(/^parsed\/parse_latex_[a-f0-9]{16}\.json$/);
     expect(payload.summary?.artifact_name).toMatch(/^parse_latex_[a-f0-9]{16}\.json$/);
-    expect(payload.summary?.run_id).toBe('run_test');
+    expect(payload.summary?.output_dir).toBe('parsed');
     expect(payload.summary?.counts).toEqual({ sections: 2 });
+    const written = JSON.parse(readProjectFile(projectRoot, payload.path!)) as { result: { summary: { counts: Record<string, number> } } };
+    expect(written.result.summary.counts).toEqual({ sections: 2 });
   });
 
   it('inspire_literature(search_affiliation) validation should fail on missing affiliation', async () => {

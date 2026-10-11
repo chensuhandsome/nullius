@@ -7,7 +7,7 @@ import {
   TopicAnalysisToolSchema,
   TraceOriginalSourceToolSchema,
 } from '../research/schemas.js';
-import { SafePathSegmentSchema, SearchExportFormatSchema } from './projectSchemas.js';
+import { OutputDirSchema, SafePathSegmentSchema, SearchExportFormatSchema } from './projectSchemas.js';
 
 const SortSchema = z.enum(['mostrecent', 'mostcited']);
 const JsonMarkdownSchema = z.enum(['json', 'markdown']);
@@ -19,7 +19,7 @@ export const InspireSearchToolSchema = z.object({
   page: optionalBudgetInt({ min: 1 }).default(1),
   format: JsonMarkdownSchema.optional().default('json'),
   review_mode: z.enum(['mixed', 'separate', 'deprioritize', 'exclude']).optional().default('mixed'),
-  run_id: SafePathSegmentSchema.optional(),
+  output_dir: OutputDirSchema.optional(),
   output_format: SearchExportFormatSchema.optional().default('jsonl'),
   artifact_name: SafePathSegmentSchema.optional(),
   meta_artifact_name: SafePathSegmentSchema.optional(),
@@ -214,7 +214,7 @@ export const InspireClassifyReviewsToolSchema = z.object({
 }).strict();
 
 export const InspireTheoreticalConflictsToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
+  output_dir: OutputDirSchema,
   recids: z.array(z.string().min(1)).min(1),
   subject_entity: z.string().min(1).optional(),
   inputs: z.array(z.enum(['title', 'abstract'])).optional(),
@@ -241,7 +241,7 @@ export const PaperSourceToolSchema = z.object({
 });
 
 export const InspireParseLatexToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
+  output_dir: OutputDirSchema,
   identifier: z.string().min(1),
   components: z
     .array(

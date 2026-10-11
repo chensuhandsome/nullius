@@ -381,9 +381,8 @@ has a canonical reference database:
   candidates, not authority.
 
 **Cross-paper tension detection.** When two HEP papers' results are
-compared, `inspire_detect_measurement_conflicts` and
-`hep_project_compare_measurements` are the HEP-specific tools. For
-non-HEP comparisons the discipline check is the same general rule:
+compared, `inspire_detect_measurement_conflicts` is the HEP-specific
+tool. For non-HEP comparisons the discipline check is the same general rule:
 align units, methodology, and uncertainty conventions before claiming
 agreement or tension.
 

@@ -10,7 +10,7 @@ Agent-first skill: given an existing `research-team` project root (with `researc
 Key entry points:
 - `scripts/bin/research_writer_scaffold.sh`: deterministic scaffold `paper/` from a `research-team` project.
 - `scripts/bin/research_writer_draft_sections.sh`: opt-in section drafting (writer → auditor) with trace logs + evidence gate.
-- `scripts/bin/research_writer_consume_paper_manifest.sh`: deterministic “publisher” for an MCP-exported `paper/` scaffold (validate/hygiene/optional compile).
+- `scripts/bin/research_writer_consume_paper_manifest.sh`: deterministic “publisher” for an externally produced `paper/` scaffold with `paper/paper_manifest.json` (validate/hygiene/optional compile).
 
 > Note: the `.sh` entry points are thin wrappers around the corresponding `.py` CLIs and accept the same flags (so `--help` works either way).
 
@@ -21,8 +21,8 @@ Default paper style:
 
 - **Scaffold a new paper** from a research-team project → `research_writer_scaffold.sh` (Quick start below).
 - **Draft/revise section prose** (writer → auditor, evidence-gated) → `research_writer_draft_sections.sh` (opt-in).
-- **Ground every claim in ingested sources** (when hep-mcp is available) → the evidence-grounded workflow.
-- **Publish an MCP-exported `paper/`** (validate + hygiene + optional compile) → `research_writer_consume_paper_manifest.sh`.
+- **Ground every claim in ingested sources** (when hep-mcp is available) → the evidence lookup workflow.
+- **Publish an externally produced `paper/`** (validate + hygiene + optional compile) → `research_writer_consume_paper_manifest.sh`.
 - **Check a draft before delivery** → the deterministic hygiene tools (math, cross-refs/citations, evidence gate, result-traceability, arXiv packaging).
 - **Tracked-change revision / response-to-referee** on a finished LaTeX manuscript → the sibling `paper-reviser` skill (this skill scaffolds + checks; it does not own the revise/resubmit cycle).
 
@@ -105,31 +105,30 @@ Advanced flags (optional; see `--help` for full surface):
 - Evidence gate: `--evidence-scan=all|macros` (default `all`); if `macros`, set one or more `--evidence-macro` (e.g. `revadd`)
 - Testing: `--stub-models` (no external calls), `--stub-variant=safe|unsafe` (`unsafe` should fail the evidence gate by design)
 
-## Evidence-grounded writing via hep-mcp (recommended)
+## Evidence lookup via hep-mcp (recommended when available)
 
-When hep-mcp is available, ground every section in ingested source material before drafting — this greatly reduces hallucinated claims and improves citation accuracy. Prereqs: a hep-mcp project with at least one paper's LaTeX source ingested, and a run with evidence artifacts (catalog + embeddings) built.
+When hep-mcp is available, ground claim-bearing sentences in ingested source material before drafting — this greatly reduces hallucinated claims and improves citation accuracy. Prereq: a hep-mcp project into which the LaTeX source of each cited paper has been ingested.
 
-The workflow is a four-step loop:
-1. **Build the evidence corpus** — `hep_run_build_writing_evidence` -> `latex_evidence_catalog.jsonl` (+ embeddings, enrichment).
-2. **Build the citation mapping** — `hep_run_build_citation_mapping` -> `citekey_to_inspire_v1.json`.
-3. **Draft each section against retrieved evidence** — before writing prose, `hep_project_query_evidence` (lexical) or `hep_project_query_evidence_semantic` (concept-level), then ground each claim-bearing sentence and structure it as a SectionDraft.
-4. **Render + export** — `hep_render_latex` (using the citation mapping) then `hep_export_project`.
+The workflow is a three-step loop:
+1. **Build the evidence catalog** — `hep_project_build_evidence` for each cited paper (writes that paper's evidence `catalog.jsonl` in the hep-mcp project).
+2. **Retrieve evidence per section** — before writing prose, `hep_project_query_evidence` (lexical search) to locate passages, then `hep_project_playback_evidence` to reread each located passage in context.
+3. **Draft and cite** — write each claim-bearing sentence against the passages actually read, cite it with a key present in `paper/references.bib` (`inspire_resolve_citekey` returns INSPIRE citekeys and BibTeX for recids), and note the `evidence_id`s and recids each sentence relies on.
 
-**Grounding rule:** check the cited source actually supports each specific claim, then record its `evidence_ids` and `recids`. Set `is_grounded: true` only after that check; omit the field while support is unknown, or use `false` for a known unsupported draft assertion. The flag is a caller declaration, and `hep_render_latex` does not perform this check. Unchecked draft text must not be presented as a verified result. Export requires complete BibTeX entries, which is a separate requirement from source support.
+**Grounding rule:** check that the cited source actually supports each specific claim before treating the sentence as supported. Unchecked draft text must not be presented as a verified result. Complete BibTeX entries are a separate requirement from source support.
 
-Full tool-call payloads, the SectionDraft JSON shape, and the end-to-end flow diagram: see `RUNBOOK.md` section 9 ("Evidence-grounded writing via hep-mcp — detailed tool-call recipes").
+hep-mcp provides no draft rendering, project export, or paper bundling tools; the manuscript itself lives in the `paper/` folder produced by the scaffold path. Full tool-call payloads: see `RUNBOOK.md` section 9 ("Evidence lookup via hep-mcp — detailed tool-call recipes").
 
 ### Integration with existing research-writer paths
 
-The evidence-grounded workflow complements the existing scaffold and draft-sections paths:
+The evidence lookup workflow complements the existing scaffold and draft-sections paths:
 
-- **Scaffold path** (`research_writer_scaffold.sh`): Use for initial `paper/` directory creation from a research-team project. The evidence-grounded path is an alternative when working directly with hep-mcp projects.
+- **Scaffold path** (`research_writer_scaffold.sh`): Use for initial `paper/` directory creation from a research-team project; use the evidence lookup above while writing its sections.
 - **Draft-sections path** (`research_writer_draft_sections.sh`): The `--run-models` writer/auditor pair can consume evidence query results as additional context. Pass evidence hits as part of the writer system prompt.
-- **Consume path** (`research_writer_consume_paper_manifest.sh`): Use after `hep_export_paper_scaffold` to validate and compile the MCP-exported paper.
+- **Consume path** (`research_writer_consume_paper_manifest.sh`): Use when another pipeline has produced a `paper/` directory with `paper/paper_manifest.json`, to validate and compile it.
 
-## Consume an MCP-exported paper scaffold (deterministic publisher)
+## Consume an externally produced paper scaffold (deterministic publisher)
 
-If `hep-mcp` / `@nullius/hep-mcp` (or another agent pipeline) already produced a `paper/` directory, this skill can validate + apply deterministic hygiene + (optionally) compile it using `paper/paper_manifest.json` as the only entrypoint.
+If another agent pipeline already produced a `paper/` directory, this skill can validate + apply deterministic hygiene + (optionally) compile it using `paper/paper_manifest.json` as the only entrypoint.
 
 From the project root (default manifest path `paper/paper_manifest.json`):
 

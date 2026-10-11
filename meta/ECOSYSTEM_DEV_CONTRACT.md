@@ -143,7 +143,7 @@ pnpm --filter @nullius/orchestrator test -- tests/nullius-cli.test.ts
 
 ```json
 {
-  "uri": "hep://runs/{run_id}/artifact/{name}",
+  "uri": "rep://runs/{run_id}/artifact/{artifact_path}",
   "kind": "evidence_catalog | section_draft | token_budget | ...",
   "schema_version": 1,
   "sha256": "hex string",
@@ -157,7 +157,7 @@ pnpm --filter @nullius/orchestrator test -- tests/nullius-cli.test.ts
 ```bash
 # 当前没有独立的 repo-local ArtifactRef validator。
 # 至少保持 artifact / URI authority 相关 contract tests 通过。
-pnpm --filter @nullius/hep-mcp test -- tests/contracts/runArtifactUriAuthority.test.ts
+pnpm --filter @nullius/shared test -- src/__tests__/artifact-ref.test.ts
 ```
 
 **违规行为**: **fail-closed** — 缺少完整性字段的 artifact 引用阻断 CI

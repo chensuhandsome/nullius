@@ -38,7 +38,7 @@ Moving or copying the runtime does not make a Nullius development checkout eligi
 - `AgentRunner` owns the non-optional permission view and whole-turn preflight. Approval-resolving tools stay at the host/operator boundary; a delegated tool result becomes a run-gate request only when a registered producer returns the complete hash-bound envelope for the root run. Team assignment state stores that gate only as a tagged projection and cannot grant it.
 - Orchestrator-owned MCP subprocesses run in an explicit execution world: a declared working directory, isolated temporary `HOME`, allowlisted ambient baseline, separately declared configuration and credentials, and required-credential checks before spawn. POSIX launches use a dedicated process group; initialization failure, unexpected parent exit, request timeout, and close terminate the descendant group. Reconnects have a lifetime budget; a timed-out client is unusable and cannot reconnect.
 - Runtime diagnostics are projections of the durable runtime manifest and runtime projection. They are operational evidence only and are never accepted as research findings, verification results, or promoted conclusions.
-- Writing rendering deterministically produces a draft, without checking source support or enforcing citation allowlists. Omitted grounding stays unknown; explicit flags are caller assertions. Export rejects missing BibTeX entries for cited keys. Source and artifact paths stay constrained under allowed roots.
+- Runs belong only to the orchestrator (`<project_root>/artifacts/runs/<run_id>/`). `hep-mcp` keeps no run of its own: its tools that produce files write them into a caller-chosen `output_dir` inside the project root and return project-relative paths. Source and output paths stay constrained under allowed roots.
 - For initialized external project roots, `.nullius/HARNESS`, `.nullius/` state, `project_index.md`, project-local durable memory, and registered immutable reports remain the enduring reconnect truth.
 - `research_plan.md#Current Status` is the human status entry for final target, current phase, completion state, blocker, next step, stop condition, and evidence pointers before the longer task board and log.
 - `research_notebook.md` is the human-facing logical narrative, organized by problem, derivation, claims, and uncertainty rather than by run date or status tracking; important literature notes require full-text/source-first reading, auditable section/page/equation/figure coverage, and LaTeX math notation, while raw dated run logs and tool-use traces belong in `research_plan.md` or `artifacts/runs/<run_id>/`.
@@ -55,7 +55,7 @@ Moving or copying the runtime does not make a Nullius development checkout eligi
 | Stateful literature planning | `nullius workflow-plan` | Checked-in workflow authority resolved via `@nullius/literature-workflows`; persists `.nullius/state.json#/plan` and derives `.nullius/plan.md`. `research_brainstorm` is the lightweight planning-only recipe variant that emits a `next_contract` handoff without starting heavier workflows |
 | Agent project harness skill | `research-harness` | Market-listed thin skill for Codex / Claude Code / OpenCode to recover project truth, route execution to `nullius` / `research-team` / `markdown-hygiene` / `hep-mcp`, and close out verification or handoff |
 | Experimental runtime bridge | `idea_mcp` | `idea_campaign_*` on explicit external data roots; node posterior/lifecycle/grounding-audit/card-revision updates, generation-pack import (`node.import_generated`), and posterior-based `rank.compute` / `node.promote` stay inside the `idea-engine` runtime contract |
-| Current most mature domain MCP front door | `@nullius/hep-mcp` | Project/Run, evidence, writing/export, and provider-local composition |
+| Current most mature domain MCP front door | `@nullius/hep-mcp` | Paper/evidence projects, evidence retrieval, literature search exports into a caller-chosen `output_dir`, and provider-local composition |
 | Provider-local atoms | `openalex_*`, `arxiv_*`, `hepdata_*`, `pdg_*`, `zotero_*` | Bounded provider operators that remain MCP-first |
 
 Front-door surface classification lives in `meta/front_door_authority_map_v1.json`; exact inventories remain owned by their source surfaces.
@@ -84,16 +84,15 @@ Front-door surface classification lives in `meta/front_door_authority_map_v1.jso
     papers/<paper_id>/
       paper.json
       evidence/
-  runs/<run_id>/
-    manifest.json
-    artifacts/
 ```
 
 Important path helpers live in:
 
 - `packages/hep-mcp/src/core/paths.ts`
 - `packages/hep-mcp/src/core/projects.ts`
-- `packages/hep-mcp/src/core/runs.ts`
+- `packages/hep-mcp/src/core/outputDir.ts`
+
+Tools that produce files (`hep_inspire_search_export`, `hep_inspire_resolve_identifiers`, `hep_import_from_zotero`, `inspire_parse_latex`, `inspire_theoretical_conflicts`, and `inspire_search` when given `output_dir`) take a caller-chosen `output_dir`. It requires `project_root`; it is relative to the project root or absolute (any spelling of the root); it is created if missing; it may not traverse a symbolic link below the project root, lie under `.nullius/`, `team/runs/` or `artifacts/hep-mcp/`, or be the project root itself. Per-call external API request/response records go to `<output_dir>/external_api/`. Historical `runs/<run_id>/` directories under a HEP data root, written by earlier versions, are read-only evidence: no tool creates or rewrites them, and `docs/URI_REGISTRY.md` gives the reading rule for historical `hep://runs/...` references.
 
 ### 5.2 `.nullius` external project roots
 
@@ -151,10 +150,8 @@ Paper originals, extracted text, arXiv source tarballs, and source trees are fil
 | --- | --- |
 | `packages/hep-mcp/src/tools/registry/shared.ts` | current tool exposure order and `standard`/`full` filtering |
 | `packages/hep-mcp/src/core/projects.ts` | project creation and listing |
-| `packages/hep-mcp/src/core/runs.ts` | run creation, manifest writes, run locking |
-| `packages/hep-mcp/src/core/paths.ts` | on-disk project/run path authority |
-| `packages/hep-mcp/src/core/writing/*` | writing evidence and render path |
-| `packages/hep-mcp/src/core/export/*` | export/import artifacts and paper bundle flows |
+| `packages/hep-mcp/src/core/paths.ts` | on-disk project/paper path authority |
+| `packages/hep-mcp/src/core/outputDir.ts` | admission of caller-chosen `output_dir` inside the project root and output file writes |
 | `packages/hep-mcp/tests/core/*` | core front-door behavior tests |
 | `packages/hep-mcp/tests/docs/docToolDrift.test.ts` | doc/tool-count/front-door drift guard |
 | `packages/orchestrator/src/cli-help.ts` | current lifecycle CLI help and boundary wording |

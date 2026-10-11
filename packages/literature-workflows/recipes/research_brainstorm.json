@@ -180,9 +180,7 @@
           ],
           "suggested_next_recipe": [
             "literature_landscape",
-            "literature_gap_analysis",
-            "derivation_cycle",
-            "review_cycle"
+            "literature_gap_analysis"
           ],
           "recommended_lane": "operator_approved_followup",
           "lane_type": "workflow_recipe_handoff",

@@ -1,17 +1,10 @@
 import { ZodError } from 'zod';
-import {
-  HEP_IMPORT_FROM_ZOTERO,
-  HEP_PROJECT_CREATE,
-  HEP_PROJECT_QUERY_EVIDENCE,
-  HEP_RUN_CREATE,
-  HEP_RUN_PREFIX,
-} from '../tool-names.js';
+import { HEP_IMPORT_FROM_ZOTERO } from '../tool-names.js';
 import {
   invalidParams,
   McpError,
   unsafeFs,
   extractTraceId,
-  INSPIRE_PARSE_LATEX,
   INSPIRE_FIND_CONNECTIONS,
   INSPIRE_SEARCH,
   INSPIRE_SEARCH_NEXT,
@@ -34,12 +27,9 @@ import type {
 } from '@modelcontextprotocol/sdk/types.js';
 import type { OutputFormat, SearchResultData } from '../utils/formatters.js';
 import { formatSearchResultMarkdown, formatPaperListMarkdown } from '../utils/formatters.js';
-import { compactPapersInResult, compactPaperSummary } from '../utils/compactPaper.js';
+import { compactPapersInResult } from '../utils/compactPaper.js';
 import { getDataDir, getDataRootInfo, projectPdgDataDir, withHepDataRoot } from '../data/dataDir.js';
 import { resolvePathWithinParent } from '../data/pathGuard.js';
-import { writeRunJsonArtifact } from '../core/citations.js';
-import { getRun } from '../core/runs.js';
-import { getRunManifestPath } from '../core/paths.js';
 import { withPdgDataDir } from '@nullius/pdg-mcp/tooling';
 
 import { getToolSpec, isToolExposed, type ToolExposureMode } from './registry.js';
@@ -147,83 +137,9 @@ function parseToolArgs<T>(toolName: string, schema: { parse: (input: unknown) =>
     return schema.parse(args);
   } catch (err) {
     if (err instanceof ZodError) {
-      const argsObj = (args && typeof args === 'object') ? (args as Record<string, unknown>) : null;
-
-      const missingRunIdForHepRunTool = (() => {
-        if (!toolName.startsWith(HEP_RUN_PREFIX) && toolName !== INSPIRE_PARSE_LATEX) return false;
-        const hasRunIdKey = argsObj ? Object.prototype.hasOwnProperty.call(argsObj, 'run_id') : false;
-        const runIdValue = hasRunIdKey && argsObj ? argsObj.run_id : undefined;
-        const runIdIsMissing = !hasRunIdKey || runIdValue === undefined;
-        if (!runIdIsMissing) return false;
-        const missingRunIdIssue = err.issues.find(issue => {
-          return Array.isArray(issue.path) && issue.path.includes('run_id');
-        });
-        return Boolean(missingRunIdIssue);
-      })();
-
-      const missingRunIdForProjectSemanticQuery = (() => {
-        if (toolName !== HEP_PROJECT_QUERY_EVIDENCE) return false;
-        const modeValue = argsObj && typeof argsObj.mode === 'string' ? argsObj.mode.trim().toLowerCase() : 'lexical';
-        if (modeValue !== 'semantic') return false;
-        const hasRunIdKey = argsObj ? Object.prototype.hasOwnProperty.call(argsObj, 'run_id') : false;
-        const runIdValue = hasRunIdKey && argsObj ? argsObj.run_id : undefined;
-        const runIdIsMissing = !hasRunIdKey || runIdValue === undefined;
-        if (!runIdIsMissing) return false;
-        const missingRunIdIssue = err.issues.find(issue => {
-          return Array.isArray(issue.path) && issue.path.includes('run_id');
-        });
-        return Boolean(missingRunIdIssue);
-      })();
-
       const data: Record<string, unknown> = {
         issues: err.issues,
       };
-
-      if (missingRunIdForProjectSemanticQuery) {
-        const projectId = argsObj && typeof argsObj.project_id === 'string' ? argsObj.project_id : '<project_id>';
-        const query = argsObj && typeof argsObj.query === 'string' ? argsObj.query : '<query>';
-        data.next_actions = [
-          {
-            tool: HEP_RUN_CREATE,
-            args: {
-              project_id: projectId,
-            },
-            reason: 'Create a run and use run_id for semantic mode.',
-          },
-          {
-            tool: HEP_PROJECT_QUERY_EVIDENCE,
-            args: {
-              project_id: projectId,
-              mode: 'semantic',
-              run_id: '<run_id from hep_run_create>',
-              query,
-            },
-            reason: 'Retry semantic evidence query with run_id.',
-          },
-        ];
-      } else if (missingRunIdForHepRunTool) {
-        data.next_actions = [
-          {
-            tool: HEP_PROJECT_CREATE,
-            args: {
-              name: 'my_project',
-              description: 'Create a project before creating a run.',
-            },
-            reason: 'Create a project first.',
-          },
-          {
-            tool: HEP_RUN_CREATE,
-            args: {
-              project_id: '<project_id from hep_project_create>',
-            },
-            reason: 'Create a run and provide run_id in subsequent hep_run_* calls.',
-          },
-        ];
-      }
-
-      if (missingRunIdForProjectSemanticQuery || missingRunIdForHepRunTool) {
-        throw invalidParams('run_id is required. Create one with hep_run_create first.', data);
-      }
 
       throw invalidParams(`Invalid parameters for ${toolName}`, data);
     }
@@ -231,57 +147,6 @@ function parseToolArgs<T>(toolName: string, schema: { parse: (input: unknown) =>
   }
 }
 
-
-type SkillBridgeJobEnvelopeV1 = {
-  version: 1;
-  job_id: string;
-  status: string;
-  manifest_path: string;
-  polling: {
-    strategy: 'manifest_file';
-    manifest_path: string;
-    terminal_statuses: string[];
-  };
-};
-
-function maybeAttachSkillBridgeJobEnvelope(result: unknown): unknown {
-  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
-
-  const record = result as Record<string, unknown>;
-  if (record.job && typeof record.job === 'object') return result;
-
-  const runIdRaw = record.run_id;
-  if (typeof runIdRaw !== 'string' || runIdRaw.trim().length === 0) return result;
-  const runId = runIdRaw.trim();
-
-  let status = 'failed';
-  try {
-    const runStatus = getRun(runId).status;
-    status = typeof runStatus === 'string' && runStatus.trim().length > 0 ? runStatus : 'created';
-  } catch {
-    // best-effort envelope only; if run is unavailable, expose terminal fallback status
-    status = 'failed';
-  }
-
-  const manifestPath = getRunManifestPath(runId);
-
-  const job: SkillBridgeJobEnvelopeV1 = {
-    version: 1,
-    job_id: runId,
-    status,
-    manifest_path: manifestPath,
-    polling: {
-      strategy: 'manifest_file',
-      manifest_path: manifestPath,
-      terminal_statuses: ['done', 'failed'],
-    },
-  };
-
-  return {
-    ...record,
-    job,
-  };
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // H-13 L1: Tools whose paper lists should be compacted
@@ -363,67 +228,6 @@ function tryFormatMarkdown(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// H-13 L3: Size guard helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-function extractRunIdFromResult(result: unknown, args: Record<string, unknown>): string | null {
-  if (typeof args.run_id === 'string' && args.run_id.trim()) return args.run_id.trim();
-  if (result && typeof result === 'object' && !Array.isArray(result)) {
-    const record = result as Record<string, unknown>;
-    if (typeof record.run_id === 'string' && record.run_id.trim()) return record.run_id.trim();
-  }
-  return null;
-}
-
-function autoSummarize(result: unknown, _toolName: string): Record<string, unknown> {
-  if (!result || typeof result !== 'object') {
-    return { type: 'unknown' };
-  }
-
-  if (Array.isArray(result)) {
-    return {
-      total_items: result.length,
-      shown_items: Math.min(5, result.length),
-      highlights: result.slice(0, 5),
-    };
-  }
-
-  const record = result as Record<string, unknown>;
-
-  // { papers: [...] }
-  if (Array.isArray(record.papers)) {
-    const papers = record.papers;
-    const compacted = papers.slice(0, 5).map((p: unknown) => {
-      if (p && typeof p === 'object' && 'title' in p) {
-        return compactPaperSummary(p as PaperSummary);
-      }
-      return p;
-    });
-    return {
-      total_items: typeof record.total === 'number' ? record.total : papers.length,
-      shown_items: compacted.length,
-      highlights: compacted,
-    };
-  }
-
-  // { results: [...] } or { hits: [...] }
-  for (const key of ['results', 'hits'] as const) {
-    if (Array.isArray(record[key])) {
-      const arr = record[key] as unknown[];
-      return {
-        total_items: typeof record.total === 'number' ? record.total : arr.length,
-        shown_items: Math.min(5, arr.length),
-        highlights: arr.slice(0, 5),
-      };
-    }
-  }
-
-  // Generic object — expose keys
-  const keys = Object.keys(record);
-  return { type: 'object', keys: keys.slice(0, 20), total_keys: keys.length };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // formatToolResult — H-13 L0+L1+L3 unified
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -459,26 +263,7 @@ function formatToolResult(
     return { content: [{ type: 'text', text: json }] };
   }
 
-  // L3: over soft limit — write artifact if run_id available
-  const runId = extractRunIdFromResult(processed, args);
-  if (runId) {
-    const artifactName = `${name}_result_${Date.now()}.json`;
-    const ref = writeRunJsonArtifact(runId, artifactName, { version: 1, result: processed });
-    const summary = autoSummarize(processed, name);
-    return {
-      content: [
-        { type: 'text', text: JSON.stringify({
-          _result_too_large: true,
-          size_bytes: size,
-          artifact_uri: ref.uri,
-          artifact_name: artifactName,
-          summary,
-        }) },
-      ],
-    };
-  }
-
-  // L3: no run context — hard truncate if beyond hard cap
+  // L3: over soft limit — hard truncate if beyond hard cap
   if (size > HARD_CAP_RESULT_BYTES) {
     const truncated = json.slice(0, HARD_CAP_RESULT_BYTES);
     return {
@@ -486,7 +271,7 @@ function formatToolResult(
     };
   }
 
-  // Between soft and hard cap, no run context — return as-is
+  // Between soft and hard cap — return as-is
   return { content: [{ type: 'text', text: json }] };
 }
 
@@ -496,7 +281,6 @@ function formatToolError(
   traceId?: string
 ): { content: ToolResultContentBlock[]; isError: true } {
   const requestId = ctx?.requestId ?? null;
-  const runId = null;
 
   const payload = (() => {
     if (err instanceof McpError) {
@@ -512,7 +296,6 @@ function formatToolError(
         },
         trace_id: traceId ?? null,
         request_id: requestId,
-        run_id: runId,
       };
     }
 
@@ -524,7 +307,6 @@ function formatToolError(
       },
       trace_id: traceId ?? null,
       request_id: requestId,
-      run_id: runId,
     };
   })();
 
@@ -701,7 +483,6 @@ async function handleToolCallInResolvedDataRoot(
       createMessage: ctx?.createMessage,
       callTool: loopbackCallTool,
     });
-    const resultWithSkillBridgeEnvelope = maybeAttachSkillBridgeJobEnvelope(result);
     recordToolUsage(name);
     const durationMs = Date.now() - startMs;
 
@@ -710,7 +491,7 @@ async function handleToolCallInResolvedDataRoot(
 
     if (reportProgress) reportProgress(1, 1, `completed: ${name}`);
     span?.end('OK');
-    return formatToolResult(name, resultWithSkillBridgeEnvelope, parsedArgs);
+    return formatToolResult(name, result, parsedArgs);
   } catch (err) {
     const durationMs = Date.now() - startMs;
     if (reportProgress) reportProgress(1, 1, `failed: ${name}`);

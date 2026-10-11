@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import type { CreateMessageRequestParamsBase, CreateMessageResult } from '@modelcontextprotocol/sdk/types.js';
-import { HEP_PROJECT_COMPARE_MEASUREMENTS } from '../../tool-names.js';
+import { INSPIRE_DETECT_MEASUREMENT_CONFLICTS } from '../../tool-names.js';
 import { canonicalQuantityKey } from './quantityCanonical.js';
 import { normalizeUnitsForPair, unitPairIncompatible } from './quantityUnits.js';
 import {
@@ -115,7 +115,8 @@ export async function adjudicateQuantityPair(
       messages: [{ role: 'user', content: { type: 'text', text: prompt } }],
       maxTokens: 400,
       metadata: buildToolSamplingMetadata({
-        tool: HEP_PROJECT_COMPARE_MEASUREMENTS,
+        // The measurement-conflict tool is the only caller of quantity adjudication.
+        tool: INSPIRE_DETECT_MEASUREMENT_CONFLICTS,
         module: 'sem01_quantity_adjudicator',
         promptVersion,
         costClass: 'medium',

@@ -5,10 +5,8 @@ import { pathToFileURL } from 'url';
 import { invalidParams, writeBytesAtomicDurable } from '@nullius/shared';
 
 import { ensureDir, getCacheDir } from '../../data/dataDir.js';
-import { getRun, type RunArtifactRef } from '../runs.js';
 import { assertSafePathSegment } from '../paths.js';
-import { writeRunJsonArtifact } from '../citations.js';
-import { HEP_RUN_READ_ARTIFACT_CHUNK } from '../../tool-names.js';
+import { EXTERNAL_API_SUBDIR, writeOutputJson, type OutputArtifactRef, type OutputDir } from '../outputDir.js';
 
 type ExternalApiCacheEntryV1 = {
   version: 1;
@@ -89,28 +87,29 @@ function externalApiCacheEntryPath(params: { namespace: string; operation: strin
 function defaultArtifactName(prefix: string, params: { namespace: string; operation: string; request_hash: string }): string {
   const namespace = safeCacheSegment(params.namespace, 'namespace');
   const operation = safeCacheSegment(params.operation, 'operation');
-  return `${prefix}_${namespace}_${operation}_${params.request_hash}.json`;
+  return `${EXTERNAL_API_SUBDIR}/${prefix}_${namespace}_${operation}_${params.request_hash}.json`;
 }
 
+/**
+ * One external API call through the shared response cache. The request and
+ * the response actually used are recorded in the caller's output directory
+ * (under `external_api/`), so the outputs show what they were built from.
+ */
 export async function cachedExternalApiJsonCall<T>(params: {
-  run_id: string;
+  output: OutputDir;
   namespace: string;
   operation: string;
   request: unknown;
   fetch: () => Promise<T>;
-  request_artifact_name?: string;
-  response_artifact_name?: string;
   tool?: { name: string; args: Record<string, unknown> };
 }): Promise<{
-  run_id: string;
   request_hash: string;
   cache_hit: boolean;
   cached_response_uri: string;
-  artifacts: RunArtifactRef[];
+  artifacts: OutputArtifactRef[];
   response: T;
 }> {
-  const runId = params.run_id;
-  getRun(runId);
+  const output = params.output;
 
   const namespace = safeCacheSegment(params.namespace, 'namespace');
   const operation = safeCacheSegment(params.operation, 'operation');
@@ -123,19 +122,15 @@ export async function cachedExternalApiJsonCall<T>(params: {
   };
   const requestHash = sha256Hex(stableStringify(requestEnvelope));
 
-  const requestArtifactName = params.request_artifact_name?.trim()
-    ? params.request_artifact_name.trim()
-    : defaultArtifactName('external_api_request', { namespace, operation, request_hash: requestHash });
-  const responseArtifactName = params.response_artifact_name?.trim()
-    ? params.response_artifact_name.trim()
-    : defaultArtifactName('external_api_response', { namespace, operation, request_hash: requestHash });
+  const requestArtifactName = defaultArtifactName('external_api_request', { namespace, operation, request_hash: requestHash });
+  const responseArtifactName = defaultArtifactName('external_api_response', { namespace, operation, request_hash: requestHash });
 
   const cachePath = (() => {
     try {
       return externalApiCacheEntryPath({ namespace, operation, request_hash: requestHash });
     } catch (err) {
       throw invalidParams('Failed to resolve external API cache path (fail-fast)', {
-        run_id: runId,
+        output_dir: output.relative,
         namespace,
         operation,
         request_hash: requestHash,
@@ -148,10 +143,9 @@ export async function cachedExternalApiJsonCall<T>(params: {
   })();
   const cachedResponseUri = pathToFileURL(cachePath).toString();
 
-  const requestRef = writeRunJsonArtifact(runId, requestArtifactName, {
+  const requestRef = writeOutputJson(output, requestArtifactName, {
     version: 1,
     generated_at: nowIso(),
-    run_id: runId,
     namespace,
     operation,
     request_hash: requestHash,
@@ -166,10 +160,9 @@ export async function cachedExternalApiJsonCall<T>(params: {
     try {
       cached = JSON.parse(await fs.promises.readFile(cachePath, 'utf-8')) as ExternalApiCacheEntryV1;
     } catch (err) {
-      const parseErrRef = writeRunJsonArtifact(runId, `external_api_cache_parse_error_${namespace}_${operation}_${requestHash}.json`, {
+      const parseErrRef = writeOutputJson(output, `${EXTERNAL_API_SUBDIR}/external_api_cache_parse_error_${namespace}_${operation}_${requestHash}.json`, {
         version: 1,
         generated_at: nowIso(),
-        run_id: runId,
         namespace,
         operation,
         request_hash: requestHash,
@@ -177,16 +170,14 @@ export async function cachedExternalApiJsonCall<T>(params: {
         error: err instanceof Error ? err.message : String(err),
       });
       throw invalidParams('External API cache entry is not valid JSON (fail-fast)', {
-        run_id: runId,
+        output_dir: output.relative,
         namespace,
         operation,
         request_hash: requestHash,
         cached_response_uri: cachedResponseUri,
         cache_path: cachePath,
-        parse_error_uri: parseErrRef.uri,
-        parse_error_artifact: parseErrRef.name,
+        parse_error_path: parseErrRef.path,
         next_actions: [
-          { tool: HEP_RUN_READ_ARTIFACT_CHUNK, args: { run_id: runId, artifact_name: parseErrRef.name, offset: 0, length: 2048 }, reason: 'Inspect the cache parse error artifact.' },
           ...(params.tool ? [{ tool: params.tool.name, args: params.tool.args, reason: 'Retry after removing the corrupted cache entry (manual) (fail-fast).' }] : []),
         ],
       });
@@ -198,10 +189,9 @@ export async function cachedExternalApiJsonCall<T>(params: {
       || cached.namespace !== namespace
       || cached.operation !== operation
     ) {
-      const mismatchRef = writeRunJsonArtifact(runId, `external_api_cache_mismatch_${namespace}_${operation}_${requestHash}.json`, {
+      const mismatchRef = writeOutputJson(output, `${EXTERNAL_API_SUBDIR}/external_api_cache_mismatch_${namespace}_${operation}_${requestHash}.json`, {
         version: 1,
         generated_at: nowIso(),
-        run_id: runId,
         namespace,
         operation,
         request_hash: requestHash,
@@ -214,16 +204,14 @@ export async function cachedExternalApiJsonCall<T>(params: {
         },
       });
       throw invalidParams('External API cache entry mismatches request (fail-fast)', {
-        run_id: runId,
+        output_dir: output.relative,
         namespace,
         operation,
         request_hash: requestHash,
         cached_response_uri: cachedResponseUri,
         cache_path: cachePath,
-        mismatch_uri: mismatchRef.uri,
-        mismatch_artifact: mismatchRef.name,
+        mismatch_path: mismatchRef.path,
         next_actions: [
-          { tool: HEP_RUN_READ_ARTIFACT_CHUNK, args: { run_id: runId, artifact_name: mismatchRef.name, offset: 0, length: 2048 }, reason: 'Inspect the cache mismatch artifact and remove the corrupted cache entry manually if needed.' },
           ...(params.tool ? [{ tool: params.tool.name, args: params.tool.args, reason: 'Retry after removing the corrupted cache entry (manual) (fail-fast).' }] : []),
         ],
       });
@@ -247,10 +235,9 @@ export async function cachedExternalApiJsonCall<T>(params: {
     try {
       await atomicWriteFile({ file_path: cachePath, bytes: Buffer.from(JSON.stringify(entry, null, 2), 'utf-8') });
     } catch (err) {
-      const ioErrRef = writeRunJsonArtifact(runId, `external_api_cache_io_error_${namespace}_${operation}_${requestHash}.json`, {
+      const ioErrRef = writeOutputJson(output, `${EXTERNAL_API_SUBDIR}/external_api_cache_io_error_${namespace}_${operation}_${requestHash}.json`, {
         version: 1,
         generated_at: nowIso(),
-        run_id: runId,
         namespace,
         operation,
         request_hash: requestHash,
@@ -258,37 +245,33 @@ export async function cachedExternalApiJsonCall<T>(params: {
         error: err instanceof Error ? err.message : String(err),
       });
       throw invalidParams('External API cache write failed (fail-fast)', {
-        run_id: runId,
+        output_dir: output.relative,
         namespace,
         operation,
         request_hash: requestHash,
         cached_response_uri: cachedResponseUri,
         cache_path: cachePath,
-        cache_error_uri: ioErrRef.uri,
-        cache_error_artifact: ioErrRef.name,
+        cache_error_path: ioErrRef.path,
         next_actions: [
-          { tool: HEP_RUN_READ_ARTIFACT_CHUNK, args: { run_id: runId, artifact_name: ioErrRef.name, offset: 0, length: 2048 }, reason: 'Inspect the cache IO error artifact (disk/permission issues are fatal by design).' },
           ...(params.tool ? [{ tool: params.tool.name, args: params.tool.args, reason: 'Retry after resolving cache directory IO failures (fail-fast).' }] : []),
         ],
       });
     }
   }
 
-  const responseRef = writeRunJsonArtifact(runId, responseArtifactName, {
+  const responseRef = writeOutputJson(output, responseArtifactName, {
     version: 1,
     generated_at: nowIso(),
-    run_id: runId,
     namespace,
     operation,
     request_hash: requestHash,
-    request_uri: requestRef.uri,
+    request_path: requestRef.path,
     cache_hit: cacheHit,
     cached_response_uri: cachedResponseUri,
     response,
   });
 
   return {
-    run_id: runId,
     request_hash: requestHash,
     cache_hit: cacheHit,
     cached_response_uri: cachedResponseUri,

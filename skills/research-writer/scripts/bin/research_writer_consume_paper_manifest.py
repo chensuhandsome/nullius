@@ -2,7 +2,7 @@
 """
 research_writer_consume_paper_manifest.py
 
-Deterministic v1 "publisher" for an MCP-exported `paper/` scaffold.
+Deterministic v1 "publisher" for an externally produced `paper/` scaffold.
 
 Principles:
 - Deterministic: no network, no LLM calls.

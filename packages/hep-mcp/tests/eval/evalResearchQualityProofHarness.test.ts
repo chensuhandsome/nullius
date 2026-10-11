@@ -10,9 +10,8 @@ import {
   saveBaseline,
   type EvalResult,
 } from '../../src/eval/index.js';
-import { getRunArtifactPath } from '../../src/core/paths.js';
-import { createProject } from '../../src/core/projects.js';
-import { createRun } from '../../src/core/runs.js';
+import { withHepDataRoot } from '../../src/data/dataDir.js';
+import { makeProjectRoot } from '../support/hepProjectUri.js';
 import { assertEvalSnapshot, BASELINES_DIR, readEvalSetFixture } from './evalSnapshots.js';
 import {
   ALLOWED_AGGREGATE_METRICS,
@@ -80,33 +79,21 @@ function makePaper(overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function withTempHepDataDir<T>(run: () => Promise<T>): Promise<T> {
-  const original = process.env.HEP_DATA_DIR;
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hep-quality-proof-'));
-  process.env.HEP_DATA_DIR = dataDir;
+const SEM04_OUTPUT_DIR = 'eval/research_quality_proof';
+
+/** Run inside a fresh temporary project root, as the dispatcher would for a call naming it. */
+async function withTempProjectRoot<T>(run: (projectRoot: string) => Promise<T>): Promise<T> {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hep-quality-proof-'));
+  const projectRoot = makeProjectRoot(tmpDir);
   try {
-    return await run();
+    return await withHepDataRoot(projectRoot, () => run(projectRoot));
   } finally {
-    if (original !== undefined) process.env.HEP_DATA_DIR = original;
-    else delete process.env.HEP_DATA_DIR;
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 }
 
-async function createSem04Run(): Promise<string> {
-  const project = createProject({
-    name: 'Research Quality Proof',
-    description: 'Fixed-fixture eval',
-  });
-  const run = createRun({
-    project_id: project.project_id,
-    args_snapshot: { eval: 'research_quality_proof' },
-  });
-  return run.manifest.run_id;
-}
-
 async function runSem04Once(input: Extract<ProofInput, { surface: 'sem04' }>['payload']): Promise<ProofNormalizedActual> {
-  return withTempHepDataDir(async () => {
+  return withTempProjectRoot(async projectRoot => {
     vi.resetAllMocks();
     vi.mocked(api.getPaper).mockImplementation(async (recid: string) => {
       const paper = input.papers.find(candidate => candidate.recid === recid);
@@ -114,9 +101,8 @@ async function runSem04Once(input: Extract<ProofInput, { surface: 'sem04' }>['pa
       return paper as never;
     });
 
-    const run_id = await createSem04Run();
     const res = await performTheoreticalConflicts({
-      run_id,
+      output_dir: SEM04_OUTPUT_DIR,
       recids: input.papers.map(paper => paper.recid),
       subject_entity: input.subject_entity,
       inputs: input.inputs,
@@ -137,7 +123,7 @@ async function runSem04Once(input: Extract<ProofInput, { surface: 'sem04' }>['pa
         relation?: string;
         provenance?: { decision_status?: string; reason_code?: string };
       }>;
-    }>(getRunArtifactPath(run_id, 'theoretical_conflicts_v1.json'));
+    }>(path.join(projectRoot, SEM04_OUTPUT_DIR, 'theoretical_conflicts_v1.json'));
     const firstEdge = conflicts.conflicts[0] ?? {};
 
     return buildActual('sem04', firstEdge.provenance?.decision_status ?? 'unknown', firstEdge.provenance?.reason_code ?? null, {

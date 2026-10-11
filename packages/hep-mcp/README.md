@@ -1,12 +1,14 @@
 # @nullius/hep-mcp
 
-Current most mature HEP domain pack and end-to-end workflow example. Local stdio MCP server exposing `hep_*` tools for projects, runs, evidence, writing, export, and provider-local composition.
+Current most mature HEP domain pack. Local stdio MCP server exposing `hep_*` tools for paper/evidence projects, evidence retrieval, literature search exports, and provider-local composition.
 
 ## Layer
 
 Domain workflow pack. The strongest end-to-end example in the repo, but **not the root product identity** — generic lifecycle and contracts live in `@nullius/orchestrator` and `@nullius/shared`. See root [README.md](../../README.md) §3 Layer Model.
 
-Projects, run manifests, artifact URIs and local catalogs belong to this domain pack. They are artifact sessions, not generic lifecycle or approval authority. `hep_render_latex` renders structured drafts without verifying source support or enforcing citation allowlists: omitted `is_grounded` remains unknown, and explicit flags are caller assertions. `hep_export_project` rejects missing BibTeX entries for cited keys; this does not verify the claims themselves.
+Paper/evidence projects, `hep://projects/...` identifiers and local catalogs belong to this domain pack; they are not generic lifecycle or approval authority. `hep-mcp` keeps no runs of its own: runs, approvals and lifecycle belong to the orchestrator (`<project_root>/artifacts/runs/<run_id>/`). Tools that produce files (`hep_inspire_search_export`, `hep_inspire_resolve_identifiers`, `hep_import_from_zotero`, `inspire_parse_latex`, `inspire_theoretical_conflicts`, and `inspire_search` when given `output_dir`) write them into a caller-chosen `output_dir`, typically a subdirectory of the current run directory, and return project-relative paths (`export_path`, `meta_path`, `mapping_path`, `path`, `artifacts[].path`). Per-call external API request/response records go to `<output_dir>/external_api/`. `hep_project_query_evidence` is lexical only. There are no draft rendering, project export or paper bundling tools.
+
+Historical HEP run directories (`runs/<run_id>/` under a HEP data root) written by earlier versions are evidence: they stay readable in place and no tool creates or rewrites them. [docs/URI_REGISTRY.md](../../docs/URI_REGISTRY.md) gives the reading rule for historical `hep://runs/...` references.
 
 ## Aggregated providers
 
@@ -55,6 +57,11 @@ caller, as `HEP_DATA_DIR` is. Absolute
 paths compared with the data root, such as `output_dir`, may name the project
 through any alias of its root, while a path that really lands outside it,
 including through a dangling symlink, is refused.
+
+`output_dir` requires `project_root`. It is relative to the project root or
+absolute (any spelling of the root), is created if missing, may not traverse a
+symbolic link below the project root, may not lie under `.nullius/`,
+`team/runs/` or `artifacts/hep-mcp/`, and may not be the project root itself.
 
 ## Build & run
 

@@ -16,7 +16,7 @@ import {
   INSPIRE_VALIDATE_BIBLIOGRAPHY,
 } from '@nullius/shared';
 import { notFound } from '@nullius/shared';
-import { writeRunJsonArtifact } from '../../core/citations.js';
+import { resolveOutputDir, writeOutputJson } from '../../core/outputDir.js';
 import type { ToolSpec } from './types.js';
 import {
   FindConnectionsToolSchema,
@@ -44,7 +44,7 @@ export const RAW_INSPIRE_RESEARCH_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
     tier: 'consolidated',
     exposure: 'standard',
     description:
-      'Parse LaTeX content and extract selected components into a run artifact (Evidence-first; writes `parse_latex_<hash>.json`; network).',
+      'Parse LaTeX content and extract selected components, writing `parse_latex_<hash>.json` into output_dir inside project_root (network; returns its project-relative path + summary).',
     zodSchema: InspireParseLatexToolSchema,
     handler: async (params, ctx) => {
       const { parseLatexContent } = await import('../research/parseLatexContent.js');
@@ -55,6 +55,7 @@ export const RAW_INSPIRE_RESEARCH_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
       });
       const artifactName = `parse_latex_${hash}.json`;
       const generatedAt = new Date().toISOString();
+      const output = resolveOutputDir(params.output_dir);
 
       try {
         const result = await parseLatexContent({
@@ -64,10 +65,10 @@ export const RAW_INSPIRE_RESEARCH_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
           ...(ctx.createMessage ? { _mcp: { createMessage: ctx.createMessage } } : {}),
         });
 
-        const ref = writeRunJsonArtifact(params.run_id, artifactName, {
+        const ref = writeOutputJson(output, artifactName, {
           version: 1,
           generated_at: generatedAt,
-          run_id: params.run_id,
+          output_dir: output.relative,
           tool: INSPIRE_PARSE_LATEX,
           request: {
             identifier: params.identifier,
@@ -78,10 +79,10 @@ export const RAW_INSPIRE_RESEARCH_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
         });
 
         return {
-          uri: ref.uri,
+          path: ref.path,
           summary: {
             artifact_name: ref.name,
-            run_id: params.run_id,
+            output_dir: output.relative,
             identifier: params.identifier,
             components: params.components,
             metadata: {
@@ -96,7 +97,7 @@ export const RAW_INSPIRE_RESEARCH_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
         if (isNoLatexSourceError(err)) {
           const message = err instanceof Error ? err.message : String(err);
           throw notFound(message, {
-            run_id: params.run_id,
+            output_dir: output.relative,
             identifier: params.identifier,
             components: params.components,
           });
@@ -158,7 +159,7 @@ export const RAW_INSPIRE_RESEARCH_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
     tier: 'consolidated',
     exposure: 'standard',
     maturity: 'stable',
-    description: 'Build a run-scoped theoretical conflict map for a bounded paper set (network; writes run artifacts).',
+    description: 'Build a theoretical conflict map for a bounded paper set, writing every intermediate record and the map into output_dir inside project_root (network; MCP client sampling).',
     zodSchema: InspireTheoreticalConflictsToolSchema,
     handler: async (params, ctx) => {
       const { performTheoreticalConflicts } = await import('../research/theoreticalConflicts.js');

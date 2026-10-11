@@ -1,6 +1,5 @@
 import { zodToMcpInputSchema } from '../mcpSchema.js';
 import { z } from 'zod';
-import { HEP_RENDER_LATEX } from '../../tool-names.js';
 import {
   type ToolExposure,
   type ToolExposureMode,
@@ -18,7 +17,6 @@ import { OPENALEX_TOOL_SPECS } from './openalex.js';
 import { ADMIN_TOOL_SPECS } from './admin.js';
 import {
   PROJECT_CORE_TOOL_SPECS,
-  PROJECT_CITATION_TOOL_SPECS,
   PROJECT_EXTENSION_TOOL_SPECS,
 } from './project.js';
 
@@ -32,15 +30,6 @@ export type {
 };
 
 export { isAdvancedToolSpec, isToolExposed };
-
-const projectCoreRenderLatexIndex = PROJECT_CORE_TOOL_SPECS.findIndex(spec => spec.name === HEP_RENDER_LATEX);
-
-if (projectCoreRenderLatexIndex < 0) {
-  throw new Error('Unexpected project core ordering in registry split');
-}
-
-const PROJECT_CORE_PREFIX_TOOL_SPECS = PROJECT_CORE_TOOL_SPECS.slice(0, projectCoreRenderLatexIndex);
-const PROJECT_CORE_RENDER_EXPORT_TOOL_SPECS = PROJECT_CORE_TOOL_SPECS.slice(projectCoreRenderLatexIndex);
 
 const PROJECT_ROOT_DESCRIPTION =
   'Optional absolute path to an initialized nullius project root outside any nullius checkout; it is admitted in canonical (symlink-resolved) form. When set, HEP/PDG artifacts for this call are stored under <project_root>/artifacts/hep-mcp, which must be reached through real directories (a symlinked artifacts/, artifacts/hep-mcp/ or pdg/ is refused); otherwise HEP_DATA_DIR or the scratch default is used.';
@@ -60,9 +49,7 @@ function withProjectRootContract(spec: ToolSpec): ToolSpec {
 }
 
 export const TOOL_SPECS: ToolSpec[] = [
-  ...PROJECT_CORE_PREFIX_TOOL_SPECS,
-  ...PROJECT_CITATION_TOOL_SPECS,
-  ...PROJECT_CORE_RENDER_EXPORT_TOOL_SPECS,
+  ...PROJECT_CORE_TOOL_SPECS,
   ...ZOTERO_TOOL_SPECS,
   ...INSPIRE_TOOL_SPECS,
   ...PDG_TOOL_SPECS,

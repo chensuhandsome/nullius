@@ -14,7 +14,7 @@ It does not replace the research executors. It restores the project state, route
 - `nullius`: generic TS CLI and project lifecycle control plane.
 - `research-team`: milestone execution and multi-agent research progress.
 - `markdown-hygiene`: standalone Markdown math, TOC, and formatting cleanup before research handoff.
-- `hep-mcp`: HEP literature, evidence, INSPIRE/arXiv, bibliography, and export tooling.
+- `hep-mcp`: HEP literature, evidence, INSPIRE/arXiv, bibliography, and search-export tooling (file outputs go into a caller-chosen `output_dir` inside the project; runs stay with `nullius`).
 - `project_index.md#Main research report` + `nullius report-validate`: single
   current report entry point and structural promotion gate.
 
@@ -145,7 +145,7 @@ node /absolute/path/to/nullius/packages/orchestrator/dist/cli.js init --runtime-
 - If the user needs milestone execution, invoke `research-team` and keep the milestone boundary explicit.
 - If a compute environment, tool build, or documented invocation is new, rebuilt, or reconfigured, pass the three-layer readiness validation (under Long-Running Compute Jobs below) before routing real work onto it.
 - If the task is Markdown formatting, Markdown math escaping, generated TOC LaTeX cleanup, link/citation clickability, or pre-handoff note hygiene, invoke `markdown-hygiene` first, then rerun the relevant project gate.
-- If the task is physics or adjacent scientific literature research, evidence, INSPIRE/arXiv/OpenAlex provider lookup, source reading, bibliography, or export support, use `hep-mcp`. Web search may supplement broad discovery, but it does not replace the provider citation graph gate below.
+- If the task is physics or adjacent scientific literature research, evidence, INSPIRE/arXiv/OpenAlex provider lookup, source reading, bibliography, or literature search exports into project files, use `hep-mcp`. Web search may supplement broad discovery, but it does not replace the provider citation graph gate below.
 - If the task is lifecycle, verification, approval, pause/resume, final conclusions, or export, keep it on `nullius`.
 
 **Verification dispatch by result type.** This uses the same event → workflow vocabulary as the trigger table the scaffolded `AGENTS.md` carries (extended here with two harness-local rows, literature survey and prose; the integrity boundary lives in Closeout below); run the matching workflow at the moment the result appears, not on user reminder, and record the result as unverified when the named skill is unavailable:
@@ -400,7 +400,7 @@ Minimum expectations:
 - Treat `50` as a default page/initial-batch size, not a completion threshold. Literature work is complete only after a saturation artifact records provider coverage, candidate-pool rationale, and citation/reference graph checks.
 - For each seed or core paper, check both directions when relevant: papers it references and papers citing it.
 - For claims about paper relationships, source priority, review status, influence, or literature gaps, inspect the citation/reference graph with `hep-mcp` provider tools; do not rely only on search snippets or web pages.
-- For writing-facing work, build or validate bibliography/citation artifacts through `hep-mcp` rather than hand-maintaining citekey authority from web search.
+- For writing-facing work, resolve citekeys and BibTeX through `hep-mcp` provider tools rather than hand-maintaining citekey authority from web search.
 
 Useful `hep-mcp` routes include:
 
@@ -409,7 +409,7 @@ Useful `hep-mcp` routes include:
 - Cross-paper graph inside the provider layer: `inspire_find_connections` or `inspire_network_analysis`.
 - arXiv/source checks: use arXiv/provider routes for preprints, versions, and source text when the task depends on the actual paper source.
 - OpenAlex/cross-domain checks: use OpenAlex/provider routes when the paper is outside clean INSPIRE coverage or when broader cross-field citations may matter.
-- Writing allowlist / citekey mapping: `hep_run_build_citation_mapping`.
+- Citekeys and BibTeX for cited recids: `inspire_resolve_citekey`; batch identifier-to-recid mapping written into the project: `hep_inspire_resolve_identifiers` with `project_root` and an `output_dir` under the current run directory (e.g. `artifacts/runs/<run_id>/literature`).
 
 If `hep-mcp` or a needed provider is unavailable, state that limitation explicitly and do not present the citation graph as complete.
 

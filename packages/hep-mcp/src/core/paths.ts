@@ -14,10 +14,6 @@ export function getProjectsDir(): string {
   return ensureSubdir('projects');
 }
 
-export function getRunsDir(): string {
-  return ensureSubdir('runs');
-}
-
 export function assertSafePathSegment(segment: string, what: string): void {
   if (segment.length === 0) throw invalidParams(`${what} cannot be empty`);
   if (segment.includes('\0')) throw invalidParams(`${what} cannot include null byte`);
@@ -102,35 +98,4 @@ export function getProjectPaperEvidenceDir(projectId: string, paperId: string): 
 export function getProjectPaperEvidenceCatalogPath(projectId: string, paperId: string): string {
   const evidenceDir = getProjectPaperEvidenceDir(projectId, paperId);
   return resolvePathWithinParent(evidenceDir, path.join(evidenceDir, 'catalog.jsonl'), 'paper_evidence_catalog');
-}
-
-export function getRunDir(runId: string): string {
-  assertSafePathSegment(runId, 'run_id');
-  const runsDir = getRunsDir();
-  return resolvePathWithinParent(runsDir, path.join(runsDir, runId), 'run_dir');
-}
-
-export function getRunManifestPath(runId: string): string {
-  const runDir = getRunDir(runId);
-  return resolvePathWithinParent(runDir, path.join(runDir, 'manifest.json'), 'manifest.json');
-}
-
-export function getRunArtifactsDir(runId: string): string {
-  const runDir = getRunDir(runId);
-  const artifactsDir = resolvePathWithinParent(runDir, path.join(runDir, 'artifacts'), 'artifacts_dir');
-  ensureDir(artifactsDir);
-  return artifactsDir;
-}
-
-export function getRunStagingDir(runId: string): string {
-  const runDir = getRunDir(runId);
-  const stagingDir = resolvePathWithinParent(runDir, path.join(runDir, 'staging'), 'staging_dir');
-  ensureDir(stagingDir);
-  return stagingDir;
-}
-
-export function getRunArtifactPath(runId: string, artifactName: string): string {
-  assertSafePathSegment(artifactName, 'artifact_name');
-  const artifactsDir = getRunArtifactsDir(runId);
-  return resolvePathWithinParent(artifactsDir, path.join(artifactsDir, artifactName), 'artifact_path');
 }

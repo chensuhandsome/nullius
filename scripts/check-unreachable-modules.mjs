@@ -11,24 +11,30 @@
 //
 // What counts as an import (parsed with the TypeScript compiler, so comments and
 // strings cannot fake or hide one): `import`/`export ... from`, side-effect `import`,
-// `import x = require()`, `require()`, `import()` calls and `import()` types, each
-// with a literal relative specifier. An `import()` whose argument is not a literal
-// cannot be followed; in an enforced package that is reported as a failure rather
-// than silently trusted.
+// `import x = require()`, `import()` calls and `import()` types, each with a literal
+// relative specifier. Calls to a function named `require` are not followed: the name
+// can be any local binding, so such a call proves no module edge. In an enforced
+// package, a `require()` with a relative or non-literal argument, and an `import()`
+// whose argument is not a literal, are reported as failures rather than trusted.
 //
-// Specifier resolution follows the package's own build layout: a path under the
-// tsconfig `outDir` (e.g. `./dist/index.js` in package.json or a `bin/` launcher) is
-// mapped to the matching source file under `rootDir`, and the `.js`/`.mjs`/`.cjs`
-// spellings resolve to their `.ts`/`.mts`/`.cts` sources.
+// Specifier resolution follows the package's own build layout, read from its
+// tsconfig.json with the TypeScript parser (so `extends` and comments are honoured):
+// a path under `outDir` (e.g. `./dist/index.js` in package.json or a `bin/` launcher)
+// is mapped to the matching source file under `rootDir`, and the `.js`/`.mjs`/`.cjs`
+// spellings resolve to their `.ts`/`.mts`/`.cts` sources (or a hand-written
+// declaration file).
 //
 // Modules that are not part of the source graph are not candidates: declaration
 // files (`.d.ts`), test files (`*.test.*`, `*.spec.*`) and anything under a
 // `__tests__`, `__mocks__` or `__fixtures__` directory.
 //
-// Allowlist entries are additional roots, not exemptions: a module that is started
-// some other way (a shell launcher, a test-driven evaluation suite) is listed with the
-// reason, and whatever it imports counts as reached. An entry that matches no file
-// fails the check, so the list cannot outlive what it names.
+// A module that is started some other way is invisible to an import walk: a file a
+// shell script or a test suite runs, or one started as a separate process or worker
+// by its path. Such a module goes on the package's allowlist, one file per entry, with
+// the reason. Allowlist entries are additional roots, not exemptions: whatever an
+// entry imports counts as reached, and a file it does not reach still fails. An entry
+// that names no source module fails the check, so the list cannot outlive what it
+// names.
 //
 // Usage:
 //   node scripts/check-unreachable-modules.mjs            enforce the packages below
@@ -43,13 +49,14 @@ import { fileURLToPath } from 'node:url';
 const scriptRepoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // Packages held to the check, keyed by repo-relative directory. Each allowlist entry is
-// a repo-package-relative file path, or a directory prefix ending in '/'.
+// one source file, relative to the package directory.
 export const ENFORCED_PACKAGES = {
   'packages/hep-mcp': {
     allow: [
       // Evaluation substrate: driven by tests/eval/*.test.ts (vitest), not by the MCP
-      // server. Kept as the designated place for semantic-quality evaluation.
-      { path: 'src/eval/', reason: 'evaluation substrate run by tests/eval' },
+      // server. Kept as the designated place for semantic-quality evaluation; its other
+      // modules must be reached from this entry point.
+      { path: 'src/eval/index.ts', reason: 'evaluation substrate run by tests/eval' },
       // Administrative command-line tools, started by scripts/*.sh from dist/admin/.
       { path: 'src/admin/cli-import-paper.ts', reason: 'started by scripts/import-paper.sh' },
       { path: 'src/admin/cli-link-kb-notes.ts', reason: 'started by scripts/link-kb-notes.sh' },
@@ -62,11 +69,13 @@ export const ENFORCED_PACKAGES = {
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 const EXCLUDED_DIRECTORIES = new Set(['__tests__', '__mocks__', '__fixtures__', 'node_modules']);
 const RESOLUTION_ALTERNATIVES = {
-  '.js': ['.ts', '.tsx', '.js', '.jsx'],
+  '.js': ['.ts', '.tsx', '.js', '.jsx', '.d.ts'],
   '.jsx': ['.tsx', '.jsx'],
-  '.mjs': ['.mts', '.mjs'],
-  '.cjs': ['.cts', '.cjs'],
+  '.mjs': ['.mts', '.mjs', '.d.mts'],
+  '.cjs': ['.cts', '.cjs', '.d.cts'],
 };
+// TypeScript's "no inputs were found" diagnostic: irrelevant to reading rootDir/outDir.
+const TSCONFIG_NO_INPUTS = 18003;
 
 function toPosix(p) {
   return p.split(path.sep).join('/');
@@ -112,21 +121,25 @@ function listSourceModules(sourceRoot) {
   return out.sort();
 }
 
-function readLayout(packageDir) {
-  // rootDir/outDir from the package's own tsconfig; a package without one is taken to
-  // ship its sources directly from src/.
+function readLayout(ts, packageDir) {
+  // rootDir/outDir as TypeScript reads the package's tsconfig.json (following `extends`,
+  // allowing comments); a package without one is taken to ship its sources from src/.
   const tsconfigPath = path.join(packageDir, 'tsconfig.json');
-  let rootDir = 'src';
-  let outDir = null;
-  if (existsSync(tsconfigPath)) {
-    const options = JSON.parse(readFileSync(tsconfigPath, 'utf8')).compilerOptions ?? {};
-    if (typeof options.rootDir === 'string') rootDir = options.rootDir;
-    if (typeof options.outDir === 'string') outDir = options.outDir;
+  const layout = { sourceRoot: path.join(packageDir, 'src'), outRoot: null, problems: [] };
+  if (!existsSync(tsconfigPath)) return layout;
+  const message = diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, '; ');
+  const read = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+  if (read.error) {
+    layout.problems.push(`tsconfig.json cannot be read: ${message(read.error)}`);
+    return layout;
   }
-  return {
-    sourceRoot: path.resolve(packageDir, rootDir),
-    outRoot: outDir === null ? null : path.resolve(packageDir, outDir),
-  };
+  const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, packageDir, undefined, tsconfigPath);
+  for (const error of parsed.errors) {
+    if (error.code !== TSCONFIG_NO_INPUTS) layout.problems.push(`tsconfig.json: ${message(error)}`);
+  }
+  if (typeof parsed.options.rootDir === 'string') layout.sourceRoot = path.resolve(parsed.options.rootDir);
+  if (typeof parsed.options.outDir === 'string') layout.outRoot = path.resolve(parsed.options.outDir);
+  return layout;
 }
 
 function isFile(p) {
@@ -169,7 +182,7 @@ function collectSpecifiers(ts, file) {
   const text = readFileSync(file, 'utf8');
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const specifiers = [];
-  const nonLiteral = [];
+  const unfollowed = [];
   const literalOf = node =>
     node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) ? node.text : null;
   const lineOf = node => source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
@@ -181,12 +194,16 @@ function collectSpecifiers(ts, file) {
       const spec = literalOf(node.moduleReference.expression);
       if (spec !== null) specifiers.push(spec);
     } else if (ts.isCallExpression(node)) {
-      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
-      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require';
-      if (isDynamicImport || isRequire) {
+      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         const spec = literalOf(node.arguments[0]);
         if (spec !== null) specifiers.push(spec);
-        else if (isDynamicImport) nonLiteral.push(lineOf(node));
+        else unfollowed.push({ line: lineOf(node), what: 'an import() with a non-literal argument; its target cannot be followed' });
+      } else if (ts.isIdentifier(node.expression) && node.expression.text === 'require') {
+        // `require` may be any local binding, so the call proves no module edge.
+        const spec = literalOf(node.arguments[0]);
+        if (spec === null || spec.startsWith('./') || spec.startsWith('../')) {
+          unfollowed.push({ line: lineOf(node), what: 'a require() call with a relative or non-literal argument, which is not followed as an import (use import or import())' });
+        }
       }
     } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
       const spec = literalOf(node.argument.literal);
@@ -195,7 +212,7 @@ function collectSpecifiers(ts, file) {
     ts.forEachChild(node, visit);
   };
   visit(source);
-  return { specifiers, nonLiteral };
+  return { specifiers, unfollowed };
 }
 
 function collectEntryPaths(manifest) {
@@ -209,19 +226,15 @@ function collectEntryPaths(manifest) {
   return [...new Set(out)];
 }
 
-function matchesAllow(relPath, allow) {
-  return allow.path.endsWith('/') ? relPath.startsWith(allow.path) : relPath === allow.path;
-}
-
 export function scanPackage(packageDir, { allow = [], ts } = {}) {
   const typescript = ts ?? loadTypeScript(scriptRepoRoot);
   const manifestPath = path.join(packageDir, 'package.json');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-  const layout = readLayout(packageDir);
+  const layout = readLayout(typescript, packageDir);
   const modules = listSourceModules(layout.sourceRoot);
   const rel = p => toPosix(path.relative(packageDir, p));
 
-  const problems = [];
+  const problems = [...layout.problems];
   const roots = [];
   for (const entry of collectEntryPaths(manifest)) {
     if (entry.includes('*')) {
@@ -234,22 +247,22 @@ export function scanPackage(packageDir, { allow = [], ts } = {}) {
   }
   const declaredRootCount = roots.length;
   for (const item of allow) {
-    const matched = modules.filter(m => matchesAllow(rel(m), item));
-    if (matched.length === 0) problems.push(`allowlist entry ${item.path} matches no source module`);
-    roots.push(...matched);
+    const matched = modules.find(m => rel(m) === item.path);
+    if (matched === undefined) problems.push(`allowlist entry ${item.path} names no source module`);
+    else roots.push(matched);
   }
   if (declaredRootCount === 0) problems.push('package.json declares no entry that resolves to a source file');
 
   const reached = new Set();
   const queue = [...roots];
-  const nonLiteralSites = [];
+  const unfollowedSites = [];
   while (queue.length > 0) {
     const file = queue.pop();
     if (reached.has(file)) continue;
     reached.add(file);
     if (!SOURCE_EXTENSIONS.includes(path.extname(file))) continue;
-    const { specifiers, nonLiteral } = collectSpecifiers(typescript, file);
-    for (const line of nonLiteral) nonLiteralSites.push(`${rel(file)}:${line}`);
+    const { specifiers, unfollowed } = collectSpecifiers(typescript, file);
+    for (const { line, what } of unfollowed) unfollowedSites.push(`${rel(file)}:${line} has ${what}`);
     for (const spec of specifiers) {
       if (!spec.startsWith('./') && !spec.startsWith('../')) continue;
       const target = resolveTarget(path.resolve(path.dirname(file), spec), layout);
@@ -257,9 +270,7 @@ export function scanPackage(packageDir, { allow = [], ts } = {}) {
       else if (!reached.has(target)) queue.push(target);
     }
   }
-  for (const site of nonLiteralSites) {
-    problems.push(`${site} has an import() with a non-literal argument; its target cannot be followed`);
-  }
+  problems.push(...unfollowedSites);
 
   const unreachable = modules.filter(m => !reached.has(m)).map(rel);
   return { modules: modules.length, reached: modules.filter(m => reached.has(m)).length, unreachable, problems };

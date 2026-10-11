@@ -57,14 +57,54 @@ test('follows static, dynamic, type-only and launcher imports; comments, strings
   assert.equal(result.modules, 8);
 });
 
-test('allowlist entries are additional roots, and an entry matching nothing is reported', t => {
+test('allowlist entries are single-file roots; a directory or a missing file names no module', t => {
   const { packageDir, write } = packageFixture(t);
   write('pkg/src/admin/tool.ts', "import '../orphan.js';\n");
+  write('pkg/src/admin/unused.ts', 'export const u = 1;\n');
   const result = scanPackage(packageDir, {
-    allow: [{ path: 'src/admin/tool.ts', reason: 'started by a shell script' }, { path: 'src/gone/', reason: 'stale' }],
+    allow: [
+      { path: 'src/admin/tool.ts', reason: 'started by a shell script' },
+      { path: 'src/admin/', reason: 'a directory is not a root' },
+      { path: 'src/gone.ts', reason: 'stale' },
+    ],
   });
-  assert.deepEqual(result.unreachable, ['src/commented.ts', 'src/quoted.ts']);
-  assert.deepEqual(result.problems, ['allowlist entry src/gone/ matches no source module']);
+  assert.deepEqual(result.unreachable, ['src/admin/unused.ts', 'src/commented.ts', 'src/quoted.ts']);
+  assert.deepEqual(result.problems, [
+    'allowlist entry src/admin/ names no source module',
+    'allowlist entry src/gone.ts names no source module',
+  ]);
+});
+
+test('a call to a function named require is no import, even with a literal path', t => {
+  const { packageDir, write } = packageFixture(t);
+  write('pkg/src/cli.ts', [
+    'const require = (_: string) => 0;',
+    "require('./orphan.js');",
+    "export const cli = require('some-package');",
+    '',
+  ].join('\n'));
+  const result = scanPackage(packageDir);
+  assert.ok(result.unreachable.includes('src/orphan.ts'));
+  assert.deepEqual(result.problems, [
+    'src/cli.ts:2 has a require() call with a relative or non-literal argument, which is not followed as an import (use import or import())',
+  ]);
+});
+
+test('tsconfig is read as TypeScript reads it: extends, comments, declaration-file targets', t => {
+  const ws = workspace(t);
+  ws.write('pkg/package.json', JSON.stringify({ name: 'fixture', main: './build/index.js' }));
+  ws.write('pkg/tsconfig.base.json', JSON.stringify({ compilerOptions: { rootDir: './source', outDir: './build' } }));
+  ws.write('pkg/tsconfig.json', '// layout comes from the base\n{ "extends": "./tsconfig.base.json" }\n');
+  ws.write('pkg/source/index.ts', "import type { T } from './types.js';\nexport const t: T = 1;\n");
+  ws.write('pkg/source/types.d.ts', 'export type T = number;\n');
+  ws.write('pkg/source/orphan.ts', 'export const z = 1;\n');
+  const result = scanPackage(path.join(ws.base, 'pkg'));
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual(result.unreachable, ['source/orphan.ts']);
+
+  ws.write('pkg/tsconfig.json', '{ "extends": "./missing-base.json" }\n');
+  const broken = scanPackage(path.join(ws.base, 'pkg'));
+  assert.ok(broken.problems.some(problem => problem.startsWith('tsconfig.json: Cannot read file')), broken.problems.join('\n'));
 });
 
 test('a non-literal import() and an unresolved relative import are reported, not trusted', t => {
@@ -87,7 +127,7 @@ test('an entry that does not resolve to a source file is reported', t => {
   ]);
 });
 
-test('negative control: an orphan planted in a copy of each enforced package fails the check', t => {
+test('negative control: an orphan planted in a copy of each enforced package fails the check, also beside an allowlisted root', t => {
   for (const [pkg, config] of Object.entries(ENFORCED_PACKAGES)) {
     const ws = workspace(t);
     const source = path.join(repoRoot, pkg);
@@ -95,15 +135,23 @@ test('negative control: an orphan planted in a copy of each enforced package fai
     for (const entry of ['package.json', 'tsconfig.json', 'src', 'bin']) {
       if (fs.existsSync(path.join(source, entry))) fs.cpSync(path.join(source, entry), path.join(copy, entry), { recursive: true });
     }
+    // The packages' tsconfig files extend the repository's root one.
+    fs.cpSync(path.join(repoRoot, 'tsconfig.json'), path.join(ws.base, 'tsconfig.json'));
     const enforced = { [pkg]: config };
 
     const clean = runCheck({ repoRoot: ws.base, enforced });
     assert.equal(clean.failed, false, clean.lines.join('\n'));
 
-    ws.write(`${pkg}/src/planted-orphan.ts`, 'export const planted = 1;\n');
-    const planted = runCheck({ repoRoot: ws.base, enforced });
-    assert.equal(planted.failed, true);
-    assert.ok(planted.lines.includes('    src/planted-orphan.ts'), planted.lines.join('\n'));
-    assert.ok(planted.lines.some(line => line.includes('1 source module(s) reached by no declared entry')), planted.lines.join('\n'));
+    const plantDirs = new Set(['src', ...config.allow.map(item => path.posix.dirname(item.path))]);
+    for (const dir of plantDirs) {
+      const planted = `${dir}/planted-orphan.ts`;
+      ws.write(`${pkg}/${planted}`, 'export const planted = 1;\n');
+      const result = runCheck({ repoRoot: ws.base, enforced });
+      assert.equal(result.failed, true, planted);
+      assert.ok(result.lines.includes(`    ${planted}`), result.lines.join('\n'));
+      assert.ok(result.lines.some(line => line.includes('1 source module(s) reached by no declared entry')), result.lines.join('\n'));
+      fs.rmSync(path.join(copy, planted));
+    }
+    assert.equal(runCheck({ repoRoot: ws.base, enforced }).failed, false);
   }
 });

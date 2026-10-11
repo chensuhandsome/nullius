@@ -33,6 +33,8 @@
  *
  * - {@link writeBytesAtomicDurable}: the generic byte / string write. Used
  *   for binary artifacts, executable scripts, text rollback restores.
+ * - {@link writeChunksAtomicDurable}: the same staging and commit for content
+ *   that arrives as a stream of chunks (a download, a decompression).
  * - {@link writeJsonAtomicDurable}: typed wrapper that handles JSON
  *   stringification. The default stringify is non-sorting; callers needing
  *   Python-`sort_keys=True` byte-equality pass `sortKeysRecursive`
@@ -256,6 +258,73 @@ export function writeBytesAtomicDurable(
   // the tmp name is never touched again, whatever the audit hook or the
   // directory fsync does.
   commitStagedDurable(tmpPath, filePath, removeStaged);
+}
+
+/**
+ * Primitive 1b: durable atomic streamed write.
+ *
+ * The same staging and commit as {@link writeBytesAtomicDurable}, for content
+ * that arrives as a sequence of chunks (a download, a decompression): each
+ * chunk is written to the exclusively created tmp file as it arrives, then the
+ * file is fsync'd, closed and renamed into place, and the parent directory is
+ * fsync'd. If iterating `chunks` throws (an upstream stream error) or any step
+ * before the rename fails, the tmp file is removed while the tmp name still
+ * holds the file created here, the error propagates, and `filePath` is left as
+ * it was.
+ *
+ * Returns the identity of the committed file, so a caller that later removes
+ * it can do so with {@link unlinkIfSameFile}.
+ *
+ * @example
+ * await pipeline(response, gunzip, (source) => writeChunksAtomicDurable(out, source));
+ */
+export async function writeChunksAtomicDurable(
+  filePath: string,
+  chunks: AsyncIterable<Uint8Array | string>,
+  mode?: number,
+): Promise<FileIdentity> {
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true });
+  audit({ kind: 'mkdir', path: dir });
+  const tmpPath = makeTmpPath(filePath);
+  const flags = 'wx';
+  const fd = mode !== undefined
+    ? fs.openSync(tmpPath, flags, mode)
+    : fs.openSync(tmpPath, flags);
+  audit({ kind: 'open', path: tmpPath, flags, mode, fd });
+  // Cleanup removes tmpPath only while it still names the file created here
+  // (same device and inode); an entry someone else put at that name stays.
+  let staged: FileIdentity | undefined;
+  const removeStaged = (): void => unlinkIfSameFile(tmpPath, staged);
+  try {
+    staged = fileIdentityOfFd(fd);
+    for await (const chunk of chunks) {
+      const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+      // Each call writes the whole chunk at the current file position.
+      fs.writeFileSync(fd, bytes);
+      audit({ kind: 'write', fd, bytes: bytes.byteLength });
+    }
+    if (mode !== undefined) {
+      fs.fchmodSync(fd, mode);
+      audit({ kind: 'fchmod', fd, mode });
+    }
+    fs.fsyncSync(fd);
+    audit({ kind: 'fsync', fd });
+  } catch (err) {
+    try { fs.closeSync(fd); audit({ kind: 'close', fd }); } catch { /* best-effort */ }
+    removeStaged();
+    throw err;
+  }
+  try {
+    fs.closeSync(fd);
+    audit({ kind: 'close', fd });
+  } catch (closeErr) {
+    removeStaged();
+    throw closeErr;
+  }
+  commitStagedDurable(tmpPath, filePath, removeStaged);
+  // Set before any byte was written; the commit kept the same file.
+  return staged as FileIdentity;
 }
 
 /**

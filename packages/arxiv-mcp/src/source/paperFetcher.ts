@@ -2,9 +2,9 @@
  * Paper Fetcher — HTTP download + Content-Type detection
  */
 
-import * as fs from 'fs';
 import { pipeline } from 'stream/promises';
 import { Readable, Transform } from 'stream';
+import { writeChunksAtomicDurable } from '@nullius/shared';
 import { arxivFetch } from '../api/rateLimiter.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -94,16 +94,14 @@ export async function downloadFile(url: string, destPath: string): Promise<void>
     },
   });
 
-  const fileStream = fs.createWriteStream(destPath);
+  // The body is staged at a fresh exclusively created name and renamed into
+  // place, so a link already at destPath is replaced rather than written
+  // through. On a cap-exceeded abort or any other failure before the rename,
+  // the staged partial file is removed and destPath is left as it was.
   const readable = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]);
-  try {
-    await pipeline(readable, capLimiter, fileStream);
-  } catch (err) {
-    // On cap-exceeded abort the partial file is meaningless — remove it so
-    // callers don't pick up half-written archives.
-    try { fs.unlinkSync(destPath); } catch { /* best effort */ }
-    throw err;
-  }
+  await pipeline(readable, capLimiter, async (source: AsyncIterable<Buffer>) => {
+    await writeChunksAtomicDurable(destPath, source);
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

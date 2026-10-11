@@ -1,15 +1,34 @@
 import { spawnSync } from 'node:child_process';
-import { writeFileSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { writeBytesAtomicDurable } from '../atomic-write.js';
 
-function ensureDir(p: string): void {
-  mkdirSync(dirname(p), { recursive: true });
-}
+// Largest rendered image read back from Graphviz before it is written.
+const MAX_RENDER_BYTES = 256 * 1024 * 1024;
 
 /** Check if Graphviz `dot` binary is available. */
 export function isDotAvailable(): boolean {
   const result = spawnSync('which', ['dot'], { encoding: 'utf8' });
   return result.status === 0;
+}
+
+// Graphviz renders to stdout; the image is then staged beside `outPath` and
+// renamed into place, so a link at `outPath` is replaced rather than written
+// through, and a failed render leaves `outPath` as it was. Like a failed
+// render, a failed image write is reported as a warning.
+function renderTo(layoutEngine: string, format: 'png' | 'svg', dotBuffer: Buffer, outPath: string): void {
+  const result = spawnSync(layoutEngine, [`-T${format}`], {
+    input: dotBuffer,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    maxBuffer: MAX_RENDER_BYTES,
+  });
+  if (result.status !== 0 || result.error) {
+    console.warn(`[graph-viz] dot ${format.toUpperCase()} failed:`, result.error?.message ?? result.stderr?.toString());
+    return;
+  }
+  try {
+    writeBytesAtomicDurable(outPath, result.stdout);
+  } catch (err) {
+    console.warn(`[graph-viz] writing ${format.toUpperCase()} failed:`, err instanceof Error ? err.message : String(err));
+  }
 }
 
 /**
@@ -28,8 +47,7 @@ export function runDot(
   const { outDot, outPng, outSvg, layoutEngine = 'dot' } = opts;
 
   if (outDot) {
-    ensureDir(outDot);
-    writeFileSync(outDot, dotSource, 'utf8');
+    writeBytesAtomicDurable(outDot, dotSource);
   }
 
   if (!outPng && !outSvg) return;
@@ -39,28 +57,7 @@ export function runDot(
     return;
   }
 
-  // Write DOT to a temp string for stdin if no outDot
   const dotBuffer = Buffer.from(dotSource, 'utf8');
-
-  if (outPng) {
-    ensureDir(outPng);
-    const result = spawnSync(layoutEngine, ['-Tpng', '-o', outPng], {
-      input: dotBuffer,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    if (result.status !== 0) {
-      console.warn('[graph-viz] dot PNG failed:', result.stderr?.toString());
-    }
-  }
-
-  if (outSvg) {
-    ensureDir(outSvg);
-    const result = spawnSync(layoutEngine, ['-Tsvg', '-o', outSvg], {
-      input: dotBuffer,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    if (result.status !== 0) {
-      console.warn('[graph-viz] dot SVG failed:', result.stderr?.toString());
-    }
-  }
+  if (outPng) renderTo(layoutEngine, 'png', dotBuffer, outPng);
+  if (outSvg) renderTo(layoutEngine, 'svg', dotBuffer, outSvg);
 }

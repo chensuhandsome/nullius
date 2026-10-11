@@ -82,6 +82,7 @@ export { redact } from './redaction.js';
 // Durable atomic writes (P1) — primitives for POSIX-correct file writes
 export {
   writeBytesAtomicDurable,
+  writeChunksAtomicDurable,
   writeJsonAtomicDurable,
   appendJsonlDurable,
   appendBytesDurable,

@@ -9,6 +9,8 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 import { pipeline } from 'stream/promises';
 import * as tar from 'tar';
+import { writeChunksAtomicDurable } from '@nullius/shared';
+import type { FileIdentity } from '@nullius/shared';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Path Safety
@@ -61,13 +63,21 @@ export async function extractTarGz(archivePath: string, destDir: string): Promis
 }
 
 /**
- * Extract single gzipped file.
+ * Extract single gzipped file into `destPath`, staged at a fresh exclusively
+ * created name and renamed into place, so a link already at `destPath` is
+ * replaced rather than written through. Returns the identity of the written
+ * file, for a caller that removes it later.
  */
-export async function extractGz(archivePath: string, destPath: string): Promise<void> {
-  const input = fs.createReadStream(archivePath);
-  const output = fs.createWriteStream(destPath);
-  const gunzip = zlib.createGunzip();
-  await pipeline(input, gunzip, output);
+export async function extractGz(archivePath: string, destPath: string): Promise<FileIdentity> {
+  let written: FileIdentity | undefined;
+  await pipeline(
+    fs.createReadStream(archivePath),
+    zlib.createGunzip(),
+    async (source: AsyncIterable<Buffer>) => {
+      written = await writeChunksAtomicDurable(destPath, source);
+    },
+  );
+  return written as FileIdentity;
 }
 
 /**

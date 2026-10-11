@@ -5,10 +5,11 @@
  * Caller provides output_dir (baseDir); this module appends `arxiv-<id>/`.
  */
 
+import { randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { commitStagedDurable } from '@nullius/shared';
+import { commitStagedDurable, unlinkIfSameFile } from '@nullius/shared';
 import { normalizeArxivId } from './arxivSource.js';
 import { downloadFile, detectSourceType } from './paperFetcher.js';
 import { extractTarGz, extractGz, isTarArchive, findMainTexFile } from './tarExtractor.js';
@@ -163,18 +164,24 @@ async function downloadLatexSource(
     if (sourceType === 'tar.gz') {
       files = await extractTarGz(archivePath, destDir);
     } else {
-      // Single gz file — might be a tar archive inside
-      const tempPath = path.join(destDir, 'extracted_content');
-      await extractGz(archivePath, tempPath);
+      // Single gz file — might be a tar archive inside. It is decompressed
+      // under a fresh name, and removed only while that name still holds the
+      // file written here.
+      const tempPath = path.join(destDir, `extracted_content.${process.pid}.${randomBytes(8).toString('hex')}`);
+      const extracted = await extractGz(archivePath, tempPath);
 
       if (await isTarArchive(tempPath)) {
-        files = await extractTarGz(tempPath, destDir);
-        fs.unlinkSync(tempPath);
+        try {
+          files = await extractTarGz(tempPath, destDir);
+        } finally {
+          unlinkIfSameFile(tempPath, extracted);
+        }
       } else {
         const texPath = path.join(destDir, 'main.tex');
         // commitStagedDurable: same-parent rename + parent-dir fsync so the
-        // new main.tex is durably visible to downstream readers.
-        commitStagedDurable(tempPath, texPath);
+        // new main.tex is durably visible to downstream readers; the
+        // decompressed file is removed if the rename itself fails.
+        commitStagedDurable(tempPath, texPath, () => unlinkIfSameFile(tempPath, extracted));
         files = ['main.tex'];
       }
     }

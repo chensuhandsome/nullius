@@ -27,6 +27,16 @@ export function readJsonFile<T>(path: PathLike, fallback: T): T {
 }
 
 export function writeJsonFileAtomic(path: string, payload: unknown): void {
+  writeStagedText(path, () => JSON.stringify(payload, null, 2));
+}
+
+export function writeTextFileAtomic(path: string, text: string): void {
+  writeStagedText(path, () => text);
+}
+
+// `render` runs once the staging file exists, so a serialization failure is a
+// failed write that removes it.
+function writeStagedText(path: string, render: () => string): void {
   mkdirSync(dirname(path), { recursive: true });
   // Fresh staging name beside the target, so the rename stays within one
   // directory and no entry left at a predictable name is reused.
@@ -42,7 +52,7 @@ export function writeJsonFileAtomic(path: string, payload: unknown): void {
 
   try {
     staged = fileIdentityOfFd(fd);
-    writeFileSync(fd, JSON.stringify(payload, null, 2), 'utf8');
+    writeFileSync(fd, render(), 'utf8');
     fsyncSync(fd);
   } catch (error) {
     try { closeSync(fd); } catch { /* best-effort */ }

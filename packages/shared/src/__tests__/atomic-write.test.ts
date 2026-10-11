@@ -14,7 +14,7 @@
  * Expected sequence (matching `run-manifest.ts:82-97`):
  *
  *   writeBytesAtomicDurable / writeJsonAtomicDurable / writeExecutableAtomicDurable:
- *     mkdir (dirname) → open (tmp, 'w', mode?) → write → [fchmod (mode)]
+ *     mkdir (dirname) → open (tmp, 'wx', mode?) → write → [fchmod (mode)]
  *     → fsync (fd) → close (fd) → rename (tmp → final)
  *     → open (dirname, 'r') → fsync (dirFd) → close (dirFd)
  *
@@ -95,11 +95,11 @@ describe('writeBytesAtomicDurable — sequence lock', () => {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best-effort */ }
   });
 
-  it('default (no mode): mkdir → open(w) → write → fsync(fd) → close → rename → open(r) → fsync(dir) → close', () => {
+  it('default (no mode): mkdir → open(wx) → write → fsync(fd) → close → rename → open(r) → fsync(dir) → close', () => {
     writeBytesAtomicDurable(path.join(tmp, 'a/b/state.json'), 'payload');
     expect(kinds(rec.log)).toEqual([
       'mkdir',
-      'open',     // tmp 'w'
+      'open',     // tmp 'wx'
       'write',
       'fsync',    // file fd
       'close',    // file fd
@@ -126,13 +126,13 @@ describe('writeBytesAtomicDurable — sequence lock', () => {
     ]);
     const openTmp = rec.log.find(e => e.kind === 'open') as Extract<AtomicWriteAuditEvent, { kind: 'open' }>;
     expect(openTmp.mode).toBe(0o700);
-    expect(openTmp.flags).toBe('w');
+    expect(openTmp.flags).toBe('wx');
   });
 
   it('directory fsync uses "r" flag (not "w")', () => {
     writeBytesAtomicDurable(path.join(tmp, 'state.json'), 'payload');
     const opens = rec.log.filter((e): e is Extract<AtomicWriteAuditEvent, { kind: 'open' }> => e.kind === 'open');
-    expect(opens[0].flags).toBe('w');  // tmp file
+    expect(opens[0].flags).toBe('wx'); // tmp file
     expect(opens[1].flags).toBe('r');  // dir fsync
   });
 

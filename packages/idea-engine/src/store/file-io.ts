@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import {
   closeSync,
   fsyncSync,
@@ -11,6 +12,8 @@ import {
 } from 'fs';
 import type { PathLike } from 'fs';
 import { dirname } from 'path';
+import { fileIdentityOfFd, unlinkIfSameFile } from '@nullius/shared';
+import type { FileIdentity } from '@nullius/shared';
 
 export function readJsonFile<T>(path: PathLike, fallback: T): T {
   try {
@@ -25,17 +28,43 @@ export function readJsonFile<T>(path: PathLike, fallback: T): T {
 
 export function writeJsonFileAtomic(path: string, payload: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
-  const tempPath = `${path}.tmp`;
-  const fd = openSync(tempPath, 'w');
+  // Fresh staging name beside the target, so the rename stays within one
+  // directory and no entry left at a predictable name is reused.
+  const tempPath = `${path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+  // 'wx' is O_CREAT|O_EXCL: the open fails on any existing entry at tempPath,
+  // a symlink included (whatever it points to), so the bytes can only land in
+  // a file created here.
+  const fd = openSync(tempPath, 'wx');
+  // Cleanup removes tempPath only while it still names the file created here
+  // (same device and inode); an entry someone else put at that name stays.
+  let staged: FileIdentity | undefined;
+  const removeStaged = (): void => unlinkIfSameFile(tempPath, staged);
 
   try {
+    staged = fileIdentityOfFd(fd);
     writeFileSync(fd, JSON.stringify(payload, null, 2), 'utf8');
     fsyncSync(fd);
-  } finally {
+  } catch (error) {
+    try { closeSync(fd); } catch { /* best-effort */ }
+    removeStaged();
+    throw error;
+  }
+  // A staging file that cannot be closed is not committed.
+  try {
     closeSync(fd);
+  } catch (error) {
+    removeStaged();
+    throw error;
   }
 
-  renameSync(tempPath, path);
+  // The rename is the commit. A staging file whose rename failed is removed;
+  // once the rename has returned, the staging name is never touched again.
+  try {
+    renameSync(tempPath, path);
+  } catch (error) {
+    removeStaged();
+    throw error;
+  }
 }
 
 export function appendJsonLine(path: string, payload: unknown): void {

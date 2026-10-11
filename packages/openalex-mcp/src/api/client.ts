@@ -6,14 +6,25 @@
  * to avoid the OpenAlex 10k page-based limit.
  */
 
+import { randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { commitStagedDurable, invalidParams, notFound, upstreamError, uniqueShortId } from '@nullius/shared';
+import {
+  commitStagedDurable,
+  fileIdentityOfFd,
+  invalidParams,
+  notFound,
+  unlinkIfSameFile,
+  upstreamError,
+  uniqueShortId,
+} from '@nullius/shared';
+import type { FileIdentity } from '@nullius/shared';
 import { openalexFetch, getCostSummary, getResponseMeta, isBudgetExceeded } from './rateLimiter.js';
 import { buildQueryParams } from './paramMapping.js';
 import { augmentSelect } from './selectAugment.js';
 import { detectIdentifier } from './identifiers.js';
+import { guardPath } from './pathGuard.js';
 import type {
   OpenAlexListResponse,
   OpenAlexGroupByEntry,
@@ -154,12 +165,17 @@ async function paginatedFetch<T>(
     };
   }
 
-  // Bulk mode: auto-paginate via cursor, write JSONL to file
-  const resultsDir = path.join(dataDir ?? getDataDir(), 'results');
+  // Bulk mode: auto-paginate via cursor, write JSONL to file. The results dir
+  // is held to the data dir, so a `results` link that leads out of it is
+  // refused before anything is written.
+  const baseDir = dataDir ?? getDataDir();
+  const resultsDir = guardPath(baseDir, path.join(baseDir, 'results'), 'results dir');
   ensureDir(resultsDir);
   const fileId = uniqueShortId((id) => fs.existsSync(path.join(resultsDir, `${id}.jsonl`)));
   const outFile = path.join(resultsDir, `${fileId}.jsonl`);
-  const tmpFile = `${outFile}.tmp`;
+  // Fresh staging name beside the export, so the rename stays within one
+  // directory and no entry left at a predictable name is reused.
+  const tmpFile = `${outFile}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
 
   let collected = 0;
   let totalCount = 0;
@@ -167,8 +183,16 @@ async function paginatedFetch<T>(
   let stopReason: PaginatedResult<T>['stop_reason'] = 'max_results';
   let complete = false;
 
-  const fd = fs.openSync(tmpFile, 'w');
+  // 'wx' is O_CREAT|O_EXCL: the open fails on any existing entry at tmpFile,
+  // a symlink included (whatever it points to), so the results can only land
+  // in a file created here.
+  const fd = fs.openSync(tmpFile, 'wx');
+  // Cleanup removes tmpFile only while it still names the file created here
+  // (same device and inode); an entry someone else put at that name stays.
+  let staged: FileIdentity | undefined;
+  const removeStaged = (): void => unlinkIfSameFile(tmpFile, staged);
   try {
+    staged = fileIdentityOfFd(fd);
     while (collected < maxResults && currentCursor != null) {
       if (isBudgetExceeded()) {
         stopReason = 'budget_exceeded';
@@ -213,15 +237,25 @@ async function paginatedFetch<T>(
       stopReason = 'max_results';
       complete = false;
     }
-  } finally {
     fs.fsyncSync(fd);
+  } catch (err) {
+    try { fs.closeSync(fd); } catch { /* best-effort */ }
+    removeStaged();
+    throw err;
+  }
+  // A staging file that cannot be closed is not committed.
+  try {
     fs.closeSync(fd);
+  } catch (err) {
+    removeStaged();
+    throw err;
   }
 
-  // commitStagedDurable: rename + parent-dir fsync (same gold-standard
-  // sequence the streaming write above already follows for the staged
-  // file).
-  commitStagedDurable(tmpFile, outFile);
+  // Commit: rename, then fsync the parent directory. A staging file whose
+  // rename failed is removed, since each attempt has its own name and none is
+  // reused. Once the rename has returned, the staging name is never touched
+  // again, whatever the directory fsync does.
+  commitStagedDurable(tmpFile, outFile, removeStaged);
 
   return {
     total_count: totalCount,

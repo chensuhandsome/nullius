@@ -135,7 +135,11 @@ describe('output staging files are created exclusively', () => {
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('unidentified');
       fstatFault.armed = true;
-      expect(() => new OutputBatch(out).json('data.json', { x: 1 })).toThrow(/could not be identified and was left in place/);
+      let thrown: (Error & { code?: string; data?: { staging_path?: string } }) | undefined;
+      try { new OutputBatch(out).json('data.json', { x: 1 }); } catch (error) { thrown = error as typeof thrown; }
+      expect(thrown?.message).toMatch(/could not be identified and was left in place/);
+      expect(thrown?.code).toBe('UNSAFE_FS');
+      expect(thrown?.data?.staging_path).toBe(`unidentified/.data.json.${process.pid}.00000000-0000-4000-8000-000000000000.tmp`);
       expect(fs.readdirSync(out.dir).filter(name => name.endsWith('.tmp'))).toHaveLength(1);
     });
   });
@@ -150,7 +154,8 @@ describe('output staging files are created exclusively', () => {
       linkFault.failOnCall = 2;
       linkFault.before = () => fs.chmodSync(out.dir, 0o555);
       try {
-        const error = await batch.publish().then(() => null, (e: unknown) => e as { message: string; data?: { files_left?: string[] } });
+        const error = await batch.publish().then(() => null, (e: unknown) => e as { message: string; code?: string; data?: { files_left?: string[] } });
+        expect(error?.code).toBe('UNSAFE_FS');
         expect(error?.message).toMatch(/outputs are incomplete/);
         expect(error?.data?.files_left).toEqual(['stuck/a.json']);
         expect((error?.data as { staging_left?: string[] } | undefined)?.staging_left).toHaveLength(2);

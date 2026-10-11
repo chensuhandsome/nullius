@@ -21,6 +21,14 @@ const { McpError, upstreamError } = await import('@nullius/shared');
 
 type ToolResult = Awaited<ReturnType<typeof handleToolCall>>;
 
+/** Every file below `dir`, at any depth (none if `dir` does not exist). */
+function filesBelow(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  return (fs.readdirSync(dir, { recursive: true }) as string[])
+    .filter(entry => fs.lstatSync(path.join(dir, entry)).isFile())
+    .sort();
+}
+
 function errorOf(result: ToolResult): { code: string; message: string } {
   expect(result.isError).toBe(true);
   return (JSON.parse(result.content[0]!.text) as { error: { code: string; message: string } }).error;
@@ -298,7 +306,10 @@ describe('output files are checked again at write time and streamed outputs fail
       fs.renameSync(out.dir, moved);
       fs.symlinkSync(outside, out.dir, 'dir');
       fs.writeFileSync(path.join(outside, temp), 'sentinel');
-      await expect(batch.publish()).rejects.toThrow(/symbolic link/);
+      const error = await batch.publish().then(() => null, (e: unknown) => e as Error & { data?: { staging_left?: string[] } });
+      expect(error?.message).toMatch(/symbolic link/);
+      // The staging file could not be removed through the symlink, so it is named.
+      expect(error?.data?.staging_left).toEqual([`swap/${temp}`]);
       // The same-named file behind the symlink is untouched; the real
       // staging file stays where it was created.
       expect(fs.readFileSync(path.join(outside, temp), 'utf-8')).toBe('sentinel');
@@ -319,7 +330,11 @@ describe('output files are checked again at write time and streamed outputs fail
       fs.renameSync(out.dir, moved);
       fs.mkdirSync(out.dir);
       fs.writeFileSync(path.join(out.dir, temp), '{"stale":true}\n');
-      await expect(batch.publish()).rejects.toThrow(/staged output file was replaced/);
+      const error = await batch.publish().then(() => null, (e: unknown) => e as Error & { data?: { staging_left?: string[] } });
+      expect(error?.message).toMatch(/staged output file was replaced/);
+      // This call's staging file left output_dir with the moved directory; the
+      // stale file now at its name is not this call's, so nothing is reported.
+      expect(error?.data?.staging_left).toBeUndefined();
       expect(fs.existsSync(path.join(out.dir, 'records.jsonl'))).toBe(false);
       expect(fs.readFileSync(path.join(out.dir, temp), 'utf-8')).toBe('{"stale":true}\n');
       expect(fs.existsSync(path.join(moved, temp))).toBe(true);
@@ -645,7 +660,7 @@ describe('identifier resolution does not turn a refused write into a per-identif
     const error = errorOf(second);
     expect(error.message).toMatch(/Cached external API response is malformed/);
     expect(JSON.stringify(error)).toContain(entryPath);
-    expect(fs.readdirSync(path.join(projectRoot, 'ids2')).filter(name => name !== 'external_api')).toEqual([]);
+    expect(filesBelow(path.join(projectRoot, 'ids2'))).toEqual([]);
   });
 
   it('fails the call when a cache entry is not an entry at all', async () => {
@@ -920,7 +935,7 @@ describe('round-5 argument, name and response checks', () => {
     const result = await handleToolCall('hep_inspire_search_export', { project_root: alias, output_dir: 'loop', query: 't:x' });
     expect(errorOf(result).message).toMatch(/points back to an earlier page/);
     expect(api.searchByUrl).toHaveBeenCalledTimes(1);
-    expect(fs.readdirSync(path.join(tmpDir, 'project', 'loop')).filter(name => name !== 'external_api')).toEqual([]);
+    expect(filesBelow(path.join(tmpDir, 'project', 'loop'))).toEqual([]);
   });
 
   it('a search export refuses more records than the reported total', async () => {

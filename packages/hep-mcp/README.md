@@ -6,7 +6,7 @@ Current most mature HEP domain pack. Local stdio MCP server exposing `hep_*` too
 
 Domain workflow pack. The strongest end-to-end example in the repo, but **not the root product identity** — generic lifecycle and contracts live in `@nullius/orchestrator` and `@nullius/shared`. See root [README.md](../../README.md) §3 Layer Model.
 
-Paper/evidence projects, `hep://projects/...` identifiers and local catalogs belong to this domain pack; they are not generic lifecycle or approval authority. `hep-mcp` keeps no runs of its own: runs, approvals and lifecycle belong to the orchestrator (`<project_root>/artifacts/runs/<run_id>/`). Tools that produce files (`hep_inspire_search_export`, `hep_inspire_resolve_identifiers`, `hep_import_from_zotero`, `inspire_parse_latex`, `inspire_theoretical_conflicts`, and `inspire_search` when given `output_dir`) write them into a caller-chosen `output_dir`, typically a subdirectory of the current run directory, and return project-relative paths (`export_path`, `meta_path`, `mapping_path`, `path`, `artifacts[].path`). INSPIRE lookups made through the response cache (by `hep_inspire_search_export`, `hep_inspire_resolve_identifiers`, `inspire_search` with `output_dir`, and the INSPIRE resolution step of `hep_import_from_zotero`) are recorded request by request under `<output_dir>/external_api/`; other provider calls (the Zotero local API, the paper fetches of `inspire_theoretical_conflicts`, the source retrieval of `inspire_parse_latex`) are not recorded there. `hep_project_query_evidence` is lexical only. There are no draft rendering, project export or paper bundling tools.
+Paper/evidence projects, `hep://projects/...` identifiers and local catalogs belong to this domain pack; they are not generic lifecycle or approval authority. `hep-mcp` keeps no runs of its own: runs, approvals and lifecycle belong to the orchestrator (`<project_root>/artifacts/runs/<run_id>/`). Tools that produce files (`hep_inspire_search_export`, `hep_inspire_resolve_identifiers`, `hep_import_from_zotero`, `inspire_parse_latex`, `inspire_theoretical_conflicts`, and `inspire_search` when given `output_dir`) write them into a caller-chosen `output_dir`, typically a subdirectory of the current run directory, and return project-relative paths (`export_path`, `meta_path`, `mapping_path`, `path`, `artifacts[].path`). INSPIRE lookups made through the response cache (by `hep_inspire_search_export`, `hep_inspire_resolve_identifiers`, `inspire_search` with `output_dir`, and the INSPIRE resolution step of `hep_import_from_zotero`) are recorded request by request under `<output_dir>/external_api/`; other provider calls (the Zotero local API, the paper fetches of `inspire_theoretical_conflicts`, the source retrieval of `inspire_parse_latex`) are not recorded there. `hep_project_query_evidence` is lexical only; `mode: 'semantic'` is refused. There are no draft rendering, project export or paper bundling tools.
 
 Historical HEP run directories (`runs/<run_id>/` under a HEP data root) written by earlier versions are evidence: they stay readable in place and no tool creates or rewrites them. [docs/URI_REGISTRY.md](../../docs/URI_REGISTRY.md) gives the reading rule for historical `hep://runs/...` references.
 
@@ -61,7 +61,12 @@ including through a dangling symlink, is refused.
 `output_dir` requires `project_root`. It is relative to the project root or
 absolute (any spelling of the root), is created if missing, may not traverse a
 symbolic link below the project root, may not lie under `.nullius/`,
-`team/runs/` or `artifacts/hep-mcp/`, and may not be the project root itself.
+`team/runs/` or `artifacts/hep-mcp/` (compared ignoring letter case), and may not
+be the project root itself. An output name is one file name (or
+`external_api/<file name>` for API records); the names of one call must be
+distinct even when compared ignoring case and Unicode normalization, and none may
+be `external_api` itself. A request repeated within one call is made and recorded
+once.
 Each output file is staged and flushed first and only then given its name, and
 a call never replaces an existing file: if any file it would write already
 exists, the call is refused, before any provider request when the name is known

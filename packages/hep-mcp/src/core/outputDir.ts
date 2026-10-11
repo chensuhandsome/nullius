@@ -264,6 +264,12 @@ function projectRelative(out: OutputDir, file: string): string {
   return toPosix(path.relative(out.projectRoot, file));
 }
 
+/** The message of the error a call failed with (or a plain note when none was given). */
+function describeCause(cause: unknown): string {
+  if (cause === undefined) return 'the call was discarded';
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
 /**
  * The error to report for `cause` when some staging files could not be
  * removed: the cause itself if none were left, otherwise the cause (same
@@ -278,7 +284,7 @@ function withStagingLeft(out: OutputDir, cause: unknown, left: string[]): unknow
       : { cause_data: cause.data };
     return new McpError(cause.code, `${cause.message}${note}`, { ...data, staging_left: left });
   }
-  const message = cause instanceof Error ? cause.message : String(cause);
+  const message = describeCause(cause);
   return unsafeFs(`${message}${note}`, { project_root: out.projectRoot, error: message, staging_left: left });
 }
 
@@ -636,7 +642,7 @@ export class OutputBatch {
     }
     const stagingLeft = [...this.stagingFiles.keys()].map(temp => projectRelative(this.out, temp));
     const filesLeft = [...this.publishedLeft.keys()].map(target => projectRelative(this.out, target));
-    const message = cause instanceof Error ? cause.message : String(cause);
+    const message = describeCause(cause);
     const original = { error: message, ...(cause instanceof McpError ? { error_code: cause.code } : {}) };
     if (filesLeft.length > 0) {
       return unsafeFs('publishing failed and some of its files could not be removed; this call\'s outputs are incomplete', {

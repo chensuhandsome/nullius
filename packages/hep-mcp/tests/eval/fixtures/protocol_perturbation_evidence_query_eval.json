@@ -1,6 +1,6 @@
 {
   "name": "protocol_perturbation_evidence_query",
-  "version": 1,
+  "version": 2,
   "description": "Deterministic front-door perturbation harness for the lexical evidence-query tool surface.",
   "module": "SEM-06",
   "cases": [

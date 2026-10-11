@@ -109,7 +109,7 @@ Persisted workflow-plan dispatch uses the existing run manifest for immutable to
 ## State and artifact truth
 
 - HEP data root resolution is project-aware: tool-call `project_root` writes under `<project_root>/artifacts/hep-mcp`; absent that, `HEP_DATA_DIR` is the explicit override; absent that, scratch fallback is `~/.nullius/hep-mcp`
-- HEP project artifacts live under `projects/<project_id>/...`; HEP research-output tools (search exports, identifier and Zotero mappings, LaTeX parses, conflict maps) put their files in a caller-chosen `output_dir` inside the project root (not the root itself, never under `.nullius/`, `team/runs/` or `artifacts/hep-mcp/`) and return project-relative paths
+- HEP project artifacts live under `projects/<project_id>/...`; HEP research-output tools (search exports, identifier and Zotero mappings, LaTeX parses, conflict maps) put their files in a caller-chosen `output_dir` inside the project root (not the root itself, never under `.nullius/`, `team/runs/` or `artifacts/hep-mcp/`, compared ignoring letter case), never replace an existing file, and return project-relative paths
 - Historical HEP run directories (`runs/<run_id>/...` under the HEP data root) are evidence from earlier versions: they stay readable in place and no tool creates or rewrites them; `docs/URI_REGISTRY.md` gives the reading rule for historical `hep://runs/...` references
 - Paper originals, extracted text, arXiv source tarballs, and source trees are filesystem materials: keep one-off checks in local temp, and persist verification/continuation inputs under the external project root in suitable project/run artifact directories
 - Generic lifecycle state lives in external project roots under `.nullius/`

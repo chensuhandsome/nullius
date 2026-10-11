@@ -75,7 +75,8 @@
 **研究输出工具：调用方指定 `output_dir`**
 - `hep-mcp` 没有自己的 run；run、审批与生命周期只属于 orchestrator（`artifacts/runs/<run_id>/`）。
 - 研究输出工具（`hep_inspire_search_export`、`hep_inspire_resolve_identifiers`、`hep_import_from_zotero`、`inspire_parse_latex`、`inspire_theoretical_conflicts`，以及带 `output_dir` 的 `inspire_search`）把文件写入调用方给定的 `output_dir`。`inspire_paper_source` 的下载、缓存、PDG 数据与 hep 论文/evidence project 仍位于 hep-mcp 的数据根（`<project_root>/artifacts/hep-mcp` 或 `HEP_DATA_DIR`）。
-- `output_dir` 需要同时传 `project_root`；可写成相对 `project_root` 的路径，或绝对路径（根目录的任一别名拼写均可）；不存在时创建；不得经过 project root 以下的符号链接；不得位于 `.nullius/`、`team/runs/` 或 `artifacts/hep-mcp/` 之下，也不能是 project root 本身。
+- `output_dir` 需要同时传 `project_root`；可写成相对 `project_root` 的路径，或绝对路径（根目录的任一别名拼写均可）；不存在时创建；不得经过 project root 以下的符号链接；不得位于 `.nullius/`、`team/runs/` 或 `artifacts/hep-mcp/` 之下（比较时不区分大小写），也不能是 project root 本身。
+- 调用从不覆盖已有文件：输出名已存在的调用会被拒绝；调用失败时撤回本次已发布的文件，删不掉的在错误里列出（详见 hep-mcp README）。
 - 结果返回项目相对路径（`export_path`、`meta_path`、`mapping_path`、`path`、`artifacts[].path`），不再返回 `hep://` run URI。
 - 通常把 `output_dir` 设为当前 orchestrator run 目录下的子目录，例如 `artifacts/runs/<run_id>/literature/`。
 

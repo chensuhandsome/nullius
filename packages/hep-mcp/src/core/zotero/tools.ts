@@ -249,7 +249,9 @@ export async function hepImportFromZotero(params: {
     throw batch.discard(failed.reason);
   }
   const perItem = settled.map(result => {
-    if (result.status !== 'fulfilled' || result.value === null) throw new Error('Internal: a Zotero item was skipped without a failure');
+    if (result.status !== 'fulfilled' || result.value === null) {
+      throw batch.discard(new Error('Internal: a Zotero item was skipped without a failure'));
+    }
     return result.value;
   });
 

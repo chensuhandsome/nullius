@@ -78,7 +78,7 @@ Skill 源码面与分发面是分离的：
 ```
 
 - Project 根位于 `projects/<project_id>/...`。
-- `hep-mcp` 没有自己的 run：run、审批与生命周期属于 orchestrator，位于 `<project_root>/artifacts/runs/<run_id>/`。HEP 研究输出工具（检索导出、标识符映射、Zotero 映射、LaTeX 解析、冲突图）把文件写入调用方指定的项目内 `output_dir`（通常是当前 run 目录下的子目录），并返回项目相对路径。`output_dir` 需要 `project_root`，不得经过 project root 以下的符号链接，也不得位于 `.nullius/`、`team/runs/` 或 `artifacts/hep-mcp/` 之下。`inspire_paper_source` 的下载、缓存、PDG 数据与 hep 论文/evidence project 仍位于 hep-mcp 的数据根（`<project_root>/artifacts/hep-mcp` 或 `HEP_DATA_DIR`）。
+- `hep-mcp` 没有自己的 run：run、审批与生命周期属于 orchestrator，位于 `<project_root>/artifacts/runs/<run_id>/`。HEP 研究输出工具（检索导出、标识符映射、Zotero 映射、LaTeX 解析、冲突图）把文件写入调用方指定的项目内 `output_dir`（通常是当前 run 目录下的子目录），并返回项目相对路径。`output_dir` 需要 `project_root`，不能是 project root 本身，不得经过 project root 以下的符号链接，也不得位于 `.nullius/`、`team/runs/` 或 `artifacts/hep-mcp/` 之下（比较时不区分大小写）；调用从不覆盖已有文件。`inspire_paper_source` 的下载、缓存、PDG 数据与 hep 论文/evidence project 仍位于 hep-mcp 的数据根（`<project_root>/artifacts/hep-mcp` 或 `HEP_DATA_DIR`）。
 - 旧版本留下的 HEP run 目录（HEP 数据根下的 `runs/<run_id>/`）是历史证据：原位读取，不再被任何工具创建或改写。历史 `hep://runs/...` 引用的解析规则见 [`docs/URI_REGISTRY.md`](./URI_REGISTRY.md)。
 - `PDG_DATA_DIR` 是 PDG 的本地 companion root；未单独设置时跟随 resolved HEP data root，即 `<resolved HEP data root>/pdg`。
 - 文本与二进制 artifacts 都保留在 package-owned artifact root 下；tool result 保持紧凑，只指回 project artifacts，避免把大 payload 内联进上下文。

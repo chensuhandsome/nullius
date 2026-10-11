@@ -274,12 +274,11 @@ make codegen-check  # 重新生成 → git diff --exit-code */generated/
 
 **CI 验证**:
 ```bash
-# 当前没有独立的 repo-local config-key linter。
-# 先由 checked-in config docs + package-local config tests 保持该约束。
-pnpm --filter @nullius/hep-mcp test -- tests/research/config.test.ts
+# 当前没有自动检查未注册配置键的 linter 或测试。
+# 新增配置键须登记在上表，评审时核对。
 ```
 
-**违规行为**: **fail-closed** — 未注册的配置键阻断 CI
+**违规行为**: 评审中发现的未登记配置键应在合入前登记或删除
 
 ### CFG-02: .env 加载一致性
 
@@ -868,7 +867,7 @@ if (internal.length) { console.error('PLUG-01:', internal); process.exit(1); }
 | | SYNC-05 跨组件冒烟矩阵 | fail-closed | standard/full 冒烟测试 |
 | | SYNC-06 跨语言类型代码生成 | fail-closed | codegen diff 检查 |
 | | SYNC-07 新技能接线同步 | fail-open（review 阻断） | 验收清单 + market 依赖测试 |
-| **CFG** | CFG-01 配置键注册表 | fail-closed | lint: 未注册键检查 |
+| **CFG** | CFG-01 配置键注册表 | fail-open（review 阻断） | 评审核对 |
 | | CFG-02 .env 加载一致性 | fail-closed | 集成测试 |
 | | CFG-03 env 传播白名单 | fail-closed | 交叉验证 |
 | | CFG-04 配置回显 | fail-open | 冒烟测试 |
@@ -881,7 +880,7 @@ if (internal.length) { console.error('PLUG-01:', internal); process.exit(1); }
 | | LOG-02 trace_id 透传 | fail-open | 集成测试 |
 | | LOG-03 Ledger 事件枚举 | fail-closed | lint 检查 |
 | | LOG-04 日志脱敏 | fail-closed | secrets 模式 grep |
-| **ART** | ART-01 命名规范 | fail-closed | 正则 lint |
+| **ART** | ART-01 命名规范 | fail-open（review 阻断） | 评审核对 |
 | | ART-02 版本化双标记 | fail-closed | 一致性检查 |
 | | ART-03 原子写入 | fail-closed | lint: writeFile 检查 |
 | | ART-04 载荷大小限制 | fail-closed | 集成测试 |

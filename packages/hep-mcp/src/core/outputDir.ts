@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import { commitStagedDurable, invalidParams, respellUnderDirectory, unsafeFs, writeBytesAtomicDurable } from '@nullius/shared';
+import { commitStagedDurable, invalidParams, respellUnderDirectory, unsafeFs } from '@nullius/shared';
 
 import { getDataRootInfo } from '../data/dataDir.js';
 import { isPathInside } from '../data/pathGuard.js';
@@ -186,15 +186,81 @@ export function outputArtifactRef(out: OutputDir, name: string, mimeType: string
   return { name, path: `${out.relative}/${name}`, mimeType };
 }
 
+type FileIdentity = { dev: number; ino: number };
+
+/** A fresh, unpredictable staging name beside the target. */
+function stagingPath(target: string): string {
+  return path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${randomUUID()}.tmp`);
+}
+
+function isSameFile(filePath: string, identity: FileIdentity): boolean {
+  const stat = lstatOrNull(filePath);
+  return stat !== null && stat.isFile() && stat.dev === identity.dev && stat.ino === identity.ino;
+}
+
 /**
- * Write serialized bytes: the path is checked right before the temporary
- * file is opened and again right before it replaces the target.
+ * Remove a staging file, but only while it is still the file this write
+ * created, reached through the same real directories. If anything was
+ * swapped meanwhile, nothing is deleted through the new path and the file
+ * stays where it was created.
+ */
+function removeStaged(out: OutputDir, temp: string, identity: FileIdentity | null): void {
+  if (identity === null) return;
+  try {
+    realDirectoryChain(out.projectRoot, out.relative.split('/'), 'output_dir', out.projectRoot, false);
+    if (isSameFile(temp, identity)) fs.unlinkSync(temp);
+  } catch { /* leave it in place */ }
+}
+
+/**
+ * Replace the target with the staging file this write created: the
+ * directory chain and target are checked again, and the staging file must
+ * still be the very file that was written (same identity), so a replaced
+ * staging file is never committed. On failure the staging file is removed
+ * under the same identity rule.
+ */
+function commitStaged(out: OutputDir, name: string, temp: string, target: string, identity: FileIdentity | null): void {
+  try {
+    outputFilePath(out, name);
+    if (identity === null || !isSameFile(temp, identity)) {
+      throw unsafeFs('staged output file was replaced or is unknown; refusing to commit it', {
+        project_root: out.projectRoot,
+        path: temp,
+      });
+    }
+    commitStagedDurable(temp, target);
+  } catch (error) {
+    removeStaged(out, temp, identity);
+    throw error;
+  }
+}
+
+/**
+ * Write serialized bytes durably. The staging file is created exclusively
+ * under an unpredictable name (an existing entry, symlink or not, is never
+ * opened or followed), flushed to disk, and committed under the identity
+ * rule of `commitStaged`. The path is checked before the staging file is
+ * created and again before it replaces the target.
  */
 function writeOutputBytes(out: OutputDir, name: string, bytes: string): void {
-  const file = outputFilePath(out, name);
-  writeBytesAtomicDurable(file, bytes, undefined, () => {
-    outputFilePath(out, name);
-  });
+  const target = outputFilePath(out, name);
+  const temp = stagingPath(target);
+  const fd = fs.openSync(temp, 'wx');
+  let identity: FileIdentity | null = null;
+  try {
+    const stat = fs.fstatSync(fd);
+    identity = { dev: stat.dev, ino: stat.ino };
+    const buffer = Buffer.from(bytes, 'utf-8');
+    let offset = 0;
+    while (offset < buffer.length) offset += fs.writeSync(fd, buffer, offset, buffer.length - offset);
+    fs.fsyncSync(fd);
+  } catch (error) {
+    fs.closeSync(fd);
+    removeStaged(out, temp, identity);
+    throw error;
+  }
+  fs.closeSync(fd);
+  commitStaged(out, name, temp, target, identity);
 }
 
 export function writeOutputJson(out: OutputDir, name: string, data: unknown): OutputArtifactRef {
@@ -225,17 +291,9 @@ export function openOutputStream(out: OutputDir, name: string): {
   abort: () => void;
 } {
   const target = outputFilePath(out, name);
-  const temp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${randomUUID()}.tmp`);
-  let created: { dev: number; ino: number } | null = null;
-  const removeTemp = (): void => {
-    try {
-      if (created === null) return;
-      realDirectoryChain(out.projectRoot, out.relative.split('/'), 'output_dir', out.projectRoot, false);
-      const stat = fs.lstatSync(temp);
-      if (!stat.isFile() || stat.dev !== created.dev || stat.ino !== created.ino) return;
-      fs.unlinkSync(temp);
-    } catch { /* leave it in place */ }
-  };
+  const temp = stagingPath(target);
+  let created: FileIdentity | null = null;
+  const removeTemp = (): void => removeStaged(out, temp, created);
   let failure: unknown = null;
   let aborted = false;
   const stream = fs.createWriteStream(temp, { encoding: 'utf-8', flags: 'wx' });
@@ -268,11 +326,16 @@ export function openOutputStream(out: OutputDir, name: string): {
       stream.once('finish', () => {
         stream.off('error', fail);
         try {
+          // Flush the file this stream wrote (checked by identity), then
+          // commit it under the identity rule.
           const fd = fs.openSync(temp, 'r');
-          try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-          // Re-check the directory chain and the target just before replacing it.
-          outputFilePath(out, name);
-          commitStagedDurable(temp, target);
+          try {
+            const stat = fs.fstatSync(fd);
+            if (created !== null && stat.dev === created.dev && stat.ino === created.ino) fs.fsyncSync(fd);
+          } finally {
+            fs.closeSync(fd);
+          }
+          commitStaged(out, name, temp, target, created);
           resolve();
         } catch (error) {
           fail(error);

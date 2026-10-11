@@ -281,6 +281,24 @@ describe('output files are checked again at write time and streamed outputs fail
     });
   });
 
+  it('never commits or deletes a same-named file in a real directory that replaced the output directory', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('replaced');
+      const file = openOutputStream(out, 'records.jsonl');
+      file.stream.write('{"genuine":true}\n');
+      await new Promise(resolve => file.stream.once('ready', resolve));
+      const temp = temporaryFiles(out.dir)[0]!;
+      const moved = path.join(tmpDir, 'replaced-moved');
+      fs.renameSync(out.dir, moved);
+      fs.mkdirSync(out.dir);
+      fs.writeFileSync(path.join(out.dir, temp), '{"stale":true}\n');
+      await expect(file.commit()).rejects.toThrow(/replaced or is unknown/);
+      expect(fs.existsSync(path.join(out.dir, 'records.jsonl'))).toBe(false);
+      expect(fs.readFileSync(path.join(out.dir, temp), 'utf-8')).toBe('{"stale":true}\n');
+      expect(fs.existsSync(path.join(moved, temp))).toBe(true);
+    });
+  });
+
   it('leaves no temporary file when aborted before the file was opened', async () => {
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('early');

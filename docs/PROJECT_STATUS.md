@@ -16,7 +16,7 @@ Native computation binds an enabled A3 approval to the current manifest, scripts
 - `pnpm -r test` ✅
 - `pnpm -r lint` ✅
 - `pnpm --filter @nullius/hep-mcp docs:tool-counts:check` ✅
-- `standard=62`, `full=68`
+- `standard=62`, `full=68` (tool counts are kept in sync with the live registry by `docs:tool-counts:sync`, not frozen at the baseline above)
 - `HEP_ENABLE_ZOTERO=0` → `standard=53`, `full=59`
 
 ## Local installation and personal plugin

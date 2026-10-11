@@ -130,9 +130,28 @@ describe('output_dir lies inside the admitted project root, through real directo
     expect(result.isError).toBeFalsy();
   });
 
-  it.each(['.', ''])('refuses the project root itself or a blank output_dir (%j)', async outputDir => {
-    const result = await resolveIds({ project_root: alias, output_dir: outputDir });
-    expect(result.isError).toBe(true);
+  it('refuses the project root itself named as "."', async () => {
+    const error = errorOf(await resolveIds({ project_root: alias, output_dir: '.' }));
+    expect(error.message).toMatch(/not the root itself/);
+  });
+
+  it('refuses a blank output_dir at argument validation', async () => {
+    const result = await resolveIds({ project_root: alias, output_dir: '' });
+    expect(errorOf(result).code).toBe('INVALID_PARAMS');
+    expect(result.content[0]!.text).toContain('output_dir');
+  });
+
+  it.each([
+    ['hep_inspire_search_export', { query: 't:x' }, '../escape.jsonl'],
+    ['hep_inspire_search_export', { query: 't:x' }, 'a/b.jsonl'],
+    ['hep_inspire_resolve_identifiers', { identifiers: ['1'] }, '..'],
+    ['hep_inspire_resolve_identifiers', { identifiers: ['1'] }, 'a\\b.jsonl'],
+  ])('%s refuses the output file name %j before any provider call', async (tool, args, name) => {
+    const result = await handleToolCall(tool, { project_root: alias, output_dir: 'out', artifact_name: name, ...args });
+    expect(errorOf(result).code).toBe('INVALID_PARAMS');
+    expect(api.search).not.toHaveBeenCalled();
+    expect(api.getPaper).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(tmpDir, 'escape.jsonl'))).toBe(false);
   });
 
   it('refuses the project root itself spelled through the alias', async () => {

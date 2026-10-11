@@ -57,8 +57,9 @@ export const OutputDirSchema = z
   .describe(
     'Directory inside project_root that receives this call\'s output files, relative to project_root or absolute '
       + '(any spelling of the root). Requires project_root. Created if missing; it may not traverse a symbolic link, '
-      + 'and may not lie under .nullius/, team/runs/ or artifacts/hep-mcp/. A call never replaces an existing file: '
-      + 'it writes all of its files or none, and is refused if any of them already exists.'
+      + 'and may not lie under .nullius/, team/runs/ or artifacts/hep-mcp/. A call never replaces an existing file '
+      + '(it is refused if any of its files already exists), and a call that fails removes what it had published; '
+      + 'only a crash during publication can leave part of a set, which later calls naming those files refuse until it is removed.'
   );
 
 // The tools that write into output_dir, and the lexical evidence query, use
@@ -84,8 +85,12 @@ export const HepInspireSearchExportToolSchema = z.object({
   output_dir: OutputDirSchema,
   query: z.string().min(1),
   sort: SortSchema.optional(),
-  size: strictBudgetInt({ min: 1, max: 1000 }).default(1000),
-  max_results: strictBudgetInt({ min: 1, max: 10_000 }).default(10_000),
+  size: strictBudgetInt({ min: 1, max: 1000 }).default(1000).describe(
+    'Records per INSPIRE page. If omitted: HEP_BUDGET_INSPIRE_SEARCH_PAGE_SIZE when set, otherwise 1000.'
+  ),
+  max_results: strictBudgetInt({ min: 1, max: 10_000 }).default(10_000).describe(
+    'Most records to export (at most 10000). If omitted: HEP_BUDGET_INSPIRE_SEARCH_MAX_RESULTS when set, otherwise 10000.'
+  ),
   output_format: SearchExportFormatSchema.optional().default('jsonl'),
   artifact_name: SafePathSegmentSchema.optional(),
   meta_artifact_name: SafePathSegmentSchema.optional(),

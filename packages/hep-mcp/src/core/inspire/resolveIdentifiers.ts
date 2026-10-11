@@ -211,6 +211,14 @@ export async function hepInspireResolveIdentifiers(params: {
   const artifacts: OutputArtifactRef[] = [];
   const warnings: string[] = [];
   const externalApiCalls: ExternalApiCallIndexItemV1[] = [];
+  // A request repeated in this call is made once, so it is indexed once.
+  const indexedRequests = new Set<string>();
+  const indexCall = (entry: ExternalApiCallIndexItemV1): void => {
+    const key = `${entry.namespace}:${entry.operation}:${entry.request_hash}`;
+    if (indexedRequests.has(key)) return;
+    indexedRequests.add(key);
+    externalApiCalls.push(entry);
+  };
 
   let matched = 0;
   let notFound = 0;
@@ -243,7 +251,7 @@ export async function hepInspireResolveIdentifiers(params: {
         validate: response => ({ recid: paperRecid(response, operation) }),
       });
       const [requestRef, responseRef] = cached.artifacts;
-      externalApiCalls.push({
+      indexCall({
         version: 1,
         namespace: 'inspire',
         operation,
@@ -258,7 +266,7 @@ export async function hepInspireResolveIdentifiers(params: {
     } catch (err) {
       if (!isProviderFailure(err)) throw err;
       const failure = err as McpError;
-      externalApiCalls.push({
+      indexCall({
         version: 1,
         namespace: 'inspire',
         operation,
@@ -379,7 +387,6 @@ export async function hepInspireResolveIdentifiers(params: {
       },
     };
   } catch (err) {
-    batch.discard();
-    throw err;
+    throw batch.discard(err);
   }
 }

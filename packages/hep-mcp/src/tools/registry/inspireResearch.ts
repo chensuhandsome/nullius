@@ -101,16 +101,15 @@ export const RAW_INSPIRE_RESEARCH_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
           },
         };
       } catch (err) {
-        batch.discard();
         if (isNoLatexSourceError(err)) {
           const message = err instanceof Error ? err.message : String(err);
-          throw notFound(message, {
+          throw batch.discard(notFound(message, {
             output_dir: output.relative,
             identifier: params.identifier,
             components: params.components,
-          });
+          }));
         }
-        throw err;
+        throw batch.discard(err);
       }
     },
   },

@@ -392,7 +392,6 @@ export async function hepInspireSearchExport(params: {
       },
     };
   } catch (err) {
-    batch.discard();
-    throw err;
+    throw batch.discard(err);
   }
 }

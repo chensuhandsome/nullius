@@ -16,7 +16,7 @@ export const InspireSearchToolSchema = z.object({
   query: z.string().min(1),
   sort: SortSchema.optional(),
   size: strictBudgetInt({ min: 1, max: 1000 }).default(25).describe(
-    'Results per page. Default 25 when listing; in a file export (output_dir) the default is 1000, or HEP_BUDGET_INSPIRE_SEARCH_PAGE_SIZE if set.'
+    'Results per page. Default 25 when listing; in a file export (output_dir), if omitted: HEP_BUDGET_INSPIRE_SEARCH_PAGE_SIZE when set, otherwise 1000.'
   ),
   page: strictBudgetInt({ min: 1 }).default(1),
   format: JsonMarkdownSchema.optional().default('json'),
@@ -26,7 +26,7 @@ export const InspireSearchToolSchema = z.object({
   artifact_name: SafePathSegmentSchema.optional(),
   meta_artifact_name: SafePathSegmentSchema.optional(),
   max_results: strictBudgetInt({ min: 1 }).default(100).describe(
-    'Most results to return. Default 100 when listing; in a file export (output_dir) the default is 10000, or HEP_BUDGET_INSPIRE_SEARCH_MAX_RESULTS if set, and at most 10000 may be requested.'
+    'When listing: if given (and page is not), pages are combined up to max_results results; if omitted, one page of size results is returned. In a file export (output_dir): at most 10000; if omitted, HEP_BUDGET_INSPIRE_SEARCH_MAX_RESULTS when set, otherwise 10000.'
   ),
 }).strict();
 

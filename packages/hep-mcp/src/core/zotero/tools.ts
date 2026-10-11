@@ -68,6 +68,14 @@ export async function hepImportFromZotero(params: {
     request_path: string;
     response_path: string;
   }> = [];
+  // A request repeated in this call is made once, so it is indexed once.
+  const indexedRequests = new Set<string>();
+  const indexCall = (entry: (typeof externalApiCalls)[number]): void => {
+    const key = `${entry.namespace}:${entry.operation}:${entry.request_hash}`;
+    if (indexedRequests.has(key)) return;
+    indexedRequests.add(key);
+    externalApiCalls.push(entry);
+  };
 
   const concurrency = budget.resolveInt({
     key: 'budget.concurrency',
@@ -165,7 +173,7 @@ export async function hepImportFromZotero(params: {
           validate: response => paperRecid(response, 'getByDoi'),
         });
         const [requestRef, responseRef] = cached.artifacts;
-        externalApiCalls.push({
+        indexCall({
           version: 1,
           namespace: 'inspire',
           operation: 'getByDoi',
@@ -189,7 +197,7 @@ export async function hepImportFromZotero(params: {
           validate: response => paperRecid(response, 'getByArxiv'),
         });
         const [requestRef, responseRef] = cached.artifacts;
-        externalApiCalls.push({
+        indexCall({
           version: 1,
           namespace: 'inspire',
           operation: 'getByArxiv',
@@ -238,8 +246,7 @@ export async function hepImportFromZotero(params: {
   })));
   const failed = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
   if (failed) {
-    batch.discard();
-    throw failed.reason;
+    throw batch.discard(failed.reason);
   }
   const perItem = settled.map(result => {
     if (result.status !== 'fulfilled' || result.value === null) throw new Error('Internal: a Zotero item was skipped without a failure');
@@ -290,8 +297,7 @@ export async function hepImportFromZotero(params: {
 
     await batch.publish();
   } catch (error) {
-    batch.discard();
-    throw error;
+    throw batch.discard(error);
   }
 
   return {

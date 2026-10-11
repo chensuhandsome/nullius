@@ -539,18 +539,18 @@ pnpm --filter @nullius/hep-mcp test -- tests/contracts/jsonlStderrLogging.test.t
 
 ### ART-03: 原子写入
 
-**规则**: 所有 artifact 写入必须使用原子操作：write `.tmp` → `fsync` → `rename`。禁止直接 `writeFile` 到最终路径。
+**规则**: 所有 artifact 写入必须是原子的：先完整写入暂存文件并 `fsync`，再赋予最终名字并 `fsync` 所在目录。禁止直接写到最终路径。赋名有两种方式：
+1. **替换式**：`rename` 到最终名，由 `@nullius/shared` 的持久写入原语完成（`writeBytesAtomicDurable`、`writeJsonAtomicDurable`、`commitStagedDurable` 等），用于允许覆盖的文件，例如控制面状态。
+2. **不替换式**：以硬链接（`link`）把暂存文件发布到最终名，遇到已有条目即失败、绝不替换，随后删除暂存名。用于 provider 工具写入调用方 `output_dir` 的研究输出（`packages/hep-mcp/src/core/outputDir.ts`）。一次调用的全部文件先暂存，再逐个发布，失败时撤回已发布的文件；只有发布途中进程崩溃才可能留下部分文件，之后点名这些文件的调用会被拒绝。
 
 **CI 验证**:
 ```bash
-# lint: 检查 writeFile/open('w') 调用是否使用 atomicWrite 封装
-grep -rn 'writeFile\|writeFileSync' packages/hep-mcp/src/ \
-  | grep -v 'atomicWriteFile\|node_modules\|test' && exit 1 || exit 0
+# 拒绝生产代码中裸的 writeFile/rename/appendFile 调用（允许清单与理由见脚本）
+node scripts/check-atomic-write-anti-drift.mjs
 ```
+不替换式发布不经 `rename`，不在该脚本的禁止模式内，其行为由 `packages/hep-mcp/tests/core/outputDirContainment.test.ts` 与 `outputDirStaging.test.ts` 覆盖。
 
-**违规行为**: **fail-closed** — 非原子写入阻断 CI
-
-> **CI 升级路径**: 当前 grep 检查为临时实现。Phase 3 升级为 AST-based lint，精确匹配非 `atomicWriteFile` 封装的写入调用。
+**违规行为**: **fail-closed** — 裸写入阻断 CI
 
 ### ART-04: 载荷大小限制
 
@@ -890,7 +890,7 @@ if (internal.length) { console.error('PLUG-01:', internal); process.exit(1); }
 | | LOG-04 日志脱敏 | fail-closed | secrets 模式 grep |
 | **ART** | ART-01 命名规范 | fail-open（review 阻断） | 评审核对 |
 | | ART-02 版本化双标记 | fail-open（review 阻断） | 评审核对 |
-| | ART-03 原子写入 | fail-closed | lint: writeFile 检查 |
+| | ART-03 原子写入 | fail-closed | check-atomic-write-anti-drift |
 | | ART-04 载荷大小限制 | fail-closed | 集成测试 |
 | | ART-05 完整性验证 | fail-closed | 契约测试 |
 | **SEC** | SEC-01 执行适配器隔离 | fail-closed | 沙箱测试 |

@@ -474,6 +474,11 @@ describe('a call writes all of its files or none, and never replaces an existing
     expect(payload.summary.matched).toBe(2);
     const records = fs.readdirSync(path.join(projectRoot, 'dup', 'external_api'));
     expect(records.filter(name => name.startsWith('external_api_request_inspire_getPaper_'))).toHaveLength(1);
+    expect(api.getPaper).toHaveBeenCalledTimes(1);
+    const indexName = fs.readdirSync(path.join(projectRoot, 'dup')).find(name => name.startsWith('external_api_calls_'))!;
+    const index = JSON.parse(fs.readFileSync(path.join(projectRoot, 'dup', indexName), 'utf-8')) as { calls: unknown[]; stats: { calls_total: number; cache_misses: number } };
+    expect(index.calls).toHaveLength(1);
+    expect(index.stats).toMatchObject({ calls_total: 1, cache_misses: 1 });
   });
 });
 

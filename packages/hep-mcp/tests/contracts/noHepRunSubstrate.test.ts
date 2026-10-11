@@ -25,7 +25,7 @@ function collectSourceFiles(dirPath: string): string[] {
 const FORBIDDEN = [
   { label: 'hep_run_uri', re: /hep:\/\/runs/ },
   { label: 'hep_run_tool', re: /\bhep_run_[a-z_]+/ },
-  { label: 'runs_path_segment', re: /(?<!team)[/'"`]runs[/'"`]/ },
+  { label: 'runs_path_segment', re: /[/'"`]runs[/'"`]/ },
   { label: 'run_dir_helper', re: /\bgetRun(?:Dir|sDir|ArtifactPath|ManifestPath|ArtifactsDir)\b/ },
   { label: 'run_substrate_name', re: /\b(?:createRun|listRuns|RunManifest|run_manifest|runManifestUri)\b/ },
 ];
@@ -34,10 +34,16 @@ const ALLOWED_LINES = new Set([
   "  ['team', 'runs'],",
 ]);
 
+// The reserved prefix as a whole path segment pair: 'team' must start a
+// segment (start of a string or path, not part of a longer name).
+const RESERVED_TEAM_RUNS = /(?<![\w.-])team\/runs(?![\w.-])/g;
+
 function offendersIn(lines: string[], where: (index: number) => string): string[] {
-  return lines.flatMap((line, index) => (ALLOWED_LINES.has(line)
-    ? []
-    : FORBIDDEN.filter(check => check.re.test(line)).map(check => `${where(index)}:${check.label}`)));
+  return lines.flatMap((line, index) => {
+    if (ALLOWED_LINES.has(line)) return [];
+    const probe = line.replace(RESERVED_TEAM_RUNS, 'team/<reserved>');
+    return FORBIDDEN.filter(check => check.re.test(probe)).map(check => `${where(index)}:${check.label}`);
+  });
 }
 
 describe('hep-mcp keeps no run substrate of its own', () => {
@@ -61,6 +67,10 @@ describe('hep-mcp keeps no run substrate of its own', () => {
       "registerTool('hep_run_create', spec);",
       'const runsDir = getRunsDir();',
       "  ['team', 'runs', 'x'],",
+      "const dir = 'steam/runs/';",
+      "const dir = 'notteam/runs/';",
+      "const dir = 'myteam/runs/';",
+      "const dir = 'my-team/runs/';",
     ];
     for (const line of rebuilt) {
       expect(offendersIn([line], () => 'fixture'), line).not.toEqual([]);
@@ -69,6 +79,7 @@ describe('hep-mcp keeps no run substrate of its own', () => {
       "  ['team', 'runs'],",
       "'and may not lie under .nullius/, team/runs/ or artifacts/hep-mcp/.'",
       "const label = 'runtime';",
+      "const dir = 'team/runs-old/x';",
       'const reruns = 2;',
     ], () => 'fixture')).toEqual([]);
   });

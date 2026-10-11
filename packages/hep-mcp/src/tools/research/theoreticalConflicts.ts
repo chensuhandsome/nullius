@@ -964,8 +964,7 @@ export async function performTheoreticalConflicts(params: {
 
     await batch.publish();
   } catch (error) {
-    batch.discard();
-    throw error;
+    throw batch.discard(error);
   }
 
   return {

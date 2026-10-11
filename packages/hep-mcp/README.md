@@ -62,11 +62,14 @@ including through a dangling symlink, is refused.
 absolute (any spelling of the root), is created if missing, may not traverse a
 symbolic link below the project root, may not lie under `.nullius/`,
 `team/runs/` or `artifacts/hep-mcp/`, and may not be the project root itself.
-A call writes all of its output files or none of them (each file is staged and
-flushed first, and only then given its name), and it never replaces an existing
-file: if any file it would write already exists, the call is refused, before any
-provider request when the name is known in advance. Choose a new `output_dir`
-(or new artifact names) to run a tool again; earlier outputs keep their bytes.
+Each output file is staged and flushed first and only then given its name, and
+a call never replaces an existing file: if any file it would write already
+exists, the call is refused, before any provider request when the name is known
+in advance. A call that fails removes the files it had already published, so it
+leaves all of its files or none; only a crash of the server process during
+publication can leave part of a set, and a later call naming those files is then
+refused until they are removed. Choose a new `output_dir` (or new artifact names)
+to run a tool again; earlier outputs keep their bytes.
 
 ## Build & run
 

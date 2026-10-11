@@ -244,6 +244,31 @@ describe('vNext: Zotero integration', () => {
     expect(requested.some(url => url.includes('LATE0003'))).toBe(false);
   });
 
+  it('hep_import_from_zotero makes, records and indexes a DOI lookup shared by two items once', async () => {
+    const item = readFixtureJson<any>('zotero_item.min.json');
+    const children = readFixtureJson<any>('zotero_children.min.json');
+    vi.stubGlobal('fetch', vi.fn(async (input: any) => {
+      const u = new URL(typeof input === 'string' ? input : input?.url);
+      if (/^\/api\/users\/0\/items\/(ITEM0001|ITEM0002)$/.test(u.pathname)) return json(item);
+      if (/^\/api\/users\/0\/items\/(ITEM0001|ITEM0002)\/children$/.test(u.pathname)) return json(children);
+      return new Response('not found', { status: 404 });
+    }) as any);
+    vi.mocked(api.getByDoi).mockImplementation(async () => {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      return { recid: '999' } as any;
+    });
+    const { projectRoot, alias } = aliasedProjectRoot();
+    const res = await handleToolCall('hep_import_from_zotero', {
+      project_root: alias, output_dir: 'z', item_keys: ['ITEM0001', 'ITEM0002'], concurrency: 2,
+    });
+    expect(res.isError).not.toBe(true);
+    expect(vi.mocked(api.getByDoi)).toHaveBeenCalledTimes(1);
+    const responses = fs.readdirSync(path.join(projectRoot, 'z', 'external_api')).filter(name => name.startsWith('external_api_response_'));
+    expect(responses).toHaveLength(1);
+    const index = JSON.parse(fs.readFileSync(path.join(projectRoot, 'z', 'external_api_calls_inspire_zotero_import_v1.json'), 'utf-8')) as { stats: { calls_total: number } };
+    expect(index.stats.calls_total).toBe(1);
+  });
+
   it('hep_import_from_zotero refuses a child entry without an item key instead of skipping it', async () => {
     const item = readFixtureJson<any>('zotero_item.min.json');
     vi.stubGlobal('fetch', vi.fn(async (input: any) => {

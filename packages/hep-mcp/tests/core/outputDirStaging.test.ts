@@ -112,9 +112,40 @@ describe('output staging files are created exclusively', () => {
         const error = await batch.publish().then(() => null, (e: unknown) => e as { message: string; data?: { files_left?: string[] } });
         expect(error?.message).toMatch(/outputs are incomplete/);
         expect(error?.data?.files_left).toEqual(['stuck/a.json']);
+        expect((error?.data as { staging_left?: string[] } | undefined)?.staging_left).toHaveLength(2);
       } finally {
         fs.chmodSync(out.dir, 0o755);
       }
+    });
+  });
+
+  it('names the staging files it could not remove when a call is discarded, keeping the original error', async () => {
+    const { McpError } = await import('@nullius/shared');
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('kept');
+      const batch = new OutputBatch(out);
+      batch.json('a.json', { x: 1 });
+      batch.stream('b.jsonl', 'application/x-ndjson');
+      fs.chmodSync(out.dir, 0o555);
+      try {
+        const reported = batch.discard(new McpError('INVALID_PARAMS', 'the original failure', { detail: 1 })) as InstanceType<typeof McpError>;
+        expect(reported).toBeInstanceOf(McpError);
+        expect(reported.code).toBe('INVALID_PARAMS');
+        expect(reported.message).toMatch(/^the original failure; staging files could not be removed/);
+        expect(reported.data).toMatchObject({ detail: 1 });
+        expect((reported.data as { staging_left: string[] }).staging_left).toHaveLength(2);
+      } finally {
+        fs.chmodSync(out.dir, 0o755);
+      }
+    });
+  });
+
+  it('returns the original error unchanged when discarding leaves nothing behind', async () => {
+    await withHepDataRoot(alias, async () => {
+      const batch = new OutputBatch(resolveOutputDir('clean'));
+      batch.json('a.json', { x: 1 });
+      const cause = new Error('plain failure');
+      expect(batch.discard(cause)).toBe(cause);
     });
   });
 

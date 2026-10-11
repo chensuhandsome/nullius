@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import { fsyncParentDirectoryDurable, invalidParams, respellUnderDirectory, unsafeFs } from '@nullius/shared';
+import { fsyncParentDirectoryDurable, invalidParams, McpError, respellUnderDirectory, unsafeFs } from '@nullius/shared';
 
 import { getDataRootInfo } from '../data/dataDir.js';
 import { isPathInside } from '../data/pathGuard.js';
@@ -248,6 +248,24 @@ function projectRelative(out: OutputDir, file: string): string {
   return toPosix(path.relative(out.projectRoot, file));
 }
 
+/**
+ * The error to report for `cause` when some staging files could not be
+ * removed: the cause itself if none were left, otherwise the cause (same
+ * code, message extended) with the files named in `staging_left`.
+ */
+function withStagingLeft(out: OutputDir, cause: unknown, left: string[]): unknown {
+  if (left.length === 0) return cause;
+  const note = `; staging files could not be removed: ${left.join(', ')}`;
+  if (cause instanceof McpError) {
+    const data = cause.data && typeof cause.data === 'object' && !Array.isArray(cause.data)
+      ? cause.data as Record<string, unknown>
+      : { cause_data: cause.data };
+    return new McpError(cause.code, `${cause.message}${note}`, { ...data, staging_left: left });
+  }
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return unsafeFs(`${message}${note}`, { project_root: out.projectRoot, error: message, staging_left: left });
+}
+
 /** The error for a staging file created but not identified; it stays where it is. */
 function unidentifiedStagingError(out: OutputDir, temp: string, error: unknown): Error {
   return unsafeFs('a new staging file could not be identified and was left in place', {
@@ -288,7 +306,7 @@ function existingOutputError(out: OutputDir, name: string): Error {
 export class OutputBatch {
   private readonly staged: StagedFile[] = [];
   private readonly claimed = new Set<string>();
-  private readonly unfinished = new Set<() => void>();
+  private readonly unfinished = new Set<() => string | null>();
   private readonly shared = new Map<string, Promise<unknown>>();
   private closed = false;
 
@@ -409,13 +427,14 @@ export class OutputBatch {
     }
     let failure: unknown = null;
     let aborted = false;
-    const removeTemp = (): void => { removeIfSame(this.out, name, temp, created); };
+    const removeTemp = (): boolean => removeIfSame(this.out, name, temp, created);
     const stream = fs.createWriteStream(temp, { fd, encoding: 'utf-8' });
-    const abort = (): void => {
+    // Returns the staging file's project-relative path if it could not be removed.
+    const abort = (): string | null => {
       aborted = true;
       this.unfinished.delete(abort);
       try { stream.destroy(); } catch { /* best effort */ }
-      removeTemp();
+      return removeTemp() ? null : projectRelative(this.out, temp);
     };
     this.unfinished.add(abort);
     // Listen from the start: an error while the caller is still producing
@@ -536,26 +555,39 @@ export class OutputBatch {
       for (const target of oneFilePerDirectory.values()) fsyncParentDirectoryDurable(target);
     } catch (error) {
       const publishedLeft = published.filter(file => !removeIfSame(this.out, file.name, file.target, file.identity));
-      this.removeStagedFiles();
+      const stagingLeft = this.removeStagedFiles();
       if (publishedLeft.length > 0) {
         throw unsafeFs('publishing failed and some of its files could not be removed; this call\'s outputs are incomplete', {
           project_root: this.out.projectRoot,
           files_left: publishedLeft.map(file => projectRelative(this.out, file.target)),
+          staging_left: stagingLeft,
           error: error instanceof Error ? error.message : String(error),
         });
       }
-      throw error;
+      throw withStagingLeft(this.out, error, stagingLeft);
     }
   }
 
-  /** Drop everything this batch staged; nothing is published. */
-  discard(): void {
+  /**
+   * Drop everything this batch staged; nothing is published. Returns the
+   * error to report for `cause`: the cause itself, or, when some staging
+   * file could not be removed, the cause with those files named.
+   */
+  discard(cause?: unknown): unknown {
     this.closed = true;
-    for (const abort of [...this.unfinished]) abort();
-    this.removeStagedFiles();
+    const left: string[] = [];
+    for (const abort of [...this.unfinished]) {
+      const kept = abort();
+      if (kept !== null) left.push(kept);
+    }
+    left.push(...this.removeStagedFiles());
+    return withStagingLeft(this.out, cause, left);
   }
 
-  private removeStagedFiles(): void {
-    for (const file of this.staged) removeIfSame(this.out, file.name, file.temp, file.identity);
+  /** Remove the staging files; returns those that could not be removed. */
+  private removeStagedFiles(): string[] {
+    return this.staged
+      .filter(file => !removeIfSame(this.out, file.name, file.temp, file.identity))
+      .map(file => projectRelative(this.out, file.temp));
   }
 }

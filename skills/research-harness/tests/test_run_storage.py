@@ -1251,6 +1251,13 @@ def test_a_force_added_stowed_file_is_reported_as_tracked_not_as_a_negation_rule
     assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_FINDINGS
     err = capsys.readouterr().err
     assert "git rm --cached <path>" in err and "negation rule" not in err
+    (run / "sub").mkdir()
+    (run / "sub" / ".gitignore").write_text("!other.bin\n")
+    (run / "sub" / "other.bin").write_bytes(blob(THRESHOLD, 58))  # re-included by a deeper rule
+    capsys.readouterr()
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_FINDINGS
+    err = capsys.readouterr().err
+    assert "['big.bin'] are stowed but tracked" in err and "does not cover ['sub/other.bin']" in err
 
 
 def test_a_stow_that_changes_nothing_rewrites_nothing_and_asks_for_no_commit(tmp_path, monkeypatch, capsys):
@@ -1271,6 +1278,12 @@ def test_a_stow_that_changes_nothing_rewrites_nothing_and_asks_for_no_commit(tmp
     assert "nothing changed" in out and "  commit " not in out
     assert {n: os.stat(run / n).st_ino for n in (rs.MANIFEST_NAME, ".gitignore")} == inodes, "not rewritten"
     assert {n: os.stat(run / n, follow_symlinks=False).st_mtime_ns for n in (rs.MANIFEST_NAME, ".gitignore")} == stamps
+    assert stow_json(run, repo, monkeypatch, capsys)["commit_needed"] is False
+    (run / "more.bin").write_bytes(blob(THRESHOLD, 57))  # a new output changes the committed record
+    doc = stow_json(run, repo, monkeypatch, capsys)
+    assert doc["commit_needed"] is True and [s["path"] for s in doc["stowed"]] == ["more.bin"]
+    assert "/more.bin" in (run / ".gitignore").read_text()
+    assert {e["path"] for e in json.loads((run / rs.MANIFEST_NAME).read_text())["entries"]} == {"big.bin", "more.bin"}
 
 
 @pytest.mark.parametrize("staged", [True, False])

@@ -1106,13 +1106,14 @@ def cmd_stow(args) -> int:
                   "re-includes them. Fix the ignore rules before committing.", file=sys.stderr)
         return EXIT_FINDINGS
     records = [repo.rel(run_dir / name) for name in RECORD_NAMES]
-    if changed or committed_and_pending(repo, records)[0] != set(records):
+    commit_needed = changed or committed_and_pending(repo, records)[0] != set(records)
+    if commit_needed:
         lines.append(f"  commit {records[0]} and {records[1]}; stowed files are read-only (a corrected result "
                      "goes to a new run)")
     else:
         lines.append("  nothing changed; the stow record is already committed")
     emit({"stowed": stowed, "already_tracked": legacy, "symlinks_not_followed": sorted(links), "store": str(store),
-          "manifest": str(run_dir / MANIFEST_NAME)}, args.json, lines)
+          "manifest": str(run_dir / MANIFEST_NAME), "commit_needed": commit_needed}, args.json, lines)
     return EXIT_OK
 
 

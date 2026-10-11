@@ -390,6 +390,26 @@ describe('identifier resolution does not turn a refused write into a per-identif
   });
 });
 
+describe('a search export aborts on a malformed search page', () => {
+  it('refuses a non-page INSPIRE response with INVALID_PARAMS and commits no export', async () => {
+    vi.resetAllMocks();
+    const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-page-')));
+    try {
+      const projectRoot = makeProjectRoot(tmpDir);
+      const alias = path.join(tmpDir, 'alias');
+      fs.symlinkSync(projectRoot, alias, 'dir');
+      vi.mocked(api.search).mockResolvedValueOnce(null as any);
+      const result = await handleToolCall('hep_inspire_search_export', { project_root: alias, output_dir: 'out', query: 't:x' });
+      const error = errorOf(result);
+      expect(error.code).toBe('INVALID_PARAMS');
+      expect(error.message).toMatch(/malformed search page/);
+      expect(fs.readdirSync(path.join(projectRoot, 'out')).filter(name => name.endsWith('.jsonl') || name.endsWith('.tmp'))).toEqual([]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('inspire_search export mode refuses parameters that do not apply', () => {
   let tmpDir: string;
   let alias: string;
@@ -441,6 +461,8 @@ describe('a run_id argument is refused rather than silently dropped', () => {
     ['inspire_search', { query: 't:x', run_id: 'run_abc' }],
     ['hep_project_query_evidence', { project_id: 'p1', query: 'x', run_id: 'run_abc' }],
     ['hep_inspire_search_export', { query: 't:x', run_id: 'run_abc' }],
+    // A destructive tool reports the run_id refusal, not a confirmation request.
+    ['hepdata_download', { hepdata_id: 1, run_id: 'run_abc' }],
   ])('%s with run_id', async (tool, args) => {
     vi.resetAllMocks();
     const result = await handleToolCall(tool, args);

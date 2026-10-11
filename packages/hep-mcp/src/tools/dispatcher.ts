@@ -428,6 +428,15 @@ async function handleToolCallInResolvedDataRoot(
     }
     delete cleanArgs._chain_depth;
 
+    // hep-mcp keeps no runs: a run_id argument (accepted by earlier versions)
+    // is refused instead of being silently dropped by schema parsing, which
+    // could change what the call does.
+    if (Object.prototype.hasOwnProperty.call(cleanArgs, 'run_id')) {
+      throw invalidParams('run_id is not accepted: hep-mcp keeps no runs. Tools that write files take project_root + output_dir; runs belong to the orchestrator.', {
+        tool: name,
+      });
+    }
+
     // H-11a Phase 2: destructive tools require explicit _confirm: true
     if (spec.riskLevel === 'destructive' && cleanArgs._confirm !== true) {
       span?.end('OK');
@@ -458,14 +467,6 @@ async function handleToolCallInResolvedDataRoot(
       reportProgress(0, 1, `started: ${name}`);
     }
 
-    // hep-mcp keeps no runs: a run_id argument (accepted by earlier versions)
-    // is refused instead of being silently dropped by schema parsing, which
-    // could change what the call does.
-    if (Object.prototype.hasOwnProperty.call(cleanArgs, 'run_id')) {
-      throw invalidParams('run_id is not accepted: hep-mcp keeps no runs. Tools that write files take project_root + output_dir; runs belong to the orchestrator.', {
-        tool: name,
-      });
-    }
     const parsedArgs = parseToolArgs(name, spec.zodSchema, cleanArgs) as unknown as Record<string, unknown>;
     const loopbackCallTool = ctx?.callTool
       ? (toolName: string, toolArgs: Record<string, unknown>) => ctx.callTool!(

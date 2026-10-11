@@ -1,5 +1,7 @@
 import { createHash } from 'crypto';
 
+import { invalidParams } from '@nullius/shared';
+
 import * as api from '../../api/client.js';
 import { BudgetTrackerV1, writeOutputDiagnosticsArtifact } from '../diagnostics.js';
 import { cachedExternalApiJsonCall } from '../cache/externalApiCache.js';
@@ -59,6 +61,15 @@ function makeArtifactNames(params: {
 
 function preprocessQuery(query: string): string {
   return query.replace(/\ba:["']([^"']+)["']/gi, 'a:$1');
+}
+
+/** A search page from the cache or INSPIRE; anything else aborts the export (fail-fast). */
+function searchPage<T>(response: T, operation: string): T {
+  const page = response as { papers?: unknown; total?: unknown } | null;
+  if (!page || typeof page !== 'object' || !Array.isArray(page.papers) || typeof page.total !== 'number') {
+    throw invalidParams(`INSPIRE ${operation} returned a malformed search page (fail-fast)`, { operation });
+  }
+  return response;
 }
 
 type ExternalApiCallIndexItemV1 = {
@@ -207,7 +218,7 @@ export async function hepInspireSearchExport(params: {
         request_path: requestRef.path,
         response_path: responseRef.path,
       });
-      return cached.response;
+      return searchPage(cached.response, 'search');
     })();
     pagesFetched += 1;
     total = pageRes.total;
@@ -255,7 +266,7 @@ export async function hepInspireSearchExport(params: {
           request_path: requestRef.path,
           response_path: responseRef.path,
         });
-        return cached.response;
+        return searchPage(cached.response, 'searchByUrl');
       })();
       pagesFetched += 1;
       if (pageRes.papers.length === 0) break;

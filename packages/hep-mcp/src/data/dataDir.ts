@@ -9,7 +9,6 @@ import { isPathInside, resolvePathWithinParent } from './pathGuard.js';
 export const HEP_DATA_DIR_ENV = 'HEP_DATA_DIR';
 export const HEP_DOWNLOAD_DIR_ENV = 'HEP_DOWNLOAD_DIR';
 export const ARXIV_DOWNLOAD_DIR_ENV = 'ARXIV_DOWNLOAD_DIR';
-export const WRITING_PROGRESS_DIR_ENV = 'WRITING_PROGRESS_DIR';
 
 const DEFAULT_DATA_DIR = path.join(os.homedir(), '.nullius', 'hep-mcp');
 const PROJECT_LOCAL_HEP_DATA_DIR = ['artifacts', 'hep-mcp'] as const;
@@ -194,15 +193,6 @@ export function ensureDir(dirPath: string): void {
 
 export function getCacheDir(): string {
   return path.join(getDataDir(), 'cache');
-}
-
-export function getWritingProgressDir(): string {
-  const root = getDataRootInfo();
-  const dataDir = root.path;
-  const candidate = root.source === 'project_root'
-    ? path.join(dataDir, 'writing_progress')
-    : expandTilde(process.env[WRITING_PROGRESS_DIR_ENV] || path.join(dataDir, 'writing_progress'));
-  return resolvePathWithinParent(dataDir, candidate, WRITING_PROGRESS_DIR_ENV);
 }
 
 export function getDownloadsDir(): string {

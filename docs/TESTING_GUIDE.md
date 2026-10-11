@@ -134,8 +134,7 @@ HEP_LIVE_SMOKE=1 pnpm -r test
       "env": {
         "HEP_DATA_DIR": "~/.nullius/hep-mcp",
         "HEP_TOOL_MODE": "standard",
-        "HEP_DOWNLOAD_DIR": "~/.nullius/hep-mcp/downloads",
-        "WRITING_PROGRESS_DIR": "~/.nullius/hep-mcp/writing_progress"
+        "HEP_DOWNLOAD_DIR": "~/.nullius/hep-mcp/downloads"
       }
     }
   }
@@ -481,7 +480,7 @@ nullius workflow-plan \
 ## 6. 常见排障
 
 - 工具看不到：先做 `pnpm -r build`，再跑上面的 `listTools` sanity check
-- 找不到输出文件：先确认 tool call 是否传入 `project_root`（写文件的工具还需 `output_dir`）。有 `project_root` 时，project 与缓存在 `<project_root>/artifacts/hep-mcp`，写文件的工具输出在 `output_dir`；没有时检查本轮 `HEP_DATA_DIR` 或默认 scratch 根。`HEP_DOWNLOAD_DIR` 和 `WRITING_PROGRESS_DIR` 只对非 `project_root` scratch/override 模式生效，且必须位于 HEP data root 之内
+- 找不到输出文件：先确认 tool call 是否传入 `project_root`（写文件的工具还需 `output_dir`）。有 `project_root` 时，project 与缓存在 `<project_root>/artifacts/hep-mcp`，写文件的工具输出在 `output_dir`；没有时检查本轮 `HEP_DATA_DIR` 或默认 scratch 根。`HEP_DOWNLOAD_DIR` 只对非 `project_root` scratch/override 模式生效，且必须位于 HEP data root 之内
 - GUI 客户端找不到 Node：把 `command` 换成 Node 的绝对路径
 - 想看 generic lifecycle state：不要从 `hep-mcp` 猜，直接使用 `nullius status --project-root ...`
 

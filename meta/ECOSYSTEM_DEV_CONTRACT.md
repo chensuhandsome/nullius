@@ -505,13 +505,13 @@ pnpm --filter @nullius/hep-mcp test -- tests/contracts/jsonlStderrLogging.test.t
 
 **CI 验证**:
 ```bash
-python3 meta/scripts/lint_artifact_names.py \
-  --pattern '^[a-z]+_[a-z_]+(_\d{3})?_v\d+\.(json|tex|jsonl)$'
+# 当前没有自动的命名 linter：原 lint 只扫描 hep-mcp 的 run 产物写入点，
+# 这些写入点已随 hep-mcp 自带 run 一并移除。新 artifact 的命名在评审时核对。
 ```
 
-**违规行为**: **fail-closed** — 不符合命名规范的新 artifact 阻断 CI
+**违规行为**: 评审中发现的不合规新 artifact 名应在合入前改正
 
-> **例外 (R4)**: 审批 markdown 产物 (`packet_short.md`, `packet.md`) 由 GATE-05 管辖，不受 ART-01 正则约束。lint 脚本中显式豁免。
+> **例外 (R4)**: 审批 markdown 产物 (`packet_short.md`, `packet.md`) 由 GATE-05 管辖，不受 ART-01 正则约束。
 
 ### ART-02: 版本化双标记
 
@@ -547,19 +547,19 @@ grep -rn 'writeFile\|writeFileSync' packages/hep-mcp/src/ \
 
 ### ART-04: 载荷大小限制
 
-**规则**: MCP tool result 最大 100KB。超限必须溢出到 artifact + 返回 `{truncated: true, artifact_uri, summary}`。
+**规则**: MCP tool result 最大 100KB（`STDIO_MAX_RESULT_BYTES`）。会产生大量记录的工具把完整结果写入调用方指定的位置（如 hep-mcp 的 `output_dir`），只返回路径与摘要；其余结果超过 `HARD_CAP_RESULT_BYTES` 时截断并附截断标记，任何结果都不得超过 stdio 上限。
 
 **CI 验证**:
 ```bash
-# 契约测试: 超限 payload 必须转成 artifact/backpressure path
+# 契约测试: 内联上限 < 截断上限 < stdio 上限 的层级
 pnpm --filter @nullius/hep-mcp test -- tests/contracts/payloadBackpressure.test.ts
 ```
 
-**违规行为**: **fail-closed** — 超限未截断的 tool result 阻断（运行时拦截）
+**违规行为**: **fail-closed** — 超过截断上限仍未截断的 tool result 阻断（运行时拦截）
 
 ### ART-05: 完整性验证
 
-**规则**: 质量关键步骤（写作流水线 submit_*）在消费 artifact 前必须验证 `ArtifactRefV1.sha256` + `size_bytes`。
+**规则**: 消费 `ArtifactRefV1` 的验证与审查步骤在读取 artifact 前必须核对 `sha256` 与 `size_bytes`（orchestrator 的 `loadVerifiedRunJson` / `resolveVerifiedRunArtifact`）。
 
 研究笔记正文审查复用 verification subject/check-run/verdict/coverage 与
 `ArtifactRef`，作为 supporting semantic check，不得冒充计算的 decisive validation。
@@ -583,8 +583,8 @@ reviewer 的模型、方法与输入独立性局限必须保留。
 
 **CI 验证**:
 ```bash
-# 契约测试: 篡改 artifact 内容 → 验证 submit 拒绝
-pnpm --filter @nullius/hep-mcp test -- tests/core/writingEvidence.test.ts
+# 契约测试: 篡改审查证据 → 拒绝而不是沿用旧的通过
+pnpm --filter @nullius/orchestrator test -- tests/notebook-content-review.test.ts
 ```
 
 **违规行为**: **fail-closed** — 完整性校验失败拒绝处理

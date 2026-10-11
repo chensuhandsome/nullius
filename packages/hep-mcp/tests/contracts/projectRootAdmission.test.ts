@@ -16,7 +16,7 @@ import { HEP_PAPERS_CACHE_DIR_ENV, materializeCacheEntry } from '../../src/data/
 // discriminate on hosts whose temp directory is not itself reached through
 // an alias (Linux CI), as well as on macOS.
 
-const ENV_KEYS = ['HEP_DATA_DIR', 'PDG_DATA_DIR', 'HEP_DOWNLOAD_DIR', 'ARXIV_DOWNLOAD_DIR', 'WRITING_PROGRESS_DIR', HEP_PAPERS_CACHE_DIR_ENV];
+const ENV_KEYS = ['HEP_DATA_DIR', 'PDG_DATA_DIR', 'HEP_DOWNLOAD_DIR', 'ARXIV_DOWNLOAD_DIR', HEP_PAPERS_CACHE_DIR_ENV];
 
 function parsePayload(result: { content: Array<{ text: string }> }): any {
   return JSON.parse(result.content[0]!.text);

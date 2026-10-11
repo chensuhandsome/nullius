@@ -55,7 +55,6 @@ describe('project-aware HEP data root resolution', () => {
     fs.mkdirSync(path.join(projectRoot, '.nullius'), { recursive: true });
     process.env.HEP_DATA_DIR = path.join(tmpRoot, 'env-hep-data');
     process.env.HEP_DOWNLOAD_DIR = path.join(tmpRoot, 'env-downloads');
-    process.env.WRITING_PROGRESS_DIR = path.join(tmpRoot, 'env-writing-progress');
     process.env.PDG_DATA_DIR = path.join(tmpRoot, 'env-pdg');
 
     const result = await handleToolCall('hep_health', {

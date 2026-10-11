@@ -172,6 +172,7 @@ test('only roots carrying an exact, regular origin marker are ever swept', t => 
     directory: named('DiRmRk'),          // the marker is a directory
     otherPid: named('OtHpId'),           // the marker names another process
     extraText: named('ExTrAt'),          // the marker carries more than the expected text
+    fifo: named('FiFoMk'),               // the marker is a FIFO (opening it must not block)
   };
   for (const dir of Object.values(cases)) fs.mkdirSync(dir);
   mark(cases.marked);
@@ -181,6 +182,7 @@ test('only roots carrying an exact, regular origin marker are ever swept', t => 
   fs.mkdirSync(path.join(cases.directory, ROOT_MARKER));
   fs.writeFileSync(path.join(cases.otherPid, ROOT_MARKER), 'nullius test temp root\npid 12345\n');
   fs.writeFileSync(path.join(cases.extraText, ROOT_MARKER), `nullius test temp root\npid ${dead}\nmore\n`);
+  assert.equal(spawnSync('mkfifo', [path.join(cases.fifo, ROOT_MARKER)]).status, 0);
   for (const dir of Object.values(cases)) {
     for (const name of fs.readdirSync(dir)) {
       const entry = path.join(dir, name);

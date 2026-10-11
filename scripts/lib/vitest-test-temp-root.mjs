@@ -50,8 +50,11 @@ export function rootMarkerText(pid) {
 export function hasRootMarker(dir, pid) {
   let fd;
   try {
-    fd = fs.openSync(path.join(dir, ROOT_MARKER), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    // O_NONBLOCK: opening a FIFO at the marker path must not wait for a writer.
+    fd = fs.openSync(path.join(dir, ROOT_MARKER),
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     const stat = fs.fstatSync(fd);
+    // A non-regular marker could never supply the exact text either; refuse it before reading.
     if (!stat.isFile() || stat.size > MARKER_MAX_BYTES) return false;
     return fs.readFileSync(fd, 'utf-8') === rootMarkerText(pid);
   } catch {

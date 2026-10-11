@@ -1443,6 +1443,49 @@ def test_case_probe_reports_what_the_file_system_does(tmp_path):
         os.chmod(sub, 0o700)
 
 
+def test_same_file_compares_identity_without_following_links(tmp_path):
+    a = tmp_path / "a.bin"
+    a.write_bytes(b"x")
+    os.link(a, tmp_path / "hard.bin")
+    (tmp_path / "other.bin").write_bytes(b"x")
+    os.symlink(a, tmp_path / "link.bin")
+    assert rs.same_file(a, tmp_path / "hard.bin")
+    assert not rs.same_file(a, tmp_path / "other.bin"), "equal bytes are not the same file"
+    assert not rs.same_file(a, tmp_path / "link.bin"), "a link is not its target"
+    assert not rs.same_file(a, tmp_path / "missing.bin")
+
+
+def case_sensitive_file_system(directory: Path) -> bool:
+    (directory / "case-probe").write_text("")
+    return not (directory / "CASE-PROBE").exists()
+
+
+def test_a_different_file_whose_name_only_folds_to_a_recorded_one_is_never_skipped(tmp_path, monkeypatch, capsys):
+    if not case_sensitive_file_system(tmp_path):
+        pytest.skip("needs a case-sensitive file system (as on Linux)")
+    repo = make_repo(tmp_path)
+    sh("git", "config", "core.ignorecase", "true", cwd=repo)  # e.g. carried over from a macOS checkout
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "result.bin").write_bytes(blob(THRESHOLD, 65))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    commit_records(repo)
+    (run / "RESULT.bin").write_bytes(blob(THRESHOLD, 66))  # a new, different output
+    assert sh("git", "check-ignore", "-q", "artifacts/runs/r1/RESULT.bin", cwd=repo, check=False).returncode == 0, \
+        "git folds case here, so the managed block hides the new file"
+    capsys.readouterr()
+    assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    doc = json.loads(capsys.readouterr().out)
+    assert [r["path"] for r in doc["ignored_unstowed"]] == ["artifacts/runs/r1/RESULT.bin"]
+    assert [r["path"] for r in doc["stowed"]] == ["artifacts/runs/r1/result.bin"]
+    doc = stow_json(run, repo, monkeypatch, capsys)
+    assert [e["path"] for e in doc["stowed"]] == ["RESULT.bin"], "stowed as the new output it is"
+    assert {e["path"] for e in json.loads((run / rs.MANIFEST_NAME).read_text())["entries"]} == {
+        "result.bin", "RESULT.bin"}
+    commit_records(repo)
+    assert run_main(["check", "--strict"], repo, monkeypatch) == rs.EXIT_OK
+
+
 # ------------------------------------------------------- verify / materialize
 
 def test_verify_reports_every_state(tmp_path, monkeypatch, capsys):

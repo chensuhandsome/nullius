@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import type { MutationProposalV1, SkillProposalV2 } from '@nullius/shared';
 import { invalidParams, normalizeSignals } from '@nullius/shared';
 import { writeJsonAtomic } from './computation/io.js';
+import { resolveEvidencePath } from './run-directories.js';
 import type { RunState } from './types.js';
 
 export type ProposalKind = 'repair' | 'skill' | 'optimize' | 'innovate';
@@ -184,10 +185,15 @@ function readCurrentProposalDescriptor(params: {
       run_id: params.state.run_id,
     });
   }
-  const proposalPath = path.resolve(params.projectRoot, pointer);
-  const root = path.resolve(params.projectRoot);
-  const relative = path.relative(root, proposalPath);
-  if (relative.startsWith('..') || path.isAbsolute(relative) || !fs.existsSync(proposalPath)) {
+  // Same containment as the proposal read views: inside the project, and
+  // never read through a symlink below its root.
+  let proposalPath: string | null;
+  try {
+    proposalPath = resolveEvidencePath(params.projectRoot, pointer);
+  } catch {
+    proposalPath = null;
+  }
+  if (proposalPath === null || !fs.existsSync(proposalPath)) {
     throw invalidParams(`Current ${params.proposalKind} proposal pointer is invalid.`, {
       proposal_kind: params.proposalKind,
       pointer,

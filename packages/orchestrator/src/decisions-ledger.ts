@@ -9,6 +9,7 @@ import {
 } from '@nullius/shared';
 import { nulliusControlDir } from './state-manager.js';
 import { utcNowIso } from './util.js';
+import { escapesBase } from './computation/path-safety.js';
 
 /** Ledger of human decisions made in conversation.
  *
@@ -218,7 +219,7 @@ export function decisionsLedgerPath(projectRoot: string): string {
 export function decisionsLedgerDisplayPath(projectRoot: string): string {
   const absolute = decisionsLedgerPath(projectRoot);
   const relative = path.relative(projectRoot, absolute);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return absolute;
+  if (escapesBase(relative)) return absolute;
   return relative.split(path.sep).join('/');
 }
 

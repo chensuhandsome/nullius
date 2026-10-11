@@ -28,17 +28,13 @@ import type { DelegatedComputationFollowupTask } from '../computation/delegated-
 import type {
   FeedbackFollowupLaunchOutcome,
 } from '../computation/feedback-followup-progression.js';
+import { resolveUnderRoot } from '../computation/path-safety.js';
 import { utcNowIso } from '../util.js';
 
 function resolvePathWithinParent(parentDir: string, candidatePath: string, field: string): string {
   const resolvedParent = path.resolve(parentDir);
-  const resolved = path.isAbsolute(candidatePath)
-    ? path.resolve(candidatePath)
-    : path.resolve(resolvedParent, candidatePath);
-  const relative = path.relative(resolvedParent, resolved);
-  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
-    return resolved;
-  }
+  const resolved = resolveUnderRoot(resolvedParent, candidatePath);
+  if (resolved !== null) return resolved;
   throw invalidParams(`${field} must be within ${resolvedParent}`, {
     field,
     parent_dir: resolvedParent,

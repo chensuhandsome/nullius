@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { realLocationWithin } from './computation/path-safety.js';
 import { appendDecision } from './decisions-ledger.js';
 import { nulliusControlDir } from './state-manager.js';
 
@@ -67,18 +68,6 @@ function git(projectRoot: string, args: string[]): string {
 /** Canonical form of a path that may not exist yet: realpath of the nearest
  *  existing ancestor plus the non-existing tail. A lexical-only comparison
  *  would let a symlink smuggle the target back inside the project root. */
-function canonicalizeMaybeMissing(target: string): string {
-  let existing = target;
-  const tail: string[] = [];
-  while (!fs.existsSync(existing)) {
-    const parent = path.dirname(existing);
-    if (parent === existing) break;
-    tail.unshift(path.basename(existing));
-    existing = parent;
-  }
-  return path.join(fs.realpathSync(existing), ...tail);
-}
-
 function resolveCommit(projectRoot: string, ref: string): string {
   try {
     return git(projectRoot, ['rev-parse', '--verify', `${ref}^{commit}`]).trim();
@@ -145,9 +134,7 @@ export function runReleaseCommand(projectRoot: string, options: ReleaseOptions, 
   }
 
   const targetDir = path.resolve(options.targetDir);
-  const canonicalTarget = canonicalizeMaybeMissing(targetDir);
-  const canonicalRoot = fs.realpathSync(path.resolve(projectRoot));
-  if (canonicalRoot === canonicalTarget || canonicalTarget.startsWith(`${canonicalRoot}${path.sep}`)) {
+  if (realLocationWithin(projectRoot, targetDir)) {
     throw new Error('target directory must be OUTSIDE the project root (the public snapshot must not nest into the internal repository)');
   }
   if (fs.existsSync(targetDir) && fs.readdirSync(targetDir).length > 0) {

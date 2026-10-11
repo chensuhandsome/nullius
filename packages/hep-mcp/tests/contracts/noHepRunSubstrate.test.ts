@@ -22,7 +22,8 @@ function collectSourceFiles(dirPath: string): string[] {
 // Building a runs directory under any root needs the path segment 'runs' as
 // a string, so every such literal is refused. The only exceptions are the
 // exact source lines that name the reserved team/runs prefix in order to
-// refuse it (output_dir admission and its parameter description), keyed by
+// refuse it (output_dir admission and the output_dir and project_root
+// parameter descriptions), keyed by
 // file and full line text; any other occurrence fails.
 const FORBIDDEN = [
   { label: 'hep_run_uri', re: /hep:\/\/runs/ },
@@ -35,6 +36,7 @@ const FORBIDDEN = [
 const ALLOWED_LINES = new Set([
   "core/outputDir.ts:  ['team', 'runs'],",
   "tools/registry/projectSchemas.ts:      + 'and may not lie under .nullius/, team/runs/ or artifacts/hep-mcp/. A call never replaces an existing file '",
+  "tools/registry/shared.ts:  'Optional absolute path to an initialized nullius project root outside any nullius checkout; it is admitted in canonical (symlink-resolved) form. When set, the hep-mcp data for this call (paper/evidence projects, caches, downloads, PDG data) lives under <project_root>/artifacts/hep-mcp, which must be reached through real directories (a symlinked artifacts/, artifacts/hep-mcp/ or pdg/ is refused); otherwise HEP_DATA_DIR or the scratch default is used. Tools that write output files put them in their output_dir instead, which requires project_root and may not lie under the reserved areas .nullius/, team/runs/ or artifacts/hep-mcp/.';",
 ]);
 
 function offendersIn(file: string, lines: string[], where: (index: number) => string): string[] {

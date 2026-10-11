@@ -186,7 +186,7 @@ def test_real_plugin_composition_and_copied_skill_execution(tmp_path):
         "hep-mcp": {"env": {
             "NULLIUS_PROJECT_ROOT": str(project), "HEP_DATA_DIR": str(tmp_path / "hep"),
             "HEP_DOWNLOAD_DIR": str(tmp_path / "hep/downloads"), "PDG_DATA_DIR": str(tmp_path / "hep/pdg"),
-            "HEP_DISCOVERY_TTL_HOURS": "0", "PDG_ARTIFACT_TTL_HOURS": "0",
+            "PDG_ARTIFACT_TTL_HOURS": "0",
         }},
         "idea-mcp": {"env": {"NULLIUS_PROJECT_ROOT": str(project), "IDEA_MCP_DATA_DIR": str(tmp_path / "idea-data")}},
     }}))

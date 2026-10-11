@@ -6,7 +6,6 @@ import {
   SemanticAssessmentStatusSchema,
 } from '@nullius/shared';
 
-import { parseProvenanceMatchingResponse } from '../../src/tools/research/provenanceMatchingSampling.js';
 import { parseKeyEquationSamplingResponse } from '../../src/tools/research/latex/keyEquationSampling.js';
 
 function readResearchContractTemplate(): string {
@@ -30,15 +29,6 @@ describe('evidence surface extraction preflight', () => {
   });
 
   it('keeps provider-local fail-closed statuses out of sampling payload schemas', () => {
-    expect(parseProvenanceMatchingResponse({
-      status: 'sampling_unavailable',
-      selected_candidate_key: null,
-      relationship: 'unknown',
-      confidence: 0,
-      reason_code: 'sampling_unavailable',
-      reason: 'No sampling support.',
-    })).toBeNull();
-
     expect(parseKeyEquationSamplingResponse({
       overall_status: 'unavailable',
       evaluations: [],

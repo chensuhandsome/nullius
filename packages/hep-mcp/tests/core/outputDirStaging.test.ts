@@ -10,8 +10,11 @@ vi.mock('crypto', async importOriginal => {
   return { ...actual, randomUUID: () => '00000000-0000-4000-8000-000000000000' };
 });
 
-// Let a test make the next closeSync fail after the descriptor is closed.
+// Let a test make the next closeSync or fstatSync fail, or run a step
+// before a given linkSync call fails.
 const closeFault = vi.hoisted(() => ({ armed: false }));
+const fstatFault = vi.hoisted(() => ({ armed: false }));
+const linkFault = vi.hoisted(() => ({ failOnCall: 0, calls: 0, before: (() => {}) as () => void }));
 vi.mock('fs', async importOriginal => {
   const actual = await importOriginal<typeof import('fs')>();
   const closeSync = (fd: number): void => {
@@ -21,7 +24,23 @@ vi.mock('fs', async importOriginal => {
       throw Object.assign(new Error('simulated close failure'), { code: 'EIO' });
     }
   };
-  return { ...actual, closeSync, default: { ...actual, closeSync } };
+  const fstatSync = ((fd: number, options?: any) => {
+    if (fstatFault.armed) {
+      fstatFault.armed = false;
+      throw Object.assign(new Error('simulated fstat failure'), { code: 'EIO' });
+    }
+    return actual.fstatSync(fd, options);
+  }) as typeof actual.fstatSync;
+  const linkSync = (existing: string, target: string): void => {
+    linkFault.calls += 1;
+    if (linkFault.calls === linkFault.failOnCall) {
+      linkFault.before();
+      throw Object.assign(new Error('simulated link failure'), { code: 'EIO' });
+    }
+    actual.linkSync(existing, target);
+  };
+  const patched = { closeSync, fstatSync, linkSync };
+  return { ...actual, ...patched, default: { ...actual, ...patched } };
 });
 
 const { withHepDataRoot } = await import('../../src/data/dataDir.js');
@@ -34,6 +53,10 @@ describe('output staging files are created exclusively', () => {
 
   beforeEach(() => {
     closeFault.armed = false;
+    fstatFault.armed = false;
+    linkFault.failOnCall = 0;
+    linkFault.calls = 0;
+    linkFault.before = () => {};
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-staging-')));
     const projectRoot = makeProjectRoot(tmpDir);
     alias = path.join(tmpDir, 'alias');
@@ -64,6 +87,45 @@ describe('output staging files are created exclusively', () => {
       const batch = new OutputBatch(out);
       closeFault.armed = true;
       expect(() => batch.json('data.json', { x: 1 })).toThrow('simulated close failure');
+      expect(fs.readdirSync(out.dir)).toEqual([]);
+    });
+  });
+
+  it('names a staging file that was created but could not be identified', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('unidentified');
+      fstatFault.armed = true;
+      expect(() => new OutputBatch(out).json('data.json', { x: 1 })).toThrow(/could not be identified and was left in place/);
+      expect(fs.readdirSync(out.dir).filter(name => name.endsWith('.tmp'))).toHaveLength(1);
+    });
+  });
+
+  it('reports the files it could not remove when publishing fails, instead of claiming all or none', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('stuck');
+      const batch = new OutputBatch(out);
+      batch.json('a.json', { x: 1 });
+      batch.json('b.json', { x: 2 });
+      linkFault.failOnCall = 2;
+      linkFault.before = () => fs.chmodSync(out.dir, 0o555);
+      try {
+        const error = await batch.publish().then(() => null, (e: unknown) => e as { message: string; data?: { files_left?: string[] } });
+        expect(error?.message).toMatch(/outputs are incomplete/);
+        expect(error?.data?.files_left).toEqual(['stuck/a.json']);
+      } finally {
+        fs.chmodSync(out.dir, 0o755);
+      }
+    });
+  });
+
+  it('removes what it published when a later link fails, and leaves no staging file', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('undone');
+      const batch = new OutputBatch(out);
+      batch.json('a.json', { x: 1 });
+      batch.json('b.json', { x: 2 });
+      linkFault.failOnCall = 2;
+      await expect(batch.publish()).rejects.toThrow('simulated link failure');
       expect(fs.readdirSync(out.dir)).toEqual([]);
     });
   });

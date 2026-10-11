@@ -118,10 +118,15 @@ export async function hepImportFromZotero(params: {
   // still calling Zotero or INSPIRE, or recording, after the call returns.
   const limiter = pLimit(concurrency);
   let stopped = false;
+  // A failing request stops the queue at once, before its sibling request settles.
+  const stopOnFailure = <T>(request: Promise<T>): Promise<T> => request.catch(error => {
+    stopped = true;
+    throw error;
+  });
   const mapItem = async (itemKey: string) => {
     const [itemSettled, childSettled] = await Promise.allSettled([
-      zoteroGetJson<Record<string, unknown>>(`/users/0/items/${encodeURIComponent(itemKey)}`),
-      zoteroGetJson<unknown[]>(`/users/0/items/${encodeURIComponent(itemKey)}/children`),
+      stopOnFailure(zoteroGetJson<Record<string, unknown>>(`/users/0/items/${encodeURIComponent(itemKey)}`)),
+      stopOnFailure(zoteroGetJson<unknown[]>(`/users/0/items/${encodeURIComponent(itemKey)}/children`)),
     ]);
     if (itemSettled.status === 'rejected') throw itemSettled.reason;
     if (childSettled.status === 'rejected') throw childSettled.reason;
@@ -131,6 +136,17 @@ export async function hepImportFromZotero(params: {
     if (!Array.isArray(childRes.data)) {
       throw invalidParams('Zotero returned a malformed child-item listing (fail-fast): not a list', { item_key: itemKey });
     }
+    // Every child entry is checked, so none is skipped silently by the attachment parser.
+    childRes.data.forEach((child, index) => {
+      const ok = isRecord(child)
+        && typeof child.key === 'string' && child.key.trim().length > 0
+        && isRecord(child.data) && typeof child.data.itemType === 'string';
+      if (!ok) {
+        throw invalidParams(`Zotero returned a malformed child-item listing (fail-fast): entry ${index} lacks an item key, data or item type`, {
+          item_key: itemKey,
+        });
+      }
+    });
     const attachments = parseAttachmentSummaries(childRes.data);
 
     const ids = extractZoteroItemIdentifiers(itemRes.data);

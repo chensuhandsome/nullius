@@ -231,13 +231,30 @@ function isSameFile(filePath: string, identity: FileIdentity): boolean {
  * same real directories. If anything was swapped meanwhile, nothing is
  * deleted through the new path and the file stays where it was created.
  */
-function removeIfSame(out: OutputDir, name: string, file: string, identity: FileIdentity | null): void {
-  if (identity === null) return;
+function removeIfSame(out: OutputDir, name: string, file: string, identity: FileIdentity | null): boolean {
+  if (identity === null) return lstatOrNull(file) === null;
   try {
     const chain = [...out.relative.split('/'), ...name.split('/').slice(0, -1)];
     realDirectoryChain(out.projectRoot, chain, 'output_dir', out.projectRoot, false);
     if (isSameFile(file, identity)) fs.unlinkSync(file);
-  } catch { /* leave it in place */ }
+    return !isSameFile(file, identity);
+  } catch {
+    // Left in place; the caller decides whether that must be reported.
+    return false;
+  }
+}
+
+function projectRelative(out: OutputDir, file: string): string {
+  return toPosix(path.relative(out.projectRoot, file));
+}
+
+/** The error for a staging file created but not identified; it stays where it is. */
+function unidentifiedStagingError(out: OutputDir, temp: string, error: unknown): Error {
+  return unsafeFs('a new staging file could not be identified and was left in place', {
+    project_root: out.projectRoot,
+    staging_path: projectRelative(out, temp),
+    error: error instanceof Error ? error.message : String(error),
+  });
 }
 
 function existingOutputError(out: OutputDir, name: string): Error {
@@ -272,6 +289,7 @@ export class OutputBatch {
   private readonly staged: StagedFile[] = [];
   private readonly claimed = new Set<string>();
   private readonly unfinished = new Set<() => void>();
+  private readonly shared = new Map<string, Promise<unknown>>();
   private closed = false;
 
   constructor(readonly out: OutputDir) {}
@@ -291,6 +309,28 @@ export class OutputBatch {
   /** Whether this batch already holds output `name`. */
   has(name: string): boolean {
     return this.claimed.has(nameKey(name));
+  }
+
+  /**
+   * Refuse, before provider work, an output name that is taken in the
+   * output directory (a name this batch already holds is fine).
+   */
+  assertFree(name: string): void {
+    if (this.has(name)) return;
+    if (lstatOrNull(outputFilePath(this.out, name)) !== null) throw existingOutputError(this.out, name);
+  }
+
+  /**
+   * Run `work` once per key within this call; later callers with the same
+   * key, concurrent or not, share its result or its failure.
+   */
+  once<T>(key: string, work: () => Promise<T>): Promise<T> {
+    let pending = this.shared.get(key) as Promise<T> | undefined;
+    if (pending === undefined) {
+      pending = work();
+      this.shared.set(key, pending);
+    }
+    return pending;
   }
 
   json(name: string, data: unknown): OutputArtifactRef {
@@ -338,7 +378,8 @@ export class OutputBatch {
     } catch (error) {
       failure ??= error;
     }
-    if (failure !== null || identity === null) {
+    if (identity === null) throw unidentifiedStagingError(this.out, temp, failure);
+    if (failure !== null) {
       removeIfSame(this.out, name, temp, identity);
       throw failure;
     }
@@ -362,13 +403,13 @@ export class OutputBatch {
       const stat = fs.fstatSync(fd);
       created = { dev: stat.dev, ino: stat.ino };
     } catch (error) {
-      // Identity unknown: the file is closed but never deleted.
+      // Identity unknown: the file is closed but never deleted, and its path is reported.
       try { fs.closeSync(fd); } catch { /* the fstat failure is reported */ }
-      throw error;
+      throw unidentifiedStagingError(this.out, temp, error);
     }
     let failure: unknown = null;
     let aborted = false;
-    const removeTemp = (): void => removeIfSame(this.out, name, temp, created);
+    const removeTemp = (): void => { removeIfSame(this.out, name, temp, created); };
     const stream = fs.createWriteStream(temp, { fd, encoding: 'utf-8' });
     const abort = (): void => {
       aborted = true;
@@ -446,8 +487,10 @@ export class OutputBatch {
   }
 
   /**
-   * Link every staged file to its final name, never replacing an entry; on
-   * any failure remove what this batch published and its staging files.
+   * Link every staged file to its final name, never replacing an entry, and
+   * remove the staging names; on any failure remove what this batch
+   * published. If a published file cannot be removed, the error says so and
+   * names it, since the call's files are then not all-or-none.
    */
   async publish(): Promise<void> {
     if (this.unfinished.size > 0) throw new Error('Internal: an output stream of this call was not finished');
@@ -480,15 +523,29 @@ export class OutputBatch {
         }
         published.push(file);
       }
+      // A published call leaves no staging name behind.
+      const stagingLeft = this.staged.filter(file => !removeIfSame(this.out, file.name, file.temp, file.identity));
+      if (stagingLeft.length > 0) {
+        throw unsafeFs('staging files could not be removed after publishing', {
+          project_root: this.out.projectRoot,
+          staging_paths: stagingLeft.map(file => projectRelative(this.out, file.temp)),
+        });
+      }
       // Make the new directory entries durable: one flush per directory.
       const oneFilePerDirectory = new Map(this.staged.map(file => [path.dirname(file.target), file.target]));
       for (const target of oneFilePerDirectory.values()) fsyncParentDirectoryDurable(target);
     } catch (error) {
-      for (const file of published) removeIfSame(this.out, file.name, file.target, file.identity);
+      const publishedLeft = published.filter(file => !removeIfSame(this.out, file.name, file.target, file.identity));
       this.removeStagedFiles();
+      if (publishedLeft.length > 0) {
+        throw unsafeFs('publishing failed and some of its files could not be removed; this call\'s outputs are incomplete', {
+          project_root: this.out.projectRoot,
+          files_left: publishedLeft.map(file => projectRelative(this.out, file.target)),
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       throw error;
     }
-    this.removeStagedFiles();
   }
 
   /** Drop everything this batch staged; nothing is published. */

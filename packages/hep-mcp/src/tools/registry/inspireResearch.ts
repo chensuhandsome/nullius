@@ -48,10 +48,14 @@ export const RAW_INSPIRE_RESEARCH_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
     zodSchema: InspireParseLatexToolSchema,
     handler: async (params, ctx) => {
       const { parseLatexContent } = await import('../research/parseLatexContent.js');
+      // Options not given stay absent, so the parser's defaults apply to them.
+      const options = params.options
+        ? Object.fromEntries(Object.entries(params.options).filter(([, value]) => value !== undefined))
+        : undefined;
       const hash = hashParseLatexRequest({
         identifier: params.identifier,
         components: params.components,
-        options: params.options,
+        options,
       });
       const artifactName = `parse_latex_${hash}.json`;
       const generatedAt = new Date().toISOString();
@@ -63,7 +67,7 @@ export const RAW_INSPIRE_RESEARCH_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
         const result = await parseLatexContent({
           identifier: params.identifier,
           components: params.components,
-          options: params.options,
+          options,
           ...(ctx.createMessage ? { _mcp: { createMessage: ctx.createMessage } } : {}),
         });
 
@@ -75,7 +79,7 @@ export const RAW_INSPIRE_RESEARCH_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
           request: {
             identifier: params.identifier,
             components: params.components,
-            options: params.options ?? null,
+            options: options ?? null,
           },
           result,
         });

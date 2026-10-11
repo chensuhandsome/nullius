@@ -261,12 +261,16 @@ export const InspireParseLatexToolSchema = z.object({
       ])
     )
     .min(1),
+  // Exactly the options the parser reads; anything else is refused.
   options: z
     .object({
-      format: JsonMarkdownSchema.optional(),
-      include_external: z.boolean().optional(),
-      max_depth: strictBudgetInt({ min: 1 }),
-      cross_validate: z.boolean().optional(),
+      include_key_equations: z.boolean().optional(),
+      include_inline_math: z.boolean().optional(),
+      include_section_content: z.boolean().optional(),
+      max_section_content: strictBudgetInt({ min: 1 }),
+      include_proofs: z.boolean().optional(),
+      citation_context_window: strictBudgetInt({ min: 0 }),
+      parse_table_data: z.boolean().optional(),
     })
     .strict()
     .optional(),

@@ -219,6 +219,45 @@ describe('vNext: Zotero integration', () => {
     expect(requested.some(url => url.includes('OTHR'))).toBe(false);
   });
 
+  it('hep_import_from_zotero stops the queue as soon as one request fails, before its sibling request settles', async () => {
+    const item = readFixtureJson<any>('zotero_item.min.json');
+    const children = readFixtureJson<any>('zotero_children.min.json');
+    const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    const fetchStub = vi.fn(async (input: any) => {
+      const u = new URL(typeof input === 'string' ? input : input?.url);
+      if (u.pathname === '/api/users/0/items/FAIL0001') return new Response('boom', { status: 500 });
+      if (u.pathname === '/api/users/0/items/FAIL0001/children') { await delay(100); return json(children); }
+      if (u.pathname === '/api/users/0/items/FAST0002') return json(item);
+      if (u.pathname === '/api/users/0/items/FAST0002/children') return json(children);
+      if (u.pathname.startsWith('/api/users/0/items/LATE0003')) return json(item);
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchStub as any);
+    vi.mocked(api.getByDoi).mockResolvedValue({ recid: '999' } as any);
+    const { alias } = aliasedProjectRoot();
+
+    const res = await handleToolCall('hep_import_from_zotero', {
+      project_root: alias, output_dir: 'z', item_keys: ['FAIL0001', 'FAST0002', 'LATE0003'], concurrency: 2,
+    });
+    expect(res.isError).toBe(true);
+    const requested = fetchStub.mock.calls.map(call => String(typeof call[0] === 'string' ? call[0] : call[0]?.url));
+    expect(requested.some(url => url.includes('LATE0003'))).toBe(false);
+  });
+
+  it('hep_import_from_zotero refuses a child entry without an item key instead of skipping it', async () => {
+    const item = readFixtureJson<any>('zotero_item.min.json');
+    vi.stubGlobal('fetch', vi.fn(async (input: any) => {
+      const u = new URL(typeof input === 'string' ? input : input?.url);
+      if (u.pathname === '/api/users/0/items/ITEM1234') return json(item);
+      if (u.pathname === '/api/users/0/items/ITEM1234/children') return json([{ data: { itemType: 'attachment', filename: 'paper.pdf' } }]);
+      return new Response('not found', { status: 404 });
+    }) as any);
+    const { alias } = aliasedProjectRoot();
+    const res = await handleToolCall('hep_import_from_zotero', { project_root: alias, output_dir: 'z', item_keys: ['ITEM1234'] });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).error.message).toMatch(/entry 0 lacks an item key/);
+  });
+
   it('hep_import_from_zotero refuses a collection listing that is not a list of items', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: any) => {
       const u = new URL(typeof input === 'string' ? input : input?.url);

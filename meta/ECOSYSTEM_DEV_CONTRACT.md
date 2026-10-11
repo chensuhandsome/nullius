@@ -489,7 +489,7 @@ pnpm --filter @nullius/hep-mcp test -- tests/contracts/jsonlStderrLogging.test.t
 
 ### ART-01: 命名规范
 
-**适用范围**: 控制面写入 run 目录（`<project_root>/artifacts/runs/<run_id>/`）、且其格式由 `meta/schemas/` 定义的契约型 artifact。provider 工具写入调用方 `output_dir` 的研究输出不在此列：它们用各工具文档写明的固定名或调用方给定的名字（如 `inspire_search_export_<hash>.jsonl`、`zotero_map_v1.json`、`external_api/` 下的请求/响应记录），JSON 输出在顶层带 `version` 字段。
+**适用范围**: 控制面写入 run 目录（`<project_root>/artifacts/runs/<run_id>/`）、且其格式由 `meta/schemas/` 定义的契约型 artifact。provider 工具写入调用方 `output_dir` 的研究输出不在此列：它们用各工具文档写明的固定名或调用方给定的名字（如 `inspire_search_export_<hash>.jsonl`、`zotero_map_v1.json`、`external_api/` 下的请求/响应记录）。其中 JSON 对象输出在顶层带 `version` 字段；逐行记录文件（`.jsonl`）与纯记录数组（JSON 格式的检索导出、`theoretical_debate_map_v1.json`）不带版本，由同一次调用写出的、带 `version` 的 meta 记录说明。
 
 **规则**: 适用范围内的 artifact 文件名必须符合以下正则：
 
@@ -520,7 +520,7 @@ pnpm --filter @nullius/hep-mcp test -- tests/contracts/jsonlStderrLogging.test.t
 
 ### ART-02: 版本化双标记
 
-**适用范围**: 同 ART-01（provider 研究输出用顶层 `version` 字段，不在此列）。
+**适用范围**: 同 ART-01（provider 研究输出不在此列，其约定见 ART-01）。
 
 **规则**: 适用范围内的持久化 artifact 必须同时使用：
 1. 文件名 `_v{N}` 后缀

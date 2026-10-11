@@ -819,6 +819,37 @@ describe('Tool Handlers (current exposure)', () => {
     expect(parseLatexContent.parseLatexContent).not.toHaveBeenCalled();
   });
 
+  it('inspire_parse_latex passes exactly the parser options it declares and refuses the ones it never read', async () => {
+    for (const removed of [{ format: 'markdown' }, { max_depth: 1 }, { include_external: true }, { cross_validate: true }]) {
+      const refused = await handleToolCall('inspire_parse_latex', {
+        project_root: projectRoot, output_dir: 'parsed', identifier: '123', components: ['sections'], options: removed,
+      } as any);
+      expect(refused.isError, JSON.stringify(removed)).toBe(true);
+    }
+    expect(parseLatexContent.parseLatexContent).not.toHaveBeenCalled();
+
+    vi.mocked(parseLatexContent.parseLatexContent).mockResolvedValueOnce({
+      metadata: { title: 'T', authors: [], abstract: '', arxiv_id: '1234.5678', source_file: '/tmp/main.tex' },
+      summary: { counts: {} },
+    } as any);
+    const options = {
+      include_key_equations: false,
+      include_inline_math: true,
+      include_section_content: true,
+      max_section_content: '500',
+      include_proofs: false,
+      citation_context_window: 0,
+      parse_table_data: false,
+    };
+    const res = await handleToolCall('inspire_parse_latex', {
+      project_root: projectRoot, output_dir: 'parsed-options', identifier: '123', components: ['sections'], options,
+    } as any);
+    expect(res.isError).toBeFalsy();
+    expect(vi.mocked(parseLatexContent.parseLatexContent).mock.calls[0]?.[0]).toMatchObject({
+      options: { ...options, max_section_content: 500 },
+    });
+  });
+
   it('inspire_parse_latex should write its result into output_dir and return path+summary', async () => {
     vi.mocked(parseLatexContent.parseLatexContent).mockResolvedValueOnce({
       metadata: {
@@ -840,14 +871,14 @@ describe('Tool Handlers (current exposure)', () => {
       output_dir: 'parsed',
       identifier: '123',
       components: ['sections'],
-      options: { cross_validate: true, max_depth: 2 },
+      options: { include_section_content: true, max_section_content: 2 },
     });
 
     expect(res.isError).toBeFalsy();
     expect(parseLatexContent.parseLatexContent).toHaveBeenCalledWith({
       identifier: '123',
       components: ['sections'],
-      options: { cross_validate: true, max_depth: 2 },
+      options: { include_section_content: true, max_section_content: 2 },
     });
 
     const payload = JSON.parse(readTextBlock(res)) as {

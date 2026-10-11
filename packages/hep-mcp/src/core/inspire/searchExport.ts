@@ -182,8 +182,10 @@ export async function hepInspireSearchExport(params: {
   });
 
   let exported = 0;
+  let received = 0;
   let pagesFetched = 0;
-  let total = 0;
+  // INSPIRE's total may grow while an export pages through it; the largest
+  // reported value is the one used throughout.
   let largestTotal = 0;
   let nextUrl: string | undefined;
   let truncatedMidPage = false;
@@ -239,8 +241,20 @@ export async function hepInspireSearchExport(params: {
         response_path: responseRef.path,
       });
       pagesFetched += 1;
-      largestTotal = Math.max(largestTotal, cached.response.total);
-      return cached.response;
+      const page = cached.response;
+      largestTotal = Math.max(largestTotal, page.total);
+      if (page.warning) {
+        warnings.push(page.warning);
+        budget.warn({ severity: 'warning', code: 'inspire_api_limit', message: page.warning });
+      }
+      // Count every record INSPIRE returned, before max_results cuts a page:
+      // more records than the reported total means pages repeated.
+      received += page.papers.length;
+      if (received > largestTotal) {
+        paginationContradiction(`INSPIRE returned ${received} records but reported a total of ${largestTotal}`);
+      }
+      if (page.papers.length === 0 && page.has_more) paginationContradiction('an empty page claims that more records follow');
+      return page;
     };
 
     if (outputFormat === 'json') {
@@ -252,13 +266,6 @@ export async function hepInspireSearchExport(params: {
       { query, sort: params.sort ?? null, size: pageSize, page: 1 },
       () => api.search(query, { sort: params.sort, size: pageSize, page: 1 }),
     );
-    total = pageRes.total;
-
-    if (pageRes.warning) {
-      warnings.push(pageRes.warning);
-      budget.warn({ severity: 'warning', code: 'inspire_api_limit', message: pageRes.warning });
-    }
-
     while (true) {
       const remaining = maxResults - exported;
       const page = pageRes.papers.slice(0, Math.max(0, remaining));
@@ -266,9 +273,6 @@ export async function hepInspireSearchExport(params: {
         writeItem(paper);
         exported += 1;
       }
-      // More records than INSPIRE reported in total means pages repeated.
-      if (exported > largestTotal) paginationContradiction(`exported ${exported} records but the reported total is ${largestTotal}`);
-
       if (pageRes.papers.length > page.length) {
         truncatedMidPage = true;
       }
@@ -283,7 +287,6 @@ export async function hepInspireSearchExport(params: {
       if (visitedUrls.has(url)) paginationContradiction('a page points back to an earlier page');
       visitedUrls.add(url);
       pageRes = await fetchPage('searchByUrl', { url }, () => api.searchByUrl(url));
-      if (pageRes.papers.length === 0) break;
     }
 
     if (outputFormat === 'json') {
@@ -291,7 +294,17 @@ export async function hepInspireSearchExport(params: {
     }
 
     const exportRef = await exportFile.finish();
-    const hasMore = Boolean(nextUrl) && total > exported;
+    const total = largestTotal;
+    const hasMore = total > exported;
+    // A next-page URL continues the export only if this export ended on a
+    // page boundary; after cutting inside a page it would skip the rest of
+    // that page, so none is given.
+    const resumeUrl = hasMore && !truncatedMidPage ? nextUrl : undefined;
+    if (hasMore && resumeUrl === undefined) {
+      const msg = 'More records exist than were exported and no continuation URL is given (the export stopped inside a page, or INSPIRE offered no next page); rerun with a larger max_results.';
+      warnings.push(msg);
+      budget.warn({ severity: 'warning', code: 'no_continuation_url', message: msg });
+    }
 
     if (total > exported) {
       const msg = `INSPIRE search export truncated at max_results=${maxResults} (total=${total}, exported=${exported}).`;
@@ -350,7 +363,7 @@ export async function hepInspireSearchExport(params: {
       exported,
       pages_fetched: pagesFetched,
       has_more: hasMore,
-      next_url: hasMore ? nextUrl : undefined,
+      next_url: resumeUrl,
       warnings,
       artifacts: {
         export_path: exportRef.path,

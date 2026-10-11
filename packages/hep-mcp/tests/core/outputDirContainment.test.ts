@@ -803,7 +803,7 @@ describe('round-5 argument, name and response checks', () => {
   it('a search export refuses more records than the reported total', async () => {
     vi.mocked(api.search).mockResolvedValueOnce({ total: 1, papers: [VALID_PAPER, { ...VALID_PAPER, recid: '2' }], has_more: false } as any);
     const result = await handleToolCall('hep_inspire_search_export', { project_root: alias, output_dir: 'over', query: 't:x' });
-    expect(errorOf(result).message).toMatch(/reported total is 1/);
+    expect(errorOf(result).message).toMatch(/returned 2 records but reported a total of 1/);
   });
 
   it('inspire_search refuses a file export of more than 10000 records before any provider call', async () => {
@@ -868,6 +868,119 @@ describe('round-5 argument, name and response checks', () => {
     expect(second.message).toMatch(/already exists/);
     expect(api.getPaper).not.toHaveBeenCalled();
     expect(fs.readdirSync(path.join(tmpDir, 'project', 'tc')).sort()).toEqual(names);
+  });
+
+  async function exportResult(args: Record<string, unknown>) {
+    const result = await handleToolCall('hep_inspire_search_export', { project_root: alias, query: 't:x', ...args });
+    expect(result.isError, result.content[0]!.text).toBeFalsy();
+    const payload = JSON.parse(result.content[0]!.text) as {
+      meta_path: string;
+      summary: { total: number; exported: number; has_more: boolean; warnings: string[] };
+    };
+    const meta = JSON.parse(fs.readFileSync(path.join(tmpDir, 'project', payload.meta_path), 'utf-8')) as { next_url?: string; total: number };
+    return { summary: payload.summary, meta };
+  }
+  const P = (recid: string) => ({ ...VALID_PAPER, recid });
+
+  it('a search export cut inside a page gives no continuation URL that would skip the rest of the page', async () => {
+    vi.mocked(api.search).mockResolvedValueOnce({ total: 3, papers: [P('1'), P('2'), P('3')], has_more: true, next_url: NEXT } as any);
+    const { summary, meta } = await exportResult({ output_dir: 'cut', max_results: 2 });
+    expect(summary).toMatchObject({ total: 3, exported: 2, has_more: true });
+    expect(meta.next_url).toBeUndefined();
+    expect(summary.warnings.some(w => /no continuation URL/.test(w))).toBe(true);
+  });
+
+  it('a search export cut inside the last page still reports that more records exist', async () => {
+    vi.mocked(api.search).mockResolvedValueOnce({ total: 3, papers: [P('1'), P('2'), P('3')], has_more: false } as any);
+    const { summary, meta } = await exportResult({ output_dir: 'cut-last', max_results: 2 });
+    expect(summary).toMatchObject({ total: 3, exported: 2, has_more: true });
+    expect(meta.next_url).toBeUndefined();
+  });
+
+  it('a search export that stops on a page boundary gives the next page as its continuation', async () => {
+    vi.mocked(api.search).mockResolvedValueOnce({ total: 4, papers: [P('1'), P('2')], has_more: true, next_url: NEXT } as any);
+    const { summary, meta } = await exportResult({ output_dir: 'edge', max_results: 2 });
+    expect(summary).toMatchObject({ total: 4, exported: 2, has_more: true });
+    expect(meta.next_url).toBe(NEXT);
+  });
+
+  it('a search export reports the largest total INSPIRE gave, and every page\'s warning', async () => {
+    vi.mocked(api.search).mockResolvedValueOnce({ total: 1, papers: [P('1')], has_more: true, next_url: NEXT } as any);
+    vi.mocked(api.searchByUrl).mockResolvedValueOnce({ total: 2, papers: [P('2')], has_more: false, warning: 'later-page limit notice' } as any);
+    const { summary, meta } = await exportResult({ output_dir: 'grow' });
+    expect(summary).toMatchObject({ total: 2, exported: 2, has_more: false });
+    expect(meta.total).toBe(2);
+    expect(summary.warnings).toContain('later-page limit notice');
+  });
+
+  it('a search export refuses an empty page that claims more records follow', async () => {
+    vi.mocked(api.search).mockResolvedValueOnce({ total: 5, papers: [P('1')], has_more: true, next_url: NEXT } as any);
+    vi.mocked(api.searchByUrl).mockResolvedValueOnce({ total: 5, papers: [], has_more: true, next_url: `${NEXT}&x=1` } as any);
+    const result = await handleToolCall('hep_inspire_search_export', { project_root: alias, output_dir: 'empty', query: 't:x' });
+    expect(errorOf(result).message).toMatch(/empty page claims that more records follow/);
+  });
+
+  it('a search export counts records before max_results cuts a page', async () => {
+    vi.mocked(api.search).mockResolvedValueOnce({ total: 1, papers: [P('1'), P('2')], has_more: false } as any);
+    const result = await handleToolCall('hep_inspire_search_export', { project_root: alias, output_dir: 'hidden', query: 't:x', max_results: 1 });
+    expect(errorOf(result).message).toMatch(/returned 2 records but reported a total of 1/);
+  });
+
+  it('the response record keeps INSPIRE\'s raw response, also when it carries no recid', async () => {
+    vi.mocked(api.getPaper).mockResolvedValueOnce({ recid: '123', title: 'Raw title', extra: { kept: true } } as any);
+    vi.mocked(api.getPaper).mockResolvedValueOnce({ title: 'No recid here' } as any);
+    const result = await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'raw', identifiers: ['123', '456'] });
+    expect(result.isError).toBeFalsy();
+    const dir = path.join(tmpDir, 'project', 'raw', 'external_api');
+    const responses = fs.readdirSync(dir).filter(name => name.startsWith('external_api_response_'))
+      .map(name => (JSON.parse(fs.readFileSync(path.join(dir, name), 'utf-8')) as { response: unknown }).response);
+    expect(responses).toEqual(expect.arrayContaining([
+      { recid: '123', title: 'Raw title', extra: { kept: true } },
+      { title: 'No recid here' },
+    ]));
+  });
+
+  it('refuses a cache entry recorded for another request, even with this request\'s hash', async () => {
+    vi.mocked(api.getPaper).mockResolvedValue({ recid: '123' } as any);
+    expect((await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'c1', identifiers: ['123'] })).isError).toBeFalsy();
+    const cacheRoot = path.join(tmpDir, 'project', 'artifacts', 'hep-mcp', 'cache', 'external_api_v1', 'inspire', 'getPaper');
+    const shard = fs.readdirSync(cacheRoot)[0]!;
+    const entryPath = path.join(cacheRoot, shard, fs.readdirSync(path.join(cacheRoot, shard))[0]!);
+    const entry = JSON.parse(fs.readFileSync(entryPath, 'utf-8')) as Record<string, unknown>;
+    fs.writeFileSync(entryPath, JSON.stringify({ ...entry, request: { recid: '999' } }));
+    const error = errorOf(await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'c2', identifiers: ['123'] }));
+    expect(error.message).toMatch(/not an entry for this request/);
+  });
+
+  it('refuses a taken response-record name before asking INSPIRE', async () => {
+    const names = describeExternalApiRequest({ namespace: 'inspire', operation: 'getPaper', request: { recid: '123' } });
+    fs.mkdirSync(path.join(tmpDir, 'project', 'taken', 'external_api'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'project', 'taken', names.response_name), 'earlier');
+    const error = errorOf(await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'taken', identifiers: ['123'] }));
+    expect(error.message).toMatch(/already exists/);
+    expect(api.getPaper).not.toHaveBeenCalled();
+  });
+
+  it('makes a request repeated concurrently within one call once, and records it once', async () => {
+    const { cachedExternalApiJsonCall } = await import('../../src/core/cache/externalApiCache.js');
+    await withHepDataRoot(alias, async () => {
+      const batch = new OutputBatch(resolveOutputDir('shared'));
+      let fetches = 0;
+      const call = () => cachedExternalApiJsonCall({
+        batch,
+        namespace: 'inspire',
+        operation: 'getByDoi',
+        request: { doi: '10.1/x' },
+        fetch: async () => { fetches += 1; await new Promise(resolve => setTimeout(resolve, 20)); return { recid: String(fetches) }; },
+        validate: response => response as { recid: string },
+      });
+      const [first, second] = await Promise.all([call(), call()]);
+      expect(fetches).toBe(1);
+      expect(second.response).toEqual(first.response);
+      await batch.publish();
+      const records = fs.readdirSync(path.join(tmpDir, 'project', 'shared', 'external_api'));
+      expect(records.filter(name => name.startsWith('external_api_response_'))).toHaveLength(1);
+    });
   });
 
   it('identifier resolution accepts a numeric recid as its digit string', async () => {

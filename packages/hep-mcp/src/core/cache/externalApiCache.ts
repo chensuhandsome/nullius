@@ -124,15 +124,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * One external API call through the shared response cache. The request and
- * the response actually used are recorded in the caller's output batch
- * (under `external_api/`; a request repeated within one call is recorded
- * once), so the outputs show what they were built from.
+ * the response INSPIRE (or the cache) returned are recorded in the caller's
+ * output batch under `external_api/`; the response record keeps the raw
+ * response, not the caller's reading of it. A request repeated within one
+ * call, concurrently or not, is made, validated and recorded once, and
+ * every repeat shares the outcome.
  *
  * `validate` checks the response for the fields the caller uses and returns
- * it typed. A fresh response is validated before it enters the cache, so a
- * malformed one is never cached; a cached response that fails validation,
- * or a cache entry that is not a well-formed entry for this request, aborts
- * the call with an error naming the cache entry to remove.
+ * what the caller needs from it. A fresh response is validated before it
+ * enters the cache, so a malformed one is never cached; a cached response
+ * that fails validation, or a cache entry that is not a well-formed entry for
+ * exactly this request, aborts the call with an error naming the cache entry
+ * to remove. Both record names are checked before the cache is read or the
+ * provider is asked.
  */
 export async function cachedExternalApiJsonCall<T>(params: {
   batch: OutputBatch;
@@ -149,13 +153,39 @@ export async function cachedExternalApiJsonCall<T>(params: {
   artifacts: OutputArtifactRef[];
   response: T;
 }> {
+  const described = describeExternalApiRequest(params);
+  return params.batch.once(
+    `external_api:${described.namespace}:${described.operation}:${described.request_hash}`,
+    () => performCachedCall(params, described),
+  );
+}
+
+async function performCachedCall<T>(
+  params: {
+    batch: OutputBatch;
+    request: unknown;
+    fetch: () => Promise<unknown>;
+    validate: (response: unknown) => T;
+    tool?: { name: string; args: Record<string, unknown> };
+  },
+  described: ReturnType<typeof describeExternalApiRequest>,
+): Promise<{
+  request_hash: string;
+  cache_hit: boolean;
+  cached_response_uri: string;
+  artifacts: OutputArtifactRef[];
+  response: T;
+}> {
   const batch = params.batch;
   const output = batch.out;
-  const { namespace, operation, request_hash: requestHash, request_name: requestArtifactName, response_name: responseArtifactName } =
-    describeExternalApiRequest(params);
+  const { namespace, operation, request_hash: requestHash, request_name: requestArtifactName, response_name: responseArtifactName } = described;
+  const request = params.request ?? null;
   const retryAfterRemoving = params.tool
     ? [{ tool: params.tool.name, args: params.tool.args, reason: 'Retry after removing the corrupted cache entry (manual) (fail-fast).' }]
     : [];
+
+  batch.assertFree(requestArtifactName);
+  batch.assertFree(responseArtifactName);
 
   const cachePath = (() => {
     try {
@@ -185,19 +215,18 @@ export async function cachedExternalApiJsonCall<T>(params: {
     next_actions: retryAfterRemoving,
   });
 
-  if (!batch.has(requestArtifactName)) {
-    batch.json(requestArtifactName, {
-      version: 1,
-      generated_at: nowIso(),
-      namespace,
-      operation,
-      request_hash: requestHash,
-      request: params.request ?? null,
-    });
-  }
+  batch.json(requestArtifactName, {
+    version: 1,
+    generated_at: nowIso(),
+    namespace,
+    operation,
+    request_hash: requestHash,
+    request,
+  });
   const requestRef = outputArtifactRef(output, requestArtifactName, 'application/json');
 
   let cacheHit = false;
+  let raw: unknown;
   let response: T;
 
   if (fs.existsSync(cachePath)) {
@@ -208,25 +237,29 @@ export async function cachedExternalApiJsonCall<T>(params: {
       throw corrupted('External API cache entry is not valid JSON (fail-fast)', err);
     }
 
+    // The entry must be for exactly this request: its recorded request is
+    // compared, not only the hash field it carries.
     if (
       !isRecord(cached)
       || cached.version !== 1
       || cached.request_hash !== requestHash
       || cached.namespace !== namespace
       || cached.operation !== operation
+      || !Object.prototype.hasOwnProperty.call(cached, 'request')
+      || stableStringify(cached.request) !== stableStringify(request)
       || !Object.prototype.hasOwnProperty.call(cached, 'response')
     ) {
       throw corrupted('External API cache entry is not an entry for this request (fail-fast)');
     }
 
+    raw = cached.response;
     try {
-      response = params.validate(cached.response);
+      response = params.validate(raw);
     } catch (err) {
       throw corrupted('Cached external API response is malformed (fail-fast)', err);
     }
     cacheHit = true;
   } else {
-    let raw: unknown;
     try {
       raw = await params.fetch();
     } catch (err) {
@@ -251,7 +284,7 @@ export async function cachedExternalApiJsonCall<T>(params: {
       namespace,
       operation,
       request_hash: requestHash,
-      request: params.request ?? null,
+      request,
       response: raw,
     };
 
@@ -273,19 +306,17 @@ export async function cachedExternalApiJsonCall<T>(params: {
     }
   }
 
-  if (!batch.has(responseArtifactName)) {
-    batch.json(responseArtifactName, {
-      version: 1,
-      generated_at: nowIso(),
-      namespace,
-      operation,
-      request_hash: requestHash,
-      request_path: requestRef.path,
-      cache_hit: cacheHit,
-      cached_response_uri: cachedResponseUri,
-      response,
-    });
-  }
+  batch.json(responseArtifactName, {
+    version: 1,
+    generated_at: nowIso(),
+    namespace,
+    operation,
+    request_hash: requestHash,
+    request_path: requestRef.path,
+    cache_hit: cacheHit,
+    cached_response_uri: cachedResponseUri,
+    response: raw ?? null,
+  });
   const responseRef = outputArtifactRef(output, responseArtifactName, 'application/json');
 
   return {

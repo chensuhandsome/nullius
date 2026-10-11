@@ -7,6 +7,7 @@ import {
   SerialIntervalGate,
   sleepWithAbort,
   upstreamError,
+  writeBytesAtomicDurable,
 } from '@nullius/shared';
 
 /**
@@ -308,7 +309,10 @@ async function writeBackoffUntilMs(backoffFile: string, deadlineMs: number): Pro
   const current = await readBackoffUntilMs(backoffFile);
   const next = Math.max(current, capped);
   if (next > current) {
-    await fs.writeFile(backoffFile, String(next), 'utf-8');
+    // Replaced by rename, never written through: the default state dir sits
+    // under the shared system temp dir, where another account could have
+    // left a link at this name.
+    writeBytesAtomicDurable(backoffFile, String(next));
   }
 }
 
@@ -331,7 +335,8 @@ async function acquireSharedIntervalGate(signal?: AbortSignal): Promise<void> {
       signal,
       () => upstreamError('arXiv request aborted while waiting for shared rate-limit window'),
     );
-    await fs.writeFile(timestampFile, String(Date.now()), 'utf-8');
+    // Replaced by rename, never written through (see writeBackoffUntilMs).
+    writeBytesAtomicDurable(timestampFile, String(Date.now()));
   } finally {
     await releaseLock();
   }

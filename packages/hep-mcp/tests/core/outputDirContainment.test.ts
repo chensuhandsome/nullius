@@ -456,6 +456,16 @@ describe('a call writes all of its files or none, and never replaces an existing
     });
   });
 
+  it('refuses an output file named like the external_api/ record directory, in any case', async () => {
+    await withHepDataRoot(alias, async () => {
+      const batch = new OutputBatch(resolveOutputDir('recdir'));
+      expect(() => batch.json('external_api', { x: 1 })).toThrow(/external_api\/ record directory/);
+      expect(() => batch.json('External_API', { x: 1 })).toThrow(/external_api\/ record directory/);
+      batch.discard();
+      expect(fs.readdirSync(path.join(projectRoot, 'recdir'))).toEqual([]);
+    });
+  });
+
   it('refuses two outputs of one call that name the same file', async () => {
     await withHepDataRoot(alias, async () => {
       const batch = new OutputBatch(resolveOutputDir('twice'));

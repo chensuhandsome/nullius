@@ -176,7 +176,7 @@ hep-mcp 不提供草稿渲染、项目导出或论文打包工具；稿件在项
 ## 常见提示
 
 - 若提示 `output_dir requires project_root`：同时传入已初始化项目的绝对 `project_root`。
-- 若提示输出文件已存在（`already exists`）：工具从不覆盖已有输出；换一个新的 `output_dir`（或新的文件名）再调用，旧结果保持原样。调用失败时会撤回本次已发布的文件；只有在发布途中服务进程崩溃，才可能留下一组不完整的文件，此时删除这些文件或换新的 `output_dir` 即可。
+- 若提示输出文件已存在（`already exists`）：工具从不覆盖已有输出；换一个新的 `output_dir`（或新的文件名）再调用，旧结果保持原样。调用失败时会撤回本次已发布的文件；若有文件删不掉，错误会写明输出不完整并列出残留文件（`files_left`、`staging_left`）；只有在发布途中服务进程崩溃，才可能留下未被报告的不完整文件。这两种情况下，删除这些文件或换新的 `output_dir` 即可。
 - 若 `output_dir` 因符号链接或保留位置（`.nullius/`、`team/runs/`、`artifacts/hep-mcp/`）被拒：换成项目内由真实目录构成的子目录，例如当前 run 目录下的子目录。
 - 若 token gate overflow：按返回的 overflow artifact 和 `next_actions` 收敛上下文规模，不要绕过门控。
 

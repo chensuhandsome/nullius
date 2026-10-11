@@ -290,13 +290,18 @@ function existingOutputError(out: OutputDir, name: string): Error {
  * existing entry, symlink or not, is never opened or followed) and flushed
  * to disk; no final name appears before `publish`. `publish` then links
  * every staged file to its final name, never replacing an existing entry:
- * if any final name is taken, the call fails and the files this batch had
- * already published are removed. A call therefore leaves either all of its
- * files or none of them, and never changes a file that an earlier call
- * wrote, so a result cited elsewhere keeps its bytes. Directories created
- * on the way remain. A crash in the middle of `publish` can leave part of
- * the set; a later call naming those files is then refused rather than
+ * if any final name is taken, or anything else fails, the files this batch
+ * had already published are removed. When that cleanup succeeds, a call
+ * leaves either all of its files or none of them; when a file cannot be
+ * removed, the error says the outputs are incomplete and names it (see
+ * `discard`). A call never changes a file that an earlier call wrote, so a
+ * result cited elsewhere keeps its bytes. Directories created on the way
+ * remain. Only a crash in the middle of `publish` can leave part of the set
+ * without a report; a later call naming those files is refused rather than
  * mixed with them.
+ *
+ * `publish` is the call's commit point: a tool returns its result right
+ * after it, with no further step that could fail.
  *
  * The directory chain from the project root is checked again before every
  * staging file is created and before every link; a staging or published
@@ -381,6 +386,9 @@ export class OutputBatch {
   private claim(name: string): string {
     if (this.closed) throw new Error('Internal: this output batch was already published or discarded');
     const key = nameKey(name);
+    if (key === nameKey(EXTERNAL_API_SUBDIR)) {
+      throw invalidParams(`output file '${name}' would name the external_api/ record directory`, { artifact_name: name });
+    }
     if (this.claimed.has(key)) {
       throw invalidParams(`two outputs of this call name the same file '${name}'`, { artifact_name: name });
     }

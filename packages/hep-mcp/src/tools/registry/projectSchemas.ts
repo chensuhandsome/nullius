@@ -64,7 +64,8 @@ export const OutputDirSchema = z
       + '(any spelling of the root). Requires project_root. Created if missing; it may not traverse a symbolic link, '
       + 'and may not lie under .nullius/, team/runs/ or artifacts/hep-mcp/. A call never replaces an existing file '
       + '(it is refused if any of its files already exists), and a call that fails removes what it had published; '
-      + 'only a crash during publication can leave part of a set, which later calls naming those files refuse until it is removed.'
+      + 'if a file cannot be removed, the error says the outputs are incomplete and names the files left. Only a crash '
+      + 'during publication can leave part of a set unreported. Later calls naming leftover files are refused until they are removed.'
   );
 
 // The tools that write into output_dir, and the lexical evidence query, use

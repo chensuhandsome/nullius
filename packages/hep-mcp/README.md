@@ -65,9 +65,12 @@ symbolic link below the project root, may not lie under `.nullius/`,
 Each output file is staged and flushed first and only then given its name, and
 a call never replaces an existing file: if any file it would write already
 exists, the call is refused, before any provider request when the name is known
-in advance. A call that fails removes the files it had already published, so it
-leaves all of its files or none; only a crash of the server process during
-publication can leave part of a set, and a later call naming those files is then
+in advance. A call that fails removes the files it had already published, so when
+that cleanup succeeds it leaves all of its files or none; if a file cannot be
+removed, the error says the outputs are incomplete and names the files left
+(`files_left`, `staging_left`). Only a crash of the server process during
+publication can leave part of a set without such a report. Either way, a later
+call naming those files is then
 refused until they are removed. Choose a new `output_dir` (or new artifact names)
 to run a tool again; earlier outputs keep their bytes.
 

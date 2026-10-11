@@ -24,7 +24,7 @@ function makeHandoff(): Record<string, unknown> {
     idea_id: 'dddddd03',
     promoted_at: '2026-03-13T00:00:00Z',
     idea_card: {
-      thesis_statement: 'Generic staged planning should compile a domain-owned run directory through orch_run_plan_computation.',
+      thesis_statement: 'Generic staged planning should compile a run directory inside the project through orch_run_plan_computation.',
       testable_hypotheses: ['Hypothesis A'],
       required_observables: ['observable_a'],
       minimal_compute_plan: [
@@ -93,9 +93,9 @@ afterEach(() => {
 });
 
 describe('orch_run_plan_computation tool', () => {
-  it('compiles staged idea artifacts from a domain-owned run directory', async () => {
+  it('compiles staged idea artifacts from a run directory inside the project', async () => {
     const projectRoot = makeTmpDir('orch-plan-project-');
-    const runDir = makeTmpDir('orch-plan-run-');
+    const runDir = fs.mkdtempSync(path.join(projectRoot, 'orch-plan-run-'));
     CLEANUP_DIRS.push(projectRoot, runDir);
 
     stageIdeaArtifactsIntoRun({
@@ -124,7 +124,7 @@ describe('orch_run_plan_computation tool', () => {
 
   it('keeps the supplied provider-backed operation on the public orch_* path', async () => {
     const projectRoot = makeTmpDir('orch-plan-project-');
-    const runDir = makeTmpDir('orch-plan-run-');
+    const runDir = fs.mkdtempSync(path.join(projectRoot, 'orch-plan-run-'));
     CLEANUP_DIRS.push(projectRoot, runDir);
 
     stageIdeaArtifactsIntoRun({
@@ -180,7 +180,7 @@ describe('orch_run_plan_computation tool', () => {
 
   it('keeps an A3 approval valid when planning is repeated later from unchanged inputs, and re-gates changed inputs', async () => {
     const projectRoot = makeTmpDir('orch-plan-project-');
-    const runDir = makeTmpDir('orch-plan-run-');
+    const runDir = fs.mkdtempSync(path.join(projectRoot, 'orch-plan-run-'));
     CLEANUP_DIRS.push(projectRoot, runDir);
     // This method passes the execution plan to its script, so the plan file is
     // an approved input alongside the manifest.
@@ -233,7 +233,7 @@ describe('orch_run_plan_computation tool', () => {
 
   it('returns a ready-to-execute planned result (no approval) when A3 (compute_runs) is opt-out by default', async () => {
     const projectRoot = makeTmpDir('orch-plan-project-');
-    const runDir = makeTmpDir('orch-plan-run-');
+    const runDir = fs.mkdtempSync(path.join(projectRoot, 'orch-plan-run-'));
     CLEANUP_DIRS.push(projectRoot, runDir);
 
     stageIdeaArtifactsIntoRun({

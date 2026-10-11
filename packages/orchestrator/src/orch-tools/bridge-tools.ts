@@ -28,7 +28,7 @@ import type { DelegatedComputationFollowupTask } from '../computation/delegated-
 import type {
   FeedbackFollowupLaunchOutcome,
 } from '../computation/feedback-followup-progression.js';
-import { resolveUnderRoot } from '../computation/path-safety.js';
+import { resolveProjectContainedPath, resolveUnderRoot } from '../computation/path-safety.js';
 import { utcNowIso } from '../util.js';
 import { resolveProjectRoot } from './common.js';
 
@@ -43,23 +43,47 @@ function resolvePathWithinParent(parentDir: string, candidatePath: string, field
   });
 }
 
+/**
+ * The project root and run directory a bridge tool works in. The root is
+ * admitted like every other front door's (tilde expansion, canonical form,
+ * outside any nullius checkout); the run directory must lie within it, by the
+ * rule `nullius run --run-dir` applies: an alias above the root is accepted,
+ * a symbolic link below it is refused. Everything the tool writes, reads or
+ * executes then derives from the admitted run directory.
+ */
+function admitProjectRun(params: { project_root: string; run_dir: string }): { projectRoot: string; runDir: string } {
+  const projectRoot = resolveProjectRoot(params.project_root);
+  if (!path.isAbsolute(params.run_dir)) {
+    throw invalidParams('run_dir must be an absolute path inside project_root', {
+      project_root: projectRoot,
+      run_dir: params.run_dir,
+    });
+  }
+  if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) {
+    throw invalidParams('project_root must name an existing directory', { project_root: projectRoot });
+  }
+  return { projectRoot, runDir: resolveProjectContainedPath(projectRoot, params.run_dir, 'run_dir') };
+}
+
 export async function handleOrchRunStageIdea(params: {
+  project_root: string;
   run_id: string;
   run_dir: string;
   handoff_path: string;
   handoff_uri?: string;
 }) {
+  const { runDir } = admitProjectRun(params);
   const staged = stageIdeaArtifactsIntoRunFromPath({
     handoffPath: params.handoff_path,
     handoffUri: params.handoff_uri,
-    runDir: params.run_dir,
+    runDir,
   });
   return {
     status: 'staged',
     run_id: params.run_id,
     run_dir: params.run_dir,
-    outline_seed_path: path.relative(params.run_dir, staged.outlineSeedPath).split(path.sep).join('/'),
-    hints_snapshot_path: path.relative(params.run_dir, staged.hintsSnapshotPath).split(path.sep).join('/'),
+    outline_seed_path: path.relative(runDir, staged.outlineSeedPath).split(path.sep).join('/'),
+    hints_snapshot_path: path.relative(runDir, staged.hintsSnapshotPath).split(path.sep).join('/'),
     next_actions: [
       {
         tool: 'orch_run_plan_computation',
@@ -70,6 +94,7 @@ export async function handleOrchRunStageIdea(params: {
 }
 
 export async function handleOrchRunStageContent(params: {
+  project_root: string;
   run_id: string;
   run_dir: string;
   content_type: 'section_output' | 'outline_plan' | 'paperset_curation' | 'revision_plan' | 'reviewer_report' | 'judge_decision';
@@ -78,9 +103,10 @@ export async function handleOrchRunStageContent(params: {
   task_id?: string;
   task_kind?: 'draft_update' | 'review';
 }) {
+  const { runDir } = admitProjectRun(params);
   return stageContentInRunDir({
     runId: params.run_id,
-    runDir: params.run_dir,
+    runDir,
     contentType: params.content_type,
     content: params.content,
     artifactSuffix: params.artifact_suffix,
@@ -95,13 +121,11 @@ export async function handleOrchRunPlanComputation(params: {
   run_dir: string;
   dry_run?: boolean;
 }) {
-  // Admitted like every other front door: canonical form, outside any
-  // nullius checkout.
-  const projectRoot = resolveProjectRoot(params.project_root);
+  const { projectRoot, runDir } = admitProjectRun(params);
   return planComputationFromRunDir({
     dryRun: params.dry_run,
     projectRoot,
-    runDir: params.run_dir,
+    runDir,
     runId: params.run_id,
   });
 }
@@ -113,14 +137,14 @@ export async function handleOrchRunExecuteManifest(params: {
   manifest_path: string;
   dry_run?: boolean;
 }) {
-  const projectRoot = resolveProjectRoot(params.project_root);
-  const manifestPath = resolvePathWithinParent(params.run_dir, params.manifest_path, 'manifest_path');
-  resolvePathWithinParent(path.join(params.run_dir, 'computation'), manifestPath, 'manifest_path');
+  const { projectRoot, runDir } = admitProjectRun(params);
+  const manifestPath = resolvePathWithinParent(runDir, params.manifest_path, 'manifest_path');
+  resolvePathWithinParent(path.join(runDir, 'computation'), manifestPath, 'manifest_path');
   return executeComputationManifest({
     dryRun: params.dry_run,
     manifestPath,
     projectRoot,
-    runDir: params.run_dir,
+    runDir,
     runId: params.run_id,
   });
 }
@@ -179,6 +203,7 @@ async function launchFollowupTaskViaTeamRuntime(params: {
   computationResult: Awaited<ReturnType<typeof loadComputationResultFromRunDir>>;
   projectRoot: string;
   runId: string;
+  runDir: string;
   task: DelegatedFeedbackFollowupTask | DelegatedComputationFollowupTask;
   team: DelegatedFollowupTeamConfig;
 }): Promise<FeedbackFollowupLaunchOutcome | DelegatedComputationFollowupLaunchOutcome> {
@@ -190,7 +215,9 @@ async function launchFollowupTaskViaTeamRuntime(params: {
     messages: [{
       role: 'user',
       content: buildFollowupRuntimePrompt({
+        projectRoot: params.projectRoot,
         runId: params.runId,
+        runDir: params.runDir,
         taskId: params.task.task_id,
         taskKind: params.task.kind,
         taskTitle: params.task.title,
@@ -313,7 +340,7 @@ export async function handleOrchRunProgressFollowups(
   },
   ctx: AgentToolHandlerContext = {},
 ) {
-  const projectRoot = resolveProjectRoot(params.project_root);
+  const { projectRoot, runDir } = admitProjectRun(params);
   if (!ctx.createMessage || !ctx.callTool) {
     throw invalidParams('orch_run_progress_followups requires host sampling/createMessage support and tool-call loopback.', {
       missing_context: [
@@ -324,18 +351,19 @@ export async function handleOrchRunProgressFollowups(
   }
   const computationResult = loadComputationResultFromRunDir({
     runId: params.run_id,
-    runDir: params.run_dir,
+    runDir,
   });
   const result = await progressRunFollowups({
     computationResult,
     projectRoot,
     runId: params.run_id,
-    runDir: params.run_dir,
+    runDir,
     launchFeedbackTask: async launchParams => launchFollowupTaskViaTeamRuntime({
       ctx,
       computationResult: launchParams.computationResult,
       projectRoot: launchParams.projectRoot,
       runId: launchParams.runId,
+      runDir,
       task: launchParams.task,
       team: launchParams.team,
     }) as Promise<FeedbackFollowupLaunchOutcome>,
@@ -344,13 +372,14 @@ export async function handleOrchRunProgressFollowups(
       computationResult: launchParams.computationResult,
       projectRoot: launchParams.projectRoot,
       runId: launchParams.runId,
+      runDir,
       task: launchParams.task,
       team: launchParams.team,
     }) as Promise<DelegatedComputationFollowupLaunchOutcome>,
   });
   syncCompletedFollowupTaskIntoComputationResult({
     runId: params.run_id,
-    runDir: params.run_dir,
+    runDir,
     launchResult: result,
   });
   return result;

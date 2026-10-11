@@ -381,6 +381,7 @@ describe('team unified runtime control paths', () => {
             expect(protocol).toContain('task_id=task-task-ref');
             expect(protocol).toContain('content_type=section_output');
             return toolUseResponse('tu_task_ref', 'orch_run_stage_content', {
+              project_root: projectRoot,
               run_id: 'run-task-ref',
               run_dir: path.join(projectRoot, 'run-task-ref'),
               content_type: 'section_output',
@@ -575,6 +576,7 @@ describe('team unified runtime control paths', () => {
             expect(protocol).toMatch(/content_type=reviewer_report or revision_plan/);
             expect(protocol).toContain('content_type=judge_decision');
             return toolUseResponse('tu_review_ref', 'orch_run_stage_content', {
+              project_root: projectRoot,
               run_id: runId,
               run_dir: runDir,
               content_type: 'reviewer_report',
@@ -678,6 +680,7 @@ describe('team unified runtime control paths', () => {
             const protocol = extractProtocolText(params);
             expect(protocol).toContain('content_type=judge_decision');
             return toolUseResponse('tu_review_report', 'orch_run_stage_content', {
+              project_root: projectRoot,
               run_id: runId,
               run_dir: runDir,
               content_type: 'reviewer_report',
@@ -687,6 +690,7 @@ describe('team unified runtime control paths', () => {
             });
           })
           .mockImplementationOnce(async () => toolUseResponse('tu_judge_decision', 'orch_run_stage_content', {
+            project_root: projectRoot,
             run_id: runId,
             run_dir: runDir,
             content_type: 'judge_decision',
@@ -787,6 +791,7 @@ describe('team unified runtime control paths', () => {
         }) },
         _messagesCreate: vi.fn()
           .mockImplementationOnce(async () => toolUseResponse('tu_review_report', 'orch_run_stage_content', {
+            project_root: projectRoot,
             run_id: runId,
             run_dir: runDir,
             content_type: 'reviewer_report',
@@ -795,6 +800,7 @@ describe('team unified runtime control paths', () => {
             task_kind: 'review',
           }))
           .mockImplementationOnce(async () => toolUseResponse('tu_judge_decision', 'orch_run_stage_content', {
+            project_root: projectRoot,
             run_id: runId,
             run_dir: runDir,
             content_type: 'judge_decision',

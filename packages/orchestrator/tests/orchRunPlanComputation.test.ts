@@ -55,7 +55,7 @@ afterEach(() => {
 describe('orch_run_plan_computation', () => {
   it('stages a handoff into a run directory and plans computation through the generic orchestrator tools', async () => {
     const projectRoot = makeTmpDir('orch-plan-project-');
-    const runDir = makeTmpDir('orch-plan-run-');
+    const runDir = fs.mkdtempSync(path.join(projectRoot, 'orch-plan-run-'));
     const handoffDir = makeTmpDir('orch-plan-handoff-');
     const handoffPath = path.join(handoffDir, 'idea_handoff_c2_v1.json');
     CLEANUP_DIRS.push(projectRoot, runDir, handoffDir);
@@ -65,6 +65,7 @@ describe('orch_run_plan_computation', () => {
     const staged = extractPayload(await handleToolCall(
       'orch_run_stage_idea',
       {
+        project_root: projectRoot,
         run_id: 'run-plan-001',
         run_dir: runDir,
         handoff_path: handoffPath,

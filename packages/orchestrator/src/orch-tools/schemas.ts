@@ -12,7 +12,7 @@ const ProjectRootSchema = z
 const RunDirSchema = z
   .string()
   .min(1)
-  .describe('Absolute path to the domain-owned run directory whose artifacts should be staged or executed.');
+  .describe('Absolute path to the run directory whose artifacts should be staged or executed, inside project_root (normally <project_root>/artifacts/runs/<run_id>); it may be spelled through an alias above project_root, but a symbolic link below project_root is refused.');
 const RunIdSchema = z
   .string()
   .min(1)
@@ -109,13 +109,15 @@ export const OrchRunCreateSchema = z.object({
 });
 
 export const OrchRunStageIdeaSchema = z.object({
-  run_id: RunIdSchema.describe('Run identifier whose domain-owned run_dir should receive staged idea artifacts.'),
+  project_root: ProjectRootSchema,
+  run_id: RunIdSchema.describe('Run identifier whose run_dir should receive staged idea artifacts.'),
   run_dir: RunDirSchema,
   handoff_path: HandoffPathSchema,
   handoff_uri: HandoffUriSchema.optional(),
 });
 
 export const OrchRunStageContentSchema = z.object({
+  project_root: ProjectRootSchema,
   run_id: RunIdSchema.describe('Run identifier whose run_dir should receive a staged writing/review artifact.'),
   run_dir: RunDirSchema,
   content_type: StagedContentTypeSchema.describe('Generic writing/review staged content type.'),

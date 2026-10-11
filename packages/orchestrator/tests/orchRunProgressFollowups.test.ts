@@ -215,6 +215,7 @@ describe('orch_run_progress_followups', () => {
     const reviewTask = computationResult.workspace_feedback.tasks.find(task => task.kind === 'review')!;
     const responseQueue = [
       toolUseResponse('tu_stage_draft', 'orch_run_stage_content', {
+        project_root: projectRoot,
         run_id: runId,
         run_dir: runDir,
         content_type: 'section_output',
@@ -224,6 +225,7 @@ describe('orch_run_progress_followups', () => {
       }),
       textResponse('draft follow-up complete'),
       toolUseResponse('tu_stage_review_report', 'orch_run_stage_content', {
+        project_root: projectRoot,
         run_id: runId,
         run_dir: runDir,
         content_type: 'reviewer_report',
@@ -232,6 +234,7 @@ describe('orch_run_progress_followups', () => {
         task_kind: 'review',
       }),
       toolUseResponse('tu_stage_review_decision', 'orch_run_stage_content', {
+        project_root: projectRoot,
         run_id: runId,
         run_dir: runDir,
         content_type: 'judge_decision',

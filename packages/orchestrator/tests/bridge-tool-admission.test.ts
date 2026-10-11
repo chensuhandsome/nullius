@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { buildFollowupRuntimePrompt } from '../src/computation/followup-runtime.js';
 import { sanitizeRelativePath } from '../src/computation/path-safety.js';
 import { handleToolCall } from '../src/tooling.js';
 
@@ -69,7 +70,7 @@ async function stagedRun(project: { parent: string; alias: string }, runId: stri
   const runDir = path.join(project.alias, 'artifacts', 'runs', runId);
   const handoffPath = path.join(project.parent, `${runId}-handoff.json`);
   writeJson(handoffPath, idea);
-  const staged = await call('orch_run_stage_idea', { run_id: runId, run_dir: runDir, handoff_path: handoffPath });
+  const staged = await call('orch_run_stage_idea', { project_root: project.alias, run_id: runId, run_dir: runDir, handoff_path: handoffPath });
   expect(staged.isError, JSON.stringify(staged.payload)).toBe(false);
   return runDir;
 }
@@ -115,6 +116,68 @@ describe('computation bridge tools admit project_root like every other front doo
       _confirm: true, project_root: project.alias, run_id: 'r-alias', run_dir: runDir, manifest_path: 'computation/manifest.json', dry_run: true,
     });
     expect(executed.payload.status, JSON.stringify(executed.payload)).toBe('dry_run');
+  });
+});
+
+describe('the computation bridge tools work only in a run directory inside the admitted project root', () => {
+  /** Arguments that reach each tool's run directory, with `runDir` as given. */
+  function argsFor(tool: string, projectRoot: string, runDir: string, handoffPath: string): Record<string, unknown> {
+    const base = { project_root: projectRoot, run_id: 'r1', run_dir: runDir };
+    switch (tool) {
+      case 'orch_run_stage_idea': return { ...base, handoff_path: handoffPath };
+      case 'orch_run_stage_content': return { ...base, content_type: 'section_output', content: '{"title":"Draft"}' };
+      case 'orch_run_plan_computation': return { ...base, dry_run: true };
+      case 'orch_run_execute_manifest': return { ...base, _confirm: true, manifest_path: 'computation/manifest.json', dry_run: true };
+      default: return { ...base, _confirm: true };
+    }
+  }
+  const TOOLS = ['orch_run_stage_idea', 'orch_run_stage_content', 'orch_run_plan_computation', 'orch_run_execute_manifest', 'orch_run_progress_followups'];
+
+  function projectWithHandoff(): { parent: string; root: string; alias: string; handoffPath: string } {
+    const project = aliasedProject();
+    const handoffPath = path.join(project.parent, 'handoff.json');
+    writeJson(handoffPath, handoff([{ path: 'scripts/run.py', content: WRITE_VALUE }], 'scripts/run.py', ['outputs/value.txt']));
+    return { ...project, handoffPath };
+  }
+
+  it.each(TOOLS)('%s refuses a run directory outside the project root and writes nothing there', async (tool) => {
+    const { parent, alias, handoffPath } = projectWithHandoff();
+    const outside = path.join(parent, 'elsewhere', 'r1');
+    const result = await call(tool, argsFor(tool, alias, outside, handoffPath));
+    expect(result.isError).toBe(true);
+    expect(result.payload.error.message).toMatch(/run_dir must stay within/);
+    expect(fs.existsSync(path.join(parent, 'elsewhere'))).toBe(false);
+  });
+
+  it.each(TOOLS)('%s refuses a run directory reached through a symbolic link below the project root', async (tool) => {
+    const { parent, root, alias, handoffPath } = projectWithHandoff();
+    const outside = path.join(parent, 'outside');
+    fs.mkdirSync(outside);
+    fs.mkdirSync(path.join(root, 'artifacts'));
+    fs.symlinkSync(outside, path.join(root, 'artifacts', 'runs'), 'dir');
+    const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
+    expect(result.isError).toBe(true);
+    expect(result.payload.error.message).toMatch(/run_dir must not traverse a symbolic link/);
+    expect(fs.readdirSync(outside)).toEqual([]);
+  });
+
+  it('refuses a relative run directory, and a project root that does not exist', async () => {
+    const { parent, alias, handoffPath } = projectWithHandoff();
+    const relative = await call('orch_run_stage_idea', argsFor('orch_run_stage_idea', alias, path.join('artifacts', 'runs', 'r1'), handoffPath));
+    expect(relative.payload.error.message).toMatch(/run_dir must be an absolute path inside project_root/);
+    const missingRoot = path.join(parent, 'alias', 'missing');
+    const missing = await call('orch_run_stage_idea', argsFor('orch_run_stage_idea', missingRoot, path.join(missingRoot, 'r1'), handoffPath));
+    expect(missing.payload.error.message).toMatch(/project_root must name an existing directory/);
+    expect(fs.existsSync(path.join(parent, 'real', 'missing'))).toBe(false);
+  });
+
+  it('names the project root and run directory to a delegated follow-up, which must pass them when staging', () => {
+    const prompt = buildFollowupRuntimePrompt({
+      projectRoot: '/projects/p', runId: 'r1', runDir: '/projects/p/artifacts/runs/r1', taskId: 't1', taskKind: 'draft_update',
+      taskTitle: 'Update the draft', computationResultUri: 'rep://runs/r1/artifact/x', handoffId: 'h1', handoffKind: 'writing',
+    }).split('\n');
+    expect(prompt).toContain('project_root: /projects/p');
+    expect(prompt).toContain('run_dir: /projects/p/artifacts/runs/r1');
   });
 });
 

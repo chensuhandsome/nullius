@@ -29,6 +29,7 @@ describe('orch_run_stage_content', () => {
 
     const res = await handleToolCall('orch_run_stage_content', {
       run_id: 'run-1',
+      project_root: tmpDir,
       run_dir: runDir,
       content_type: 'section_output',
       content: '{"section_number":"1","title":"Draft","content":"Hello"}',

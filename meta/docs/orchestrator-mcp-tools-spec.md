@@ -31,8 +31,8 @@
 | Tool | Risk | Live responsibility |
 |---|---|---|
 | `orch_run_create` | `write` | Initialize or replay an orchestrator run in a project root |
-| `orch_run_stage_idea` | `write` | Stage IdeaHandoffC2 artifacts into an existing domain-owned run directory |
-| `orch_run_stage_content` | `write` | Stage generic writing/review content into an existing run directory and return a `rep://runs/.../artifact/...` staging URI; loop-owned draft/review tasks may attach task-scoped provenance so completion and downstream review refresh can fail closed on missing outputs |
+| `orch_run_stage_idea` | `write` | Stage IdeaHandoffC2 artifacts into an existing run directory inside the project root |
+| `orch_run_stage_content` | `write` | Stage generic writing/review content into an existing run directory inside the project root and return a `rep://runs/.../artifact/...` staging URI; loop-owned draft/review tasks may attach task-scoped provenance so completion and downstream review refresh can fail closed on missing outputs |
 | `orch_run_plan_computation` | `write` | Compile staged idea artifacts into `execution_plan_v1.json` and a run-local `computation/manifest.json`, requiring a supplied `method_spec` with files and `run_card`; missing methods are refused before executable artifacts are written |
 | `orch_run_execute_manifest` | `destructive` | Execute an approved run-local `computation_manifest_v1` from an existing run directory |
 | `orch_run_progress_followups` | `destructive` | Progress exactly one computation-generated follow-up through the generic delegated runtime surface; delegated idea/literature feedback and writer/reviewer continuation are live |
@@ -109,6 +109,7 @@ Fleet tools operate on queue items and worker ids rather than on artifact ids or
 3. Approval resolution lives on `orch_run_status`, `orch_run_approvals_list`, `orch_run_approve`, and `orch_run_reject`; domain tools may trigger the need for a gate but do not own the gate state.
 4. Fleet semantics live on the orchestrator fleet-tool family; they are not hidden behind domain packs or legacy Python shells.
 5. `nullius` remains the generic front door for lifecycle / workflow-plan / bounded computation; `orch_*` is the MCP/operator counterpart of that control plane rather than a competing product identity.
+6. The computation bridge tools (`orch_run_stage_idea`, `orch_run_stage_content`, `orch_run_plan_computation`, `orch_run_execute_manifest`, `orch_run_progress_followups`) admit `project_root` as every other front door does (canonical form, outside any nullius checkout) and require `run_dir` to lie inside it, by the rule `nullius run --run-dir` applies: an alias above the project root is accepted, a symbolic link below it is refused.
 
 ### 2.3 Interaction Sketch
 
@@ -116,8 +117,8 @@ Fleet tools operate on queue items and worker ids rather than on artifact ids or
 Agent / operator
   │
   ├──► orch_run_create(project_root, run_id)            → initialize / replay run
-  ├──► orch_run_stage_idea(run_dir, handoff_path, ...)  → stage provider-local idea artifacts
-  ├──► orch_run_stage_content(run_dir, content_type, ...) → stage generic writing/review artifacts
+  ├──► orch_run_stage_idea(project_root, run_dir, handoff_path, ...) → stage idea artifacts into the run directory
+  ├──► orch_run_stage_content(project_root, run_dir, content_type, ...) → stage generic writing/review artifacts
   ├──► orch_run_plan_computation(...)                   → compile staged idea into execution plan + run-local manifest
   ├──► orch_run_execute_manifest(...)                   → execute approved run-local computation manifest
   ├──► orch_run_progress_followups(...)                 → advance one feedback/literature or writing/review continuation

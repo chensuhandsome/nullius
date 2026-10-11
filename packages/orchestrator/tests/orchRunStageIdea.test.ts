@@ -53,6 +53,7 @@ describe('orch_run_stage_idea', () => {
 
     const res = await handleToolCall('orch_run_stage_idea', {
       run_id: 'run-1',
+      project_root: tmpDir,
       run_dir: runDir,
       handoff_path: handoffPath,
     }, 'full');

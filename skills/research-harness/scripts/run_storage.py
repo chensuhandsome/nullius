@@ -157,8 +157,20 @@ def write_atomic(path: Path, data: bytes, mode: int = 0o644) -> None:
     fsync_dir(path.parent)
 
 
-def write_json_atomic(path: Path, obj) -> None:
-    write_atomic(path, (json.dumps(obj, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
+def json_bytes(obj) -> bytes:
+    return (json.dumps(obj, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def write_if_changed(path: Path, data: bytes) -> bool:
+    """Write atomically unless the regular file already holds exactly these
+    bytes. Returns whether anything was written."""
+    try:
+        if stat.S_ISREG(path.lstat().st_mode) and path.read_bytes() == data:
+            return False
+    except FileNotFoundError:
+        pass
+    write_atomic(path, data)
+    return True
 
 
 def walk_error(error: OSError) -> None:
@@ -650,7 +662,7 @@ def check_ignore_markers(run_dir: Path) -> None:
                        "repair them before stowing so no user rule is lost")
 
 
-def update_ignore_block(run_dir: Path, rel_paths: "list[str]") -> None:
+def update_ignore_block(run_dir: Path, rel_paths: "list[str]") -> bool:
     """Write the managed block where it already stands (rule order decides
     which rule wins), or append it; user lines are kept exactly."""
     check_ignore_markers(run_dir)
@@ -674,7 +686,7 @@ def update_ignore_block(run_dir: Path, rel_paths: "list[str]") -> None:
         out += ([""] if out else []) + block
     elif out and out[-1] == "":
         out.pop()  # the final newline is written below
-    write_atomic(path, ("\n".join(out) + "\n").encode("utf-8"))
+    return write_if_changed(path, ("\n".join(out) + "\n").encode("utf-8"))
 
 
 # ------------------------------------------------------------------ check
@@ -1016,8 +1028,10 @@ def cmd_stow(args) -> int:
             candidates.append((rel_run, full))
     if conflicts:
         print("run-storage: recorded outputs are changed or unavailable (nothing was changed). A changed "
-              "result belongs in a new run; `missing`/`store_mismatch` entries need the store copy restored "
-              "first (see `verify`):", file=sys.stderr)
+              "result belongs in a new run. `missing` and `store_mismatch` entries have no valid copy here "
+              "(neither in place nor in the store, so `materialize` cannot help): put the recorded bytes back in "
+              "place from another copy (another store, a backup) and stow again, or record the result in a new "
+              "run:", file=sys.stderr)
         for rel_run, status in conflicts:
             print(f"  {status:>14}  {rel_run}", file=sys.stderr)
         return EXIT_FINDINGS
@@ -1073,20 +1087,28 @@ def cmd_stow(args) -> int:
         lines.append(f"  stowed {human(size):>12}  {rel_run}  ({method})")
     manifest["entries"] = sorted(entries.values(), key=lambda e: e["path"])
     manifest["threshold_bytes"] = threshold
-    update_ignore_block(run_dir, [e["path"] for e in manifest["entries"]])
-    write_json_atomic(run_dir / MANIFEST_NAME, manifest)
-    not_ignored = []
-    for entry in manifest["entries"]:
-        target = run_dir / entry["path"]
-        if git(["check-ignore", "-q", "--", os.path.relpath(target, repo.toplevel)], repo.toplevel,
-               check=False, literal_pathspecs=False).returncode != 0:
-            not_ignored.append(entry["path"])
+    changed = update_ignore_block(run_dir, [e["path"] for e in manifest["entries"]])
+    changed = write_if_changed(run_dir / MANIFEST_NAME, json_bytes(manifest)) or changed
+    not_ignored = [e["path"] for e in manifest["entries"] if not is_ignored(repo, run_dir / e["path"])]
     if not_ignored:
-        print(f"run-storage: the ignore block does not cover {not_ignored}; a negation rule elsewhere "
-              "re-includes them. Fix the ignore rules before committing.", file=sys.stderr)
+        # git never applies ignore rules to a tracked path (e.g. one added with `git add -f`).
+        in_index = repo.tracked([repo.rel(run_dir / rel) for rel in not_ignored])
+        forced = [rel for rel in not_ignored if repo.rel(run_dir / rel) in in_index]
+        reincluded = [rel for rel in not_ignored if rel not in forced]
+        if forced:
+            print(f"run-storage: {forced} are stowed but tracked by git (added with `git add -f`?), so the ignore "
+                  "block cannot keep them out of history: `git rm --cached <path>` (the file stays on disk).",
+                  file=sys.stderr)
+        if reincluded:
+            print(f"run-storage: the ignore block does not cover {reincluded}; a negation rule elsewhere "
+                  "re-includes them. Fix the ignore rules before committing.", file=sys.stderr)
         return EXIT_FINDINGS
-    lines.append(f"  commit {repo.rel(run_dir / MANIFEST_NAME)} and {repo.rel(run_dir / '.gitignore')}; "
-                 "stowed files are read-only (a corrected result goes to a new run)")
+    records = [repo.rel(run_dir / name) for name in RECORD_NAMES]
+    if changed or committed_and_pending(repo, records)[0] != set(records):
+        lines.append(f"  commit {records[0]} and {records[1]}; stowed files are read-only (a corrected result "
+                     "goes to a new run)")
+    else:
+        lines.append("  nothing changed; the stow record is already committed")
     emit({"stowed": stowed, "already_tracked": legacy, "symlinks_not_followed": sorted(links), "store": str(store),
           "manifest": str(run_dir / MANIFEST_NAME)}, args.json, lines)
     return EXIT_OK

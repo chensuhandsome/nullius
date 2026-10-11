@@ -733,7 +733,7 @@ def test_store_put_copies_across_file_systems(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("state", ["missing", "store_mismatch"])
-def test_stow_refuses_while_a_recorded_entry_is_unavailable(tmp_path, monkeypatch, state):
+def test_stow_refuses_while_a_recorded_entry_is_unavailable(tmp_path, monkeypatch, capsys, state):
     repo = make_repo(tmp_path)
     run = repo / "artifacts" / "runs" / "r1"
     run.mkdir()
@@ -748,7 +748,9 @@ def test_stow_refuses_while_a_recorded_entry_is_unavailable(tmp_path, monkeypatc
         obj.write_bytes(blob(THRESHOLD, 18))
     (run / "new.bin").write_bytes(blob(THRESHOLD, 19))
     before = (run / rs.MANIFEST_NAME).read_text()
+    capsys.readouterr()
     assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert "from another copy" in capsys.readouterr().err
     assert (run / rs.MANIFEST_NAME).read_text() == before
     assert stat.S_IMODE((run / "new.bin").stat().st_mode) & 0o200, "nothing is changed"
 
@@ -1235,6 +1237,40 @@ def test_materialize_dry_run_says_what_it_would_restore(tmp_path, monkeypatch, c
     capsys.readouterr()
     assert run_main(["materialize", str(run), "--dry-run"], repo, monkeypatch) == rs.EXIT_OK
     assert "1 would be restored (dry run)" in capsys.readouterr().out and not (run / "a.bin").exists()
+
+
+def test_a_force_added_stowed_file_is_reported_as_tracked_not_as_a_negation_rule(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "big.bin").write_bytes(blob(THRESHOLD, 54))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    commit_records(repo)
+    sh("git", "add", "-f", "artifacts/runs/r1/big.bin", cwd=repo)
+    capsys.readouterr()
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_FINDINGS
+    err = capsys.readouterr().err
+    assert "git rm --cached <path>" in err and "negation rule" not in err
+
+
+def test_a_stow_that_changes_nothing_rewrites_nothing_and_asks_for_no_commit(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "big.bin").write_bytes(blob(THRESHOLD, 55))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    capsys.readouterr()
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    assert "  commit " in capsys.readouterr().out, "uncommitted records are still to be committed"
+    commit_records(repo)
+    stamps = {n: os.stat(run / n, follow_symlinks=False).st_mtime_ns for n in (rs.MANIFEST_NAME, ".gitignore")}
+    inodes = {n: os.stat(run / n).st_ino for n in (rs.MANIFEST_NAME, ".gitignore")}
+    capsys.readouterr()
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    out = capsys.readouterr().out
+    assert "nothing changed" in out and "  commit " not in out
+    assert {n: os.stat(run / n).st_ino for n in (rs.MANIFEST_NAME, ".gitignore")} == inodes, "not rewritten"
+    assert {n: os.stat(run / n, follow_symlinks=False).st_mtime_ns for n in (rs.MANIFEST_NAME, ".gitignore")} == stamps
 
 
 # ------------------------------------------------------- verify / materialize

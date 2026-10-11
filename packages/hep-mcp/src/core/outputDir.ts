@@ -306,9 +306,15 @@ function existingOutputError(out: OutputDir, name: string): Error {
 export class OutputBatch {
   private readonly staged: StagedFile[] = [];
   private readonly claimed = new Set<string>();
-  private readonly unfinished = new Set<() => string | null>();
+  private readonly unfinished = new Set<() => void>();
   private readonly shared = new Map<string, Promise<unknown>>();
+  // Staging files this batch created and has not yet removed, and published
+  // files a rollback could not remove; the final report is built from what
+  // is still here after the last cleanup attempt.
+  private readonly stagingFiles = new Map<string, { name: string; identity: FileIdentity }>();
+  private readonly publishedLeft = new Map<string, { name: string; identity: FileIdentity }>();
   private closed = false;
+  private finalized = false;
 
   constructor(readonly out: OutputDir) {}
 
@@ -351,6 +357,15 @@ export class OutputBatch {
     return pending;
   }
 
+  /** Remove a tracked staging file; true when it is gone. */
+  private removeStaging(temp: string): boolean {
+    const entry = this.stagingFiles.get(temp);
+    if (entry === undefined) return true;
+    if (!removeIfSame(this.out, entry.name, temp, entry.identity)) return false;
+    this.stagingFiles.delete(temp);
+    return true;
+  }
+
   json(name: string, data: unknown): OutputArtifactRef {
     // Serialize first, so no time-consuming step separates the check from the write.
     this.stageBytes(name, JSON.stringify(data, null, 2));
@@ -384,6 +399,7 @@ export class OutputBatch {
     try {
       const stat = fs.fstatSync(fd);
       identity = { dev: stat.dev, ino: stat.ino };
+      this.stagingFiles.set(temp, { name, identity });
       const buffer = Buffer.from(bytes, 'utf-8');
       let offset = 0;
       while (offset < buffer.length) offset += fs.writeSync(fd, buffer, offset, buffer.length - offset);
@@ -398,7 +414,8 @@ export class OutputBatch {
     }
     if (identity === null) throw unidentifiedStagingError(this.out, temp, failure);
     if (failure !== null) {
-      removeIfSame(this.out, name, temp, identity);
+      // If this removal fails the file stays tracked, and discard reports it.
+      this.removeStaging(temp);
       throw failure;
     }
     this.staged.push({ name, temp, target, identity });
@@ -425,16 +442,17 @@ export class OutputBatch {
       try { fs.closeSync(fd); } catch { /* the fstat failure is reported */ }
       throw unidentifiedStagingError(this.out, temp, error);
     }
+    this.stagingFiles.set(temp, { name, identity: created });
     let failure: unknown = null;
     let aborted = false;
-    const removeTemp = (): boolean => removeIfSame(this.out, name, temp, created);
+    // A removal that fails leaves the file tracked; discard reports it.
+    const removeTemp = (): void => { this.removeStaging(temp); };
     const stream = fs.createWriteStream(temp, { fd, encoding: 'utf-8' });
-    // Returns the staging file's project-relative path if it could not be removed.
-    const abort = (): string | null => {
+    const abort = (): void => {
       aborted = true;
       this.unfinished.delete(abort);
       try { stream.destroy(); } catch { /* best effort */ }
-      return removeTemp() ? null : projectRelative(this.out, temp);
+      removeTemp();
     };
     this.unfinished.add(abort);
     // Listen from the start: an error while the caller is still producing
@@ -507,9 +525,9 @@ export class OutputBatch {
 
   /**
    * Link every staged file to its final name, never replacing an entry, and
-   * remove the staging names; on any failure remove what this batch
-   * published. If a published file cannot be removed, the error says so and
-   * names it, since the call's files are then not all-or-none.
+   * remove the staging names. On any failure, remove what this batch
+   * published and its staging files, and throw the final report (see
+   * `discard`), built after that last cleanup attempt.
    */
   async publish(): Promise<void> {
     if (this.unfinished.size > 0) throw new Error('Internal: an output stream of this call was not finished');
@@ -543,7 +561,7 @@ export class OutputBatch {
         published.push(file);
       }
       // A published call leaves no staging name behind.
-      const stagingLeft = this.staged.filter(file => !removeIfSame(this.out, file.name, file.temp, file.identity));
+      const stagingLeft = this.staged.filter(file => !this.removeStaging(file.temp));
       if (stagingLeft.length > 0) {
         throw unsafeFs('staging files could not be removed after publishing', {
           project_root: this.out.projectRoot,
@@ -554,40 +572,48 @@ export class OutputBatch {
       const oneFilePerDirectory = new Map(this.staged.map(file => [path.dirname(file.target), file.target]));
       for (const target of oneFilePerDirectory.values()) fsyncParentDirectoryDurable(target);
     } catch (error) {
-      const publishedLeft = published.filter(file => !removeIfSame(this.out, file.name, file.target, file.identity));
-      const stagingLeft = this.removeStagedFiles();
-      if (publishedLeft.length > 0) {
-        throw unsafeFs('publishing failed and some of its files could not be removed; this call\'s outputs are incomplete', {
-          project_root: this.out.projectRoot,
-          files_left: publishedLeft.map(file => projectRelative(this.out, file.target)),
-          staging_left: stagingLeft,
-          error: error instanceof Error ? error.message : String(error),
-        });
+      for (const file of published) {
+        if (!removeIfSame(this.out, file.name, file.target, file.identity)) {
+          this.publishedLeft.set(file.target, { name: file.name, identity: file.identity });
+        }
       }
-      throw withStagingLeft(this.out, error, stagingLeft);
+      throw this.discard(error);
     }
   }
 
   /**
-   * Drop everything this batch staged; nothing is published. Returns the
-   * error to report for `cause`: the cause itself, or, when some staging
-   * file could not be removed, the cause with those files named.
+   * Drop everything this batch staged (nothing stays published) and return
+   * the error to report for `cause`. This is the last cleanup attempt: it
+   * retries every staging file and every published file still present, and
+   * the report describes what is left after it.
+   * - Published files left: UNSAFE_FS "outputs are incomplete", naming them
+   *   (`files_left`), any staging files left, and the original error.
+   * - Only staging files left: the cause with its code kept, its message
+   *   extended and the files named in `staging_left`.
+   * - Nothing left: the cause itself.
+   * A later call returns its cause unchanged: the report is already final.
    */
   discard(cause?: unknown): unknown {
+    if (this.finalized) return cause;
+    this.finalized = true;
     this.closed = true;
-    const left: string[] = [];
-    for (const abort of [...this.unfinished]) {
-      const kept = abort();
-      if (kept !== null) left.push(kept);
+    for (const abort of [...this.unfinished]) abort();
+    for (const temp of [...this.stagingFiles.keys()]) this.removeStaging(temp);
+    for (const [target, entry] of [...this.publishedLeft]) {
+      if (removeIfSame(this.out, entry.name, target, entry.identity)) this.publishedLeft.delete(target);
     }
-    left.push(...this.removeStagedFiles());
-    return withStagingLeft(this.out, cause, left);
-  }
-
-  /** Remove the staging files; returns those that could not be removed. */
-  private removeStagedFiles(): string[] {
-    return this.staged
-      .filter(file => !removeIfSame(this.out, file.name, file.temp, file.identity))
-      .map(file => projectRelative(this.out, file.temp));
+    const stagingLeft = [...this.stagingFiles.keys()].map(temp => projectRelative(this.out, temp));
+    const filesLeft = [...this.publishedLeft.keys()].map(target => projectRelative(this.out, target));
+    if (filesLeft.length > 0) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      return unsafeFs('publishing failed and some of its files could not be removed; this call\'s outputs are incomplete', {
+        project_root: this.out.projectRoot,
+        files_left: filesLeft,
+        staging_left: stagingLeft,
+        error: message,
+        ...(cause instanceof McpError ? { error_code: cause.code } : {}),
+      });
+    }
+    return withStagingLeft(this.out, cause, stagingLeft);
   }
 }

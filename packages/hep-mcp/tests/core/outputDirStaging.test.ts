@@ -15,6 +15,7 @@ vi.mock('crypto', async importOriginal => {
 const closeFault = vi.hoisted(() => ({ armed: false }));
 const fstatFault = vi.hoisted(() => ({ armed: false }));
 const linkFault = vi.hoisted(() => ({ failOnCall: 0, calls: 0, before: (() => {}) as () => void }));
+const unlinkFault = vi.hoisted(() => ({ failNext: 0 }));
 vi.mock('fs', async importOriginal => {
   const actual = await importOriginal<typeof import('fs')>();
   const closeSync = (fd: number): void => {
@@ -39,7 +40,14 @@ vi.mock('fs', async importOriginal => {
     }
     actual.linkSync(existing, target);
   };
-  const patched = { closeSync, fstatSync, linkSync };
+  const unlinkSync = (target: string): void => {
+    if (unlinkFault.failNext > 0) {
+      unlinkFault.failNext -= 1;
+      throw Object.assign(new Error('simulated unlink failure'), { code: 'EIO' });
+    }
+    actual.unlinkSync(target);
+  };
+  const patched = { closeSync, fstatSync, linkSync, unlinkSync };
   return { ...actual, ...patched, default: { ...actual, ...patched } };
 });
 
@@ -57,6 +65,7 @@ describe('output staging files are created exclusively', () => {
     linkFault.failOnCall = 0;
     linkFault.calls = 0;
     linkFault.before = () => {};
+    unlinkFault.failNext = 0;
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-staging-')));
     const projectRoot = makeProjectRoot(tmpDir);
     alias = path.join(tmpDir, 'alias');
@@ -158,6 +167,71 @@ describe('output staging files are created exclusively', () => {
       linkFault.failOnCall = 2;
       await expect(batch.publish()).rejects.toThrow('simulated link failure');
       expect(fs.readdirSync(out.dir)).toEqual([]);
+    });
+  });
+
+  it('reports a staging file that a failed write could not remove, when the call is discarded', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('write-kept');
+      const batch = new OutputBatch(out);
+      closeFault.armed = true;
+      unlinkFault.failNext = 2;
+      let thrown: unknown;
+      try { batch.json('data.json', { x: 1 }); } catch (error) { thrown = error; }
+      expect((thrown as Error).message).toBe('simulated close failure');
+      const reported = batch.discard(thrown) as Error & { data?: { staging_left?: string[] } };
+      expect(reported.message).toMatch(/^simulated close failure; staging files could not be removed/);
+      expect(reported.data?.staging_left).toHaveLength(1);
+    });
+  });
+
+  it('returns the original error, with no stale leftover claim, when a later cleanup attempt succeeds', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('write-retried');
+      const batch = new OutputBatch(out);
+      closeFault.armed = true;
+      unlinkFault.failNext = 1;
+      let thrown: unknown;
+      try { batch.json('data.json', { x: 1 }); } catch (error) { thrown = error; }
+      expect(batch.discard(thrown)).toBe(thrown);
+      expect(fs.readdirSync(out.dir)).toEqual([]);
+    });
+  });
+
+  it('builds the publication failure report after the last cleanup attempt, and later discards keep it', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('publish-retried');
+      const batch = new OutputBatch(out);
+      batch.json('a.json', { x: 1 });
+      batch.json('b.json', { x: 2 });
+      linkFault.failOnCall = 2;
+      // The rollback's first attempt to remove the published a.json fails once.
+      linkFault.before = () => { unlinkFault.failNext = 1; };
+      const error = await batch.publish().then(() => null, (e: unknown) => e as Error & { data?: Record<string, unknown> });
+      expect(error?.message).toBe('simulated link failure');
+      expect(error?.data).toBeUndefined();
+      expect(batch.discard(error)).toBe(error);
+      expect(fs.readdirSync(out.dir)).toEqual([]);
+    });
+  });
+
+  it('reports a streamed staging file that a stream error could not remove, when the call is discarded', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('stream-kept');
+      const batch = new OutputBatch(out);
+      const file = batch.stream('records.jsonl', 'application/x-ndjson');
+      // Every removal attempt fails: the stream's error handler, finish, and discard.
+      unlinkFault.failNext = 100;
+      try {
+        file.stream.destroy(new Error('simulated disk full'));
+        const thrown = await file.finish().then(() => null, (e: unknown) => e);
+        expect((thrown as Error).message).toBe('simulated disk full');
+        const reported = batch.discard(thrown) as Error & { data?: { staging_left?: string[] } };
+        expect(reported.message).toMatch(/^simulated disk full; staging files could not be removed/);
+        expect(reported.data?.staging_left).toHaveLength(1);
+      } finally {
+        unlinkFault.failNext = 0;
+      }
     });
   });
 });

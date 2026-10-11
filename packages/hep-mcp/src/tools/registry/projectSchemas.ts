@@ -39,15 +39,20 @@ export function strictBudgetInt(options: { min?: number; max?: number } = {}) {
   let inner = z.number().int();
   if (options.min !== undefined) inner = inner.min(options.min);
   if (options.max !== undefined) inner = inner.max(options.max);
-  const schema = z.preprocess(
+  const parsed = z.preprocess(
     value => (typeof value === 'string' && /^\s*[+-]?\d+\s*$/.test(value) ? Number(value.trim()) : value),
     inner.optional(),
   );
+  // Optional on the outside too, so the published input schema does not
+  // list the field as required (an omitted value takes the tool's default).
+  const schema = parsed.optional();
   // Publish the bounds in the tool's input schema, as the shared helper does.
-  Object.defineProperty(schema, '__mcpBudget', {
-    value: { ...options, integer: true },
-    configurable: true,
-  });
+  for (const node of [parsed, schema]) {
+    Object.defineProperty(node, '__mcpBudget', {
+      value: { ...options, integer: true },
+      configurable: true,
+    });
+  }
   return schema;
 }
 

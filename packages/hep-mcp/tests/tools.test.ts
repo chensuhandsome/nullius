@@ -103,7 +103,7 @@ vi.mock('../src/tools/research/paperClassifier.js', () => ({
 }));
 
 // Import after mocking
-const { handleToolCall } = await import('../src/tools/index.js');
+const { getTools, handleToolCall } = await import('../src/tools/index.js');
 const api = await import('../src/api/client.js');
 
 // Import mocked modules
@@ -817,6 +817,24 @@ describe('Tool Handlers (current exposure)', () => {
     expect(payload.error?.code).toBe('INVALID_PARAMS');
     expect(readTextBlock(res)).toContain('max_dept');
     expect(parseLatexContent.parseLatexContent).not.toHaveBeenCalled();
+  });
+
+  it('the published schemas list no optional numeric option as required, and runtime accepts empty and partial options', async () => {
+    const parseLatex = getTools('full').find(t => t.name === 'inspire_parse_latex')!;
+    expect((parseLatex.inputSchema as any).properties.options.required ?? []).toEqual([]);
+    const zotero = getTools('full').find(t => t.name === 'hep_import_from_zotero')!;
+    expect((zotero.inputSchema as any).required).toEqual(['output_dir']);
+    vi.mocked(parseLatexContent.parseLatexContent).mockResolvedValue({
+      metadata: { title: 'T', authors: [], abstract: '', arxiv_id: '1234.5678', source_file: '/tmp/main.tex' },
+      summary: { counts: {} },
+    } as any);
+    for (const [dir, options] of [['opt-empty', {}], ['opt-partial', { include_inline_math: true }]] as const) {
+      const res = await handleToolCall('inspire_parse_latex', {
+        project_root: projectRoot, output_dir: dir, identifier: '123', components: ['sections'], options,
+      } as any);
+      expect(res.isError, readTextBlock(res)).toBeFalsy();
+    }
+    vi.mocked(parseLatexContent.parseLatexContent).mockReset();
   });
 
   it('inspire_parse_latex passes exactly the parser options it declares and refuses the ones it never read', async () => {

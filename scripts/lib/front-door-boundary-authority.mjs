@@ -281,6 +281,7 @@ export const FRONT_DOOR_SNIPPETS = [
       '| `hep://runs/<run_id>/artifact/<name>` | `<HEP data root>/runs/<run_id>/artifacts/<name>` |',
       '| `hep://runs/<run_id>/manifest` | `<HEP data root>/runs/<run_id>/manifest.json` |',
       'These directories are historical evidence: read them in place, and never rewrite, move, or delete them.',
+      '`~/.hep-research-mcp` until 2026-02-26, `~/.hep-mcp` from 2026-02-26 until 2026-05-16, `~/.autoresearch/hep-mcp` from 2026-05-16 until 2026-07-05, and `~/.nullius/hep-mcp` since 2026-07-05',
     ],
     forbiddenSnippets: [
       '`hep://corpora` | Live',

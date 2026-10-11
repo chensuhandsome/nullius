@@ -76,7 +76,7 @@ Earlier hep-mcp versions kept their own runs and returned `hep://runs/...` ident
 | `hep://runs/<run_id>/artifact/<name>` | `<HEP data root>/runs/<run_id>/artifacts/<name>` |
 | `hep://runs/<run_id>/manifest` | `<HEP data root>/runs/<run_id>/manifest.json` |
 
-`<HEP data root>` is the one in force when the reference was written: `<project_root>/artifacts/hep-mcp` when the call named a project root; otherwise `$HEP_DATA_DIR` as configured at that time; otherwise the scratch default `~/.nullius/hep-mcp` (earlier defaults, newest first: `~/.autoresearch/hep-mcp`, `~/.hep-mcp`, `~/.hep-research-mcp`). `<run_id>` and `<name>` are the percent-decoded URI path segments.
+`<HEP data root>` is the one in force when the reference was written: `<project_root>/artifacts/hep-mcp` when the call named a project root; otherwise `$HEP_DATA_DIR` as configured at that time; otherwise the scratch default of the version that wrote it: `~/.hep-research-mcp` until 2026-02-26, `~/.hep-mcp` from 2026-02-26 until 2026-05-16, `~/.autoresearch/hep-mcp` from 2026-05-16 until 2026-07-05, and `~/.nullius/hep-mcp` since 2026-07-05. The run manifest's `created_at` dates a run; around a changeover date, look in both candidate directories. `<run_id>` and `<name>` are the percent-decoded URI path segments.
 
 These directories are historical evidence: read them in place, and never rewrite, move, or delete them.
 

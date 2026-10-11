@@ -79,7 +79,7 @@
 - 结果返回项目相对路径（`export_path`、`meta_path`、`mapping_path`、`path`、`artifacts[].path`），不再返回 `hep://` run URI。
 - 通常把 `output_dir` 设为当前 orchestrator run 目录下的子目录，例如 `artifacts/runs/<run_id>/literature/`。
 
-每次调用的外部 API 请求/响应记录写入 `<output_dir>/external_api/`，并另写一份预算/警告记录（例如 `inspire_search_export_<hash>_diagnostics.json`）。旧版本留下的 HEP run 目录（`<project_root>/artifacts/hep-mcp/runs/<run_id>/` 等）是历史证据：原位读取，不再被任何工具创建或改写；`hep://runs/...` 引用的人工解析规则见 [`docs/URI_REGISTRY.md`](./URI_REGISTRY.md)。
+经 INSPIRE 响应缓存发出的查询（`hep_inspire_search_export`、`hep_inspire_resolve_identifiers`、带 `output_dir` 的 `inspire_search`，以及 `hep_import_from_zotero` 中把条目解析到 INSPIRE 的一步）逐次把请求/响应记录到 `<output_dir>/external_api/`；其他外部调用（Zotero 本地 API、`inspire_theoretical_conflicts` 取论文、`inspire_parse_latex` 取源码）不在此记录。检索导出与 Zotero 映射另写一份预算/警告记录（例如 `inspire_search_export_<hash>_diagnostics.json`）。旧版本留下的 HEP run 目录（`<project_root>/artifacts/hep-mcp/runs/<run_id>/` 等）是历史证据：原位读取，不再被任何工具创建或改写；`hep://runs/...` 引用的人工解析规则见 [`docs/URI_REGISTRY.md`](./URI_REGISTRY.md)。
 
 **generic lifecycle / staging / execution 属于 orchestrator**
 - HEP 包不暴露 generic staging / computation planning / manifest execution authority。

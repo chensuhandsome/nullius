@@ -162,7 +162,7 @@ nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-
 
 4) 把检索结果导出成项目文件：`hep_inspire_search_export`（或带 `output_dir` 的 `inspire_search`）、`hep_inspire_resolve_identifiers`
 - 关键参数：`project_root` + `output_dir`。`output_dir` 相对 `project_root` 或写成绝对路径，不存在时创建；不得经过 project root 以下的符号链接，不得位于 `.nullius/`、`team/runs/`、`artifacts/hep-mcp/` 之下，也不能是 project root 本身。通常取当前 orchestrator run 目录下的子目录，例如 `artifacts/runs/<run_id>/literature/`。
-- 返回项目相对路径（`export_path`、`meta_path`、`mapping_path` 等）；每次调用的外部 API 请求/响应记录在 `<output_dir>/external_api/`。`inspire_parse_latex`、`inspire_theoretical_conflicts` 与 `hep_import_from_zotero` 同样写入 `output_dir`。
+- 返回项目相对路径（`export_path`、`meta_path`、`mapping_path` 等）；导出所用的每次 INSPIRE 请求/响应记录在 `<output_dir>/external_api/`。`inspire_parse_latex`、`inspire_theoretical_conflicts` 与 `hep_import_from_zotero` 同样写入 `output_dir`。
 
 5) `nullius workflow-plan --recipe literature_to_evidence`
 - 先在目标外部 project root 执行 `nullius init`，然后在该 root 内或通过 `--project-root` 调用；这是一个公开的 stateful front door，会直接通过 `@nullius/literature-workflows` 解析 checked-in workflow authority，并写入 `.nullius/state.json#/plan` / `.nullius/plan.md`。对受限论文集分析使用 `inspire_critical_analysis`、`inspire_classify_reviews`、`inspire_theoretical_conflicts` 等 bounded operators。

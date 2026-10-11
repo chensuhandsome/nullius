@@ -70,6 +70,17 @@ Example combined query: "a:Feng.Kun.Guo.1 topcite:250+ authorcount:1->10"`,
       const effectivePageSize = maxResultsProvided ? Math.min(params.size, params.max_results) : params.size;
 
       if (params.output_dir !== undefined) {
+        // The export writes every record up to max_results into files and
+        // returns paths as JSON, so paging, review ordering and Markdown
+        // rendering do not apply; naming them is refused rather than silently
+        // ignored.
+        const inapplicable = ['page', 'review_mode'].filter(key => Object.prototype.hasOwnProperty.call(raw, key));
+        if (Object.prototype.hasOwnProperty.call(raw, 'format') && raw.format !== 'json') inapplicable.push('format');
+        if (inapplicable.length > 0) {
+          throw invalidParams('inspire_search with output_dir exports to files; page, review_mode and Markdown format do not apply', {
+            inapplicable_params: inapplicable,
+          });
+        }
         const sizeProvided = Object.prototype.hasOwnProperty.call(raw, 'size');
         return hepInspireSearchExport({
           output_dir: params.output_dir,

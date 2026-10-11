@@ -14,6 +14,9 @@ vi.mock('../../src/api/client.js', () => ({
 const api = await import('../../src/api/client.js');
 const { handleToolCall } = await import('../../src/tools/index.js');
 const { makeProjectRoot } = await import('../support/hepProjectUri.js');
+const { withHepDataRoot } = await import('../../src/data/dataDir.js');
+const { openOutputStream, resolveOutputDir, writeOutputJson } = await import('../../src/core/outputDir.js');
+const { upstreamError } = await import('@nullius/shared');
 
 type ToolResult = Awaited<ReturnType<typeof handleToolCall>>;
 
@@ -163,5 +166,166 @@ describe('output_dir lies inside the admitted project root, through real directo
     const records = fs.readdirSync(path.join(projectRoot, 'out', 'external_api')).sort();
     expect(records.some(name => name.startsWith('external_api_request_inspire_getPaper_'))).toBe(true);
     expect(records.some(name => name.startsWith('external_api_response_inspire_getPaper_'))).toBe(true);
+  });
+});
+
+describe('output files are checked again at write time and streamed outputs fail cleanly', () => {
+  let tmpDir: string;
+  let projectRoot: string;
+  let alias: string;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-write-')));
+    projectRoot = makeProjectRoot(tmpDir);
+    alias = path.join(tmpDir, 'alias');
+    fs.symlinkSync(projectRoot, alias, 'dir');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function temporaryFiles(dir: string): string[] {
+    return fs.readdirSync(dir).filter(name => name.endsWith('.tmp'));
+  }
+
+  it('refuses a write after the admitted directory was swapped for a symlink', async () => {
+    const outside = path.join(tmpDir, 'outside');
+    fs.mkdirSync(outside);
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('out/sub');
+      fs.renameSync(path.join(projectRoot, 'out'), path.join(tmpDir, 'moved-away'));
+      fs.symlinkSync(outside, path.join(projectRoot, 'out'), 'dir');
+      expect(() => writeOutputJson(out, 'late.json', { x: 1 })).toThrow(/symbolic link/);
+    });
+    expect(fs.readdirSync(outside)).toEqual([]);
+  });
+
+  it('holds an error raised while opening the stream until commit, with no crash and no residue', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('locked');
+      fs.chmodSync(out.dir, 0o555);
+      try {
+        const file = openOutputStream(out, 'records.jsonl');
+        file.stream.write('{"a":1}\n');
+        await new Promise(resolve => setTimeout(resolve, 50));
+        await expect(file.commit()).rejects.toMatchObject({ code: 'EACCES' });
+      } finally {
+        fs.chmodSync(out.dir, 0o755);
+      }
+      expect(temporaryFiles(out.dir)).toEqual([]);
+      expect(fs.existsSync(path.join(out.dir, 'records.jsonl'))).toBe(false);
+    });
+  });
+
+  it('rejects commit and removes the temporary file when a write fails midway', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('midway');
+      const file = openOutputStream(out, 'records.jsonl');
+      file.stream.write('{"a":1}\n');
+      file.stream.destroy(new Error('simulated disk full'));
+      await expect(file.commit()).rejects.toThrow('simulated disk full');
+      expect(temporaryFiles(out.dir)).toEqual([]);
+      expect(fs.existsSync(path.join(out.dir, 'records.jsonl'))).toBe(false);
+    });
+  });
+
+  it('rejects commit and removes the temporary file when the target became a directory', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('final');
+      const file = openOutputStream(out, 'records.jsonl');
+      file.stream.write('{"a":1}\n');
+      fs.mkdirSync(path.join(out.dir, 'records.jsonl'));
+      await expect(file.commit()).rejects.toThrow(/non-file entry/);
+      expect(temporaryFiles(out.dir)).toEqual([]);
+    });
+  });
+
+  it('commits a streamed file in place of the target and leaves no temporary file', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('ok');
+      const file = openOutputStream(out, 'records.jsonl');
+      file.stream.write('{"a":1}\n');
+      await file.commit();
+      expect(fs.readFileSync(path.join(out.dir, 'records.jsonl'), 'utf-8')).toBe('{"a":1}\n');
+      expect(temporaryFiles(out.dir)).toEqual([]);
+    });
+  });
+});
+
+describe('identifier resolution does not turn a refused write into a per-identifier failure', () => {
+  let tmpDir: string;
+  let projectRoot: string;
+  let alias: string;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-ids-')));
+    projectRoot = makeProjectRoot(tmpDir);
+    alias = path.join(tmpDir, 'alias');
+    fs.symlinkSync(projectRoot, alias, 'dir');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('fails the call when an external API record path is a planted symlink', async () => {
+    vi.mocked(api.getPaper).mockResolvedValue({ recid: '123' } as any);
+    const first = await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids', identifiers: ['123'] });
+    expect(first.isError).toBeFalsy();
+    const recordDir = path.join(projectRoot, 'ids', 'external_api');
+    const request = fs.readdirSync(recordDir).find(name => name.startsWith('external_api_request_inspire_getPaper_'))!;
+    const victim = path.join(tmpDir, 'victim.json');
+    fs.writeFileSync(victim, 'original');
+    fs.rmSync(path.join(recordDir, request));
+    fs.symlinkSync(victim, path.join(recordDir, request), 'file');
+
+    const second = await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids', identifiers: ['123'] });
+    expect(errorOf(second).code).toBe('UNSAFE_FS');
+    expect(fs.readFileSync(victim, 'utf-8')).toBe('original');
+  });
+
+  it('still reports an INSPIRE lookup failure per identifier', async () => {
+    vi.mocked(api.getPaper).mockRejectedValue(upstreamError('INSPIRE API error: 503', { status: 503 }));
+    const result = await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids', identifiers: ['123'] });
+    expect(result.isError).toBeFalsy();
+    expect((JSON.parse(result.content[0]!.text) as { summary: { errors: number } }).summary.errors).toBe(1);
+  });
+});
+
+describe('inspire_search export mode refuses parameters that do not apply', () => {
+  let tmpDir: string;
+  let alias: string;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-search-')));
+    const projectRoot = makeProjectRoot(tmpDir);
+    alias = path.join(tmpDir, 'alias');
+    fs.symlinkSync(projectRoot, alias, 'dir');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    [{ page: 2 }, 'page'],
+    [{ review_mode: 'exclude' }, 'review_mode'],
+    [{ format: 'markdown' }, 'format'],
+  ])('refuses %j with output_dir', async (extra, key) => {
+    const result = await handleToolCall('inspire_search', { project_root: alias, output_dir: 'out', query: 't:x', ...extra });
+    const error = errorOf(result);
+    expect(error.code).toBe('INVALID_PARAMS');
+    expect(JSON.stringify(result.content[0]!.text)).toContain(key);
+    expect(api.search).not.toHaveBeenCalled();
+  });
+
+  it('accepts an explicit JSON format with output_dir', async () => {
+    vi.mocked(api.search).mockResolvedValueOnce({ total: 0, papers: [], has_more: false } as any);
+    const result = await handleToolCall('inspire_search', { project_root: alias, output_dir: 'out', query: 't:x', format: 'json' });
+    expect(result.isError).toBeFalsy();
   });
 });

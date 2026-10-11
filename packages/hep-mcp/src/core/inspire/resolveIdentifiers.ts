@@ -3,6 +3,7 @@ import {
   extractRecidFromUrl,
   normalizeArxivID,
   invalidParams,
+  McpError,
   type IdentifierType,
 } from '@nullius/shared';
 
@@ -114,6 +115,21 @@ function classifyIdentifier(raw: string): { kind: IdentifierType; normalized: st
   if (arxiv) return { kind: 'arxiv', normalized: arxiv, arxiv_id: arxiv };
 
   return { kind: 'unknown', normalized: trimmed };
+}
+
+// Only a failed INSPIRE lookup becomes an item-level status. Anything else
+// (a refused or failed write of the output files, a corrupted cache entry, an
+// internal fault) aborts the whole call: reporting it per identifier would
+// return success while the recorded evidence is missing.
+const PROVIDER_FAILURE_CODES = new Set(['UPSTREAM_ERROR', 'RATE_LIMIT', 'NOT_FOUND']);
+
+function isProviderFailure(err: unknown): boolean {
+  if (err instanceof McpError) return PROVIDER_FAILURE_CODES.has(err.code);
+  // Node system errors (EACCES, ENOSPC, ...) come from the local filesystem.
+  if (err && typeof err === 'object' && 'syscall' in err) return false;
+  // Remaining plain errors come from the network layer (fetch failures, the
+  // INSPIRE circuit breaker).
+  return err instanceof Error;
 }
 
 function resolveStatusFromError(err: unknown): { status: ResolveStatusV1; message?: string } {
@@ -285,7 +301,7 @@ export async function hepInspireResolveIdentifiers(params: {
           item.message = 'unsupported_identifier';
         }
       } catch (err) {
-        if ((err as any)?.code === 'INVALID_PARAMS') throw err;
+        if (!isProviderFailure(err)) throw err;
         const status = resolveStatusFromError(err);
         item.status = status.status;
         item.message = status.message;

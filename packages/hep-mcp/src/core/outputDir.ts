@@ -145,8 +145,13 @@ export function resolveOutputDir(rawOutputDir: string): OutputDir {
 
 /**
  * Absolute path of the output file `name`: one safe file name, or
- * `external_api/<file name>`. An existing entry there must be a regular file,
- * never a symlink that would redirect the write.
+ * `external_api/<file name>`. The whole directory chain from the project
+ * root is checked again on every call, so a component swapped for a
+ * symlink after admission is refused before each write rather than only at
+ * admission. An existing entry at the file itself must be a regular file,
+ * never a symlink that would redirect the write. (A swap in the instant
+ * between this check and the write is not excluded: Node offers no
+ * directory-descriptor-relative open or rename.)
  */
 export function outputFilePath(out: OutputDir, name: string): string {
   const parts = name.split('/');
@@ -154,7 +159,8 @@ export function outputFilePath(out: OutputDir, name: string): string {
     throw invalidParams('output artifact name must be one file name', { artifact_name: name });
   }
   for (const part of parts) assertSafePathSegment(part, 'artifact_name');
-  if (parts.length === 2) realDirectoryChain(out.dir, [EXTERNAL_API_SUBDIR], 'output_dir', out.projectRoot);
+  const chain = [...out.relative.split('/'), ...parts.slice(0, -1)];
+  realDirectoryChain(out.projectRoot, chain, 'output_dir', out.projectRoot);
 
   const file = path.join(out.dir, ...parts);
   const stat = lstatOrNull(file);
@@ -185,7 +191,9 @@ export function writeOutputJsonl(out: OutputDir, name: string, rows: unknown[]):
 /**
  * A streamed output file. Bytes go to a temporary file beside the target,
  * which is flushed to disk and then replaces the target only on `commit`;
- * `abort` removes it.
+ * `abort` removes it. A stream error at any time (opening, writing, or
+ * finishing) is held until `commit`, which then rejects with it; the
+ * temporary file is removed on every failure path.
  */
 export function openOutputStream(out: OutputDir, name: string): {
   stream: fs.WriteStream;
@@ -194,29 +202,47 @@ export function openOutputStream(out: OutputDir, name: string): {
 } {
   const target = outputFilePath(out, name);
   const temp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${randomUUID()}.tmp`);
+  const removeTemp = (): void => {
+    try { fs.rmSync(temp, { force: true }); } catch { /* best effort */ }
+  };
+  let failure: unknown = null;
   const stream = fs.createWriteStream(temp, { encoding: 'utf-8', flags: 'wx' });
+  // Listen from the start: an error while the caller is still producing
+  // bytes must neither go unhandled nor leave the temporary file behind.
+  stream.on('error', error => {
+    failure ??= error;
+    removeTemp();
+  });
   return {
     stream,
     commit: () => new Promise<void>((resolve, reject) => {
-      stream.on('error', reject);
-      stream.on('finish', () => {
+      const fail = (error: unknown): void => {
+        removeTemp();
+        reject(error);
+      };
+      if (failure !== null) {
+        fail(failure);
+        return;
+      }
+      stream.once('error', fail);
+      stream.once('finish', () => {
+        stream.off('error', fail);
         try {
           const fd = fs.openSync(temp, 'r');
           try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-          // Re-check the target just before replacing it.
+          // Re-check the directory chain and the target just before replacing it.
           outputFilePath(out, name);
           commitStagedDurable(temp, target);
           resolve();
         } catch (error) {
-          try { fs.rmSync(temp, { force: true }); } catch { /* best effort */ }
-          reject(error);
+          fail(error);
         }
       });
       stream.end();
     }),
     abort: () => {
       try { stream.destroy(); } catch { /* best effort */ }
-      try { fs.rmSync(temp, { force: true }); } catch { /* best effort */ }
+      removeTemp();
     },
   };
 }

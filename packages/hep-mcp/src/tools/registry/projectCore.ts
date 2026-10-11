@@ -143,7 +143,7 @@ export const RAW_PROJECT_CORE_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
     tier: 'core',
     exposure: 'standard',
     description:
-      'Export an INSPIRE search (safe pagination) into output_dir inside project_root (jsonl/json records + meta + the external API requests/responses used). Network (INSPIRE); returns project-relative paths + summary.',
+      'Export an INSPIRE search (safe pagination) into output_dir inside project_root (jsonl/json records + meta + the INSPIRE requests/responses used). Network (INSPIRE); returns project-relative paths + summary.',
     zodSchema: HepInspireSearchExportToolSchema,
     handler: async (params, ctx) => {
       const raw = ctx.rawArgs ?? {};
@@ -170,7 +170,7 @@ export const RAW_PROJECT_CORE_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
     tier: 'core',
     exposure: 'standard',
     description:
-      'Batch resolve identifiers (recid/arXiv/DOI) to INSPIRE recids, writing the mapping + meta + the external API requests/responses used into output_dir inside project_root (network; returns project-relative paths + summary).',
+      'Batch resolve identifiers (recid/arXiv/DOI) to INSPIRE recids, writing the mapping + meta + the INSPIRE requests/responses used into output_dir inside project_root (network; returns project-relative paths + summary).',
     zodSchema: HepInspireResolveIdentifiersToolSchema,
     handler: async params =>
       hepInspireResolveIdentifiers({

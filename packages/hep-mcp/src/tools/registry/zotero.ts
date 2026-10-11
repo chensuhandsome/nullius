@@ -30,7 +30,7 @@ const RAW_ZOTERO_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = ZOTERO_INTEGRATION_
         tier: 'core',
         exposure: 'standard',
         description:
-          'Map Zotero items to INSPIRE recids (Zotero item → identifiers → INSPIRE recid), writing `zotero_map_v1.json` + the external API requests/responses used into output_dir inside project_root. Requires Zotero Local API; resolves via INSPIRE when needed (network).',
+          'Map Zotero items to INSPIRE recids (Zotero item → identifiers → INSPIRE recid), writing `zotero_map_v1.json` + the requests/responses of its INSPIRE lookups into output_dir inside project_root. Requires Zotero Local API; resolves via INSPIRE when needed (network).',
         zodSchema: HepImportFromZoteroToolSchema,
         handler: async (params, ctx) => {
           const raw = ctx.rawArgs ?? {};

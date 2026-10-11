@@ -337,4 +337,20 @@ describe('output staging files are created exclusively', () => {
       expect(fs.existsSync(path.join(out.dir, 'a.json'))).toBe(false);
     });
   });
+
+  it('says the call was discarded when discard is given no cause but leaves staging files', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('no-cause');
+      const batch = new OutputBatch(out);
+      batch.json('a.json', { x: 1 });
+      unlinkFault.failNext = 100;
+      try {
+        const reported = batch.discard() as Error & { data?: { staging_left?: string[] } };
+        expect(reported.message).toMatch(/^the call was discarded; staging files could not be removed/);
+        expect(reported.data?.staging_left).toHaveLength(1);
+      } finally {
+        unlinkFault.failNext = 0;
+      }
+    });
+  });
 });

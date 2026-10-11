@@ -34,16 +34,37 @@
  *      papersCache.ts (`commitStagedDurable(tmpRoot, paths.root)`), which
  *      subsumes this intermediate rename's local durability.
  *
- * Scanned packages (production code only — tests excluded):
- *   packages/orchestrator/src
- *   packages/hep-mcp/src
- *   packages/arxiv-mcp/src
- *   packages/hepdata-mcp/src
- *   packages/openalex-mcp/src
- *   packages/pdg-mcp/src
- *   packages/zotero-mcp/src
- *   packages/idea-mcp/src
- *   packages/shared/src (with atomic-write.ts allowlisted)
+ * Import-bound rule: the patterns below only see calls spelled `fs.<name>`.
+ * A file that imports a writer under another binding — a named import
+ * (`import { writeFileSync } from 'node:fs'`), an alias, a default import, or
+ * a namespace bound to `fs/promises` (`import * as fs from 'fs/promises'`,
+ * then `fs.writeFile`, or `import { promises as fsp } from 'fs'`, then
+ * `fsp.writeFile`) — is also scanned for calls through that binding. The
+ * writers are writeFileSync / renameSync / appendFileSync /
+ * createWriteStream / writeFile / rename / appendFile (fs), and writeFile /
+ * rename / appendFile (fs/promises). `createWriteStream` is included because
+ * it opens the final path with 'w' by default: it follows a link left at that
+ * name and leaves a partial file behind on failure. Streamed content goes
+ * through `writeChunksAtomicDurable`.
+ *
+ * Exceptions to the import-bound rule are listed per exact source line in
+ * BOUND_CALL_EXCEPTIONS below, each with its reason; one entry excuses one
+ * occurrence. An edited line is flagged again, and an exception whose line no
+ * longer exists fails the check, so the list cannot outlive the code it
+ * excuses. The per-file ALLOWLIST keeps its meaning and applies to both rules.
+ *
+ * Not detected (known limits): a writer reached through a binding made by
+ * assignment (`const fsp = fs.promises`) or through a property
+ * (`this.fs.writeFile`), or bound by `require('fs')` or a dynamic
+ * `import('fs')`; writable descriptors from open/openSync ('w', 'a', 'a+',
+ * 'r+') and ftruncateSync — these include in-place appends and repairs of logs
+ * and ledgers at their own names, which follow a link left at that name too;
+ * copyFileSync/cpSync; and writes made by child processes (for example a
+ * renderer given an output path).
+ *
+ * Scanned packages (production code only — tests excluded): every
+ * packages/<name>/src, so a package added later is covered from its first
+ * commit (packages/shared/src/atomic-write.ts allowlisted).
  *
  * Excluded from scanning:
  *   - **\/__tests__\/**
@@ -59,17 +80,10 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-const SCANNED_ROOTS = [
-  'packages/orchestrator/src',
-  'packages/hep-mcp/src',
-  'packages/arxiv-mcp/src',
-  'packages/hepdata-mcp/src',
-  'packages/openalex-mcp/src',
-  'packages/pdg-mcp/src',
-  'packages/zotero-mcp/src',
-  'packages/idea-mcp/src',
-  'packages/shared/src',
-];
+const SCANNED_ROOTS = readdirSync(path.join(repoRoot, 'packages'), { withFileTypes: true })
+  .filter(entry => entry.isDirectory())
+  .map(entry => `packages/${entry.name}/src`)
+  .sort();
 
 const FORBIDDEN_PATTERNS = [
   // sync namespaced
@@ -92,6 +106,114 @@ const ALLOWLIST = new Set([
   'packages/shared/src/atomic-write.ts',
   'packages/hep-mcp/src/data/papersCacheFetch.ts',
 ]);
+
+const FS_MODULES = new Set(['fs', 'node:fs']);
+const FS_PROMISES_MODULES = new Set(['fs/promises', 'node:fs/promises']);
+const FS_WRITERS = ['writeFileSync', 'renameSync', 'appendFileSync', 'createWriteStream', 'writeFile', 'rename', 'appendFile'];
+const FS_PROMISES_WRITERS = ['writeFile', 'rename', 'appendFile'];
+
+// Lines the import-bound rule flags that are justified where they stand.
+// `line` is the exact source line, trimmed.
+const BOUND_CALL_EXCEPTIONS = [
+  {
+    path: 'packages/idea-engine/src/store/file-io.ts',
+    line: "writeFileSync(fd, render(), 'utf8');",
+    reason: "idea-engine's own staged write: the descriptor is a fresh staging file opened with 'wx'",
+  },
+  {
+    path: 'packages/idea-engine/src/store/file-io.ts',
+    line: 'renameSync(tempPath, path);',
+    reason: "idea-engine's own staged write: commits that staging file; its store writes deliberately skip the directory fsync",
+  },
+  {
+    path: 'packages/idea-engine/src/store/file-io.ts',
+    line: "writeFileSync(fd, `${prefix}${JSON.stringify(payload)}\\n`, 'utf8');",
+    reason: "appendJsonLine appends in place to the log at its own name, through a descriptor opened with 'a+'; like every in-place append, that open follows a link left at the log's name — a deferred same-class site, not a cleared one",
+  },
+  {
+    path: 'packages/idea-engine/src/store/file-lock.ts',
+    line: "writeFileSync(fd, JSON.stringify({ created_at: new Date().toISOString(), pid: process.pid }), 'utf8');",
+    reason: "fills the lock file through the descriptor that created it with 'wx'",
+  },
+  {
+    path: 'packages/rep-sdk/src/transport/file-transport.ts',
+    line: "await appendFile(this.filePath, `${serializeEnvelope(validation.data)}\\n`, 'utf8');",
+    reason: 'standalone SDK without workspace dependencies; its JSONL transport is documented as not crash-atomic',
+  },
+  {
+    path: 'packages/hep-mcp/src/core/evidence.ts',
+    line: "const out = fs.createWriteStream(catalogPath, { encoding: 'utf-8' });",
+    reason: 'evidence catalog writer; the evidence tools are scheduled for removal',
+  },
+  {
+    path: 'packages/hep-mcp/src/core/hep/measurements.ts',
+    line: "const out = fs.createWriteStream(outPath, { encoding: 'utf-8' });",
+    reason: 'run-artifact writer; hep-mcp run-artifact paths are being rewritten in a separate change',
+  },
+  {
+    path: 'packages/hep-mcp/src/core/inspire/resolveIdentifiers.ts',
+    line: "const out = fs.createWriteStream(mappingPath, { encoding: 'utf-8' });",
+    reason: 'run-artifact writer; hep-mcp run-artifact paths are being rewritten in a separate change',
+  },
+  {
+    path: 'packages/hep-mcp/src/core/inspire/searchExport.ts',
+    line: "const out = fs.createWriteStream(exportPath, { encoding: 'utf-8' });",
+    reason: 'run-artifact writer; hep-mcp run-artifact paths are being rewritten in a separate change',
+  },
+  {
+    path: 'packages/hep-mcp/src/core/writing/latexCompileGate.ts',
+    line: "const stdoutStream = fs.createWriteStream(stdoutPath, { flags: 'w' });",
+    reason: 'run-artifact log stream; hep-mcp run-artifact paths are being rewritten in a separate change',
+  },
+  {
+    path: 'packages/hep-mcp/src/core/writing/latexCompileGate.ts',
+    line: "const stderrStream = fs.createWriteStream(stderrPath, { flags: 'w' });",
+    reason: 'run-artifact log stream; hep-mcp run-artifact paths are being rewritten in a separate change',
+  },
+];
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function writersFor(moduleName) {
+  if (FS_MODULES.has(moduleName)) return FS_WRITERS;
+  if (FS_PROMISES_MODULES.has(moduleName)) return FS_PROMISES_WRITERS;
+  return null;
+}
+
+// Patterns for calls of fs writers through the bindings this file imports.
+function importBoundPatterns(content) {
+  const patterns = [];
+  // import * as NAME from 'm'  /  import NAME from 'm'  /  import NAME, { ... } from 'm'
+  for (const match of content.matchAll(/import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,\s*\{[^}]*\}\s*)?from\s*['"]([^'"]+)['"]/g)) {
+    const writers = writersFor(match[2]);
+    if (!writers) continue;
+    const name = escapeRegExp(match[1]);
+    patterns.push(new RegExp(`(?<![\\w$.])${name}\\.(?:${writers.join('|')})\\s*\\(`));
+    if (FS_MODULES.has(match[2])) {
+      patterns.push(new RegExp(`(?<![\\w$.])${name}\\.promises\\.(?:${FS_PROMISES_WRITERS.join('|')})\\s*\\(`));
+    }
+  }
+  // import { a, b as c } from 'm'  (also after a default import)
+  for (const match of content.matchAll(/import\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g)) {
+    const writers = writersFor(match[2]);
+    if (!writers) continue;
+    for (const specifier of match[1].split(',').map(item => item.trim()).filter(Boolean)) {
+      const parts = specifier.match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
+      if (!parts) continue;
+      const local = escapeRegExp(parts[2] ?? parts[1]);
+      if (FS_MODULES.has(match[2]) && parts[1] === 'promises') {
+        // `import { promises as fsp } from 'fs'` binds the fs/promises namespace.
+        patterns.push(new RegExp(`(?<![\\w$.])${local}\\.(?:${FS_PROMISES_WRITERS.join('|')})\\s*\\(`));
+        continue;
+      }
+      if (!writers.includes(parts[1])) continue;
+      patterns.push(new RegExp(`(?<![\\w$.])${local}\\s*\\(`));
+    }
+  }
+  return patterns;
+}
 
 function* walkProductionFiles(rootRel) {
   const rootAbs = path.join(repoRoot, rootRel);
@@ -130,19 +252,20 @@ function stripCommentsAndStrings(line) {
   // comments containing `fs.writeFileSync` would still trigger; in that case
   // the author should rephrase the comment.
   let stripped = line;
-  // Remove line comments
+  // Remove string contents first (rough — drops everything between balanced
+  // quotes on a single line). This eliminates docstrings and string-literal
+  // diagnostics that mention these tokens, and keeps a `//` or `/*` inside a
+  // string (a URL, a glob) from hiding the code after it.
+  stripped = stripped.replace(/"(?:\\.|[^"\\])*"/g, '""');
+  stripped = stripped.replace(/'(?:\\.|[^'\\])*'/g, "''");
+  stripped = stripped.replace(/`(?:\\.|[^`\\])*`/g, '``');
+  // Remove block comment fragments closed on this line, then a line comment.
+  // A `/*` left over opens a block comment that runs past this line.
+  stripped = stripped.replace(/\/\*[\s\S]*?\*\//g, '');
   const lineCommentIdx = stripped.indexOf('//');
   if (lineCommentIdx !== -1) {
     stripped = stripped.slice(0, lineCommentIdx);
   }
-  // Remove single-line block comment fragments
-  stripped = stripped.replace(/\/\*[^*]*\*\//g, '');
-  // Remove string contents (rough — drops everything between balanced quotes
-  // on a single line). This eliminates docstrings and string-literal
-  // diagnostics that mention these tokens.
-  stripped = stripped.replace(/"(?:\\.|[^"\\])*"/g, '""');
-  stripped = stripped.replace(/'(?:\\.|[^'\\])*'/g, "''");
-  stripped = stripped.replace(/`(?:\\.|[^`\\])*`/g, '``');
   return stripped;
 }
 
@@ -151,6 +274,7 @@ function scanFile(absPath) {
   if (ALLOWLIST.has(relPath)) return [];
 
   const content = readFileSync(absPath, 'utf-8');
+  const boundPatterns = importBoundPatterns(content);
   const lines = content.split('\n');
   const hits = [];
   let inBlockComment = false;
@@ -163,17 +287,22 @@ function scanFile(absPath) {
       line = line.slice(endIdx + 2);
       inBlockComment = false;
     }
-    const openIdx = line.indexOf('/*');
-    if (openIdx !== -1 && line.indexOf('*/', openIdx) === -1) {
-      line = line.slice(0, openIdx);
+    // Judged on the stripped line, so a `/*` inside a string or after `//`
+    // does not open a block comment.
+    let code = stripCommentsAndStrings(line);
+    const openIdx = code.indexOf('/*');
+    if (openIdx !== -1) {
+      code = code.slice(0, openIdx);
       inBlockComment = true;
     }
-    const code = stripCommentsAndStrings(line);
-    for (const pattern of FORBIDDEN_PATTERNS) {
-      if (pattern.test(code)) {
-        hits.push({ line: lineIdx + 1, match: pattern.source, text: line.trim() });
-        break;
-      }
+    const namespaced = FORBIDDEN_PATTERNS.find(pattern => pattern.test(code));
+    if (namespaced) {
+      hits.push({ line: lineIdx + 1, match: namespaced.source, text: line.trim(), bound: false });
+      continue;
+    }
+    const bound = boundPatterns.find(pattern => pattern.test(code));
+    if (bound) {
+      hits.push({ line: lineIdx + 1, match: bound.source, text: line.trim(), bound: true });
     }
   }
   return hits.map(hit => ({ relPath, ...hit }));
@@ -181,14 +310,31 @@ function scanFile(absPath) {
 
 function main() {
   const errors = [];
+  const usedExceptions = new Set();
   for (const rootRel of SCANNED_ROOTS) {
     for (const absPath of walkProductionFiles(rootRel)) {
       const hits = scanFile(absPath);
       for (const hit of hits) {
+        if (hit.bound) {
+          const exception = BOUND_CALL_EXCEPTIONS.find(entry => (
+            entry.path === hit.relPath && entry.line === hit.text && !usedExceptions.has(entry)
+          ));
+          if (exception) {
+            usedExceptions.add(exception);
+            continue;
+          }
+        }
         errors.push(
           `${hit.relPath}:${hit.line} — forbidden \`${hit.match}\`: ${hit.text}`,
         );
       }
+    }
+  }
+  for (const exception of BOUND_CALL_EXCEPTIONS) {
+    if (!usedExceptions.has(exception)) {
+      errors.push(
+        `${exception.path} — BOUND_CALL_EXCEPTIONS entry matches no flagged line any more; remove it: ${exception.line}`,
+      );
     }
   }
 
@@ -200,6 +346,7 @@ function main() {
     process.stderr.write(
       '\nUse one of the durable primitives from @nullius/shared instead:\n' +
       '  - writeBytesAtomicDurable(filePath, bytes, mode?)\n' +
+      '  - writeChunksAtomicDurable(filePath, chunks, mode?)   (streamed content)\n' +
       '  - writeJsonAtomicDurable(filePath, payload, stringify?)\n' +
       '  - appendJsonlDurable(filePath, lineObject)\n' +
       '  - appendBytesDurable(filePath, bytes)\n' +
@@ -208,7 +355,8 @@ function main() {
       '  - moveEntryDurable(fromPath, toPath)   (cross-parent durable move)\n' +
       '\nIf the new call site genuinely cannot use a primitive (e.g. cross-parent\n' +
       'rename inside an outer durably-committed staging area), add it to the\n' +
-      'ALLOWLIST in scripts/check-atomic-write-anti-drift.mjs with a justification.\n',
+      'ALLOWLIST in scripts/check-atomic-write-anti-drift.mjs with a justification,\n' +
+      'or, for an import-bound call, its exact line to BOUND_CALL_EXCEPTIONS with a reason.\n',
     );
     process.exitCode = 1;
     return;

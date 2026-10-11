@@ -1,5 +1,17 @@
 import { createHash } from 'crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import { pathToFileURL } from 'url';
@@ -463,6 +475,53 @@ describe('node.import_generated', () => {
     expect(migratedIdem.response.payload.pack_artifact_ref).toBe(portableRef);
     expect(migratedIdem.response.payload.archive_hash).toBe(replay.archive_hash);
     expect((migratedIdem.response.payload.idempotency as Record<string, unknown>).is_replay).toBe(false);
+  });
+
+  it('does not write through a link left at the old fixed node-log staging name during legacy migration', () => {
+    const service = freshService();
+    const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'idea-engine-import-outside-')));
+    tempDirs.push(outside);
+    const campaignId = initCampaign(service);
+    const pack = validPack(campaignId);
+    const first = importPack(service, campaignId, pack);
+    const portableRef = String(first.pack_artifact_ref);
+    const artifactFile = artifactPathFromRef(service, portableRef);
+    const legacyRef = pathToFileURL(join('/Users/old-machine/moved-project/idea-store/campaigns', campaignId, 'artifacts/generation', basename(artifactFile))).href;
+    const nodeId = String((first.imported as Array<Record<string, unknown>>)[0]!.node_id);
+
+    const archive = JSON.parse(readFileSync(artifactFile, 'utf8')) as Record<string, unknown>;
+    const assembled = (archive.engine_assembled as Record<string, unknown>).nodes as Record<string, Record<string, unknown>>;
+    ((assembled[nodeId]!.operator_trace as Record<string, unknown>).inputs as Record<string, unknown>).pack_artifact = legacyRef;
+    const legacyArchiveHash = payloadHash(archive);
+    writeFileSync(artifactFile, JSON.stringify(archive, null, 2), 'utf8');
+
+    const nodes = service.node.store.loadNodes<Record<string, unknown>>(campaignId);
+    ((nodes[nodeId]!.operator_trace as Record<string, unknown>).inputs as Record<string, unknown>).pack_artifact = legacyRef;
+    service.node.store.saveNodes(campaignId, nodes);
+
+    const logPath = service.node.store.nodesLogPath(campaignId);
+    writeFileSync(logPath, readFileSync(logPath, 'utf8').replaceAll(portableRef, legacyRef), 'utf8');
+
+    const idem = loadIdem(service, campaignId);
+    const record = idem['node.import_generated:import-key-1']!;
+    record.response.payload.pack_artifact_ref = legacyRef;
+    record.response.payload.archive_hash = legacyArchiveHash;
+    (record.response.payload.idempotency as Record<string, unknown>).is_replay = false;
+    writeFileSync(idemPath(service, campaignId), `${JSON.stringify(idem, null, 2)}\n`, 'utf8');
+
+    // The node log used to be rewritten through `${logPath}.tmp`.
+    const victim = join(outside, 'victim.jsonl');
+    writeFileSync(victim, 'ORIGINAL', 'utf8');
+    symlinkSync(victim, `${logPath}.tmp`);
+
+    const replay = importPack(service, campaignId, pack);
+
+    expect(replay.pack_artifact_ref).toBe(portableRef);
+    expect(readFileSync(victim, 'utf8')).toBe('ORIGINAL');
+    expect(lstatSync(logPath).isFile()).toBe(true);
+    expect(readFileSync(logPath, 'utf8')).toContain(portableRef);
+    expect(readFileSync(logPath, 'utf8')).not.toContain(legacyRef);
+    expect(readlinkSync(`${logPath}.tmp`)).toBe(victim);
   });
 
   it('resumes legacy replay migration when the archive was rewritten before idempotency', () => {

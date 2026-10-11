@@ -82,6 +82,7 @@ export { redact } from './redaction.js';
 // Durable atomic writes (P1) — primitives for POSIX-correct file writes
 export {
   writeBytesAtomicDurable,
+  writeChunksAtomicDurable,
   writeJsonAtomicDurable,
   appendJsonlDurable,
   appendBytesDurable,
@@ -89,6 +90,9 @@ export {
   commitStagedDurable,
   moveEntryDurable,
   fsyncParentDirectoryDurable,
+  fileIdentityOfFd,
+  unlinkIfSameFile,
+  type FileIdentity,
   // Test-only: audit hook for sequence-locking regression tests.
   _setAtomicWriteAuditHook,
   type AtomicWriteAudit,

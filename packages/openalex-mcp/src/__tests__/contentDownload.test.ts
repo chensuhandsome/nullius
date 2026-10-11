@@ -7,26 +7,34 @@ vi.mock('../api/rateLimiter.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api/rateLimiter.js')>()),
   openalexFetchFullUrl: vi.fn(),
 }));
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return { ...actual, closeSync: vi.fn(actual.closeSync) };
+});
 vi.mock('crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('crypto')>();
   return { ...actual, randomBytes: vi.fn(actual.randomBytes) };
 });
-vi.mock('@nullius/shared', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@nullius/shared')>();
-  return { ...actual, fsyncParentDirectoryDurable: vi.fn(actual.fsyncParentDirectoryDurable) };
-});
 
 import { randomBytes } from 'crypto';
-import { fsyncParentDirectoryDurable } from '@nullius/shared';
+import { _setAtomicWriteAuditHook } from '@nullius/shared';
 import { handleContent } from '../api/contentDownload.js';
 import { openalexFetchFullUrl } from '../api/rateLimiter.js';
 
 const mockFetch = vi.mocked(openalexFetchFullUrl);
 const mockRandomBytes = vi.mocked(randomBytes);
-const mockDirSync = vi.mocked(fsyncParentDirectoryDurable);
+const mockClose = vi.mocked(fs.closeSync);
+const { closeSync: actualCloseSync } = await vi.importActual<typeof import('fs')>('fs');
 const ORIGINAL_OPENALEX_DATA_DIR = process.env.OPENALEX_DATA_DIR;
 const PDF_BYTES = Buffer.from('%PDF-1.4 test body');
-const fixedHex = 'ab'.repeat(8);
+
+// The next closeSync really closes its descriptor and then reports failure.
+function failNextClose(): void {
+  mockClose.mockImplementationOnce((fd: number) => {
+    actualCloseSync(fd);
+    throw Object.assign(new Error('injected close failure'), { code: 'EIO' });
+  });
+}
 
 function download(outDir?: string) {
   return handleContent({ work_id: 'W123', type: 'pdf', out_dir: outDir, _confirm: true, max_size_mb: 1 });
@@ -43,7 +51,7 @@ describe('handleContent out_dir containment', () => {
     process.env.OPENALEX_DATA_DIR = dataDir;
     mockFetch.mockReset();
     mockRandomBytes.mockReset(); // back to the real randomBytes
-    mockDirSync.mockReset(); // back to the real fsyncParentDirectoryDurable
+    mockClose.mockReset(); // back to the real closeSync
     mockFetch.mockImplementation(async () => new Response(PDF_BYTES, {
       status: 200,
       headers: { 'content-type': 'application/pdf' },
@@ -185,31 +193,39 @@ describe('handleContent out_dir containment', () => {
     expect(fs.statSync(path.join(outDir, 'W123.pdf')).isDirectory()).toBe(true);
   });
   it('leaves whatever takes the vacated staging name after a completed rename', async () => {
-    // The rename succeeds and the directory sync then fails; by then the
-    // vacated staging name holds an entry this download did not create:
-    // another file, a link to the very file it staged, or such a link with the
-    // destination itself removed again.
+    // The rename succeeds and a later step then fails (the audit record of the
+    // rename, or the directory fsync); by then the vacated staging name holds
+    // an entry this download did not create: another file, a link to the very
+    // file it staged, or such a link with the destination itself removed again.
     const outDir = path.join(dataDir, 'sub');
     const destPath = path.join(outDir, 'W123.pdf');
     const takeVacatedName = [
-      (stagingPath: string) => fs.writeFileSync(stagingPath, 'NOT OURS'),
-      (stagingPath: string) => fs.linkSync(destPath, stagingPath),
-      (stagingPath: string) => { fs.linkSync(destPath, stagingPath); fs.unlinkSync(destPath); },
+      (staging: string) => fs.writeFileSync(staging, 'NOT OURS'),
+      (staging: string) => fs.linkSync(destPath, staging),
+      (staging: string) => { fs.linkSync(destPath, staging); fs.unlinkSync(destPath); },
     ];
-    for (const take of takeVacatedName) {
-      fs.rmSync(outDir, { recursive: true, force: true });
-      mockDirSync.mockImplementationOnce(() => {
-        const [name] = fs.readdirSync(outDir).filter((entry) => entry.endsWith('.tmp'));
-        expect(name).toBeUndefined(); // the rename has happened
-        take(`${destPath}.${process.pid}.${fixedHex}.tmp`);
-        throw new Error('directory fsync failed');
-      });
-      mockRandomBytes.mockImplementationOnce(() => Buffer.from(fixedHex, 'hex'));
+    for (const failAt of ['rename', 'directory fsync'] as const) {
+      for (const take of takeVacatedName) {
+        fs.rmSync(outDir, { recursive: true, force: true });
+        let staging: string | undefined;
+        const restore = _setAtomicWriteAuditHook((event) => {
+          if (event.kind === 'rename') staging = event.from;
+          const hit = failAt === 'rename'
+            ? event.kind === 'rename'
+            : staging !== undefined && event.kind === 'fsync' && fs.fstatSync(event.fd).isDirectory();
+          if (!hit) return;
+          expect(fs.existsSync(staging!)).toBe(false); // the rename has happened
+          take(staging!);
+          throw new Error(`injected ${failAt} failure`);
+        });
+        try {
+          await expect(download(outDir)).rejects.toThrow(`injected ${failAt} failure`);
+        } finally {
+          restore();
+        }
 
-      await expect(download(outDir)).rejects.toThrow(/directory fsync failed/);
-
-      const staging = fs.readdirSync(outDir).filter((name) => name.endsWith('.tmp'));
-      expect(staging).toHaveLength(1);
+        expect(fs.readdirSync(outDir).filter((name) => name.endsWith('.tmp'))).toEqual([path.basename(staging!)]);
+      }
     }
   });
 
@@ -224,6 +240,27 @@ describe('handleContent out_dir containment', () => {
 
     expect(fs.readdirSync(outDir)).toEqual([]);
   });
+  it('removes its staging file when closing it fails, after a failed or a complete download', async () => {
+    const outDir = path.join(dataDir, 'sub');
+    mockFetch.mockImplementationOnce(async () => {
+      failNextClose();
+      return new Response(Buffer.alloc(1024 * 1024 + 1), {
+        status: 200,
+        headers: { 'content-type': 'application/pdf' },
+      });
+    });
+
+    await expect(download(outDir)).rejects.toThrow(/exceeded max_size_mb/);
+
+    expect(fs.readdirSync(outDir)).toEqual([]);
+
+    failNextClose();
+
+    await expect(download(outDir)).rejects.toThrow(/injected close failure/);
+
+    expect(fs.readdirSync(outDir)).toEqual([]);
+  });
+
   it('leaves an entry that replaced its staging file before the download failed', async () => {
     // While the body streams, the staging name is taken over by another file;
     // the over-size failure that follows must not remove that file.

@@ -30,13 +30,35 @@ export const HepHealthToolSchema = z.object({
   inspire_timeout_ms: optionalBudgetInt({ min: 1 }).default(5000),
 });
 
+/**
+ * A whole-number limit given as a number or a digit string. Unlike the
+ * lenient shared helper, a value that is not a whole number or lies outside
+ * [min, max] is refused (INVALID_PARAMS), never replaced by the default.
+ */
+export function strictBudgetInt(options: { min?: number; max?: number } = {}) {
+  let inner = z.number().int();
+  if (options.min !== undefined) inner = inner.min(options.min);
+  if (options.max !== undefined) inner = inner.max(options.max);
+  const schema = z.preprocess(
+    value => (typeof value === 'string' && /^\s*[+-]?\d+\s*$/.test(value) ? Number(value.trim()) : value),
+    inner.optional(),
+  );
+  // Publish the bounds in the tool's input schema, as the shared helper does.
+  Object.defineProperty(schema, '__mcpBudget', {
+    value: { ...options, integer: true },
+    configurable: true,
+  });
+  return schema;
+}
+
 export const OutputDirSchema = z
   .string()
   .min(1)
   .describe(
     'Directory inside project_root that receives this call\'s output files, relative to project_root or absolute '
       + '(any spelling of the root). Requires project_root. Created if missing; it may not traverse a symbolic link, '
-      + 'and may not lie under .nullius/, team/runs/ or artifacts/hep-mcp/.'
+      + 'and may not lie under .nullius/, team/runs/ or artifacts/hep-mcp/. A call never replaces an existing file: '
+      + 'it writes all of its files or none, and is refused if any of them already exists.'
   );
 
 // The tools that write into output_dir, and the lexical evidence query, use
@@ -49,9 +71,9 @@ export const HepImportFromZoteroToolSchema = z.object({
   output_dir: OutputDirSchema,
   collection_key: SafePathSegmentSchema.optional(),
   item_keys: z.array(SafePathSegmentSchema).optional().default([]),
-  limit: optionalBudgetInt({ min: 1 }),
-  start: optionalBudgetInt({ min: 0 }),
-  concurrency: optionalBudgetInt({ min: 1, max: 16 }).default(4),
+  limit: strictBudgetInt({ min: 1 }),
+  start: strictBudgetInt({ min: 0 }),
+  concurrency: strictBudgetInt({ min: 1, max: 16 }).default(4),
 }).strict().refine(v => Boolean(v.collection_key) || v.item_keys.length > 0, {
   message: 'Either collection_key or item_keys is required',
 });
@@ -62,8 +84,8 @@ export const HepInspireSearchExportToolSchema = z.object({
   output_dir: OutputDirSchema,
   query: z.string().min(1),
   sort: SortSchema.optional(),
-  size: optionalBudgetInt({ min: 1, max: 1000 }).default(1000),
-  max_results: optionalBudgetInt({ min: 1, max: 10_000 }).default(10_000),
+  size: strictBudgetInt({ min: 1, max: 1000 }).default(1000),
+  max_results: strictBudgetInt({ min: 1, max: 10_000 }).default(10_000),
   output_format: SearchExportFormatSchema.optional().default('jsonl'),
   artifact_name: SafePathSegmentSchema.optional(),
   meta_artifact_name: SafePathSegmentSchema.optional(),
@@ -111,8 +133,8 @@ export const HepProjectQueryEvidenceToolSchema = z.object({
   types: z.array(QueryEvidenceTypeSchema).optional(),
   // Lexical search is the only mode; naming another one is refused rather than ignored.
   mode: z.literal('lexical').optional(),
-  concurrency: optionalBudgetInt({ min: 1, max: 16 }).default(4),
-  limit: optionalBudgetInt({ min: 1, max: 50 }).default(10),
+  concurrency: strictBudgetInt({ min: 1, max: 16 }).default(4),
+  limit: strictBudgetInt({ min: 1, max: 50 }).default(10),
 }).strict();
 
 export const HepProjectPlaybackEvidenceToolSchema = z.object({

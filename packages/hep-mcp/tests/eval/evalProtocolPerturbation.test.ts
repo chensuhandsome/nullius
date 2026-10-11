@@ -122,7 +122,7 @@ function scenarioSpecs(fixture: QueryFixture, input: ProtocolInput): { canonical
           args: { ...sharedLexicalArgs, mode: 'lexical' },
         },
       };
-    case 'lexical_budget_noise_falls_back':
+    case 'lexical_budget_noise_fail_closed':
       return {
         canonical: { tool: 'hep_project_query_evidence', args: sharedLexicalArgs },
         perturbed: {
@@ -241,8 +241,8 @@ describe('eval: protocol perturbation harness for evidence query front-door surf
 
     expect(report.summary.total).toBe(3);
     expect(report.summary.failed).toBe(0);
-    expect(report.aggregateMetrics.canonical_success_retained).toBe(2);
-    expect(report.aggregateMetrics.acceptable_fail_closed_rejection).toBe(1);
+    expect(report.aggregateMetrics.canonical_success_retained).toBe(1);
+    expect(report.aggregateMetrics.acceptable_fail_closed_rejection).toBe(2);
     expect(report.aggregateMetrics.overfit_failure).toBe(0);
     expect(report.aggregateMetrics.bad_shortcut_success).toBe(0);
   });

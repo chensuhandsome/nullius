@@ -8,13 +8,11 @@ import {
 } from '@nullius/shared';
 
 import * as api from '../../api/client.js';
-import { cachedExternalApiJsonCall } from '../cache/externalApiCache.js';
+import { cachedExternalApiJsonCall, describeExternalApiRequest } from '../cache/externalApiCache.js';
 import {
-  assertDistinctOutputNames,
-  openOutputStream,
+  OutputBatch,
   outputArtifactRef,
   resolveOutputDir,
-  writeOutputJson,
   type OutputArtifactRef,
 } from '../outputDir.js';
 
@@ -147,26 +145,27 @@ export function paperRecid(response: unknown, operation: string): string | undef
   throw invalidParams(`INSPIRE ${operation} returned a malformed recid (fail-fast)`, { operation });
 }
 
-function resolveStatusFromError(err: unknown): { status: ResolveStatusV1; message?: string } {
-  if (err instanceof Error) {
-    const anyErr = err as any;
-    if (anyErr?.code === 'UPSTREAM_ERROR' && anyErr?.data?.status === 404) {
-      return { status: 'not_found', message: err.message };
-    }
-    return { status: 'error', message: err.message };
-  }
-  return { status: 'error', message: String(err) };
+function resolveStatusFromError(err: McpError): { status: ResolveStatusV1; message: string } {
+  const notFound = err.code === 'NOT_FOUND'
+    || (err.code === 'UPSTREAM_ERROR' && (err.data as { status?: unknown } | undefined)?.status === 404);
+  return { status: notFound ? 'not_found' : 'error', message: err.message };
 }
 
+/**
+ * One INSPIRE lookup made by the call. A lookup whose request failed is
+ * listed too, with its request record and the error, and no response.
+ */
 type ExternalApiCallIndexItemV1 = {
   version: 1;
   namespace: string;
   operation: string;
   request_hash: string;
+  outcome: 'response' | 'error';
   cache_hit: boolean;
-  cached_response_uri: string;
+  cached_response_uri?: string;
   request_path: string;
-  response_path: string;
+  response_path: string | null;
+  error?: { code: string; message: string };
 };
 
 /**
@@ -193,9 +192,10 @@ export async function hepInspireResolveIdentifiers(params: {
     warnings: string[];
   };
 }> {
-  const identifiers = params.identifiers.map(s => s.trim()).filter(Boolean);
-  if (identifiers.length === 0) {
-    throw invalidParams('identifiers cannot be empty', { identifiers: params.identifiers });
+  const identifiers = params.identifiers.map(s => s.trim());
+  const blank = identifiers.flatMap((identifier, index) => (identifier.length === 0 ? [index] : []));
+  if (blank.length > 0) {
+    throw invalidParams('identifiers must not be blank', { blank_indices: blank });
   }
 
   const { mappingName, metaName } = makeArtifactNames({
@@ -217,16 +217,66 @@ export async function hepInspireResolveIdentifiers(params: {
   let errors = 0;
 
   const indexName = `external_api_calls_inspire_resolve_identifiers_${sha256Hex(JSON.stringify({ identifiers })).slice(0, 16)}.json`;
-  assertDistinctOutputNames({
+  const batch = new OutputBatch(output);
+  batch.reserve({
     artifact_name: mappingName,
     meta_artifact_name: metaName,
     external_api_calls: indexName,
   });
 
-  const mappingFile = openOutputStream(output, mappingName);
-  const out = mappingFile.stream;
+  // One INSPIRE lookup; the record is validated for its recid before it is
+  // cached. A provider failure becomes the item's status; anything else
+  // aborts the call.
+  const lookup = async (
+    operation: 'getPaper' | 'getByDoi' | 'getByArxiv',
+    request: Record<string, unknown>,
+    fetch: () => Promise<unknown>,
+  ): Promise<{ recid?: string } | { failure: McpError }> => {
+    const described = describeExternalApiRequest({ namespace: 'inspire', operation, request });
+    try {
+      const cached = await cachedExternalApiJsonCall({
+        batch,
+        namespace: 'inspire',
+        operation,
+        request,
+        fetch,
+        validate: response => ({ recid: paperRecid(response, operation) }),
+      });
+      const [requestRef, responseRef] = cached.artifacts;
+      externalApiCalls.push({
+        version: 1,
+        namespace: 'inspire',
+        operation,
+        request_hash: cached.request_hash,
+        outcome: 'response',
+        cache_hit: cached.cache_hit,
+        cached_response_uri: cached.cached_response_uri,
+        request_path: requestRef.path,
+        response_path: responseRef.path,
+      });
+      return cached.response;
+    } catch (err) {
+      if (!isProviderFailure(err)) throw err;
+      const failure = err as McpError;
+      externalApiCalls.push({
+        version: 1,
+        namespace: 'inspire',
+        operation,
+        request_hash: described.request_hash,
+        outcome: 'error',
+        cache_hit: false,
+        request_path: outputArtifactRef(output, described.request_name, 'application/json').path,
+        response_path: null,
+        error: { code: failure.code, message: failure.message },
+      });
+      return { failure };
+    }
+  };
 
   try {
+    const mappingFile = batch.stream(mappingName, 'application/x-ndjson');
+    const out = mappingFile.stream;
+
     for (const input of identifiers) {
       const classified = classifyIdentifier(input);
 
@@ -249,81 +299,29 @@ export async function hepInspireResolveIdentifiers(params: {
         continue;
       }
 
-      try {
-        if (classified.kind === 'recid') {
-          const cached = await cachedExternalApiJsonCall({
-            output,
-            namespace: 'inspire',
-            operation: 'getPaper',
-            request: { recid: classified.normalized },
-            fetch: () => api.getPaper(classified.normalized),
-          });
-          const [requestRef, responseRef] = cached.artifacts;
-          externalApiCalls.push({
-            version: 1,
-            namespace: 'inspire',
-            operation: 'getPaper',
-            request_hash: cached.request_hash,
-            cache_hit: cached.cache_hit,
-            cached_response_uri: cached.cached_response_uri,
-            request_path: requestRef.path,
-            response_path: responseRef.path,
-          });
-          item.recid = paperRecid(cached.response, 'getPaper') ?? classified.normalized;
-          item.status = item.recid ? 'matched' : 'not_found';
-        } else if (classified.kind === 'doi' && classified.doi) {
-          const doi = classified.doi;
-          const cached = await cachedExternalApiJsonCall({
-            output,
-            namespace: 'inspire',
-            operation: 'getByDoi',
-            request: { doi },
-            fetch: () => api.getByDoi(doi),
-          });
-          const [requestRef, responseRef] = cached.artifacts;
-          externalApiCalls.push({
-            version: 1,
-            namespace: 'inspire',
-            operation: 'getByDoi',
-            request_hash: cached.request_hash,
-            cache_hit: cached.cache_hit,
-            cached_response_uri: cached.cached_response_uri,
-            request_path: requestRef.path,
-            response_path: responseRef.path,
-          });
-          item.recid = paperRecid(cached.response, 'lookup');
-          item.status = item.recid ? 'matched' : 'not_found';
-        } else if (classified.kind === 'arxiv' && classified.arxiv_id) {
-          const arxivId = classified.arxiv_id;
-          const cached = await cachedExternalApiJsonCall({
-            output,
-            namespace: 'inspire',
-            operation: 'getByArxiv',
-            request: { arxiv_id: arxivId },
-            fetch: () => api.getByArxiv(arxivId),
-          });
-          const [requestRef, responseRef] = cached.artifacts;
-          externalApiCalls.push({
-            version: 1,
-            namespace: 'inspire',
-            operation: 'getByArxiv',
-            request_hash: cached.request_hash,
-            cache_hit: cached.cache_hit,
-            cached_response_uri: cached.cached_response_uri,
-            request_path: requestRef.path,
-            response_path: responseRef.path,
-          });
-          item.recid = paperRecid(cached.response, 'lookup');
-          item.status = item.recid ? 'matched' : 'not_found';
-        } else {
-          item.status = 'not_found';
-          item.message = 'unsupported_identifier';
-        }
-      } catch (err) {
-        if (!isProviderFailure(err)) throw err;
-        const status = resolveStatusFromError(err);
+      let result: { recid?: string } | { failure: McpError } | null = null;
+      if (classified.kind === 'recid') {
+        const recid = classified.normalized;
+        result = await lookup('getPaper', { recid }, () => api.getPaper(recid));
+      } else if (classified.kind === 'doi' && classified.doi) {
+        const doi = classified.doi;
+        result = await lookup('getByDoi', { doi }, () => api.getByDoi(doi));
+      } else if (classified.kind === 'arxiv' && classified.arxiv_id) {
+        const arxivId = classified.arxiv_id;
+        result = await lookup('getByArxiv', { arxiv_id: arxivId }, () => api.getByArxiv(arxivId));
+      }
+
+      if (result === null) {
+        item.status = 'not_found';
+        item.message = 'unsupported_identifier';
+      } else if ('failure' in result) {
+        const status = resolveStatusFromError(result.failure);
         item.status = status.status;
         item.message = status.message;
+      } else {
+        // A record without a recid resolves to nothing, whatever was asked.
+        item.recid = result.recid;
+        item.status = result.recid ? 'matched' : 'not_found';
       }
 
       if (item.status === 'matched') matched += 1;
@@ -332,54 +330,56 @@ export async function hepInspireResolveIdentifiers(params: {
 
       out.write(`${JSON.stringify(item)}\n`);
     }
-  } catch (err) {
-    mappingFile.abort();
-    throw err;
-  }
 
-  await mappingFile.commit();
-  artifacts.push(mappingRef);
+    artifacts.push(await mappingFile.finish());
 
-  const externalApiCallsRef = writeOutputJson(output, indexName, {
-    version: 1,
-    generated_at: nowIso(),
-    output_dir: output.relative,
-    calls: externalApiCalls,
-    stats: {
-      calls_total: externalApiCalls.length,
-      cache_hits: externalApiCalls.filter(c => c.cache_hit).length,
-      cache_misses: externalApiCalls.filter(c => !c.cache_hit).length,
-    },
-  });
-  artifacts.push(externalApiCallsRef);
+    const externalApiCallsRef = batch.json(indexName, {
+      version: 1,
+      generated_at: nowIso(),
+      output_dir: output.relative,
+      calls: externalApiCalls,
+      stats: {
+        calls_total: externalApiCalls.length,
+        failed: externalApiCalls.filter(c => c.outcome === 'error').length,
+        cache_hits: externalApiCalls.filter(c => c.cache_hit).length,
+        cache_misses: externalApiCalls.filter(c => c.outcome === 'response' && !c.cache_hit).length,
+      },
+    });
+    artifacts.push(externalApiCallsRef);
 
-  const metaPayload: ResolveIdentifiersMetaV1 = {
-    version: 1,
-    generated_at: nowIso(),
-    output_dir: output.relative,
-    total: identifiers.length,
-    matched,
-    not_found: notFound,
-    errors,
-    warnings,
-    artifacts: { mapping_path: mappingRef.path, meta_path: metaPath },
-  };
-
-  const metaRef = writeOutputJson(output, metaName, metaPayload);
-  artifacts.push(metaRef);
-
-  return {
-    output_dir: output.relative,
-    artifacts,
-    mapping_path: mappingRef.path,
-    meta_path: metaRef.path,
-    summary: {
+    const metaPayload: ResolveIdentifiersMetaV1 = {
+      version: 1,
+      generated_at: nowIso(),
+      output_dir: output.relative,
       total: identifiers.length,
       matched,
       not_found: notFound,
       errors,
-      warnings_total: warnings.length,
-      warnings: warnings.slice(0, 20),
-    },
-  };
+      warnings,
+      artifacts: { mapping_path: mappingRef.path, meta_path: metaPath },
+    };
+
+    const metaRef = batch.json(metaName, metaPayload);
+    artifacts.push(metaRef);
+
+    await batch.publish();
+
+    return {
+      output_dir: output.relative,
+      artifacts,
+      mapping_path: mappingRef.path,
+      meta_path: metaRef.path,
+      summary: {
+        total: identifiers.length,
+        matched,
+        not_found: notFound,
+        errors,
+        warnings_total: warnings.length,
+        warnings: warnings.slice(0, 20),
+      },
+    };
+  } catch (err) {
+    batch.discard();
+    throw err;
+  }
 }

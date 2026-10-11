@@ -7,7 +7,7 @@ import {
   TopicAnalysisToolSchema,
   TraceOriginalSourceToolSchema,
 } from '../research/schemas.js';
-import { OutputDirSchema, SafePathSegmentSchema, SearchExportFormatSchema } from './projectSchemas.js';
+import { OutputDirSchema, SafePathSegmentSchema, SearchExportFormatSchema, strictBudgetInt } from './projectSchemas.js';
 
 const SortSchema = z.enum(['mostrecent', 'mostcited']);
 const JsonMarkdownSchema = z.enum(['json', 'markdown']);
@@ -15,15 +15,19 @@ const JsonMarkdownSchema = z.enum(['json', 'markdown']);
 export const InspireSearchToolSchema = z.object({
   query: z.string().min(1),
   sort: SortSchema.optional(),
-  size: optionalBudgetInt({ min: 1, max: 1000 }).default(25),
-  page: optionalBudgetInt({ min: 1 }).default(1),
+  size: strictBudgetInt({ min: 1, max: 1000 }).default(25).describe(
+    'Results per page. Default 25 when listing; in a file export (output_dir) the default is 1000, or HEP_BUDGET_INSPIRE_SEARCH_PAGE_SIZE if set.'
+  ),
+  page: strictBudgetInt({ min: 1 }).default(1),
   format: JsonMarkdownSchema.optional().default('json'),
   review_mode: z.enum(['mixed', 'separate', 'deprioritize', 'exclude']).optional().default('mixed'),
   output_dir: OutputDirSchema.optional(),
   output_format: SearchExportFormatSchema.optional().default('jsonl'),
   artifact_name: SafePathSegmentSchema.optional(),
   meta_artifact_name: SafePathSegmentSchema.optional(),
-  max_results: optionalBudgetInt({ min: 1 }).default(100),
+  max_results: strictBudgetInt({ min: 1 }).default(100).describe(
+    'Most results to return. Default 100 when listing; in a file export (output_dir) the default is 10000, or HEP_BUDGET_INSPIRE_SEARCH_MAX_RESULTS if set, and at most 10000 may be requested.'
+  ),
 }).strict();
 
 export const InspireSearchNextToolSchema = z.object({
@@ -215,13 +219,13 @@ export const InspireClassifyReviewsToolSchema = z.object({
 
 export const InspireTheoreticalConflictsToolSchema = z.object({
   output_dir: OutputDirSchema,
-  recids: z.array(z.string().min(1)).min(1),
-  subject_entity: z.string().min(1).optional(),
-  inputs: z.array(z.enum(['title', 'abstract'])).optional(),
-  max_papers: optionalBudgetInt({ min: 1 }).optional(),
-  max_claim_candidates_per_paper: optionalBudgetInt({ min: 1 }).optional(),
-  max_candidates_total: optionalBudgetInt({ min: 1 }).optional(),
-  max_llm_requests: optionalBudgetInt({ min: 1 }).optional(),
+  recids: z.array(z.string().trim().regex(/^\d+$/, 'an INSPIRE recid is a string of digits')).min(1),
+  subject_entity: z.string().trim().min(1).optional(),
+  inputs: z.array(z.enum(['title', 'abstract'])).min(1).optional(),
+  max_papers: strictBudgetInt({ min: 1 }).optional(),
+  max_claim_candidates_per_paper: strictBudgetInt({ min: 1, max: 200 }).optional(),
+  max_candidates_total: strictBudgetInt({ min: 1, max: 5000 }).optional(),
+  max_llm_requests: strictBudgetInt({ min: 1 }).optional(),
   prompt_version: z.string().min(1).optional(),
   stable_sort: z.boolean().optional(),
 }).strict();
@@ -261,7 +265,7 @@ export const InspireParseLatexToolSchema = z.object({
     .object({
       format: JsonMarkdownSchema.optional(),
       include_external: z.boolean().optional(),
-      max_depth: optionalBudgetInt({ min: 1 }),
+      max_depth: strictBudgetInt({ min: 1 }),
       cross_validate: z.boolean().optional(),
     })
     .strict()

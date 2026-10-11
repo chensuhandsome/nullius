@@ -111,35 +111,32 @@ describe('Tool registry contracts (M2)', () => {
     expect((tool?.inputSchema as any).properties.identifier.description).toContain('size is tolerated and ignored');
   });
 
-  it('inspire_search falls back to defaults for invalid max_results budgets', () => {
-    const parsed = InspireSearchToolSchema.parse({
-      query: 'qcd',
-      max_results: -100,
-      page: '\r\t-5',
-    });
-    expect(parsed.max_results).toBe(100);
-    expect(parsed.page).toBe(1);
+  // The tools that write output files, and the lexical evidence query, refuse
+  // a limit that is not a whole number in range instead of replacing it by
+  // the default; a digit string is still read as its number.
+  it('inspire_search refuses invalid max_results and page values instead of using defaults', () => {
+    expect(InspireSearchToolSchema.safeParse({ query: 'qcd', max_results: -100 }).success).toBe(false);
+    expect(InspireSearchToolSchema.safeParse({ query: 'qcd', page: '\r\t-5' }).success).toBe(false);
+    expect(InspireSearchToolSchema.safeParse({ query: 'qcd', size: 2000 }).success).toBe(false);
+    const parsed = InspireSearchToolSchema.parse({ query: 'qcd', max_results: ' 50 ', page: '2' });
+    expect(parsed.max_results).toBe(50);
+    expect(parsed.page).toBe(2);
   });
 
-  it('hep_import_from_zotero does not clamp an out-of-range concurrency; it falls back to default', () => {
-    const parsed = HepImportFromZoteroToolSchema.parse({
-      output_dir: 'out',
-      item_keys: ['ABCD1234'],
-      concurrency: 999,
-    });
-    // Clamping would give the maximum (16); the budget contract falls back to the default.
-    expect(parsed.concurrency).toBe(4);
+  it('hep_import_from_zotero refuses an out-of-range concurrency instead of using the default', () => {
+    expect(HepImportFromZoteroToolSchema.safeParse({ output_dir: 'out', item_keys: ['ABCD1234'], concurrency: 999 }).success).toBe(false);
+    expect(HepImportFromZoteroToolSchema.parse({ output_dir: 'out', item_keys: ['ABCD1234'], concurrency: '8' }).concurrency).toBe(8);
   });
 
-  it('hep_project_query_evidence falls back to defaults for invalid concurrency/limit budgets', () => {
-    const parsed = HepProjectQueryEvidenceToolSchema.parse({
-      project_id: 'project-1',
-      query: 'beta function',
-      concurrency: -100,
-      limit: '\r\t999',
-    });
-    expect(parsed.concurrency).toBe(4);
-    expect(parsed.limit).toBe(10);
+  it('hep_project_query_evidence refuses invalid concurrency/limit values instead of using defaults', () => {
+    expect(HepProjectQueryEvidenceToolSchema.safeParse({ project_id: 'project-1', query: 'beta function', concurrency: -100 }).success).toBe(false);
+    expect(HepProjectQueryEvidenceToolSchema.safeParse({ project_id: 'project-1', query: 'beta function', limit: '\r\t999' }).success).toBe(false);
+    expect(HepProjectQueryEvidenceToolSchema.parse({ project_id: 'project-1', query: 'beta function', limit: '20' }).limit).toBe(20);
+  });
+
+  it('the strict limits keep publishing their bounds in the input schema', () => {
+    const tool = getTools('standard').find(t => t.name === 'inspire_search');
+    expect((tool?.inputSchema as any).properties.size).toMatchObject({ type: 'integer', minimum: 1, maximum: 1000, default: 25 });
   });
 
   it('non-budget numeric params remain fail-closed', () => {

@@ -32,7 +32,10 @@ version is the lockstep number below.
   and `inspire_search` (export mode, formerly triggered by `run_id`) write into an
   `output_dir` inside the admitted project root, reached through real directories
   only and never under `.nullius/`, `team/runs/` or `artifacts/hep-mcp/`, and return
-  project-relative paths. `hep_project_query_evidence` is lexical only.
+  project-relative paths. A call writes all of its files or none and never replaces
+  an existing file. These tools and the lexical `hep_project_query_evidence` refuse a
+  numeric limit that is not a whole number in range instead of using the default.
+  `hep_project_query_evidence` is lexical only.
 - Oversized hep-mcp tool results are truncated by UTF-8 bytes on a character
   boundary.
 

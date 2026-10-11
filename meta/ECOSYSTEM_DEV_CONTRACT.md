@@ -268,6 +268,10 @@ make codegen-check  # 重新生成 → git diff --exit-code */generated/
 | `HEP_DATA_DIR` | path | `~/.nullius/hep-mcp` | env > .env > default | hep-mcp |
 | `HEP_TOOL_MODE` | enum | `standard` | env > .env > default | hep-mcp |
 | `HEP_ENABLE_ZOTERO` | bool | `true` | env > .env > default | hep-mcp |
+| `HEP_BUDGET_INSPIRE_SEARCH_PAGE_SIZE` | int | `1000` | tool arg > env > .env > default | hep-mcp |
+| `HEP_BUDGET_INSPIRE_SEARCH_MAX_RESULTS` | int | `10000` | tool arg > env > .env > default | hep-mcp |
+| `HEP_BUDGET_CONCURRENCY` | int | `4` | tool arg > env > .env > default | hep-mcp |
+| `HEP_BUDGET_EVIDENCE_MAX_PARAGRAPH_LENGTH` | int | `0` | tool arg > env > .env > default | hep-mcp |
 | `PDG_DB_PATH` | path | (必需) | env > .env | pdg-mcp |
 | `PDG_ARTIFACT_TTL_HOURS` | int | `24` | env > .env > default | pdg-mcp |
 | `ZOTERO_BASE_URL` | URL | `http://127.0.0.1:23119` | env > .env > default | zotero-mcp |
@@ -485,7 +489,9 @@ pnpm --filter @nullius/hep-mcp test -- tests/contracts/jsonlStderrLogging.test.t
 
 ### ART-01: 命名规范
 
-**规则**: 所有 artifact 文件名必须符合以下正则：
+**适用范围**: 控制面写入 run 目录（`<project_root>/artifacts/runs/<run_id>/`）、且其格式由 `meta/schemas/` 定义的契约型 artifact。provider 工具写入调用方 `output_dir` 的研究输出不在此列：它们用各工具文档写明的固定名或调用方给定的名字（如 `inspire_search_export_<hash>.jsonl`、`zotero_map_v1.json`、`external_api/` 下的请求/响应记录），JSON 输出在顶层带 `version` 字段。
+
+**规则**: 适用范围内的 artifact 文件名必须符合以下正则：
 
 ```
 ^[a-z]+_[a-z_]+(_\d{3})?_v\d+\.(json|tex|jsonl)$
@@ -514,7 +520,9 @@ pnpm --filter @nullius/hep-mcp test -- tests/contracts/jsonlStderrLogging.test.t
 
 ### ART-02: 版本化双标记
 
-**规则**: 所有持久化 artifact 必须同时使用：
+**适用范围**: 同 ART-01（provider 研究输出用顶层 `version` 字段，不在此列）。
+
+**规则**: 适用范围内的持久化 artifact 必须同时使用：
 1. 文件名 `_v{N}` 后缀
 2. JSON 内 `schema_version: N` 字段（顶层第一个字段）
 
@@ -522,12 +530,12 @@ pnpm --filter @nullius/hep-mcp test -- tests/contracts/jsonlStderrLogging.test.t
 
 **CI 验证**:
 ```bash
-# 当前没有独立的 repo-local artifact-version linter。
-# 先由 codegen / artifact contract tests 保持该约束。
-make codegen-check
+# 当前没有检查 artifact 文件名与 schema_version 一致性的自动检查；
+# make codegen-check 只保证由 meta/schemas 生成的类型代码没有漂移。
+# 新 artifact 的版本双标记在评审时核对。
 ```
 
-**违规行为**: **fail-closed** — 版本不一致阻断 CI
+**违规行为**: 评审中发现的版本不一致应在合入前改正
 
 ### ART-03: 原子写入
 
@@ -881,7 +889,7 @@ if (internal.length) { console.error('PLUG-01:', internal); process.exit(1); }
 | | LOG-03 Ledger 事件枚举 | fail-closed | lint 检查 |
 | | LOG-04 日志脱敏 | fail-closed | secrets 模式 grep |
 | **ART** | ART-01 命名规范 | fail-open（review 阻断） | 评审核对 |
-| | ART-02 版本化双标记 | fail-closed | 一致性检查 |
+| | ART-02 版本化双标记 | fail-open（review 阻断） | 评审核对 |
 | | ART-03 原子写入 | fail-closed | lint: writeFile 检查 |
 | | ART-04 载荷大小限制 | fail-closed | 集成测试 |
 | | ART-05 完整性验证 | fail-closed | 契约测试 |

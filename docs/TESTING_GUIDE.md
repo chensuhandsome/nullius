@@ -275,6 +275,7 @@ EOF
 - 返回的 `export_path` / `meta_path` 是项目相对路径，指向 `output_dir` 下真实存在的文件
 - `<output_dir>/external_api/` 下有本次调用的外部 API 请求/响应记录，`output_dir` 下另有 `inspire_search_export_<hash>_diagnostics.json`
 - 返回的文件位置都是项目相对路径，不含 `hep://` URI
+- 用同一 `output_dir` 原样再调用一次：被拒绝（提示文件已存在），且在任何 INSPIRE 请求之前；第一次写出的文件字节不变
 
 ### 2.4 `output_dir` 拒绝条件
 
@@ -289,6 +290,7 @@ EOF
 **预期**
 
 - 每种情况都被拒绝，且拒绝前不在项目内写出任何输出文件
+- 调用中途失败（如 INSPIRE 返回畸形记录）时，`output_dir` 下不留下本次调用的任何文件（已建的目录可留下）
 - 经 project root 的别名（例如指向同一目录的上层符号链接）拼写的绝对 `output_dir` 仍被接受，返回的仍是项目相对路径
 
 ---

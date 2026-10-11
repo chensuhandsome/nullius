@@ -59,7 +59,7 @@ Review paper handling via \`review_mode\`:
 - exclude: remove only explicitly classified review papers; uncertain cases stay visible
 - deprioritize/separate: move explicit review papers to the end and keep uncertain cases in the main set
 
-File export: with output_dir (requires project_root), up to max_results records are written into that directory inside the project (same as hep_inspire_search_export) and the call returns project-relative paths instead of the records.
+File export: with output_dir (requires project_root), up to max_results records (default 10000, at most 10000; pages of size, default 1000) are written into that directory inside the project (same as hep_inspire_search_export) and the call returns project-relative paths instead of the records. A call never replaces an existing file.
 
 Example combined query: "a:Feng.Kun.Guo.1 topcite:250+ authorcount:1->10"`,
     zodSchema: InspireSearchToolSchema,
@@ -89,6 +89,9 @@ Example combined query: "a:Feng.Kun.Guo.1 topcite:250+ authorcount:1->10"`,
           throw invalidParams('inspire_search with output_dir exports to files; page, review_mode and Markdown format do not apply', {
             inapplicable_params: inapplicable,
           });
+        }
+        if (maxResultsProvided && params.max_results > 10_000) {
+          throw invalidParams('a file export takes at most max_results=10000', { max_results: params.max_results });
         }
         const sizeProvided = Object.prototype.hasOwnProperty.call(raw, 'size');
         return hepInspireSearchExport({

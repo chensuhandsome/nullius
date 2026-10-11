@@ -3,14 +3,13 @@ import { createHash } from 'crypto';
 import { invalidParams, PaperSummarySchema } from '@nullius/shared';
 
 import * as api from '../../api/client.js';
+import type { SearchResult } from '../../api/client.js';
 import { BudgetTrackerV1, writeOutputDiagnosticsArtifact } from '../diagnostics.js';
 import { cachedExternalApiJsonCall } from '../cache/externalApiCache.js';
 import {
-  assertDistinctOutputNames,
-  openOutputStream,
+  OutputBatch,
   outputArtifactRef,
   resolveOutputDir,
-  writeOutputJson,
   type OutputArtifactRef,
 } from '../outputDir.js';
 
@@ -68,7 +67,7 @@ function preprocessQuery(query: string): string {
  * A search page from the cache or INSPIRE, checked field by field before any
  * record is written; anything malformed aborts the export (fail-fast).
  */
-function searchPage<T>(response: T, operation: string): T {
+function searchPage(response: unknown, operation: string): SearchResult {
   const malformed = (detail: string): never => {
     throw invalidParams(`INSPIRE ${operation} returned a malformed search page (fail-fast): ${detail}`, { operation });
   };
@@ -85,7 +84,7 @@ function searchPage<T>(response: T, operation: string): T {
   (papers as unknown[]).forEach((paper, index) => {
     if (!PaperSummarySchema.safeParse(paper).success) malformed(`papers[${index}] is not a paper record`);
   });
-  return response;
+  return response as SearchResult;
 }
 
 type ExternalApiCallIndexItemV1 = {
@@ -182,69 +181,77 @@ export async function hepInspireSearchExport(params: {
     meta_artifact_name: params.meta_artifact_name,
   });
 
-  const exportRef = outputArtifactRef(
-    output,
-    exportName,
-    outputFormat === 'jsonl' ? 'application/x-ndjson' : 'application/json'
-  );
-
   let exported = 0;
   let pagesFetched = 0;
   let total = 0;
+  let largestTotal = 0;
   let nextUrl: string | undefined;
   let truncatedMidPage = false;
   const externalApiCalls: ExternalApiCallIndexItemV1[] = [];
+  const visitedUrls = new Set<string>();
+  const paginationContradiction = (detail: string): never => {
+    throw invalidParams(`INSPIRE search pagination is inconsistent (fail-fast): ${detail}`, { query, pages_fetched: pagesFetched });
+  };
 
   const externalApiCallsName = `external_api_calls_inspire_search_export_${exportKeyHash}.json`;
-  assertDistinctOutputNames({
+  const batch = new OutputBatch(output);
+  batch.reserve({
     artifact_name: exportName,
     meta_artifact_name: metaName,
     diagnostics: diagnosticsName,
     external_api_calls: externalApiCallsName,
   });
 
-  const exportFile = openOutputStream(output, exportName);
-  const out = exportFile.stream;
-  let wroteAny = false;
-
-  const writeItem = (paper: unknown) => {
-    if (outputFormat === 'jsonl') {
-      out.write(`${JSON.stringify(paper)}\n`);
-      return;
-    }
-
-    if (wroteAny) out.write(',\n');
-    out.write(JSON.stringify(paper));
-    wroteAny = true;
-  };
-
   try {
-    if (outputFormat === 'json') {
-      out.write('[\n');
-    }
+    const exportFile = batch.stream(exportName, outputFormat === 'jsonl' ? 'application/x-ndjson' : 'application/json');
+    const out = exportFile.stream;
+    let wroteAny = false;
 
-    let pageRes = await (async () => {
+    const writeItem = (paper: unknown) => {
+      if (outputFormat === 'jsonl') {
+        out.write(`${JSON.stringify(paper)}\n`);
+        return;
+      }
+
+      if (wroteAny) out.write(',\n');
+      out.write(JSON.stringify(paper));
+      wroteAny = true;
+    };
+
+    const fetchPage = async (operation: 'search' | 'searchByUrl', request: Record<string, unknown>, fetch: () => Promise<unknown>) => {
       const cached = await cachedExternalApiJsonCall({
-        output,
+        batch,
         namespace: 'inspire',
-        operation: 'search',
-        request: { query, sort: params.sort ?? null, size: pageSize, page: 1 },
-        fetch: () => api.search(query, { sort: params.sort, size: pageSize, page: 1 }),
+        operation,
+        request,
+        fetch,
+        validate: response => searchPage(response, operation),
       });
       const [requestRef, responseRef] = cached.artifacts;
       externalApiCalls.push({
         version: 1,
         namespace: 'inspire',
-        operation: 'search',
+        operation,
         request_hash: cached.request_hash,
         cache_hit: cached.cache_hit,
         cached_response_uri: cached.cached_response_uri,
         request_path: requestRef.path,
         response_path: responseRef.path,
       });
-      return searchPage(cached.response, 'search');
-    })();
-    pagesFetched += 1;
+      pagesFetched += 1;
+      largestTotal = Math.max(largestTotal, cached.response.total);
+      return cached.response;
+    };
+
+    if (outputFormat === 'json') {
+      out.write('[\n');
+    }
+
+    let pageRes = await fetchPage(
+      'search',
+      { query, sort: params.sort ?? null, size: pageSize, page: 1 },
+      () => api.search(query, { sort: params.sort, size: pageSize, page: 1 }),
+    );
     total = pageRes.total;
 
     if (pageRes.warning) {
@@ -254,13 +261,15 @@ export async function hepInspireSearchExport(params: {
 
     while (true) {
       const remaining = maxResults - exported;
-      const batch = pageRes.papers.slice(0, Math.max(0, remaining));
-      for (const paper of batch) {
+      const page = pageRes.papers.slice(0, Math.max(0, remaining));
+      for (const paper of page) {
         writeItem(paper);
         exported += 1;
       }
+      // More records than INSPIRE reported in total means pages repeated.
+      if (exported > largestTotal) paginationContradiction(`exported ${exported} records but the reported total is ${largestTotal}`);
 
-      if (pageRes.papers.length > batch.length) {
+      if (pageRes.papers.length > page.length) {
         truncatedMidPage = true;
       }
 
@@ -271,124 +280,106 @@ export async function hepInspireSearchExport(params: {
       if (!nextUrl) break;
 
       const url = nextUrl;
-      pageRes = await (async () => {
-        const cached = await cachedExternalApiJsonCall({
-          output,
-          namespace: 'inspire',
-          operation: 'searchByUrl',
-          request: { url },
-          fetch: () => api.searchByUrl(url),
-        });
-        const [requestRef, responseRef] = cached.artifacts;
-        externalApiCalls.push({
-          version: 1,
-          namespace: 'inspire',
-          operation: 'searchByUrl',
-          request_hash: cached.request_hash,
-          cache_hit: cached.cache_hit,
-          cached_response_uri: cached.cached_response_uri,
-          request_path: requestRef.path,
-          response_path: responseRef.path,
-        });
-        return searchPage(cached.response, 'searchByUrl');
-      })();
-      pagesFetched += 1;
+      if (visitedUrls.has(url)) paginationContradiction('a page points back to an earlier page');
+      visitedUrls.add(url);
+      pageRes = await fetchPage('searchByUrl', { url }, () => api.searchByUrl(url));
       if (pageRes.papers.length === 0) break;
     }
 
     if (outputFormat === 'json') {
       out.write('\n]\n');
     }
-  } catch (err) {
-    exportFile.abort();
-    throw err;
-  }
 
-  await exportFile.commit();
+    const exportRef = await exportFile.finish();
+    const hasMore = Boolean(nextUrl) && total > exported;
 
-  const hasMore = Boolean(nextUrl) && total > exported;
+    if (total > exported) {
+      const msg = `INSPIRE search export truncated at max_results=${maxResults} (total=${total}, exported=${exported}).`;
+      warnings.push(msg);
+      budget.recordHit({
+        key: 'inspire.search_export.max_results',
+        dimension: 'breadth',
+        unit: 'items',
+        limit: maxResults,
+        observed: total,
+        action: 'truncate',
+        message: msg,
+        data: { total, exported, truncated_mid_page: truncatedMidPage },
+      });
+    }
 
-  if (total > exported) {
-    const msg = `INSPIRE search export truncated at max_results=${maxResults} (total=${total}, exported=${exported}).`;
-    warnings.push(msg);
-    budget.recordHit({
-      key: 'inspire.search_export.max_results',
-      dimension: 'breadth',
-      unit: 'items',
-      limit: maxResults,
-      observed: total,
-      action: 'truncate',
-      message: msg,
-      data: { total, exported, truncated_mid_page: truncatedMidPage },
+    if (truncatedMidPage) {
+      const msg = 'Export stopped mid-page due to max_results; rerun with a higher max_results to avoid partial pagination.';
+      warnings.push(msg);
+      budget.warn({ severity: 'warning', code: 'pagination_mid_page_truncation', message: msg });
+    }
+
+    artifacts.push(exportRef);
+
+    const externalApiCallsRef = batch.json(externalApiCallsName, {
+      version: 1,
+      generated_at: nowIso(),
+      output_dir: output.relative,
+      calls: externalApiCalls,
+      stats: {
+        calls_total: externalApiCalls.length,
+        cache_hits: externalApiCalls.filter(c => c.cache_hit).length,
+        cache_misses: externalApiCalls.filter(c => !c.cache_hit).length,
+      },
     });
-  }
+    artifacts.push(externalApiCallsRef);
 
-  if (truncatedMidPage) {
-    const msg = 'Export stopped mid-page due to max_results; rerun with a higher max_results to avoid partial pagination.';
-    warnings.push(msg);
-    budget.warn({ severity: 'warning', code: 'pagination_mid_page_truncation', message: msg });
-  }
+    const diag = writeOutputDiagnosticsArtifact({
+      batch,
+      operation: 'inspire_search_export',
+      artifact_name: diagnosticsName,
+      ...budget.snapshot(),
+    });
+    artifacts.push(diag.ref);
 
-  artifacts.push(exportRef);
-
-  const externalApiCallsRef = writeOutputJson(output, externalApiCallsName, {
-    version: 1,
-    generated_at: nowIso(),
-    output_dir: output.relative,
-    calls: externalApiCalls,
-    stats: {
-      calls_total: externalApiCalls.length,
-      cache_hits: externalApiCalls.filter(c => c.cache_hit).length,
-      cache_misses: externalApiCalls.filter(c => !c.cache_hit).length,
-    },
-  });
-  artifacts.push(externalApiCallsRef);
-
-  const diag = writeOutputDiagnosticsArtifact({
-    output,
-    operation: 'inspire_search_export',
-    artifact_name: diagnosticsName,
-    ...budget.snapshot(),
-  });
-  artifacts.push(diag.ref);
-
-  const metaPayload: InspireSearchExportMetaV1 = {
-    version: 1,
-    generated_at: nowIso(),
-    output_dir: output.relative,
-    query,
-    sort: params.sort,
-    page_size: pageSize,
-    max_results: maxResults,
-    output_format: outputFormat,
-    total,
-    exported,
-    pages_fetched: pagesFetched,
-    has_more: hasMore,
-    next_url: hasMore ? nextUrl : undefined,
-    warnings,
-    artifacts: {
-      export_path: exportRef.path,
-      meta_path: outputArtifactRef(output, metaName, 'application/json').path,
-      diagnostics_path: diag.ref.path,
-    },
-  };
-
-  const metaRef = writeOutputJson(output, metaName, metaPayload);
-  artifacts.push(metaRef);
-
-  return {
-    output_dir: output.relative,
-    artifacts,
-    export_path: exportRef.path,
-    meta_path: metaRef.path,
-    summary: {
+    const metaPayload: InspireSearchExportMetaV1 = {
+      version: 1,
+      generated_at: nowIso(),
+      output_dir: output.relative,
+      query,
+      sort: params.sort,
+      page_size: pageSize,
+      max_results: maxResults,
+      output_format: outputFormat,
       total,
       exported,
       pages_fetched: pagesFetched,
       has_more: hasMore,
-      warnings_total: warnings.length,
-      warnings: warnings.slice(0, 20),
-    },
-  };
+      next_url: hasMore ? nextUrl : undefined,
+      warnings,
+      artifacts: {
+        export_path: exportRef.path,
+        meta_path: outputArtifactRef(output, metaName, 'application/json').path,
+        diagnostics_path: diag.ref.path,
+      },
+    };
+
+    const metaRef = batch.json(metaName, metaPayload);
+    artifacts.push(metaRef);
+
+    await batch.publish();
+
+    return {
+      output_dir: output.relative,
+      artifacts,
+      export_path: exportRef.path,
+      meta_path: metaRef.path,
+      summary: {
+        total,
+        exported,
+        pages_fetched: pagesFetched,
+        has_more: hasMore,
+        warnings_total: warnings.length,
+        warnings: warnings.slice(0, 20),
+      },
+    };
+  } catch (err) {
+    batch.discard();
+    throw err;
+  }
 }

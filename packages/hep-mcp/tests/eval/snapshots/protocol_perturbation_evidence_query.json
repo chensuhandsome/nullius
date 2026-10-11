@@ -8,8 +8,8 @@
     "partialProgressMean": 1
   },
   "aggregateMetrics": {
-    "canonical_success_retained": 2,
-    "acceptable_fail_closed_rejection": 1,
+    "canonical_success_retained": 1,
+    "acceptable_fail_closed_rejection": 2,
     "overfit_failure": 0,
     "bad_shortcut_success": 0
   },
@@ -24,12 +24,12 @@
       "next_action_tools": []
     },
     {
-      "caseId": "lexical_budget_noise_falls_back",
+      "caseId": "lexical_budget_noise_fail_closed",
       "passed": true,
-      "classification": "canonical_success_retained",
+      "classification": "acceptable_fail_closed_rejection",
       "canonical_ok": true,
-      "perturbed_ok": true,
-      "perturbed_error_code": null,
+      "perturbed_ok": false,
+      "perturbed_error_code": "INVALID_PARAMS",
       "next_action_tools": []
     },
     {

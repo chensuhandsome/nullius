@@ -1,6 +1,6 @@
 import { writeJsonAtomicDurable, type RunArtifactRef } from '@nullius/shared';
 import { getProjectArtifactPath } from './paths.js';
-import { writeOutputJson, type OutputArtifactRef, type OutputDir } from './outputDir.js';
+import type { OutputArtifactRef, OutputBatch } from './outputDir.js';
 
 // hep-mcp legacy JSON convention: no trailing newline; preserve byte-equality.
 const stringifyNoTrailingNewline = (payload: unknown): string =>
@@ -181,9 +181,9 @@ export class BudgetTrackerV1 {
   }
 }
 
-/** Budget and warning record of one tool call, written into its output directory. */
+/** Budget and warning record of one tool call, staged in its output batch. */
 export function writeOutputDiagnosticsArtifact(params: {
-  output: OutputDir;
+  batch: OutputBatch;
   operation: string;
   artifact_name: string;
   budgets: BudgetEntryV1[];
@@ -194,12 +194,12 @@ export function writeOutputDiagnosticsArtifact(params: {
     version: 1,
     generated_at: nowIso(),
     operation: params.operation,
-    output_dir: params.output.relative,
+    output_dir: params.batch.out.relative,
     budgets: params.budgets,
     hits: params.hits,
     warnings: params.warnings,
   };
-  return { ref: writeOutputJson(params.output, params.artifact_name, payload), payload };
+  return { ref: params.batch.json(params.artifact_name, payload), payload };
 }
 
 export interface ProjectDiagnosticsArtifactV1 {

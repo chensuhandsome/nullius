@@ -16,7 +16,7 @@ import {
   INSPIRE_VALIDATE_BIBLIOGRAPHY,
 } from '@nullius/shared';
 import { notFound } from '@nullius/shared';
-import { resolveOutputDir, writeOutputJson } from '../../core/outputDir.js';
+import { OutputBatch, resolveOutputDir } from '../../core/outputDir.js';
 import type { ToolSpec } from './types.js';
 import {
   FindConnectionsToolSchema,
@@ -56,6 +56,8 @@ export const RAW_INSPIRE_RESEARCH_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
       const artifactName = `parse_latex_${hash}.json`;
       const generatedAt = new Date().toISOString();
       const output = resolveOutputDir(params.output_dir);
+      const batch = new OutputBatch(output);
+      batch.reserve({ artifact_name: artifactName });
 
       try {
         const result = await parseLatexContent({
@@ -65,7 +67,7 @@ export const RAW_INSPIRE_RESEARCH_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
           ...(ctx.createMessage ? { _mcp: { createMessage: ctx.createMessage } } : {}),
         });
 
-        const ref = writeOutputJson(output, artifactName, {
+        const ref = batch.json(artifactName, {
           version: 1,
           generated_at: generatedAt,
           output_dir: output.relative,
@@ -77,6 +79,7 @@ export const RAW_INSPIRE_RESEARCH_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
           },
           result,
         });
+        await batch.publish();
 
         return {
           path: ref.path,
@@ -94,6 +97,7 @@ export const RAW_INSPIRE_RESEARCH_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
           },
         };
       } catch (err) {
+        batch.discard();
         if (isNoLatexSourceError(err)) {
           const message = err instanceof Error ? err.message : String(err);
           throw notFound(message, {

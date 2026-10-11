@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import { commitStagedDurable, invalidParams, respellUnderDirectory, unsafeFs } from '@nullius/shared';
+import { fsyncParentDirectoryDurable, invalidParams, respellUnderDirectory, unsafeFs } from '@nullius/shared';
 
 import { getDataRootInfo } from '../data/dataDir.js';
 import { isPathInside } from '../data/pathGuard.js';
@@ -184,7 +184,7 @@ export function outputFilePath(out: OutputDir, name: string): string {
 
 /**
  * How a file system may identify a name: Unicode-normalized and case-folded,
- * the conservative reading (macOS and Windows file systems ignore both).
+ * the conservative reading (the default macOS file systems ignore both).
  */
 function nameKey(name: string): string {
   return name.normalize('NFC').toLowerCase();
@@ -213,6 +213,8 @@ export function outputArtifactRef(out: OutputDir, name: string, mimeType: string
 
 type FileIdentity = { dev: number; ino: number };
 
+type StagedFile = { name: string; temp: string; target: string; identity: FileIdentity };
+
 /** A fresh, unpredictable staging name beside the target. */
 function stagingPath(target: string): string {
   return path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${randomUUID()}.tmp`);
@@ -224,122 +226,166 @@ function isSameFile(filePath: string, identity: FileIdentity): boolean {
 }
 
 /**
- * Remove a staging file, but only while it is still the file this write
- * created, reached through the same real directories. If anything was
- * swapped meanwhile, nothing is deleted through the new path and the file
- * stays where it was created.
+ * Remove `file` (the staging file or the published file of output `name`),
+ * but only while it is still the file with `identity`, reached through the
+ * same real directories. If anything was swapped meanwhile, nothing is
+ * deleted through the new path and the file stays where it was created.
  */
-function removeStaged(out: OutputDir, temp: string, identity: FileIdentity | null): void {
+function removeIfSame(out: OutputDir, name: string, file: string, identity: FileIdentity | null): void {
   if (identity === null) return;
   try {
-    realDirectoryChain(out.projectRoot, out.relative.split('/'), 'output_dir', out.projectRoot, false);
-    if (isSameFile(temp, identity)) fs.unlinkSync(temp);
+    const chain = [...out.relative.split('/'), ...name.split('/').slice(0, -1)];
+    realDirectoryChain(out.projectRoot, chain, 'output_dir', out.projectRoot, false);
+    if (isSameFile(file, identity)) fs.unlinkSync(file);
   } catch { /* leave it in place */ }
 }
 
+function existingOutputError(out: OutputDir, name: string): Error {
+  return invalidParams(
+    `output file '${name}' already exists in output_dir; a call never replaces earlier outputs: choose another output_dir or artifact name, or remove the earlier file`,
+    { project_root: out.projectRoot, output_dir: out.relative, artifact_name: name },
+  );
+}
+
 /**
- * Replace the target with the staging file this write created: the
- * directory chain and target are checked again, and the staging file must
- * still be the very file that was written (same identity), so a replaced
- * staging file is never committed. On failure the staging file is removed
- * under the same identity rule.
+ * The files one tool call writes into its output directory.
+ *
+ * Each file is first written in full to its own staging file beside its
+ * final name (created exclusively under an unpredictable name, so an
+ * existing entry, symlink or not, is never opened or followed) and flushed
+ * to disk; no final name appears before `publish`. `publish` then links
+ * every staged file to its final name, never replacing an existing entry:
+ * if any final name is taken, the call fails and the files this batch had
+ * already published are removed. A call therefore leaves either all of its
+ * files or none of them, and never changes a file that an earlier call
+ * wrote, so a result cited elsewhere keeps its bytes. Directories created
+ * on the way remain. A crash in the middle of `publish` can leave part of
+ * the set; a later call naming those files is then refused rather than
+ * mixed with them.
+ *
+ * The directory chain from the project root is checked again before every
+ * staging file is created and before every link; a staging or published
+ * file is removed only while it is still the file this batch wrote (same
+ * device and inode).
  */
-function commitStaged(out: OutputDir, name: string, temp: string, target: string, identity: FileIdentity | null): void {
-  try {
-    outputFilePath(out, name);
-    if (identity === null || !isSameFile(temp, identity)) {
-      throw unsafeFs('staged output file was replaced or is unknown; refusing to commit it', {
-        project_root: out.projectRoot,
-        path: temp,
-      });
+export class OutputBatch {
+  private readonly staged: StagedFile[] = [];
+  private readonly claimed = new Set<string>();
+  private readonly unfinished = new Set<() => void>();
+  private closed = false;
+
+  constructor(readonly out: OutputDir) {}
+
+  /**
+   * Check, before any provider work, that the names this call will write
+   * are mutually distinct (as a file system may compare them) and not yet
+   * taken in the output directory.
+   */
+  reserve(names: Record<string, string>): void {
+    assertDistinctOutputNames(names);
+    for (const name of Object.values(names)) {
+      if (lstatOrNull(outputFilePath(this.out, name)) !== null) throw existingOutputError(this.out, name);
     }
-    commitStagedDurable(temp, target);
-  } catch (error) {
-    removeStaged(out, temp, identity);
-    throw error;
   }
-}
 
-/**
- * Write serialized bytes durably. The staging file is created exclusively
- * under an unpredictable name (an existing entry, symlink or not, is never
- * opened or followed), flushed to disk, and committed under the identity
- * rule of `commitStaged`. The path is checked before the staging file is
- * created and again before it replaces the target.
- */
-function writeOutputBytes(out: OutputDir, name: string, bytes: string): void {
-  const target = outputFilePath(out, name);
-  const temp = stagingPath(target);
-  const fd = fs.openSync(temp, 'wx');
-  let identity: FileIdentity | null = null;
-  try {
-    const stat = fs.fstatSync(fd);
-    identity = { dev: stat.dev, ino: stat.ino };
-    const buffer = Buffer.from(bytes, 'utf-8');
-    let offset = 0;
-    while (offset < buffer.length) offset += fs.writeSync(fd, buffer, offset, buffer.length - offset);
-    fs.fsyncSync(fd);
-  } catch (error) {
-    fs.closeSync(fd);
-    removeStaged(out, temp, identity);
-    throw error;
+  /** Whether this batch already holds output `name`. */
+  has(name: string): boolean {
+    return this.claimed.has(nameKey(name));
   }
-  fs.closeSync(fd);
-  commitStaged(out, name, temp, target, identity);
-}
 
-export function writeOutputJson(out: OutputDir, name: string, data: unknown): OutputArtifactRef {
-  // Serialize first, so no time-consuming step separates the check from the write.
-  writeOutputBytes(out, name, JSON.stringify(data, null, 2));
-  return outputArtifactRef(out, name, 'application/json');
-}
+  json(name: string, data: unknown): OutputArtifactRef {
+    // Serialize first, so no time-consuming step separates the check from the write.
+    this.stageBytes(name, JSON.stringify(data, null, 2));
+    return outputArtifactRef(this.out, name, 'application/json');
+  }
 
-export function writeOutputJsonl(out: OutputDir, name: string, rows: unknown[]): OutputArtifactRef {
-  const body = rows.map(row => JSON.stringify(row)).join('\n');
-  writeOutputBytes(out, name, rows.length > 0 ? `${body}\n` : '');
-  return outputArtifactRef(out, name, 'application/x-ndjson');
-}
+  jsonl(name: string, rows: unknown[]): OutputArtifactRef {
+    const body = rows.map(row => JSON.stringify(row)).join('\n');
+    this.stageBytes(name, rows.length > 0 ? `${body}\n` : '');
+    return outputArtifactRef(this.out, name, 'application/x-ndjson');
+  }
 
-/**
- * A streamed output file. Bytes go to a temporary file beside the target,
- * which is flushed to disk and then replaces the target only on `commit`;
- * `abort` removes it. A stream error at any time (opening, writing, or
- * finishing) is held until `commit`, which then rejects with it. On every
- * failure path the temporary file is removed, provided it is still the file
- * this stream created, reached through the same real directories; if the
- * directory was swapped meanwhile, nothing is deleted through the new path
- * and the temporary file stays where it was created.
- */
-export function openOutputStream(out: OutputDir, name: string): {
-  stream: fs.WriteStream;
-  commit: () => Promise<void>;
-  abort: () => void;
-} {
-  const target = outputFilePath(out, name);
-  const temp = stagingPath(target);
-  let created: FileIdentity | null = null;
-  const removeTemp = (): void => removeStaged(out, temp, created);
-  let failure: unknown = null;
-  let aborted = false;
-  const stream = fs.createWriteStream(temp, { encoding: 'utf-8', flags: 'wx' });
-  stream.on('open', fd => {
+  private claim(name: string): string {
+    if (this.closed) throw new Error('Internal: this output batch was already published or discarded');
+    const key = nameKey(name);
+    if (this.claimed.has(key)) {
+      throw invalidParams(`two outputs of this call name the same file '${name}'`, { artifact_name: name });
+    }
+    const target = outputFilePath(this.out, name);
+    if (lstatOrNull(target) !== null) throw existingOutputError(this.out, name);
+    this.claimed.add(key);
+    return target;
+  }
+
+  private stageBytes(name: string, bytes: string): void {
+    const target = this.claim(name);
+    const temp = stagingPath(target);
+    const fd = fs.openSync(temp, 'wx');
+    let identity: FileIdentity | null = null;
+    let failure: unknown = null;
+    try {
+      const stat = fs.fstatSync(fd);
+      identity = { dev: stat.dev, ino: stat.ino };
+      const buffer = Buffer.from(bytes, 'utf-8');
+      let offset = 0;
+      while (offset < buffer.length) offset += fs.writeSync(fd, buffer, offset, buffer.length - offset);
+      fs.fsyncSync(fd);
+    } catch (error) {
+      failure = error;
+    }
+    try {
+      fs.closeSync(fd);
+    } catch (error) {
+      failure ??= error;
+    }
+    if (failure !== null || identity === null) {
+      removeIfSame(this.out, name, temp, identity);
+      throw failure;
+    }
+    this.staged.push({ name, temp, target, identity });
+  }
+
+  /**
+   * A streamed output file, staged like the others. The staging file is
+   * created (exclusively) and identified before the stream exists, so it can
+   * be removed at any moment, whatever the stream is doing. A stream error
+   * while writing or finishing is held until `finish`, which then rejects
+   * with it; on every failure path the staging file is removed under the
+   * identity rule.
+   */
+  stream(name: string, mimeType: string): { stream: fs.WriteStream; finish: () => Promise<OutputArtifactRef> } {
+    const target = this.claim(name);
+    const temp = stagingPath(target);
+    const fd = fs.openSync(temp, 'wx');
+    let created: FileIdentity;
     try {
       const stat = fs.fstatSync(fd);
       created = { dev: stat.dev, ino: stat.ino };
-    } catch { /* identity unknown: never delete */ }
-    // Aborted before the file existed: remove it now that it does.
-    if (aborted) removeTemp();
-  });
-  // Listen from the start: an error while the caller is still producing
-  // bytes must neither go unhandled nor leave the temporary file behind.
-  stream.on('error', error => {
-    failure ??= error;
-    removeTemp();
-  });
-  return {
-    stream,
-    commit: () => new Promise<void>((resolve, reject) => {
+    } catch (error) {
+      // Identity unknown: the file is closed but never deleted.
+      try { fs.closeSync(fd); } catch { /* the fstat failure is reported */ }
+      throw error;
+    }
+    let failure: unknown = null;
+    let aborted = false;
+    const removeTemp = (): void => removeIfSame(this.out, name, temp, created);
+    const stream = fs.createWriteStream(temp, { fd, encoding: 'utf-8' });
+    const abort = (): void => {
+      aborted = true;
+      this.unfinished.delete(abort);
+      try { stream.destroy(); } catch { /* best effort */ }
+      removeTemp();
+    };
+    this.unfinished.add(abort);
+    // Listen from the start: an error while the caller is still producing
+    // bytes must neither go unhandled nor leave the staging file behind.
+    stream.on('error', error => {
+      failure ??= error;
+      removeTemp();
+    });
+    const finish = (): Promise<OutputArtifactRef> => new Promise<OutputArtifactRef>((resolve, reject) => {
       const fail = (error: unknown): void => {
+        this.unfinished.delete(abort);
         removeTemp();
         reject(error);
       };
@@ -347,31 +393,112 @@ export function openOutputStream(out: OutputDir, name: string): {
         fail(failure);
         return;
       }
+      // A discarded stream never finishes; say so instead of waiting forever.
+      if (aborted) {
+        fail(new Error('Internal: this output stream was discarded before it finished'));
+        return;
+      }
+      // A stream destroyed by an error reports that error once it has closed.
+      if (stream.destroyed) {
+        const settle = (): void => fail(failure ?? new Error('Internal: this output stream closed before it finished'));
+        if (stream.closed) settle();
+        else stream.once('close', settle);
+        return;
+      }
       stream.once('error', fail);
       stream.once('finish', () => {
         stream.off('error', fail);
+        let flushFailure: unknown = null;
         try {
-          // Flush the file this stream wrote (checked by identity), then
-          // commit it under the identity rule.
-          const fd = fs.openSync(temp, 'r');
+          // Flush the file this stream wrote (checked by identity).
+          const readFd = fs.openSync(temp, 'r');
           try {
-            const stat = fs.fstatSync(fd);
-            if (created !== null && stat.dev === created.dev && stat.ino === created.ino) fs.fsyncSync(fd);
-          } finally {
-            fs.closeSync(fd);
+            const stat = fs.fstatSync(readFd);
+            if (stat.dev !== created.dev || stat.ino !== created.ino) {
+              throw unsafeFs('staged output file was replaced or is unknown; refusing to keep it', {
+                project_root: this.out.projectRoot,
+                path: temp,
+              });
+            }
+            fs.fsyncSync(readFd);
+          } catch (error) {
+            flushFailure = error;
           }
-          commitStaged(out, name, temp, target, created);
-          resolve();
+          try {
+            fs.closeSync(readFd);
+          } catch (error) {
+            flushFailure ??= error;
+          }
         } catch (error) {
-          fail(error);
+          flushFailure ??= error;
         }
+        if (flushFailure !== null) {
+          fail(flushFailure);
+          return;
+        }
+        this.unfinished.delete(abort);
+        this.staged.push({ name, temp, target, identity: created });
+        resolve(outputArtifactRef(this.out, name, mimeType));
       });
       stream.end();
-    }),
-    abort: () => {
-      aborted = true;
-      try { stream.destroy(); } catch { /* best effort */ }
-      removeTemp();
-    },
-  };
+    });
+    return { stream, finish };
+  }
+
+  /**
+   * Link every staged file to its final name, never replacing an entry; on
+   * any failure remove what this batch published and its staging files.
+   */
+  async publish(): Promise<void> {
+    if (this.unfinished.size > 0) throw new Error('Internal: an output stream of this call was not finished');
+    if (this.closed) throw new Error('Internal: this output batch was already published or discarded');
+    this.closed = true;
+    const published: StagedFile[] = [];
+    try {
+      for (const file of this.staged) {
+        outputFilePath(this.out, file.name);
+        if (lstatOrNull(file.target) !== null) throw existingOutputError(this.out, file.name);
+        if (!isSameFile(file.temp, file.identity)) {
+          throw unsafeFs('staged output file was replaced; refusing to publish it', {
+            project_root: this.out.projectRoot,
+            path: file.temp,
+          });
+        }
+        try {
+          fs.linkSync(file.temp, file.target);
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === 'EEXIST') throw existingOutputError(this.out, file.name);
+          if (code === 'ENOTSUP' || code === 'EOPNOTSUPP' || code === 'ENOSYS') {
+            throw unsafeFs('output_dir is on a file system without hard links, which publishing outputs without replacing files needs', {
+              project_root: this.out.projectRoot,
+              output_dir: this.out.relative,
+              error: (error as Error).message,
+            });
+          }
+          throw error;
+        }
+        published.push(file);
+      }
+      // Make the new directory entries durable: one flush per directory.
+      const oneFilePerDirectory = new Map(this.staged.map(file => [path.dirname(file.target), file.target]));
+      for (const target of oneFilePerDirectory.values()) fsyncParentDirectoryDurable(target);
+    } catch (error) {
+      for (const file of published) removeIfSame(this.out, file.name, file.target, file.identity);
+      this.removeStagedFiles();
+      throw error;
+    }
+    this.removeStagedFiles();
+  }
+
+  /** Drop everything this batch staged; nothing is published. */
+  discard(): void {
+    this.closed = true;
+    for (const abort of [...this.unfinished]) abort();
+    this.removeStagedFiles();
+  }
+
+  private removeStagedFiles(): void {
+    for (const file of this.staged) removeIfSame(this.out, file.name, file.temp, file.identity);
+  }
 }

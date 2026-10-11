@@ -24,6 +24,10 @@ Environment variables follow a strict priority chain (highest → lowest):
 | `HEP_ENABLE_ZOTERO` | boolean | `true` | Enable/disable Zotero Local API integration | hep-mcp |
 | `HEP_DEBUG` | comma-separated | (none) | Enable debug logging for specific categories (e.g. `cache,evidence`) | hep-mcp |
 | `HEP_ENABLE_TOOL_USAGE_TELEMETRY` | boolean | (unset) | Enable tool call telemetry artifacts and summaries | hep-mcp |
+| `HEP_BUDGET_INSPIRE_SEARCH_PAGE_SIZE` | int, 1–1000 | `1000` | Page size of an INSPIRE search export when the call gives no `size` (`hep_inspire_search_export` always passes its own value; `inspire_search` with `output_dir` uses this). Out-of-range values are clamped; the value used is recorded in the export's diagnostics | hep-mcp |
+| `HEP_BUDGET_INSPIRE_SEARCH_MAX_RESULTS` | int, 1–10000 | `10000` | Most records of an INSPIRE search export when the call gives no `max_results` (as above). Out-of-range values are clamped; the value used is recorded in the export's diagnostics | hep-mcp |
+| `HEP_BUDGET_CONCURRENCY` | int, 1–16 | `4` | Parallel requests of `hep_import_from_zotero` and `hep_project_query_evidence` when the call gives no `concurrency` | hep-mcp |
+| `HEP_BUDGET_EVIDENCE_MAX_PARAGRAPH_LENGTH` | int, ≥ 0 | `0` (no limit) | Paragraph length limit of `hep_project_build_evidence` when the call gives none | hep-mcp |
 
 ### Runtime / Sampling (`hep-mcp`)
 

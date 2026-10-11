@@ -472,7 +472,8 @@ describe('a removed include_explanation argument is refused rather than silently
       });
       const error = errorOf(result);
       expect(error.code).toBe('INVALID_PARAMS');
-      expect(error.message).toMatch(/include_explanation is no longer supported/);
+      // Refused by the strict schema as an unrecognized argument.
+      expect(result.content[0]!.text).toContain('include_explanation');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -493,5 +494,73 @@ describe('a run_id argument is refused rather than silently dropped', () => {
     expect(error.code).toBe('INVALID_PARAMS');
     expect(error.message).toMatch(/run_id is not accepted/);
     expect(api.search).not.toHaveBeenCalled();
+  });
+});
+
+describe('round-5 argument, name and response checks', () => {
+  let tmpDir: string;
+  let alias: string;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-r5-')));
+    const projectRoot = makeProjectRoot(tmpDir);
+    alias = path.join(tmpDir, 'alias');
+    fs.symlinkSync(projectRoot, alias, 'dir');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['inspire_search', { query: 't:x', ouput_dir: 'out' }],
+    ['hep_inspire_resolve_identifiers', { output_dir: 'out', identifiers: ['1'], meta_name: 'm.json' }],
+    ['hep_inspire_search_export', { output_dir: 'out', query: 't:x', outputformat: 'json' }],
+    ['hep_import_from_zotero', { output_dir: 'out', item_keys: ['ABCD1234'], collection: 'x' }],
+  ])('%s refuses an undeclared (misspelled) argument before any provider call', async (tool, args) => {
+    const result = await handleToolCall(tool, { project_root: alias, ...args });
+    expect(errorOf(result).code).toBe('INVALID_PARAMS');
+    expect(api.search).not.toHaveBeenCalled();
+    expect(api.getPaper).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['hep_inspire_search_export', { query: 't:x', artifact_name: 'same.json', meta_artifact_name: 'same.json' }],
+    ['hep_inspire_resolve_identifiers', { identifiers: ['1'], artifact_name: 'same.json', meta_artifact_name: 'same.json' }],
+  ])('%s refuses output names that collide', async (tool, args) => {
+    const result = await handleToolCall(tool, { project_root: alias, output_dir: 'out', ...args });
+    const error = errorOf(result);
+    expect(error.code).toBe('INVALID_PARAMS');
+    expect(error.message).toMatch(/output file names collide/);
+    expect(api.search).not.toHaveBeenCalled();
+    expect(api.getPaper).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ total: 1, papers: [null], has_more: false }, /papers\[0\]/],
+    [{ total: -1, papers: [], has_more: false }, /total/],
+    [{ total: 1, papers: [], has_more: 'no' }, /has_more/],
+  ])('a search export refuses the malformed page %j', async (page, detail) => {
+    vi.mocked(api.search).mockResolvedValueOnce(page as any);
+    const result = await handleToolCall('hep_inspire_search_export', { project_root: alias, output_dir: 'out', query: 't:x' });
+    const error = errorOf(result);
+    expect(error.message).toMatch(/malformed search page/);
+    expect(error.message).toMatch(detail);
+  });
+
+  it.each([[{}], [[1, 2]], [''], ['12a'], [-3]])('identifier resolution refuses the malformed recid %j', async recid => {
+    vi.mocked(api.getPaper).mockResolvedValue({ recid } as any);
+    const result = await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'out', identifiers: ['123'] });
+    expect(errorOf(result).message).toMatch(/malformed recid/);
+  });
+
+  it('identifier resolution accepts a numeric recid as its digit string', async () => {
+    vi.mocked(api.getPaper).mockResolvedValue({ recid: 456 } as any);
+    const result = await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'out', identifiers: ['123'] });
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(result.content[0]!.text) as { mapping_path: string };
+    const line = JSON.parse(fs.readFileSync(path.join(tmpDir, 'project', payload.mapping_path), 'utf-8').trim()) as { recid: string };
+    expect(line.recid).toBe('456');
   });
 });

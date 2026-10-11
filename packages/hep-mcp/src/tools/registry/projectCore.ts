@@ -1,4 +1,3 @@
-import { invalidParams } from '@nullius/shared';
 import {
   HEP_PROJECT_CREATE,
   HEP_PROJECT_GET,
@@ -119,13 +118,6 @@ export const RAW_PROJECT_CORE_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
     zodSchema: HepProjectQueryEvidenceToolSchema,
     handler: async (params, ctx) => {
       const raw = ctx.rawArgs ?? {};
-      // Retrieval explanations belonged to the removed semantic mode; asking
-      // for one is refused rather than silently answered without it.
-      if (Object.prototype.hasOwnProperty.call(raw, 'include_explanation')) {
-        throw invalidParams('include_explanation is no longer supported: hep_project_query_evidence is lexical only', {
-          removed_param: 'include_explanation',
-        });
-      }
       const concurrencyProvided = Object.prototype.hasOwnProperty.call(raw, 'concurrency');
       return queryProjectEvidence({
         project_id: params.project_id,

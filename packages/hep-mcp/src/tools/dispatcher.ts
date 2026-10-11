@@ -432,7 +432,7 @@ async function handleToolCallInResolvedDataRoot(
     // is refused instead of being silently dropped by schema parsing, which
     // could change what the call does.
     if (Object.prototype.hasOwnProperty.call(cleanArgs, 'run_id')) {
-      throw invalidParams('run_id is not accepted: hep-mcp keeps no runs. Tools that write files take project_root + output_dir; runs belong to the orchestrator.', {
+      throw invalidParams('run_id is not accepted: hep-mcp keeps no runs. Research-output tools take project_root + output_dir; runs belong to the orchestrator.', {
         tool: name,
       });
     }

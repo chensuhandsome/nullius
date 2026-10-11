@@ -14,7 +14,7 @@ It does not replace the research executors. It restores the project state, route
 - `nullius`: generic TS CLI and project lifecycle control plane.
 - `research-team`: milestone execution and multi-agent research progress.
 - `markdown-hygiene`: standalone Markdown math, TOC, and formatting cleanup before research handoff.
-- `hep-mcp`: HEP literature, evidence, INSPIRE/arXiv, bibliography, and search-export tooling (file outputs go into a caller-chosen `output_dir` inside the project; runs stay with `nullius`).
+- `hep-mcp`: HEP literature, evidence, INSPIRE/arXiv, bibliography, and search-export tooling (search exports and other research outputs go into a caller-chosen `output_dir` inside the project, downloads and caches stay in hep-mcp's data root; runs stay with `nullius`).
 - `project_index.md#Main research report` + `nullius report-validate`: single
   current report entry point and structural promotion gate.
 

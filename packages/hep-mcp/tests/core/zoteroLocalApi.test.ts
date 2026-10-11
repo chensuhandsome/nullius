@@ -154,6 +154,16 @@ describe('vNext: Zotero integration', () => {
     expect(JSON.parse(res.content[0].text).error.message).toMatch(/non-object response/);
   });
 
+  it('hep_import_from_zotero fails on a malformed recid instead of writing it into the mapping', async () => {
+    stubZoteroItem();
+    vi.mocked(api.getByDoi).mockResolvedValueOnce({ recid: {} } as any);
+    const projectRoot = makeProjectRoot(dataDir);
+    const res = await handleToolCall('hep_import_from_zotero', { project_root: projectRoot, output_dir: 'z', item_keys: ['ITEM1234'] });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).error.message).toMatch(/malformed recid/);
+    expect(fs.existsSync(path.join(projectRoot, 'z', 'zotero_map_v1.json'))).toBe(false);
+  });
+
   it('zotero_local(list_collections) is available (aggregated from zotero-mcp)', async () => {
     const fetchStub = vi.fn(async (input: any) => {
       const url = typeof input === 'string' ? input : input?.url;

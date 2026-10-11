@@ -10,6 +10,7 @@ import {
 import * as api from '../../api/client.js';
 import { cachedExternalApiJsonCall } from '../cache/externalApiCache.js';
 import {
+  assertDistinctOutputNames,
   openOutputStream,
   outputArtifactRef,
   resolveOutputDir,
@@ -140,7 +141,10 @@ export function paperRecid(response: unknown, operation: string): string | undef
   }
   const recid = (response as { recid?: unknown }).recid;
   if (recid === undefined || recid === null) return undefined;
-  return String(recid);
+  // INSPIRE recids are non-negative integers, given as a number or a digit string.
+  if (typeof recid === 'number' && Number.isSafeInteger(recid) && recid >= 0) return String(recid);
+  if (typeof recid === 'string' && /^\d+$/.test(recid)) return recid;
+  throw invalidParams(`INSPIRE ${operation} returned a malformed recid (fail-fast)`, { operation });
 }
 
 function resolveStatusFromError(err: unknown): { status: ResolveStatusV1; message?: string } {
@@ -211,6 +215,13 @@ export async function hepInspireResolveIdentifiers(params: {
   let matched = 0;
   let notFound = 0;
   let errors = 0;
+
+  const indexName = `external_api_calls_inspire_resolve_identifiers_${sha256Hex(JSON.stringify({ identifiers })).slice(0, 16)}.json`;
+  assertDistinctOutputNames({
+    artifact_name: mappingName,
+    meta_artifact_name: metaName,
+    external_api_calls: indexName,
+  });
 
   const mappingFile = openOutputStream(output, mappingName);
   const out = mappingFile.stream;
@@ -329,7 +340,6 @@ export async function hepInspireResolveIdentifiers(params: {
   await mappingFile.commit();
   artifacts.push(mappingRef);
 
-  const indexName = `external_api_calls_inspire_resolve_identifiers_${sha256Hex(JSON.stringify({ identifiers }))?.slice(0, 16)}.json`;
   const externalApiCallsRef = writeOutputJson(output, indexName, {
     version: 1,
     generated_at: nowIso(),

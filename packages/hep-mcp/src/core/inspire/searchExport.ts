@@ -1,11 +1,12 @@
 import { createHash } from 'crypto';
 
-import { invalidParams } from '@nullius/shared';
+import { invalidParams, PaperSummarySchema } from '@nullius/shared';
 
 import * as api from '../../api/client.js';
 import { BudgetTrackerV1, writeOutputDiagnosticsArtifact } from '../diagnostics.js';
 import { cachedExternalApiJsonCall } from '../cache/externalApiCache.js';
 import {
+  assertDistinctOutputNames,
   openOutputStream,
   outputArtifactRef,
   resolveOutputDir,
@@ -63,12 +64,25 @@ function preprocessQuery(query: string): string {
   return query.replace(/\ba:["']([^"']+)["']/gi, 'a:$1');
 }
 
-/** A search page from the cache or INSPIRE; anything else aborts the export (fail-fast). */
+/**
+ * A search page from the cache or INSPIRE, checked field by field before any
+ * record is written; anything malformed aborts the export (fail-fast).
+ */
 function searchPage<T>(response: T, operation: string): T {
-  const page = response as { papers?: unknown; total?: unknown } | null;
-  if (!page || typeof page !== 'object' || !Array.isArray(page.papers) || typeof page.total !== 'number') {
-    throw invalidParams(`INSPIRE ${operation} returned a malformed search page (fail-fast)`, { operation });
-  }
+  const malformed = (detail: string): never => {
+    throw invalidParams(`INSPIRE ${operation} returned a malformed search page (fail-fast): ${detail}`, { operation });
+  };
+  const page = response as Record<string, unknown> | null;
+  if (!page || typeof page !== 'object' || Array.isArray(page)) malformed('not an object');
+  const { total, papers, has_more: hasMore, next_url: nextUrl, warning } = page as Record<string, unknown>;
+  if (typeof total !== 'number' || !Number.isSafeInteger(total) || total < 0) malformed('total is not a non-negative integer');
+  if (!Array.isArray(papers)) malformed('papers is not an array');
+  if (hasMore !== undefined && typeof hasMore !== 'boolean') malformed('has_more is not a boolean');
+  if (nextUrl !== undefined && typeof nextUrl !== 'string') malformed('next_url is not a string');
+  if (warning !== undefined && typeof warning !== 'string') malformed('warning is not a string');
+  (papers as unknown[]).forEach((paper, index) => {
+    if (!PaperSummarySchema.safeParse(paper).success) malformed(`papers[${index}] is not a paper record`);
+  });
   return response;
 }
 
@@ -178,6 +192,14 @@ export async function hepInspireSearchExport(params: {
   let nextUrl: string | undefined;
   let truncatedMidPage = false;
   const externalApiCalls: ExternalApiCallIndexItemV1[] = [];
+
+  const externalApiCallsName = `external_api_calls_inspire_search_export_${exportKeyHash}.json`;
+  assertDistinctOutputNames({
+    artifact_name: exportName,
+    meta_artifact_name: metaName,
+    diagnostics: diagnosticsName,
+    external_api_calls: externalApiCallsName,
+  });
 
   const exportFile = openOutputStream(output, exportName);
   const out = exportFile.stream;
@@ -307,7 +329,6 @@ export async function hepInspireSearchExport(params: {
 
   artifacts.push(exportRef);
 
-  const externalApiCallsName = `external_api_calls_inspire_search_export_${exportKeyHash}.json`;
   const externalApiCallsRef = writeOutputJson(output, externalApiCallsName, {
     version: 1,
     generated_at: nowIso(),

@@ -39,14 +39,20 @@ export const OutputDirSchema = z
       + 'and may not lie under .nullius/, team/runs/ or artifacts/hep-mcp/.'
   );
 
+// The tools that write into output_dir, and the lexical evidence query, use
+// strict schemas: an undeclared argument (a misspelled output_dir, a removed
+// parameter) is refused instead of being silently dropped.
 export const HepImportFromZoteroToolSchema = z.object({
+  // Declared here because the refinement below keeps the registry from
+  // adding its generic project_root field to this schema.
+  project_root: z.string().optional().describe('Absolute path to the initialized nullius project root that contains output_dir.'),
   output_dir: OutputDirSchema,
   collection_key: SafePathSegmentSchema.optional(),
   item_keys: z.array(SafePathSegmentSchema).optional().default([]),
   limit: optionalBudgetInt({ min: 1 }),
   start: optionalBudgetInt({ min: 0 }),
   concurrency: optionalBudgetInt({ min: 1, max: 16 }).default(4),
-}).refine(v => Boolean(v.collection_key) || v.item_keys.length > 0, {
+}).strict().refine(v => Boolean(v.collection_key) || v.item_keys.length > 0, {
   message: 'Either collection_key or item_keys is required',
 });
 
@@ -61,14 +67,14 @@ export const HepInspireSearchExportToolSchema = z.object({
   output_format: SearchExportFormatSchema.optional().default('jsonl'),
   artifact_name: SafePathSegmentSchema.optional(),
   meta_artifact_name: SafePathSegmentSchema.optional(),
-});
+}).strict();
 
 export const HepInspireResolveIdentifiersToolSchema = z.object({
   output_dir: OutputDirSchema,
   identifiers: z.array(z.string().min(1)).min(1),
   artifact_name: SafePathSegmentSchema.optional(),
   meta_artifact_name: SafePathSegmentSchema.optional(),
-});
+}).strict();
 
 const EvidenceTypeSchema = z.enum([
   'title',
@@ -107,7 +113,7 @@ export const HepProjectQueryEvidenceToolSchema = z.object({
   mode: z.literal('lexical').optional(),
   concurrency: optionalBudgetInt({ min: 1, max: 16 }).default(4),
   limit: optionalBudgetInt({ min: 1, max: 50 }).default(10),
-});
+}).strict();
 
 export const HepProjectPlaybackEvidenceToolSchema = z.object({
   project_id: SafePathSegmentSchema,

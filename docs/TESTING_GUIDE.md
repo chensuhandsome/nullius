@@ -6,7 +6,7 @@
 >
 > - 返回值里的 `project_id`、时间戳、路径、URI 等动态字段请按结构和不变量核对，不要逐字比对。
 > - 下文 HEP 配置以 `packages/hep-mcp/dist/index.js` 为 domain MCP front door；个人插件另组合绑定项目的 `project-mcp` 叶层 adapter。
-> - 大对象默认落盘成文件；验收时优先检查 tool result 摘要、返回的项目相对路径，以及 `project_root` 下的实际文件（HEP project 位于 `artifacts/hep-mcp`，写文件的工具写入调用方给定的 `output_dir`）或 scratch `HEP_DATA_DIR` 下的实际文件。
+> - 大对象默认落盘成文件；验收时优先检查 tool result 摘要、返回的项目相对路径，以及 `project_root` 下的实际文件（HEP project、下载与缓存位于 `artifacts/hep-mcp`，检索导出等研究输出工具写入调用方给定的 `output_dir`）或 scratch `HEP_DATA_DIR` 下的实际文件。
 
 ---
 

@@ -26,7 +26,7 @@ version is the lockstep number below.
   references to files.
 
 ### Changed
-- **hep-mcp tools that write files take a caller-chosen `output_dir`.**
+- **hep-mcp research-output tools take a caller-chosen `output_dir`.**
   `hep_inspire_search_export`, `hep_inspire_resolve_identifiers`,
   `hep_import_from_zotero`, `inspire_parse_latex`, `inspire_theoretical_conflicts`
   and `inspire_search` (export mode, formerly triggered by `run_id`) write into an

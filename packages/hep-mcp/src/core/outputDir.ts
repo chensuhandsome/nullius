@@ -182,6 +182,21 @@ export function outputFilePath(out: OutputDir, name: string): string {
   return file;
 }
 
+/**
+ * Refuse a set of output file names in which two coincide: one file would
+ * silently replace the other while the result reported both.
+ */
+export function assertDistinctOutputNames(names: Record<string, string>): void {
+  const seen = new Map<string, string>();
+  for (const [role, name] of Object.entries(names)) {
+    const other = seen.get(name);
+    if (other !== undefined) {
+      throw invalidParams(`output file names collide: ${other} and ${role} are both '${name}'`, { names });
+    }
+    seen.set(name, role);
+  }
+}
+
 export function outputArtifactRef(out: OutputDir, name: string, mimeType: string): OutputArtifactRef {
   return { name, path: `${out.relative}/${name}`, mimeType };
 }

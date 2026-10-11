@@ -24,7 +24,7 @@ export const InspireSearchToolSchema = z.object({
   artifact_name: SafePathSegmentSchema.optional(),
   meta_artifact_name: SafePathSegmentSchema.optional(),
   max_results: optionalBudgetInt({ min: 1 }).default(100),
-});
+}).strict();
 
 export const InspireSearchNextToolSchema = z.object({
   next_url: z.string().min(1),
@@ -265,7 +265,7 @@ export const InspireParseLatexToolSchema = z.object({
       cross_validate: z.boolean().optional(),
     })
     .optional(),
-});
+}).strict();
 
 export const FindCrossoverTopicsToolSchema = z.object({
   categories: z.array(z.string().min(1)).length(2).optional(),

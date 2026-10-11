@@ -28,11 +28,13 @@
   "code": "string (错误码)",
   "message": "string (人类可读)",
   "retryable": "boolean",
-  "run_id": "string | null",
+  "run_id": "string | null (仅拥有 run 的组件)",
   "trace_id": "string (UUID v4)",
   "data": "object | null (附加上下文)"
 }
 ```
+
+`run_id` 只属于拥有 run 的组件（orchestrator 等）。不拥有 run 的 provider 包（hep-mcp 及其他 `*-mcp` 包）没有 run 可报，其错误信封不带 `run_id` 字段。
 
 **CI 验证**:
 ```bash
@@ -80,9 +82,9 @@ pnpm --filter @nullius/orchestrator test -- tests/orchestrator-mcp-tools-spec.te
 
 **违规行为**: **fail-closed** — 错误码丢失导致调用方无法区分可重试/不可重试错误
 
-### ERR-04: 错误响应禁止 run_id: null
+### ERR-04: run 上下文中的错误必须带 run_id
 
-**规则**: 当错误发生在 run 上下文中时，`run_id` 必须填充实际值。仅在无 run 上下文时允许 `null`。
+**规则**: 拥有 run 的组件中，错误发生在 run 上下文时，`run_id` 必须填充实际值；仅在无 run 上下文时允许 `null`。不拥有 run 的 provider 包（如 hep-mcp）的错误信封不带此字段（见 ERR-01）。
 
 **CI 验证**:
 ```bash
@@ -541,7 +543,7 @@ pnpm --filter @nullius/hep-mcp test -- tests/contracts/jsonlStderrLogging.test.t
 
 **规则**: 所有 artifact 写入必须是原子的：先完整写入暂存文件并 `fsync`，再赋予最终名字并 `fsync` 所在目录。禁止直接写到最终路径。赋名有两种方式：
 1. **替换式**：`rename` 到最终名，由 `@nullius/shared` 的持久写入原语完成（`writeBytesAtomicDurable`、`writeJsonAtomicDurable`、`commitStagedDurable` 等），用于允许覆盖的文件，例如控制面状态。
-2. **不替换式**：以硬链接（`link`）把暂存文件发布到最终名，遇到已有条目即失败、绝不替换，随后删除暂存名。用于 provider 工具写入调用方 `output_dir` 的研究输出（`packages/hep-mcp/src/core/outputDir.ts`）。一次调用的全部文件先暂存，再逐个发布，失败时撤回已发布的文件；撤回成功则全有或全无，撤回失败时错误写明输出不完整并列出残留文件（`files_left`、`staging_left`）；只有发布途中进程崩溃才可能留下未被报告的部分文件。之后点名这些文件的调用都会被拒绝。
+2. **不替换式**：以硬链接（`link`）把暂存文件发布到最终名，遇到已有条目即失败、绝不替换，随后删除暂存名。用于 provider 工具写入调用方 `output_dir` 的研究输出（`packages/hep-mcp/src/core/outputDir.ts`）。一次调用的全部文件先暂存，再逐个发布，失败时撤回已发布的文件；撤回成功则全有或全无；若清理失败，错误会写明残留：已发布的文件删不掉时，错误为 UNSAFE_FS，写明输出不完整并在 `files_left` 中列出它们（残留的暂存文件列在 `staging_left`）；只有暂存文件删不掉时，保留原错误并附 `staging_left`；无法识别的暂存文件在 `staging_path` 中给出。只有发布途中进程崩溃才可能留下未被报告的部分文件。之后点名这些文件的调用都会被拒绝。
 
 **CI 验证**:
 ```bash
@@ -864,7 +866,7 @@ if (internal.length) { console.error('PLUG-01:', internal); process.exit(1); }
 | **ERR** | ERR-01 统一错误信封 | fail-closed | lint: 裸 throw/raise 检查 |
 | | ERR-02 retryable 标记 | fail-closed | 错误码注册表完整性 |
 | | ERR-03 错误码保留 | fail-closed | 契约测试 |
-| | ERR-04 run_id 非 null | fail-open | 集成测试 |
+| | ERR-04 run 上下文错误带 run_id（仅拥有 run 的组件） | fail-open | 集成测试 |
 | **ID** | ID-01 Prefixed ID | fail-open | lint: ID 格式检查 |
 | | ID-02 跨组件引用模型 | fail-open | 契约测试 |
 | | ID-03 ArtifactRef V1 | fail-closed | 工具返回值检查 |

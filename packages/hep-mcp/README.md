@@ -66,9 +66,13 @@ Each output file is staged and flushed first and only then given its name, and
 a call never replaces an existing file: if any file it would write already
 exists, the call is refused, before any provider request when the name is known
 in advance. A call that fails removes the files it had already published, so when
-that cleanup succeeds it leaves all of its files or none; if a file cannot be
-removed, the error says the outputs are incomplete and names the files left
-(`files_left`, `staging_left`). Only a crash of the server process during
+that cleanup succeeds it leaves all of its files or none. If cleanup fails, the
+error says what is left: published files that could not be removed make it
+UNSAFE_FS, stating that the outputs are incomplete and listing them in
+`files_left` (with any remaining staging files in `staging_left`); staging files
+alone that could not be removed keep the original error, extended with
+`staging_left`; a staging file that could not even be identified is named in
+`staging_path`. Only a crash of the server process during
 publication can leave part of a set without such a report. Either way, a later
 call naming those files is then
 refused until they are removed. Choose a new `output_dir` (or new artifact names)

@@ -291,10 +291,13 @@ function existingOutputError(out: OutputDir, name: string): Error {
  * to disk; no final name appears before `publish`. `publish` then links
  * every staged file to its final name, never replacing an existing entry:
  * if any final name is taken, or anything else fails, the files this batch
- * had already published are removed. When that cleanup succeeds, a call
- * leaves either all of its files or none of them; when a file cannot be
- * removed, the error says the outputs are incomplete and names it (see
- * `discard`). A call never changes a file that an earlier call wrote, so a
+ * had already published are removed, and so are its staging files. When
+ * that cleanup succeeds, a call leaves either all of its files or none of
+ * them. When it fails, the error says what is left (see `discard`):
+ * published files make it UNSAFE_FS "outputs are incomplete" with
+ * `files_left` (and `staging_left`); staging files alone keep the original
+ * error, extended with `staging_left`; a staging file that could not be
+ * identified is named in `staging_path`. A call never changes a file that an earlier call wrote, so a
  * result cited elsewhere keeps its bytes. Directories created on the way
  * remain. Only a crash in the middle of `publish` can leave part of the set
  * without a report; a later call naming those files is refused rather than

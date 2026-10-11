@@ -20,8 +20,10 @@ function collectSourceFiles(dirPath: string): string[] {
 // caller-chosen output_dir inside the project instead.
 //
 // Building a runs directory under any root needs the path segment 'runs' as
-// a string, so every such literal is refused except where it names the
-// reserved team/runs prefix that output_dir admission refuses.
+// a string, so every such literal is refused. The only exceptions are the
+// exact source lines that name the reserved team/runs prefix in order to
+// refuse it (output_dir admission and its parameter description), keyed by
+// file and full line text; any other occurrence fails.
 const FORBIDDEN = [
   { label: 'hep_run_uri', re: /hep:\/\/runs/ },
   { label: 'hep_run_tool', re: /\bhep_run_[a-z_]+/ },
@@ -31,29 +33,31 @@ const FORBIDDEN = [
 ];
 
 const ALLOWED_LINES = new Set([
-  "  ['team', 'runs'],",
+  "core/outputDir.ts:  ['team', 'runs'],",
+  "tools/registry/projectSchemas.ts:      + 'and may not lie under .nullius/, team/runs/ or artifacts/hep-mcp/. A call never replaces an existing file '",
 ]);
 
-// The reserved prefix as a whole path segment pair: 'team' must start a
-// segment (start of a string or path, not part of a longer name).
-const RESERVED_TEAM_RUNS = /(?<![\w.-])team\/runs(?![\w.-])/g;
-
-function offendersIn(lines: string[], where: (index: number) => string): string[] {
+function offendersIn(file: string, lines: string[], where: (index: number) => string): string[] {
   return lines.flatMap((line, index) => {
-    if (ALLOWED_LINES.has(line)) return [];
-    const probe = line.replace(RESERVED_TEAM_RUNS, 'team/<reserved>');
-    return FORBIDDEN.filter(check => check.re.test(probe)).map(check => `${where(index)}:${check.label}`);
+    if (ALLOWED_LINES.has(`${file}:${line}`)) return [];
+    return FORBIDDEN.filter(check => check.re.test(line)).map(check => `${where(index)}:${check.label}`);
   });
 }
 
 describe('hep-mcp keeps no run substrate of its own', () => {
   it('no hep-mcp source file builds hep://runs URIs, run directories, run manifests or hep_run_* tools', () => {
     const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'src');
-    const offenders = collectSourceFiles(srcRoot).flatMap(filePath => offendersIn(
+    const files = collectSourceFiles(srcRoot);
+    const offenders = files.flatMap(filePath => offendersIn(
+      path.relative(srcRoot, filePath).split(path.sep).join('/'),
       fs.readFileSync(filePath, 'utf-8').split('\n'),
       index => `${path.relative(srcRoot, filePath)}:L${index + 1}`,
     ));
     expect(offenders).toEqual([]);
+    // Every exception still names a line that exists, so a stale one is noticed.
+    const present = new Set(files.flatMap(filePath => fs.readFileSync(filePath, 'utf-8').split('\n')
+      .map(line => `${path.relative(srcRoot, filePath).split(path.sep).join('/')}:${line}`)));
+    expect([...ALLOWED_LINES].filter(entry => !present.has(entry))).toEqual([]);
   });
 
   it('catches the ways a run substrate would be rebuilt (negative controls)', () => {
@@ -71,13 +75,14 @@ describe('hep-mcp keeps no run substrate of its own', () => {
       "const dir = 'notteam/runs/';",
       "const dir = 'myteam/runs/';",
       "const dir = 'my-team/runs/';",
+      "const dir = path.join(projectRoot, 'team/runs', runId);",
+      "const dir = `${projectRoot}/team/runs/${runId}`;",
+      "  ['team', 'runs'],",
     ];
     for (const line of rebuilt) {
-      expect(offendersIn([line], () => 'fixture'), line).not.toEqual([]);
+      expect(offendersIn('fixture.ts', [line], () => 'fixture'), line).not.toEqual([]);
     }
-    expect(offendersIn([
-      "  ['team', 'runs'],",
-      "'and may not lie under .nullius/, team/runs/ or artifacts/hep-mcp/.'",
+    expect(offendersIn('fixture.ts', [
       "const label = 'runtime';",
       "const dir = 'team/runs-old/x';",
       'const reruns = 2;',

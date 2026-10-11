@@ -306,7 +306,7 @@ describe('vNext M6: Evidence Catalog v1 (LaTeX)', () => {
       expect(buildPayload.summary.copied_files).toBe(2);
       expect(buildPayload.summary.main_tex).toBe('..paper.tex');
 
-      const items = String((readHepUri(buildPayload.catalog_uri) as any).text)
+      const items = String(readHepProjectUri(buildPayload.catalog_uri).text)
         .trim()
         .split('\n')
         .filter(Boolean)

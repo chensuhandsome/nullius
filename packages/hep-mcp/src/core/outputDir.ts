@@ -211,7 +211,14 @@ export function outputArtifactRef(out: OutputDir, name: string, mimeType: string
   return { name, path: `${out.relative}/${name}`, mimeType };
 }
 
-type FileIdentity = { dev: number; ino: number };
+// Device and inode as exact 64-bit integers: a JavaScript number cannot
+// tell apart inode numbers above 2^53.
+type FileIdentity = { dev: bigint; ino: bigint };
+
+function identityOfDescriptor(fd: number): FileIdentity {
+  const stat = fs.fstatSync(fd, { bigint: true });
+  return { dev: stat.dev, ino: stat.ino };
+}
 
 type StagedFile = { name: string; temp: string; target: string; identity: FileIdentity };
 
@@ -221,8 +228,14 @@ function stagingPath(target: string): string {
 }
 
 function isSameFile(filePath: string, identity: FileIdentity): boolean {
-  const stat = lstatOrNull(filePath);
-  return stat !== null && stat.isFile() && stat.dev === identity.dev && stat.ino === identity.ino;
+  let stat: fs.BigIntStats;
+  try {
+    stat = fs.lstatSync(filePath, { bigint: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  return stat.isFile() && stat.dev === identity.dev && stat.ino === identity.ino;
 }
 
 /**
@@ -230,17 +243,20 @@ function isSameFile(filePath: string, identity: FileIdentity): boolean {
  * but only while it is still the file with `identity`, reached through the
  * same real directories. If anything was swapped meanwhile, nothing is
  * deleted through the new path and the file stays where it was created.
+ * Returns 'removed' when this call unlinked it, 'gone' when that name no
+ * longer holds the file, and 'kept' when it could not be removed.
  */
-function removeIfSame(out: OutputDir, name: string, file: string, identity: FileIdentity | null): boolean {
-  if (identity === null) return lstatOrNull(file) === null;
+function removeIfSame(out: OutputDir, name: string, file: string, identity: FileIdentity | null): 'removed' | 'gone' | 'kept' {
+  if (identity === null) return lstatOrNull(file) === null ? 'gone' : 'kept';
   try {
     const chain = [...out.relative.split('/'), ...name.split('/').slice(0, -1)];
     realDirectoryChain(out.projectRoot, chain, 'output_dir', out.projectRoot, false);
-    if (isSameFile(file, identity)) fs.unlinkSync(file);
-    return !isSameFile(file, identity);
+    if (!isSameFile(file, identity)) return 'gone';
+    fs.unlinkSync(file);
+    return isSameFile(file, identity) ? 'kept' : 'removed';
   } catch {
     // Left in place; the caller decides whether that must be reported.
-    return false;
+    return 'kept';
   }
 }
 
@@ -297,7 +313,8 @@ function existingOutputError(out: OutputDir, name: string): Error {
  * published files make it UNSAFE_FS "outputs are incomplete" with
  * `files_left` (and `staging_left`); staging files alone keep the original
  * error, extended with `staging_left`; a staging file that could not be
- * identified is named in `staging_path`. A call never changes a file that an earlier call wrote, so a
+ * identified is named in `staging_path`; removals that cannot be flushed to
+ * disk give UNSAFE_FS with `unflushed_directories`. A call never changes a file that an earlier call wrote, so a
  * result cited elsewhere keeps its bytes. Directories created on the way
  * remain. Only a crash in the middle of `publish` can leave part of the set
  * without a report; a later call naming those files is refused rather than
@@ -321,6 +338,9 @@ export class OutputBatch {
   // is still here after the last cleanup attempt.
   private readonly stagingFiles = new Map<string, { name: string; identity: FileIdentity }>();
   private readonly publishedLeft = new Map<string, { name: string; identity: FileIdentity }>();
+  // Directories from which this batch removed an entry; discard flushes
+  // them, so a removal is not undone by a crash.
+  private readonly cleanedDirectories = new Set<string>();
   private closed = false;
   private finalized = false;
 
@@ -365,11 +385,18 @@ export class OutputBatch {
     return pending;
   }
 
+  /** Remove `file` under the identity rule, recording its directory; true when it is gone. */
+  private removeFile(name: string, file: string, identity: FileIdentity): boolean {
+    const result = removeIfSame(this.out, name, file, identity);
+    if (result === 'removed') this.cleanedDirectories.add(path.dirname(file));
+    return result !== 'kept';
+  }
+
   /** Remove a tracked staging file; true when it is gone. */
   private removeStaging(temp: string): boolean {
     const entry = this.stagingFiles.get(temp);
     if (entry === undefined) return true;
-    if (!removeIfSame(this.out, entry.name, temp, entry.identity)) return false;
+    if (!this.removeFile(entry.name, temp, entry.identity)) return false;
     this.stagingFiles.delete(temp);
     return true;
   }
@@ -408,8 +435,7 @@ export class OutputBatch {
     let identity: FileIdentity | null = null;
     let failure: unknown = null;
     try {
-      const stat = fs.fstatSync(fd);
-      identity = { dev: stat.dev, ino: stat.ino };
+      identity = identityOfDescriptor(fd);
       this.stagingFiles.set(temp, { name, identity });
       const buffer = Buffer.from(bytes, 'utf-8');
       let offset = 0;
@@ -447,8 +473,7 @@ export class OutputBatch {
     const fd = fs.openSync(temp, 'wx');
     let identity: FileIdentity;
     try {
-      const stat = fs.fstatSync(fd);
-      identity = { dev: stat.dev, ino: stat.ino };
+      identity = identityOfDescriptor(fd);
     } catch (error) {
       // Identity unknown: the file is closed but never deleted, and its path is reported.
       try { fs.closeSync(fd); } catch { /* the fstat failure is reported */ }
@@ -492,7 +517,9 @@ export class OutputBatch {
       } catch (error) {
         failure = error;
       }
-      failure ??= close();
+      // Always close, keeping the first error.
+      const closeFailure = close();
+      failure ??= closeFailure;
       this.unfinished.delete(abort);
       if (failure !== null) {
         this.removeStaging(temp);
@@ -563,7 +590,7 @@ export class OutputBatch {
       for (const dir of directories) fsyncParentDirectoryDurable(path.join(dir, '.flush'));
     } catch (error) {
       for (const file of published) {
-        if (!removeIfSame(this.out, file.name, file.target, file.identity)) {
+        if (!this.removeFile(file.name, file.target, file.identity)) {
           this.publishedLeft.set(file.target, { name: file.name, identity: file.identity });
         }
       }
@@ -576,8 +603,15 @@ export class OutputBatch {
    * the error to report for `cause`. This is the last cleanup attempt: it
    * retries every staging file and every published file still present, and
    * the report describes what is left after it.
+   * The directories it removed entries from are then flushed, so a crash
+   * cannot bring a removed file back.
    * - Published files left: UNSAFE_FS "outputs are incomplete", naming them
-   *   (`files_left`), any staging files left, and the original error.
+   *   (`files_left`), any staging files left, any directory whose flush
+   *   failed, and the original error.
+   * - A removal not known to be durable (a directory flush failed): UNSAFE_FS
+   *   saying the cleanup may not survive a crash, naming those directories
+   *   (`unflushed_directories`), any staging files left, and the original
+   *   error.
    * - Only staging files left: the cause with its code kept, its message
    *   extended and the files named in `staging_left`.
    * - Nothing left: the cause itself.
@@ -590,18 +624,35 @@ export class OutputBatch {
     for (const abort of [...this.unfinished]) abort();
     for (const temp of [...this.stagingFiles.keys()]) this.removeStaging(temp);
     for (const [target, entry] of [...this.publishedLeft]) {
-      if (removeIfSame(this.out, entry.name, target, entry.identity)) this.publishedLeft.delete(target);
+      if (this.removeFile(entry.name, target, entry.identity)) this.publishedLeft.delete(target);
+    }
+    const unflushed: string[] = [];
+    for (const dir of this.cleanedDirectories) {
+      try {
+        fsyncParentDirectoryDurable(path.join(dir, '.flush'));
+      } catch {
+        unflushed.push(projectRelative(this.out, dir) || '.');
+      }
     }
     const stagingLeft = [...this.stagingFiles.keys()].map(temp => projectRelative(this.out, temp));
     const filesLeft = [...this.publishedLeft.keys()].map(target => projectRelative(this.out, target));
+    const message = cause instanceof Error ? cause.message : String(cause);
+    const original = { error: message, ...(cause instanceof McpError ? { error_code: cause.code } : {}) };
     if (filesLeft.length > 0) {
-      const message = cause instanceof Error ? cause.message : String(cause);
       return unsafeFs('publishing failed and some of its files could not be removed; this call\'s outputs are incomplete', {
         project_root: this.out.projectRoot,
         files_left: filesLeft,
         staging_left: stagingLeft,
-        error: message,
-        ...(cause instanceof McpError ? { error_code: cause.code } : {}),
+        ...(unflushed.length > 0 ? { unflushed_directories: unflushed } : {}),
+        ...original,
+      });
+    }
+    if (unflushed.length > 0) {
+      return unsafeFs('the call failed and its cleanup could not be flushed to disk; removed files may reappear after a crash', {
+        project_root: this.out.projectRoot,
+        unflushed_directories: unflushed,
+        staging_left: stagingLeft,
+        ...original,
       });
     }
     return withStagingLeft(this.out, cause, stagingLeft);

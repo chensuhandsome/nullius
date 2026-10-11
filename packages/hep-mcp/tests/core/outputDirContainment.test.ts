@@ -378,6 +378,72 @@ describe('output files are checked again at write time and streamed outputs fail
     });
   });
 
+  it('flushes the directories it removed files from when a publication is rolled back', async () => {
+    const { _setAtomicWriteAuditHook } = await import('@nullius/shared');
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('undo/out');
+      const batch = new OutputBatch(out);
+      batch.json('a.json', { x: 1 });
+      const opened = new Map<number, string>();
+      const fsyncs: string[] = [];
+      let failedRoot = false;
+      const restore = _setAtomicWriteAuditHook(event => {
+        if (event.kind === 'open') opened.set(event.fd, event.path);
+        if (event.kind !== 'fsync' || !opened.has(event.fd)) return;
+        const dir = opened.get(event.fd)!;
+        fsyncs.push(dir);
+        // The output directory is flushed first; the project root's flush then fails once.
+        if (dir === projectRoot && !failedRoot) {
+          failedRoot = true;
+          throw new Error('simulated directory flush failure');
+        }
+      });
+      let error: (Error & { data?: Record<string, unknown> }) | null = null;
+      try {
+        error = await batch.publish().then(() => null, (e: unknown) => e as Error & { data?: Record<string, unknown> });
+      } finally {
+        restore();
+      }
+      expect(error?.message).toBe('simulated directory flush failure');
+      expect(error?.data).toBeUndefined();
+      expect(fs.readdirSync(out.dir)).toEqual([]);
+      // Flushed once by publication and once more after the rollback removed a.json.
+      expect(fsyncs.filter(dir => dir === out.dir)).toHaveLength(2);
+    });
+  });
+
+  it('reports a rollback whose removals could not be flushed to disk', async () => {
+    const { _setAtomicWriteAuditHook } = await import('@nullius/shared');
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('undo2/out');
+      const batch = new OutputBatch(out);
+      batch.json('a.json', { x: 1 });
+      const opened = new Map<number, string>();
+      let publicationFlushed = false;
+      const restore = _setAtomicWriteAuditHook(event => {
+        if (event.kind === 'open') opened.set(event.fd, event.path);
+        if (event.kind !== 'fsync' || !opened.has(event.fd)) return;
+        const dir = opened.get(event.fd)!;
+        if (dir === out.dir && !publicationFlushed) {
+          publicationFlushed = true;
+          return;
+        }
+        // Fail the project root's flush during publication and every later flush of output_dir.
+        if (dir === projectRoot || dir === out.dir) throw new Error('simulated directory flush failure');
+      });
+      let error: (Error & { code?: string; data?: { unflushed_directories?: string[]; error?: string } }) | null = null;
+      try {
+        error = await batch.publish().then(() => null, (e: unknown) => e as typeof error);
+      } finally {
+        restore();
+      }
+      expect(error?.code).toBe('UNSAFE_FS');
+      expect(error?.message).toMatch(/cleanup could not be flushed to disk/);
+      expect(error?.data?.unflushed_directories).toEqual(['undo2/out']);
+      expect(error?.data?.error).toBe('simulated directory flush failure');
+    });
+  });
+
   it('caches a provider response that is absent as null, so the next identical call is a clean cache hit', async () => {
     const { cachedExternalApiJsonCall } = await import('../../src/core/cache/externalApiCache.js');
     await withHepDataRoot(alias, async () => {

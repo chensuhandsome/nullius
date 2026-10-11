@@ -72,7 +72,9 @@ UNSAFE_FS, stating that the outputs are incomplete and listing them in
 `files_left` (with any remaining staging files in `staging_left`); staging files
 alone that could not be removed keep the original error, extended with
 `staging_left`; a staging file that could not even be identified is named in
-`staging_path`. Only a crash of the server process during
+`staging_path`; and if the removals cannot be flushed to disk, the error is
+UNSAFE_FS saying the cleanup may not survive a crash, with
+`unflushed_directories`. Only a crash of the server process during
 publication can leave part of a set without such a report. Either way, a later
 call naming those files is then
 refused until they are removed. Choose a new `output_dir` (or new artifact names)

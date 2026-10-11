@@ -35,7 +35,8 @@ version is the lockstep number below.
   project-relative paths. A call never replaces an existing file, and a call that
   fails removes what it had published; if it cannot, the error names what is left
   (published files in `files_left` with an "outputs are incomplete" error, staging
-  files in `staging_left` or `staging_path`), and only a crash during publication
+  files in `staging_left` or `staging_path`, unflushed removals in
+  `unflushed_directories`), and only a crash during publication
   can leave part of a set unreported (later calls naming those files are refused). These tools and the lexical `hep_project_query_evidence` refuse a
   numeric limit that is not a whole number in range instead of using the default.
   `hep_project_query_evidence` is lexical only.

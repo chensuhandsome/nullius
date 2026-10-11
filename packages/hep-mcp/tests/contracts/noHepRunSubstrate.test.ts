@@ -20,15 +20,16 @@ function collectSourceFiles(dirPath: string): string[] {
 // caller-chosen output_dir inside the project instead.
 //
 // Building a runs directory under any root needs the path segment 'runs' as
-// a string, so every such literal is refused. The only exceptions are the
+// a string, in any letter case (the default macOS file systems ignore case),
+// so every such literal is refused. The only exceptions are the
 // exact source lines that name the reserved team/runs prefix in order to
 // refuse it (output_dir admission and the output_dir and project_root
 // parameter descriptions), keyed by
 // file and full line text; any other occurrence fails.
 const FORBIDDEN = [
-  { label: 'hep_run_uri', re: /hep:\/\/runs/ },
-  { label: 'hep_run_tool', re: /\bhep_run_[a-z_]+/ },
-  { label: 'runs_path_segment', re: /[/'"`]runs[/'"`]/ },
+  { label: 'hep_run_uri', re: /hep:\/\/runs/i },
+  { label: 'hep_run_tool', re: /\bhep_run_[a-z_]+/i },
+  { label: 'runs_path_segment', re: /[/'"`]runs[/'"`]/i },
   { label: 'run_dir_helper', re: /\bgetRun(?:Dir|sDir|ArtifactPath|ManifestPath|ArtifactsDir)\b/ },
   { label: 'run_substrate_name', re: /\b(?:createRun|listRuns|RunManifest|run_manifest|runManifestUri)\b/ },
 ];
@@ -79,6 +80,10 @@ describe('hep-mcp keeps no run substrate of its own', () => {
       "const dir = 'my-team/runs/';",
       "const dir = path.join(projectRoot, 'team/runs', runId);",
       "const dir = `${projectRoot}/team/runs/${runId}`;",
+      "const dir = path.join(dataRoot, 'Runs', id);",
+      "const dir = path.join(dataRoot, 'RUNS', id);",
+      "const uri = `hep://Runs/${id}/manifest`;",
+      "registerTool('HEP_RUN_CREATE', spec);",
       "  ['team', 'runs'],",
     ];
     for (const line of rebuilt) {

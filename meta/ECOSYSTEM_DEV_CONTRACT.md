@@ -543,7 +543,7 @@ pnpm --filter @nullius/hep-mcp test -- tests/contracts/jsonlStderrLogging.test.t
 
 **规则**: 所有 artifact 写入必须是原子的：先完整写入暂存文件并 `fsync`，再赋予最终名字并 `fsync` 所在目录。禁止直接写到最终路径。赋名有两种方式：
 1. **替换式**：`rename` 到最终名，由 `@nullius/shared` 的持久写入原语完成（`writeBytesAtomicDurable`、`writeJsonAtomicDurable`、`commitStagedDurable` 等），用于允许覆盖的文件，例如控制面状态。
-2. **不替换式**：以硬链接（`link`）把暂存文件发布到最终名，遇到已有条目即失败、绝不替换，随后删除暂存名。用于 provider 工具写入调用方 `output_dir` 的研究输出（`packages/hep-mcp/src/core/outputDir.ts`）。一次调用的全部文件先暂存，再逐个发布，失败时撤回已发布的文件；撤回成功则全有或全无；若清理失败，错误会写明残留：已发布的文件删不掉时，错误为 UNSAFE_FS，写明输出不完整并在 `files_left` 中列出它们（残留的暂存文件列在 `staging_left`）；只有暂存文件删不掉时，保留原错误并附 `staging_left`；无法识别的暂存文件在 `staging_path` 中给出。只有发布途中进程崩溃才可能留下未被报告的部分文件。之后点名这些文件的调用都会被拒绝。
+2. **不替换式**：以硬链接（`link`）把暂存文件发布到最终名，遇到已有条目即失败、绝不替换，随后删除暂存名。用于 provider 工具写入调用方 `output_dir` 的研究输出（`packages/hep-mcp/src/core/outputDir.ts`）。一次调用的全部文件先暂存，再逐个发布，失败时撤回已发布的文件；撤回成功则全有或全无；若清理失败，错误会写明残留：已发布的文件删不掉时，错误为 UNSAFE_FS，写明输出不完整并在 `files_left` 中列出它们（残留的暂存文件列在 `staging_left`）；只有暂存文件删不掉时，保留原错误并附 `staging_left`；无法识别的暂存文件在 `staging_path` 中给出；删除之后若无法刷盘，错误为 UNSAFE_FS，说明清理可能经不起崩溃，并在 `unflushed_directories` 中列出相应目录。只有发布途中进程崩溃才可能留下未被报告的部分文件。之后点名这些文件的调用都会被拒绝。
 
 **CI 验证**:
 ```bash

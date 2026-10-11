@@ -17,22 +17,42 @@ const fstatFault = vi.hoisted(() => ({ armed: false }));
 const linkFault = vi.hoisted(() => ({ failOnCall: 0, calls: 0, before: (() => {}) as () => void }));
 const unlinkFault = vi.hoisted(() => ({ failNext: 0 }));
 const writeFault = vi.hoisted(() => ({ armed: false }));
+const fsyncFault = vi.hoisted(() => ({ armed: false }));
+const closeCount = vi.hoisted(() => ({ calls: 0 }));
+// Report a huge inode: 2^53 for a descriptor, 2^53 + 1 for a staging path.
+// As JavaScript numbers the two are equal; as exact integers they differ.
+const inodeFake = vi.hoisted(() => ({ armed: false }));
 vi.mock('fs', async importOriginal => {
   const actual = await importOriginal<typeof import('fs')>();
   const closeSync = (fd: number): void => {
+    closeCount.calls += 1;
     actual.closeSync(fd);
     if (closeFault.armed) {
       closeFault.armed = false;
       throw Object.assign(new Error('simulated close failure'), { code: 'EIO' });
     }
   };
+  const withInode = (stat: any, big: bigint, asBigint: boolean) =>
+    Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { ino: asBigint ? big : Number(big) });
   const fstatSync = ((fd: number, options?: any) => {
     if (fstatFault.armed) {
       fstatFault.armed = false;
       throw Object.assign(new Error('simulated fstat failure'), { code: 'EIO' });
     }
-    return actual.fstatSync(fd, options);
+    const stat = actual.fstatSync(fd, options);
+    return inodeFake.armed ? withInode(stat, 2n ** 53n, Boolean(options?.bigint)) : stat;
   }) as typeof actual.fstatSync;
+  const lstatSync = ((target: string, options?: any) => {
+    const stat = actual.lstatSync(target, options);
+    return inodeFake.armed && String(target).endsWith('.tmp') ? withInode(stat, 2n ** 53n + 1n, Boolean(options?.bigint)) : stat;
+  }) as typeof actual.lstatSync;
+  const fsyncSync = (fd: number): void => {
+    if (fsyncFault.armed) {
+      fsyncFault.armed = false;
+      throw Object.assign(new Error('simulated fsync failure'), { code: 'EIO' });
+    }
+    actual.fsyncSync(fd);
+  };
   const linkSync = (existing: string, target: string): void => {
     linkFault.calls += 1;
     if (linkFault.calls === linkFault.failOnCall) {
@@ -55,7 +75,7 @@ vi.mock('fs', async importOriginal => {
     }
     return (actual.writeSync as any)(fd, ...rest);
   }) as typeof actual.writeSync;
-  const patched = { closeSync, fstatSync, linkSync, unlinkSync, writeSync };
+  const patched = { closeSync, fstatSync, fsyncSync, linkSync, lstatSync, unlinkSync, writeSync };
   return { ...actual, ...patched, default: { ...actual, ...patched } };
 });
 
@@ -75,6 +95,8 @@ describe('output staging files are created exclusively', () => {
     linkFault.before = () => {};
     unlinkFault.failNext = 0;
     writeFault.armed = false;
+    fsyncFault.armed = false;
+    inodeFake.armed = false;
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-staging-')));
     const projectRoot = makeProjectRoot(tmpDir);
     alias = path.join(tmpDir, 'alias');
@@ -277,6 +299,37 @@ describe('output staging files are created exclusively', () => {
       const named = [...(error?.data?.files_left ?? []), ...(error?.data?.staging_left ?? [])];
       expect(named.length).toBeGreaterThan(0);
       for (const rel of named) expect(fs.existsSync(path.join(out.projectRoot, rel)), rel).toBe(true);
+    });
+  });
+
+  it('closes the file when flushing it fails, and refuses to write or finish it afterwards', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('fsync-failed');
+      const batch = new OutputBatch(out);
+      const file = batch.openFile('records.jsonl', 'application/x-ndjson');
+      file.write('{"a":1}\n');
+      fsyncFault.armed = true;
+      const before = closeCount.calls;
+      expect(() => file.finish()).toThrow('simulated fsync failure');
+      expect(closeCount.calls - before).toBe(1);
+      expect(() => file.write('{"b":2}\n')).toThrow(/already finished or discarded/);
+      expect(() => file.finish()).toThrow(/already finished or discarded/);
+      expect(fs.readdirSync(out.dir)).toEqual([]);
+    });
+  });
+
+  it('compares file identities as exact 64-bit integers, so inodes 2^53 and 2^53 + 1 differ', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('big-inode');
+      const batch = new OutputBatch(out);
+      inodeFake.armed = true;
+      try {
+        batch.json('a.json', { x: 1 });
+        await expect(batch.publish()).rejects.toThrow(/staged output file was replaced/);
+      } finally {
+        inodeFake.armed = false;
+      }
+      expect(fs.existsSync(path.join(out.dir, 'a.json'))).toBe(false);
     });
   });
 });

@@ -65,7 +65,8 @@ export const OutputDirSchema = z
       + 'and may not lie under .nullius/, team/runs/ or artifacts/hep-mcp/. A call never replaces an existing file '
       + '(it is refused if any of its files already exists), and a call that fails removes what it had published and staged. '
       + 'If that cleanup fails, the error says what is left: published files make it UNSAFE_FS "outputs are incomplete" with '
-      + 'files_left; staging files alone are added to the original error as staging_left (staging_path if unidentified). '
+      + 'files_left; staging files alone are added to the original error as staging_left (staging_path if unidentified); '
+      + 'removals that cannot be flushed to disk give UNSAFE_FS with unflushed_directories. '
       + 'Only a crash during publication can leave part of a set unreported. Later calls naming leftover files are refused until they are removed.'
   );
 

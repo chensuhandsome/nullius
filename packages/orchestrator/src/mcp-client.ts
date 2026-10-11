@@ -201,20 +201,72 @@ function waitForProcessExit(proc: ChildProcess, timeoutMs: number): Promise<bool
   });
 }
 
-// A zombie accepts signal 0, so after a group signal failed with EPERM this
-// separates an exited (unreaped) server from one still running under
-// credentials this process may not signal.
-function processRefusesSignals(pid: number): boolean {
+// POSIX servers run under an anchor: a small Node process spawned with setsid
+// (`detached`), so it leads the server's session and process group and the
+// group number is the anchor's pid. The anchor starts the server in that
+// group, reports on fd 3 how the server ended, and then stays in the group,
+// ignoring the signals that end the server, until the client sends SIGKILL or
+// closes fd 3. The anchor's pid cannot be reissued before the client reaps
+// it, so a group signal sent while the anchor is unreaped reaches the server's
+// group, also after the server itself has exited and left descendants behind.
+const SERVER_ANCHOR_SOURCE = `
+'use strict';
+const { spawn } = require('node:child_process');
+const net = require('node:net');
+const control = new net.Socket({ fd: 3, readable: true, writable: true });
+control.on('error', () => process.exit(1));
+control.on('end', () => process.exit(0));
+control.resume();
+for (const signal of ['SIGHUP', 'SIGINT', 'SIGTERM']) process.on(signal, () => {});
+let reported = false;
+const report = status => {
+  if (reported) return;
+  reported = true;
+  control.write(JSON.stringify(status) + '\\n');
+};
+const [command, ...args] = process.argv.slice(1);
+try {
+  const server = spawn(command, args, { stdio: ['inherit', 'inherit', 'inherit', 'ignore'] });
+  server.on('error', error => report({ error: error.message }));
+  server.on('exit', (code, signal) => report({ code, signal }));
+} catch (error) {
+  report({ error: error.message });
+}
+`;
+
+type ServerExit = { code: number | null; signal: NodeJS.Signals | null } | { error: string };
+
+function parseServerExit(line: string): ServerExit {
   try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
+    const status = JSON.parse(line) as Record<string, unknown>;
+    if (typeof status.error === 'string') return { error: status.error };
+    return {
+      code: typeof status.code === 'number' ? status.code : null,
+      signal: typeof status.signal === 'string' ? status.signal as NodeJS.Signals : null,
+    };
+  } catch {
+    return { code: null, signal: null };
   }
+}
+
+// Resolves once with how the server ended: the anchor's report, or the exit
+// of the spawned process itself (an anchor that ends unreported, or the
+// server on Windows).
+function watchServerExit(proc: ChildProcess, anchored: boolean): Promise<ServerExit> {
+  return new Promise(resolve => {
+    proc.once('exit', (code, signal) => resolve({ code, signal }));
+    const status = proc.stdio[3];
+    if (anchored && status) {
+      readline.createInterface({ input: status as NodeJS.ReadableStream }).once('line', line => {
+        resolve(parseServerExit(line));
+      });
+    }
+  });
 }
 
 export class McpClient {
   private proc: ChildProcess | null = null;
+  private readonly serverExits = new WeakMap<ChildProcess, Promise<ServerExit>>();
   private nextId = 1;
   private readonly pending = new Map<JsonRpcId, PendingRequest>();
   private readonly sampling: SamplingRuntime | null;
@@ -286,16 +338,21 @@ export class McpClient {
       options.requiredCredentialNames ?? [],
     );
     const cwd = options.cwd ?? this.controlledHome;
-    const proc = spawn(command, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env,
-      cwd,
-      detached: process.platform !== 'win32',
-    });
+    const anchored = process.platform !== 'win32';
+    const proc = anchored
+      ? spawn(process.execPath, ['-e', SERVER_ANCHOR_SOURCE, '--', command, ...args], {
+          stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+          env,
+          cwd,
+          detached: true,
+        })
+      : spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'], env, cwd });
     if (!proc.stdout) {
       throw new Error('No stdout from MCP process');
     }
     this.proc = proc;
+    const serverExit = watchServerExit(proc, anchored);
+    this.serverExits.set(proc, serverExit);
     proc.stderr?.resume();
     readline.createInterface({ input: proc.stdout }).on('line', line => {
       consumeJsonRpcLine({
@@ -308,24 +365,22 @@ export class McpClient {
         }),
       });
     });
-    proc.on('exit', code => {
-      this.killReapedServerGroup(proc);
-      const wasConnected = this.initialized;
-      this.initialized = false;
-      for (const [, pending] of this.pending) {
-        pending.reject(new Error(`MCP process exited with code ${code}`));
+    void serverExit.then(status => {
+      // An anchor outlives its server: release the server's stdin as Node
+      // does when a direct child exits.
+      proc.stdin?.destroy();
+      if ('error' in status) {
+        this.failPending(`MCP process failed to start: ${status.error}`);
+        return;
       }
-      this.pending.clear();
+      const wasConnected = this.initialized;
+      this.failPending(`MCP process exited with code ${status.code}`);
       if (wasConnected && !this.closed && !this.unusable && !this.reconnecting) {
         this.scheduleReconnect();
       }
     });
     proc.on('error', error => {
-      this.initialized = false;
-      for (const [, pending] of this.pending) {
-        pending.reject(new Error(`MCP process failed to start: ${error.message}`));
-      }
-      this.pending.clear();
+      this.failPending(`MCP process failed to start: ${error.message}`);
     });
 
     const initResponse = await this.request('initialize', {
@@ -363,9 +418,9 @@ export class McpClient {
         return;
       }
       try {
-        // Descendants may outlive the exited server; its group was killed
-        // when the server was reaped. Release the old handle before starting
-        // a new server.
+        // The direct server may have exited while descendants remain in its
+        // dedicated process group. Drain that old group before starting a new
+        // one; merely dropping the ChildProcess handle would orphan it.
         await this.terminateProcessTree();
         if (this.closed || this.unusable) {
           this.reconnecting = false;
@@ -469,23 +524,34 @@ export class McpClient {
     } catch {
       // CONTRACT-EXEMPT: CODE-01.5 best-effort shutdown cleanup
     }
-    await waitForProcessExit(proc, this.shutdownGraceMs);
+    await this.waitForServerExit(proc, this.shutdownGraceMs);
+    // Signal from a fresh macrotask, never from inside libuv's reaping pass
+    // (see signalProcessTree).
+    await new Promise(resolve => setImmediate(resolve));
     const termSent = this.signalProcessTree(proc, 'SIGTERM');
     if (termSent) {
       await new Promise(resolve => setTimeout(resolve, this.killGraceMs));
     }
     this.signalProcessTree(proc, 'SIGKILL');
     await waitForProcessExit(proc, this.killGraceMs);
+    proc.stdio[3]?.destroy();
   }
 
-  // The server's process-group number is its pid. Until the server is reaped
-  // that pid stays allocated, so no other group can carry the number. Once it
-  // is reaped, only remaining descendants keep the number allocated, and that
-  // cannot be observed: a later signal could reach an unrelated group that was
-  // given the reissued number. So the group is signalled freely while the
-  // server is unreaped, killed in the callback that reaps the server, and
-  // never signalled afterwards. Node sets exitCode/signalCode in that same
-  // callback, before 'exit' listeners run.
+  private async waitForServerExit(proc: ChildProcess, timeoutMs: number): Promise<void> {
+    const serverExit = this.serverExits.get(proc);
+    if (!serverExit) return;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([serverExit, new Promise(resolve => { timer = setTimeout(resolve, timeoutMs); })]);
+    clearTimeout(timer);
+  }
+
+  // The group number is the anchor's pid and names the server's group exactly
+  // while the anchor is unreaped. Node sets exitCode/signalCode in the exit
+  // callback that libuv runs for each child it reaped, but libuv reaps every
+  // exited child before running any of their callbacks, so inside that pass a
+  // reaped child can still show unset fields. Callers signal only from a fresh
+  // timer or immediate callback, where every reaped child has had its
+  // callback, so unset fields mean the anchor is unreaped.
   private signalProcessTree(proc: ChildProcess, signal: NodeJS.Signals): boolean {
     if (!proc.pid) return false;
     if (process.platform === 'win32') return proc.kill(signal);
@@ -494,28 +560,19 @@ export class McpClient {
       process.kill(-proc.pid, signal);
       return true;
     } catch (error) {
+      // ESRCH: no member is left. EPERM: none this process may signal; macOS
+      // reports it for a group whose members have all exited, such as an
+      // anchor killed from outside and not yet reaped.
       const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ESRCH') return false;
-      // EPERM: no member could be signalled. macOS reports it once every
-      // member has exited, the unreaped server included; a server that is
-      // still running but refuses the signal has escaped containment.
-      if (code === 'EPERM' && !processRefusesSignals(proc.pid)) return false;
+      if (code === 'ESRCH' || code === 'EPERM') return false;
       throw error;
     }
   }
 
-  // Called first in the server's 'exit' listener: the server has just been
-  // reaped and its descendants may still hold the group number.
-  private killReapedServerGroup(proc: ChildProcess): void {
-    if (process.platform === 'win32' || !proc.pid) return;
-    try {
-      process.kill(-proc.pid, 'SIGKILL');
-    } catch (error) {
-      // ESRCH: no member is left. EPERM: none can be signalled (macOS: the
-      // remaining members have exited and wait to be reaped by their new parent).
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ESRCH' && code !== 'EPERM') throw error;
-    }
+  private failPending(message: string): void {
+    this.initialized = false;
+    for (const [, pending] of this.pending) pending.reject(new Error(message));
+    this.pending.clear();
   }
 
   private removeControlledHome(): void {

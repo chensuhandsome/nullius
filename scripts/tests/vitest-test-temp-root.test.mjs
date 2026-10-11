@@ -79,6 +79,32 @@ test('runPassed is true only for a positively clean run', () => {
   assert.equal(runPassed(throwing), false, 'an accessor that throws is never a pass');
 });
 
+test('a clean task state with an unclean exit status is not a pass', t => {
+  const saved = process.exitCode;
+  t.after(() => { process.exitCode = saved; });
+  process.exitCode = 1;  // e.g. a coverage threshold failed after every test passed
+  const clean = fakeProject({ files: [{ result: { state: 'pass' } }] });
+  const verdict = runPassed(clean);
+  process.exitCode = saved;
+  assert.equal(verdict, false);
+  assert.equal(runPassed(clean), true);
+});
+
+test('one unclean rerun of a watch session keeps the root even when the last run passed', t => {
+  const base = scratch(t);
+  withEnv(t, { TMPDIR: base, TMP: undefined, TEMP: undefined, NULLIUS_KEEP_TEST_TMP: undefined });
+  let rerun;
+  const files = [{ result: { state: 'fail' } }];
+  const project = fakeProject({ files });
+  project.onTestsRerun = cb => { rerun = cb; };
+  const teardown = setup(project);
+  const root = os.tmpdir();
+  rerun([]);               // a rerun starts while the previous run's failure is still in the state
+  files[0].result.state = 'pass';
+  teardown();
+  assert.equal(fs.existsSync(root), true);
+});
+
 test('a cancelled run is never judged passed, even when every started file passed', () => {
   const test = (state, extra = {}) => ({ type: 'test', mode: 'run', ...(state ? { result: { state } } : {}), ...extra });
   const file = tasks => ({ type: 'suite', mode: 'run', result: { state: 'pass' }, tasks });
@@ -269,14 +295,18 @@ const VITEST_HOSTS = [
   ['vitest 4', path.join(repoRoot, 'packages', 'shared', 'node_modules', 'vitest', 'vitest.mjs')],
 ];
 
-function runVitest(t, bin, body, command = 'run') {
+function runVitest(t, bin, body, command = 'run', { exitReporter = false } = {}) {
   const base = scratch(t);
   const project = path.join(base, 'proj');
   const tmp = path.join(base, 'tmp');
   fs.mkdirSync(project);
   fs.mkdirSync(tmp);
+  const reporters = exitReporter ? `, reporters: ['default', './exit-reporter.mjs']` : '';
   fs.writeFileSync(path.join(project, 'vitest.config.mjs'),
-    `export default { test: { globals: true, include: ['*.test.mjs'], globalSetup: [${JSON.stringify(modulePath)}] } };\n`);
+    `export default { test: { globals: true, include: ['*.test.mjs'], globalSetup: [${JSON.stringify(modulePath)}]${reporters} } };\n`);
+  // Fails the command after every test passed, as a coverage threshold does.
+  fs.writeFileSync(path.join(project, 'exit-reporter.mjs'),
+    'export default class { onTestRunEnd() { process.exitCode = 1; } onFinished() { process.exitCode = 1; } }\n');
   fs.writeFileSync(path.join(project, 'probe.test.mjs'), `import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -306,6 +336,11 @@ for (const [label, bin] of VITEST_HOSTS) {
     const recorded = fs.readFileSync(path.join(parent, roots[0], 'probe-root.txt'), 'utf-8');
     assert.equal(fs.realpathSync(recorded), fs.realpathSync(path.join(parent, roots[0])),
       'tests saw the per-run root as their temporary directory');
+  });
+  test(`${label}: a command that fails after its tests passed keeps its root`, { skip: !fs.existsSync(bin) && `${bin} not installed` }, t => {
+    const { result, roots } = runVitest(t, bin, 'expect(1).toBe(1);', 'run', { exitReporter: true });
+    assert.notEqual(result.status, 0, result.stdout + result.stderr);
+    assert.equal(roots.length, 1);
   });
   test(`${label}: a listing command leaves no root and no warning`, { skip: !fs.existsSync(bin) && `${bin} not installed` }, t => {
     const { result, roots } = runVitest(t, bin, 'expect(1).toBe(1);', 'list');

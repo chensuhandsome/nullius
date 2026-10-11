@@ -51,8 +51,9 @@ Subcommands
 
 Exit codes: 0 clean; 1 findings (strict-check violations, verification or
 restore problems, a stow refused because recorded outputs changed or are
-unavailable or because bulk files are staged or changed but not committed,
-an ignore rule that re-includes a stowed file); 2 usage or
+unavailable, because bulk files are staged or changed but not committed, or
+because git ignores the manifest or ignore file, an ignore rule that
+re-includes a stowed file); 2 usage or
 environment errors and inputs refused before any change (unrecordable file
 names, damaged ignore-block markers, a run directory inside or around another
 stowed run, a malformed manifest or policy, a store inside a checkout).
@@ -696,6 +697,19 @@ def blob_ids(repo: Repo, args: "list[str]") -> "dict[str, str]":
     return found
 
 
+def is_ignored(repo: Repo, path: Path) -> bool:
+    """True when git's ignore rules exclude this (tracked or not, existing or
+    not) path; a tracked path is never excluded."""
+    proc = git(["check-ignore", "-q", "--", os.path.relpath(path, repo.toplevel)], repo.toplevel,
+               check=False, literal_pathspecs=False)
+    if proc.returncode not in (0, 1):
+        raise StorageError(f"git check-ignore failed for {path}: {proc.stderr.decode(errors='replace').strip()}")
+    return proc.returncode == 0
+
+
+RECORD_NAMES = (MANIFEST_NAME, ".gitignore")
+
+
 def committed_and_pending(repo: Repo, pathspecs: "list[str]") -> "tuple[set[str], set[str]]":
     """Split tracked paths into committed ones (HEAD holds exactly the staged
     and checked-out bytes) and pending ones (the next commit would add bytes:
@@ -748,7 +762,7 @@ def working_tree_bulk(repo: Repo, threshold: int, store: Path) -> "dict[str, lis
     classes: "dict[str, list[dict]]" = {"tracked": [], "pending": [], "untracked": [], "ignored_unstowed": [],
                                         "stowed": [], "stowed_damaged": [],
                                         "symlinked_run_roots": [{"path": r, "size": 0} for r in symlinked],
-                                        "nested_repositories": []}
+                                        "nested_repositories": [], "uncommitted_records": []}
     if not roots:
         return classes
     committed, pending = committed_and_pending(repo, roots)
@@ -759,6 +773,22 @@ def working_tree_bulk(repo: Repo, threshold: int, store: Path) -> "dict[str, lis
     # Every recorded entry is checked by full hash, whatever its current size:
     # a stowed output that changed, shrank, vanished, lost its store copy, or
     # is recorded twice is not "stowed" any more.
+    # The manifest and ignore file of every stowed run must be committed as
+    # they are: otherwise removing this checkout loses the record.
+    record_paths = sorted({repo.rel(run_dir / name) for records in stowed.values() for run_dir, _ in records
+                           for name in RECORD_NAMES})
+    committed_records, pending_records = committed_and_pending(repo, record_paths)
+    for rel in record_paths:
+        full = repo.toplevel / rel
+        if rel in committed_records:
+            continue
+        if not (full.exists() or full.is_symlink()):
+            status = "missing"
+        elif rel in pending_records:
+            status = "pending"
+        else:
+            status = "ignored" if is_ignored(repo, full) else "untracked"
+        classes["uncommitted_records"].append({"path": rel, "size": 0, "status": status})
     for rel, records in sorted(stowed.items()):
         statuses = [entry_status(run_dir, store, entry)["status"] for run_dir, entry in records]
         status = "recorded_more_than_once" if len(records) > 1 else statuses[0]
@@ -829,6 +859,8 @@ def cmd_check(args) -> int:
         "stowed_damaged": "recorded in a bulk manifest but changed, missing, recorded twice, or without a valid "
                           "store copy",
         "stowed": "stowed (valid copy in the content store; the copy in place, where present, matches the manifest)",
+        "uncommitted_records": "manifest or ignore file of a stowed run not committed as it is (missing, ignored, "
+                               "untracked, or changed; the record is lost with this checkout until committed)",
     }
     lines = [f"run-storage: bulk files (>= {human(threshold)}) under {', '.join(repo.run_roots)}:"]
     for r in classes["symlinked_run_roots"]:
@@ -836,7 +868,8 @@ def cmd_check(args) -> int:
                      "(configure the real path in run_roots)")
     for r in classes["nested_repositories"]:
         lines.append(f"  {r['path']} is a nested repository; its files follow that repository's rules (not classified)")
-    for key in ("stowed_damaged", "pending", "untracked", "ignored_unstowed", "tracked", "stowed"):
+    for key in ("stowed_damaged", "uncommitted_records", "pending", "untracked", "ignored_unstowed", "tracked",
+                "stowed"):
         records = classes[key]
         lines.append(f"  {len(records):5d} files {human(sum(r['size'] for r in records)):>12}  {labels[key]}")
         for r in records[: args.limit]:
@@ -845,7 +878,7 @@ def cmd_check(args) -> int:
             lines.append(f"        ... {len(records) - args.limit} more")
     emit(result, args.json, lines)
     violations = (classes["untracked"] or classes["ignored_unstowed"] or classes["stowed_damaged"]
-                  or classes["pending"] or classes["symlinked_run_roots"])
+                  or classes["pending"] or classes["symlinked_run_roots"] or classes["uncommitted_records"])
     return EXIT_FINDINGS if (violations and args.strict) else EXIT_OK
 
 
@@ -927,6 +960,14 @@ def cmd_stow(args) -> int:
     entries = {e["path"]: e for e in manifest["entries"]}
     folded = {k.casefold() for k in entries} if repo.ignorecase else set()
     check_ignore_markers(run_dir)  # before anything is changed
+    # The manifest and ignore file are the record: if git ignores them, nothing could be committed.
+    hidden = [name for name in RECORD_NAMES if is_ignored(repo, run_dir / name)]
+    if hidden:
+        print(f"run-storage: git's ignore rules exclude {', '.join(repo.rel(run_dir / n) for n in hidden)}, so the "
+              "stow record could not be committed (nothing was changed). Make them committable (see "
+              "`git check-ignore -v <path>` for the rule; a rule that ignores a whole run root cannot be undone "
+              "below it), then stow again.", file=sys.stderr)
+        return EXIT_FINDINGS
 
     # 1. Every entry already recorded must still hold its recorded bytes,
     #    whatever its current size: a recorded result is never re-recorded.
@@ -1177,7 +1218,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--threshold", type=int, default=None, help="bytes (default: policy, 5 MiB)")
     p.add_argument("--strict", action="store_true",
                    help="exit 1 when something needs attention: with --staged, bulk files staged for the next "
-                        "commit; otherwise bulk that is damaged, pending, untracked, or ignored but unstowed; "
+                        "commit; otherwise bulk that is damaged, pending, untracked, or ignored but unstowed, "
+                        "and stow records (manifest, ignore file) not committed as they are; "
                         "in both modes, a run root that passes through a symbolic link")
     p.add_argument("--quiet", action="store_true", help="print nothing when there is nothing to report")
     p.add_argument("--store", default=None, help=STORE_HELP)

@@ -77,6 +77,12 @@ def stow_json(run_dir, cwd, monkeypatch, capsys) -> dict:
     return json.loads(capsys.readouterr().out)
 
 
+def commit_records(repo: Path) -> None:
+    """Commit what stow asks to commit (stowed files are ignored)."""
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "stow records", cwd=repo)
+
+
 def overwrite_in_place(path: Path, data: bytes) -> None:
     os.chmod(path, 0o644)
     with open(path, "r+b") as fh:
@@ -272,6 +278,7 @@ def test_check_strict_fails_on_exactly_the_classes_that_need_attention(tmp_path,
         sh("git", "commit", "-q", "-m", "bulk", cwd=repo)
     elif state in ("stowed", "stowed_damaged"):
         assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+        commit_records(repo)
         if state == "stowed_damaged":
             rs.store_path(store_of(repo), rs.sha256_file(run / "big.bin")).unlink()
     elif state == "pending":
@@ -702,6 +709,7 @@ def test_decomposed_unicode_names_are_recorded_in_git_form(tmp_path, monkeypatch
     (run / "é.bin").write_bytes(blob(THRESHOLD, 30))  # NFD on disk
     assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
     assert sh("git", "status", "--porcelain", "--untracked-files=all", cwd=repo).stdout.count(".bin") == 0
+    commit_records(repo)
     capsys.readouterr()
     assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_OK
     doc = json.loads(capsys.readouterr().out)
@@ -801,6 +809,7 @@ def test_a_case_only_rename_on_a_case_insensitive_file_system_is_not_recorded_tw
     run.mkdir()
     (run / "out.bin").write_bytes(blob(THRESHOLD, 24))
     assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    commit_records(repo)
     os.rename(run / "out.bin", run / "OUT.bin")
     assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
     assert [e["path"] for e in json.loads((run / rs.MANIFEST_NAME).read_text())["entries"]] == ["out.bin"]
@@ -1017,6 +1026,7 @@ def test_decomposed_unicode_run_directory_names_are_matched_in_git_form(tmp_path
     run.mkdir()
     (run / "a.bin").write_bytes(blob(THRESHOLD, 39))
     assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    commit_records(repo)
     capsys.readouterr()
     assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_OK
     doc = json.loads(capsys.readouterr().out)
@@ -1115,6 +1125,50 @@ def test_symlinked_ignore_file_or_manifest_is_refused_and_left_alone(tmp_path, m
     os.symlink("../../../manifest-elsewhere.json", run / rs.MANIFEST_NAME)
     for argv in (["verify", str(run)], ["check"], ["stow", str(run)]):
         assert run_main(argv, repo, monkeypatch) == rs.EXIT_ERROR, argv
+
+
+@pytest.mark.parametrize("rule", ["root_ignored_by_parent", "manifest_ignored_by_run_rule"])
+def test_stow_refuses_when_git_would_ignore_the_record(tmp_path, monkeypatch, capsys, rule):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 47))
+    if rule == "root_ignored_by_parent":
+        (repo / ".gitignore").write_text("artifacts/runs/\n")
+    else:
+        (run / ".gitignore").write_text("*.json\n")
+    before = (run / ".gitignore").read_text() if (run / ".gitignore").exists() else None
+    capsys.readouterr()
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert "bulk_manifest.json" in capsys.readouterr().err
+    assert not (run / rs.MANIFEST_NAME).exists() and stat.S_IMODE((run / "a.bin").stat().st_mode) & 0o200
+    assert ((run / ".gitignore").read_text() if (run / ".gitignore").exists() else None) == before
+    assert not store_of(repo).exists()
+
+
+def test_check_strict_flags_stow_records_not_committed_as_they_are(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 48))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+
+    def records():
+        capsys.readouterr()
+        code = run_main(["check", "--strict", "--json"], repo, monkeypatch)
+        return code, {r["path"]: r["status"] for r in json.loads(capsys.readouterr().out)["uncommitted_records"]}
+
+    manifest, ignore = "artifacts/runs/r1/bulk_manifest.json", "artifacts/runs/r1/.gitignore"
+    assert records() == (rs.EXIT_FINDINGS, {manifest: "untracked", ignore: "untracked"})
+    commit_records(repo)
+    assert records() == (rs.EXIT_OK, {})
+    (run / "b.bin").write_bytes(blob(THRESHOLD, 49))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK  # the record changed
+    assert records() == (rs.EXIT_FINDINGS, {manifest: "pending", ignore: "pending"})
+    commit_records(repo)
+    (run / ".gitignore").unlink()
+    code, found = records()
+    assert code == rs.EXIT_FINDINGS and found == {ignore: "missing"}
 
 
 # ------------------------------------------------------- verify / materialize

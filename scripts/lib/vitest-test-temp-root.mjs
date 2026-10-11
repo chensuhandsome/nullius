@@ -8,8 +8,10 @@
 // deliberately short: tools create Unix-domain sockets under TMPDIR, and a
 // socket path longer than about 104 bytes (macOS) cannot be bound. At teardown
 // the root is removed only when the run is known to have passed: every test
-// finished (passed, skipped, or todo), nothing failed, and the run was not
-// being cancelled (Ctrl-C in watch mode). A failing, interrupted, or unreadable
+// finished (passed, skipped, or todo), nothing failed, the run was not being
+// cancelled (Ctrl-C in watch mode), the command's exit status is still clean
+// (vitest sets it before teardown, e.g. for a coverage threshold, and never
+// resets it), and no earlier rerun of a watch session ended unclean. A failing, interrupted, or unreadable
 // run keeps it for inspection, even when empty; the one exception is a
 // command in which no test ran at all (e.g. `vitest list`) and which left the
 // root empty: it is removed silently, since there is nothing to inspect.
@@ -183,9 +185,14 @@ function taskStarted(task) {
 /** True only when the vitest state positively reports a clean run. Any
  *  missing accessor (an API change) counts as "not known to have passed",
  *  so the root is kept rather than deleted. */
+function exitStatusClean() {
+  const code = process.exitCode;
+  return code === undefined || code === null || Number(code) === 0;
+}
+
 export function runPassed(project) {
   try {
-    if (project?.vitest?.isCancelling === true) return false;
+    if (project?.vitest?.isCancelling === true || !exitStatusClean()) return false;
     const state = readableState(project);
     if (!state) return false;
     const files = state.getFiles();
@@ -237,6 +244,18 @@ export default function setup(project) {
   process.env.TMPDIR = root;
   process.env.TMP = root;
   process.env.TEMP = root;
+  // A watch session reruns tests with the same root: when a rerun starts, the
+  // state still holds the previous run, and one unclean run keeps the root.
+  let earlierRunUnclean = false;
+  try {
+    if (typeof project?.onTestsRerun === 'function') {
+      project.onTestsRerun(() => {
+        if (!runPassed(project)) earlierRunUnclean = true;
+      });
+    }
+  } catch {
+    earlierRunUnclean = true;  // cannot follow reruns: never treat a later clean state as the whole story
+  }
 
   return () => {
     for (const [key, value] of Object.entries(previous)) {
@@ -247,8 +266,8 @@ export default function setup(project) {
       warn(`kept ${root} (NULLIUS_KEEP_TEST_TMP=1)`);
       return;
     }
-    if (!runPassed(project)) {
-      if (noTestRan(project) && isEmptyDirectory(root)) {
+    if (earlierRunUnclean || !runPassed(project)) {
+      if (!earlierRunUnclean && noTestRan(project) && isEmptyDirectory(root)) {
         removeTree(root);  // nothing ran and nothing was written: nothing to inspect
         return;
       }

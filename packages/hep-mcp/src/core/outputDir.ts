@@ -252,8 +252,10 @@ function removeIfSame(out: OutputDir, name: string, file: string, identity: File
     const chain = [...out.relative.split('/'), ...name.split('/').slice(0, -1)];
     realDirectoryChain(out.projectRoot, chain, 'output_dir', out.projectRoot, false);
     if (!isSameFile(file, identity)) return 'gone';
+    // A successful unlink removed the name; no lookup afterwards, whose own
+    // failure would misreport a removed file as left.
     fs.unlinkSync(file);
-    return isSameFile(file, identity) ? 'kept' : 'removed';
+    return 'removed';
   } catch {
     // Left in place; the caller decides whether that must be reported.
     return 'kept';

@@ -22,6 +22,8 @@ const closeCount = vi.hoisted(() => ({ calls: 0 }));
 // Report a huge inode: 2^53 for a descriptor, 2^53 + 1 for a staging path.
 // As JavaScript numbers the two are equal; as exact integers they differ.
 const inodeFake = vi.hoisted(() => ({ armed: false }));
+// Make the first lstatSync after a successful unlink fail.
+const lstatAfterUnlink = vi.hoisted(() => ({ armed: false, pending: false }));
 vi.mock('fs', async importOriginal => {
   const actual = await importOriginal<typeof import('fs')>();
   const closeSync = (fd: number): void => {
@@ -43,6 +45,10 @@ vi.mock('fs', async importOriginal => {
     return inodeFake.armed ? withInode(stat, 2n ** 53n, Boolean(options?.bigint)) : stat;
   }) as typeof actual.fstatSync;
   const lstatSync = ((target: string, options?: any) => {
+    if (lstatAfterUnlink.pending) {
+      lstatAfterUnlink.pending = false;
+      throw Object.assign(new Error('simulated lstat failure'), { code: 'EIO' });
+    }
     const stat = actual.lstatSync(target, options);
     return inodeFake.armed && String(target).endsWith('.tmp') ? withInode(stat, 2n ** 53n + 1n, Boolean(options?.bigint)) : stat;
   }) as typeof actual.lstatSync;
@@ -67,6 +73,10 @@ vi.mock('fs', async importOriginal => {
       throw Object.assign(new Error('simulated unlink failure'), { code: 'EIO' });
     }
     actual.unlinkSync(target);
+    if (lstatAfterUnlink.armed) {
+      lstatAfterUnlink.armed = false;
+      lstatAfterUnlink.pending = true;
+    }
   };
   const writeSync = ((fd: number, ...rest: any[]) => {
     if (writeFault.armed) {
@@ -97,6 +107,8 @@ describe('output staging files are created exclusively', () => {
     writeFault.armed = false;
     fsyncFault.armed = false;
     inodeFake.armed = false;
+    lstatAfterUnlink.armed = false;
+    lstatAfterUnlink.pending = false;
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-staging-')));
     const projectRoot = makeProjectRoot(tmpDir);
     alias = path.join(tmpDir, 'alias');
@@ -351,6 +363,33 @@ describe('output staging files are created exclusively', () => {
       } finally {
         unlinkFault.failNext = 0;
       }
+    });
+  });
+
+  it('counts a successful unlink as removed even if a lookup right after it fails, and flushes its directory', async () => {
+    const { _setAtomicWriteAuditHook } = await import('@nullius/shared');
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('unlinked');
+      const batch = new OutputBatch(out);
+      batch.json('a.json', { x: 1 });
+      const opened = new Map<number, string>();
+      const fsynced: string[] = [];
+      const restore = _setAtomicWriteAuditHook(event => {
+        if (event.kind === 'open') opened.set(event.fd, event.path);
+        if (event.kind === 'fsync' && opened.has(event.fd)) fsynced.push(opened.get(event.fd)!);
+      });
+      const cause = new Error('cause');
+      let reported: unknown;
+      try {
+        lstatAfterUnlink.armed = true;
+        reported = batch.discard(cause);
+      } finally {
+        restore();
+        lstatAfterUnlink.pending = false;
+      }
+      expect(reported).toBe(cause);
+      expect(fs.readdirSync(out.dir)).toEqual([]);
+      expect(fsynced).toContain(out.dir);
     });
   });
 });

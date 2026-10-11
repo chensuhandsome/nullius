@@ -7,15 +7,28 @@ vi.mock('../api/rateLimiter.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api/rateLimiter.js')>()),
   openalexFetchFullUrl: vi.fn(),
 }));
+vi.mock('crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('crypto')>();
+  return { ...actual, randomBytes: vi.fn(actual.randomBytes) };
+});
+vi.mock('@nullius/shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@nullius/shared')>();
+  return { ...actual, fsyncParentDirectoryDurable: vi.fn(actual.fsyncParentDirectoryDurable) };
+});
 
+import { randomBytes } from 'crypto';
+import { fsyncParentDirectoryDurable } from '@nullius/shared';
 import { handleContent } from '../api/contentDownload.js';
 import { openalexFetchFullUrl } from '../api/rateLimiter.js';
 
 const mockFetch = vi.mocked(openalexFetchFullUrl);
+const mockRandomBytes = vi.mocked(randomBytes);
+const mockDirSync = vi.mocked(fsyncParentDirectoryDurable);
 const ORIGINAL_OPENALEX_DATA_DIR = process.env.OPENALEX_DATA_DIR;
 const PDF_BYTES = Buffer.from('%PDF-1.4 test body');
+const fixedHex = 'ab'.repeat(8);
 
-function download(outDir: string) {
+function download(outDir?: string) {
   return handleContent({ work_id: 'W123', type: 'pdf', out_dir: outDir, _confirm: true, max_size_mb: 1 });
 }
 
@@ -29,6 +42,8 @@ describe('handleContent out_dir containment', () => {
     outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'openalex-content-outside-')));
     process.env.OPENALEX_DATA_DIR = dataDir;
     mockFetch.mockReset();
+    mockRandomBytes.mockReset(); // back to the real randomBytes
+    mockDirSync.mockReset(); // back to the real fsyncParentDirectoryDurable
     mockFetch.mockImplementation(async () => new Response(PDF_BYTES, {
       status: 200,
       headers: { 'content-type': 'application/pdf' },
@@ -71,5 +86,165 @@ describe('handleContent out_dir containment', () => {
     await expect(download(path.join(dataDir, 'out-link', 'sub'))).rejects.toThrow(/symlink escape detected/);
     expect(fs.readdirSync(outside)).toEqual([]);
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+  it('accepts a repeated download into an out_dir reached through a link inside the data dir', async () => {
+    // The second download finds W123.pdf already in place; its real location
+    // is under <data>/real, the out_dir is spelled through <data>/link.
+    fs.mkdirSync(path.join(dataDir, 'real'));
+    fs.symlinkSync(path.join(dataDir, 'real'), path.join(dataDir, 'link'), 'dir');
+    const outDir = path.join(dataDir, 'link', 'sub');
+
+    await download(outDir);
+    const second = await download(outDir);
+
+    expect(second.file_path).toBe(path.join(outDir, 'W123.pdf'));
+    expect(fs.readFileSync(path.join(dataDir, 'real', 'sub', 'W123.pdf'))).toEqual(PDF_BYTES);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts repeated downloads when the data dir itself is reached through a link, and still refuses a link out', async () => {
+    // An explicit alias, so this holds on hosts whose temp dir is not itself
+    // a symlink (Linux) as well as under /var -> /private/var (macOS).
+    const aliasHolder = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'openalex-content-alias-')));
+    try {
+      const aliasData = path.join(aliasHolder, 'data');
+      fs.symlinkSync(dataDir, aliasData, 'dir');
+      process.env.OPENALEX_DATA_DIR = aliasData;
+      const outDir = path.join(aliasData, 'sub');
+
+      await download(outDir);
+      const second = await download(outDir);
+      await download();
+      const secondDefault = await download();
+
+      expect(second.file_path).toBe(path.join(outDir, 'W123.pdf'));
+      expect(secondDefault.file_path).toBe(path.join(aliasData, 'content', 'W123.pdf'));
+      expect(fs.readFileSync(path.join(dataDir, 'sub', 'W123.pdf'))).toEqual(PDF_BYTES);
+      expect(fs.readFileSync(path.join(dataDir, 'content', 'W123.pdf'))).toEqual(PDF_BYTES);
+
+      fs.symlinkSync(outside, path.join(dataDir, 'out-link'), 'dir');
+      await expect(download(path.join(aliasData, 'out-link', 'sub'))).rejects.toThrow(/symlink escape detected/);
+      expect(fs.readdirSync(outside)).toEqual([]);
+    } finally {
+      fs.rmSync(aliasHolder, { recursive: true, force: true });
+    }
+  });
+
+  it('does not write through a link left at the old fixed staging name', async () => {
+    const outDir = path.join(dataDir, 'sub');
+    fs.mkdirSync(outDir);
+    const victim = path.join(outside, 'victim.pdf');
+    fs.writeFileSync(victim, 'ORIGINAL');
+    fs.symlinkSync(victim, path.join(outDir, 'W123.pdf.tmp'));
+
+    const result = await download(outDir);
+
+    expect(fs.readFileSync(victim, 'utf-8')).toBe('ORIGINAL');
+    expect(fs.lstatSync(result.file_path).isFile()).toBe(true);
+    expect(fs.readFileSync(result.file_path)).toEqual(PDF_BYTES);
+    expect(fs.readlinkSync(path.join(outDir, 'W123.pdf.tmp'))).toBe(victim);
+  });
+
+  it('refuses to stage through an entry already present at the fresh staging name', async () => {
+    // Force the staging name, then plant a link there: the exclusive create
+    // must fail instead of following the link out of the data dir.
+    const outDir = path.join(dataDir, 'sub');
+    fs.mkdirSync(outDir);
+    const victim = path.join(outside, 'victim.pdf');
+    fs.writeFileSync(victim, 'ORIGINAL');
+    const fixed = Buffer.alloc(8, 0xab);
+    mockRandomBytes.mockImplementationOnce(() => fixed);
+    const staging = path.join(outDir, `W123.pdf.${process.pid}.${fixed.toString('hex')}.tmp`);
+    fs.symlinkSync(victim, staging);
+
+    await expect(download(outDir)).rejects.toThrow(/EEXIST/);
+
+    expect(fs.readFileSync(victim, 'utf-8')).toBe('ORIGINAL');
+    expect(fs.readlinkSync(staging)).toBe(victim);
+    expect(fs.existsSync(path.join(outDir, 'W123.pdf'))).toBe(false);
+  });
+  it('refuses a default content dir that is a link out of the data dir', async () => {
+    fs.symlinkSync(outside, path.join(dataDir, 'content'), 'dir');
+
+    await expect(download()).rejects.toThrow(/content dir: symlink escape detected/);
+
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('removes its staging file when the final rename fails', async () => {
+    // A directory at the destination makes the rename fail after the whole
+    // body has been staged.
+    const outDir = path.join(dataDir, 'sub');
+    fs.mkdirSync(path.join(outDir, 'W123.pdf'), { recursive: true });
+
+    await expect(download(outDir)).rejects.toThrow(/rename/);
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    expect(fs.readdirSync(outDir)).toEqual(['W123.pdf']);
+    expect(fs.statSync(path.join(outDir, 'W123.pdf')).isDirectory()).toBe(true);
+  });
+  it('leaves whatever takes the vacated staging name after a completed rename', async () => {
+    // The rename succeeds and the directory sync then fails; by then the
+    // vacated staging name holds an entry this download did not create:
+    // another file, a link to the very file it staged, or such a link with the
+    // destination itself removed again.
+    const outDir = path.join(dataDir, 'sub');
+    const destPath = path.join(outDir, 'W123.pdf');
+    const takeVacatedName = [
+      (stagingPath: string) => fs.writeFileSync(stagingPath, 'NOT OURS'),
+      (stagingPath: string) => fs.linkSync(destPath, stagingPath),
+      (stagingPath: string) => { fs.linkSync(destPath, stagingPath); fs.unlinkSync(destPath); },
+    ];
+    for (const take of takeVacatedName) {
+      fs.rmSync(outDir, { recursive: true, force: true });
+      mockDirSync.mockImplementationOnce(() => {
+        const [name] = fs.readdirSync(outDir).filter((entry) => entry.endsWith('.tmp'));
+        expect(name).toBeUndefined(); // the rename has happened
+        take(`${destPath}.${process.pid}.${fixedHex}.tmp`);
+        throw new Error('directory fsync failed');
+      });
+      mockRandomBytes.mockImplementationOnce(() => Buffer.from(fixedHex, 'hex'));
+
+      await expect(download(outDir)).rejects.toThrow(/directory fsync failed/);
+
+      const staging = fs.readdirSync(outDir).filter((name) => name.endsWith('.tmp'));
+      expect(staging).toHaveLength(1);
+    }
+  });
+
+  it('removes its staging file when the body exceeds max_size_mb', async () => {
+    const outDir = path.join(dataDir, 'sub');
+    mockFetch.mockImplementation(async () => new Response(Buffer.alloc(1024 * 1024 + 1), {
+      status: 200,
+      headers: { 'content-type': 'application/pdf' },
+    }));
+
+    await expect(download(outDir)).rejects.toThrow(/exceeded max_size_mb/);
+
+    expect(fs.readdirSync(outDir)).toEqual([]);
+  });
+  it('leaves an entry that replaced its staging file before the download failed', async () => {
+    // While the body streams, the staging name is taken over by another file;
+    // the over-size failure that follows must not remove that file.
+    const outDir = path.join(dataDir, 'sub');
+    mockFetch.mockImplementation(async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const [name] = fs.readdirSync(outDir).filter((entry) => entry.endsWith('.tmp'));
+        fs.unlinkSync(path.join(outDir, name));
+        fs.writeFileSync(path.join(outDir, name), 'NOT OURS');
+        controller.enqueue(new Uint8Array(1024 * 1024 + 1));
+        controller.close();
+      },
+    }, { highWaterMark: 0 }), {
+      status: 200,
+      headers: { 'content-type': 'application/pdf' },
+    }));
+
+    await expect(download(outDir)).rejects.toThrow(/exceeded max_size_mb/);
+
+    const staging = fs.readdirSync(outDir).filter((name) => name.endsWith('.tmp'));
+    expect(staging).toHaveLength(1);
+    expect(fs.readFileSync(path.join(outDir, staging[0]), 'utf-8')).toBe('NOT OURS');
   });
 });

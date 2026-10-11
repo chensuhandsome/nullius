@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -7,6 +8,75 @@ import { McpClient } from '../src/mcp-client.js';
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-client-process-'));
+}
+
+const INITIALIZE_REPLY = `
+  if (msg.method === 'initialize') {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {
+      protocolVersion: '2025-03-26', serverInfo: { name: 'stub', version: '1' }, capabilities: {}
+    } }) + '\\n');
+  }
+`;
+
+// The exact process the client spawned, so a test can observe the turn that reaps it.
+function spawnedServer(client: McpClient): ChildProcess | null {
+  return (client as unknown as { proc: ChildProcess | null }).proc;
+}
+
+function serverProcess(client: McpClient): ChildProcess {
+  const proc = spawnedServer(client);
+  if (!proc?.pid) throw new Error('McpClient has no spawned server process');
+  return proc;
+}
+
+// Once `server` is reaped its group number can be reissued. Any later signal for
+// that number is recorded and delivered to `standIn`, an unrelated group leader,
+// as it would be if that leader now held the number. The listener is registered
+// after the client's own, so work the client does inside its exit listener is
+// not counted; anything after it is.
+function redirectSignalsAfterReap(server: ChildProcess, standIn: ChildProcess): string[] {
+  const groupNumber = server.pid!;
+  const late: string[] = [];
+  let reaped = false;
+  server.on('exit', () => { reaped = true; });
+  const realKill = process.kill.bind(process);
+  vi.spyOn(process, 'kill').mockImplementation((target, signal) => {
+    if (target === -groupNumber && reaped) {
+      late.push(String(signal));
+      return realKill(-standIn.pid!, signal);
+    }
+    return realKill(target, signal);
+  });
+  return late;
+}
+
+function spawnUnrelatedGroupLeader(): ChildProcess {
+  return spawn(process.execPath, ['-e', 'setInterval(() => {}, 1_000)'], { detached: true, stdio: 'ignore' });
+}
+
+function isZombie(pid: number): boolean {
+  if (process.platform === 'linux') {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      return stat[stat.lastIndexOf(')') + 2] === 'Z';
+    } catch {
+      return false;
+    }
+  }
+  return spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim().startsWith('Z');
+}
+
+// Holds the event loop: an exited child stays unreaped until the loop polls again.
+function holdEventLoop(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function killError(code: 'EPERM'): NodeJS.ErrnoException {
+  return Object.assign(new Error(`kill ${code}`), { code, errno: -1, syscall: 'kill' });
+}
+
+function isRunning(proc: ChildProcess): boolean {
+  return proc.exitCode === null && proc.signalCode === null;
 }
 
 async function waitForFile(filePath: string, timeoutMs = 4_000): Promise<string> {
@@ -36,6 +106,7 @@ describe('McpClient subprocess containment', () => {
   const originalCanary = process.env.NULLIUS_AMBIENT_CANARY;
 
   afterEach(() => {
+    vi.restoreAllMocks();
     if (originalCanary === undefined) delete process.env.NULLIUS_AMBIENT_CANARY;
     else process.env.NULLIUS_AMBIENT_CANARY = originalCanary;
     for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true });
@@ -322,5 +393,184 @@ describe('McpClient subprocess containment', () => {
     await client.start(process.execPath, [scriptPath], { cwd: tmpDir });
     await Promise.all([client.close(), client.close()]);
     await expect(client.close()).resolves.toBeUndefined();
+  });
+
+  it('closes cleanly when the server has exited but is not yet reaped as its grace period ends', async () => {
+    if (process.platform === 'win32') return;
+    const tmpDir = makeTmpDir();
+    tmpDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, 'server.mjs');
+    writeServer(scriptPath, `${INITIALIZE_REPLY}
+      if (msg.method === 'test/exit') process.exit(0);
+    `);
+    const client = new McpClient({ shutdownGraceMs: 20, killGraceMs: 20, maxReconnects: 0 });
+    await client.start(process.execPath, [scriptPath], { cwd: tmpDir });
+    const server = serverProcess(client);
+    const pid = server.pid!;
+    const realKill = process.kill.bind(process);
+    let signalsToExitedUnreapedGroup = 0;
+    vi.spyOn(process, 'kill').mockImplementation((target, signal) => {
+      if (target === -pid && isRunning(server) && isZombie(pid)) {
+        signalsToExitedUnreapedGroup += 1;
+        // macOS refuses a signal to a group whose members have all exited
+        // (EPERM); Linux accepts it. Give other kernels the macOS answer.
+        if (process.platform !== 'darwin') throw killError('EPERM');
+      }
+      return realKill(target, signal);
+    });
+    // Inside one held callback the server exits, close() arms its 20 ms grace
+    // timer, and the timer falls due. libuv serves due timers before it polls
+    // again, so the grace period ends before the exit can be reaped.
+    const { closing } = await new Promise<{ closing: Promise<void> }>((resolve, reject) => setImmediate(() => {
+      try {
+        void client.request('test/exit', {}, 5_000).catch(() => undefined);
+        const deadline = Date.now() + 10_000;
+        while (!isZombie(pid)) {
+          if (Date.now() > deadline) throw new Error('server did not exit');
+          holdEventLoop(5);
+        }
+        const closing = client.close();
+        holdEventLoop(60);
+        resolve({ closing });
+      } catch (error) {
+        reject(error);
+      }
+    }));
+    await expect(closing).resolves.toBeUndefined();
+    expect(signalsToExitedUnreapedGroup).toBeGreaterThan(0);
+    expect(isRunning(server)).toBe(false);
+  });
+
+  it('does not signal a reaped server group number while draining before a reconnect', async () => {
+    if (process.platform === 'win32') return;
+    const tmpDir = makeTmpDir();
+    tmpDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, 'server.mjs');
+    const generationPath = path.join(tmpDir, 'generation');
+    writeServer(scriptPath, `${INITIALIZE_REPLY}
+      if (msg.method === 'notifications/initialized' && !fs.existsSync(process.env.GENERATION_PATH)) {
+        fs.writeFileSync(process.env.GENERATION_PATH, 'first');
+        process.exit(0);
+      }
+    `);
+    const unrelated = spawnUnrelatedGroupLeader();
+    const client = new McpClient({
+      shutdownGraceMs: 20,
+      killGraceMs: 20,
+      maxReconnects: 1,
+      reconnectPolicy: { baseDelayMs: 50, maxDelayMs: 50 },
+    });
+    try {
+      await client.start(process.execPath, [scriptPath], {
+        configEnv: { GENERATION_PATH: generationPath },
+        cwd: tmpDir,
+      });
+      const first = serverProcess(client);
+      const lateSignals = redirectSignalsAfterReap(first, unrelated);
+      const deadline = Date.now() + 5_000;
+      while (!(client.isConnected && spawnedServer(client) !== first) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      expect(client.isConnected).toBe(true);
+      await client.close();
+      expect(lateSignals).toEqual([]);
+      expect(isRunning(unrelated)).toBe(true);
+    } finally {
+      unrelated.kill('SIGKILL');
+    }
+  });
+
+  it('does not signal a reaped server group number when closed before reconnecting', async () => {
+    if (process.platform === 'win32') return;
+    const tmpDir = makeTmpDir();
+    tmpDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, 'server.mjs');
+    writeServer(scriptPath, `${INITIALIZE_REPLY}
+      if (msg.method === 'notifications/initialized') process.exit(0);
+    `);
+    const unrelated = spawnUnrelatedGroupLeader();
+    const client = new McpClient({
+      shutdownGraceMs: 20,
+      killGraceMs: 20,
+      maxReconnects: 1,
+      reconnectPolicy: { baseDelayMs: 1_000, maxDelayMs: 1_000 },
+    });
+    try {
+      await client.start(process.execPath, [scriptPath], { cwd: tmpDir });
+      const first = serverProcess(client);
+      const lateSignals = redirectSignalsAfterReap(first, unrelated);
+      const deadline = Date.now() + 5_000;
+      while (isRunning(first) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(isRunning(first)).toBe(false);
+      await client.close();
+      expect(lateSignals).toEqual([]);
+      expect(isRunning(unrelated)).toBe(true);
+    } finally {
+      unrelated.kill('SIGKILL');
+    }
+  });
+
+  it('kills descendants that ignore SIGTERM when the server exits on its own', async () => {
+    if (process.platform === 'win32') return;
+    const tmpDir = makeTmpDir();
+    tmpDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, 'server.mjs');
+    const readyPath = path.join(tmpDir, 'descendant-ready');
+    const sentinelPath = path.join(tmpDir, 'descendant-sentinel');
+    writeServer(scriptPath, `${INITIALIZE_REPLY}
+      if (msg.method === 'notifications/initialized') {
+        spawn(process.execPath, ['-e', \`
+          const fs = require('fs');
+          process.on('SIGTERM', () => {});
+          fs.writeFileSync(\${JSON.stringify(process.env.READY_PATH)}, 'ready');
+          setTimeout(() => fs.writeFileSync(\${JSON.stringify(process.env.SENTINEL_PATH)}, 'survived'), 800);
+        \`], { stdio: 'ignore' }).unref();
+      }
+      if (msg.method === 'test/exit') process.exit(0);
+    `);
+    const client = new McpClient({ shutdownGraceMs: 20, killGraceMs: 20, maxReconnects: 0 });
+    await client.start(process.execPath, [scriptPath], {
+      configEnv: { READY_PATH: readyPath, SENTINEL_PATH: sentinelPath },
+      cwd: tmpDir,
+    });
+    await waitForFile(readyPath);
+    await expect(client.request('test/exit', {}, 5_000)).rejects.toThrow('MCP process exited');
+    await new Promise(resolve => setTimeout(resolve, 1_100));
+    expect(fs.existsSync(sentinelPath)).toBe(false);
+    await client.close();
+  });
+
+  it('reports a running server whose process group refuses its signals', async () => {
+    if (process.platform === 'win32') return;
+    const tmpDir = makeTmpDir();
+    tmpDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, 'server.mjs');
+    writeServer(scriptPath, `${INITIALIZE_REPLY}
+      if (msg.method === 'initialize') setInterval(() => {}, 1_000);
+    `);
+    const client = new McpClient({ shutdownGraceMs: 20, killGraceMs: 20, maxReconnects: 0 });
+    await client.start(process.execPath, [scriptPath], { cwd: tmpDir });
+    const server = serverProcess(client);
+    const pid = server.pid!;
+    const realKill = process.kill.bind(process);
+    // As if the server ran under credentials this process may not signal.
+    vi.spyOn(process, 'kill').mockImplementation((target, signal) => {
+      if (target === -pid || target === pid) throw killError('EPERM');
+      return realKill(target, signal);
+    });
+    try {
+      await expect(client.close()).rejects.toMatchObject({ code: 'EPERM' });
+      expect(isRunning(server)).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+      if (isRunning(server)) {
+        const exited = new Promise(resolve => server.once('exit', resolve));
+        // Still unreaped, so the number is this server's group.
+        process.kill(-pid, 'SIGKILL');
+        await exited;
+      }
+    }
   });
 });

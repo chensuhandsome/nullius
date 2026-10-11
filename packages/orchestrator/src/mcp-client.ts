@@ -201,6 +201,18 @@ function waitForProcessExit(proc: ChildProcess, timeoutMs: number): Promise<bool
   });
 }
 
+// A zombie accepts signal 0, so after a group signal failed with EPERM this
+// separates an exited (unreaped) server from one still running under
+// credentials this process may not signal.
+function processRefusesSignals(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 export class McpClient {
   private proc: ChildProcess | null = null;
   private nextId = 1;
@@ -297,6 +309,7 @@ export class McpClient {
       });
     });
     proc.on('exit', code => {
+      this.killReapedServerGroup(proc);
       const wasConnected = this.initialized;
       this.initialized = false;
       for (const [, pending] of this.pending) {
@@ -350,9 +363,9 @@ export class McpClient {
         return;
       }
       try {
-        // The direct server may have exited while descendants remain in its
-        // dedicated process group. Drain that old group before starting a new
-        // one; merely dropping the ChildProcess handle would orphan it.
+        // Descendants may outlive the exited server; its group was killed
+        // when the server was reaped. Release the old handle before starting
+        // a new server.
         await this.terminateProcessTree();
         if (this.closed || this.unusable) {
           this.reconnecting = false;
@@ -465,20 +478,43 @@ export class McpClient {
     await waitForProcessExit(proc, this.killGraceMs);
   }
 
+  // The server's process-group number is its pid. Until the server is reaped
+  // that pid stays allocated, so no other group can carry the number. Once it
+  // is reaped, only remaining descendants keep the number allocated, and that
+  // cannot be observed: a later signal could reach an unrelated group that was
+  // given the reissued number. So the group is signalled freely while the
+  // server is unreaped, killed in the callback that reaps the server, and
+  // never signalled afterwards. Node sets exitCode/signalCode in that same
+  // callback, before 'exit' listeners run.
   private signalProcessTree(proc: ChildProcess, signal: NodeJS.Signals): boolean {
     if (!proc.pid) return false;
+    if (process.platform === 'win32') return proc.kill(signal);
+    if (proc.exitCode !== null || proc.signalCode !== null) return false;
     try {
-      if (process.platform === 'win32') {
-        return proc.kill(signal);
-      } else {
-        process.kill(-proc.pid, signal);
-        return true;
-      }
+      process.kill(-proc.pid, signal);
+      return true;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      const directProcessExited = proc.exitCode !== null || proc.signalCode !== null;
-      if (code === 'ESRCH' || (code === 'EPERM' && directProcessExited)) return false;
+      if (code === 'ESRCH') return false;
+      // EPERM: no member could be signalled. macOS reports it once every
+      // member has exited, the unreaped server included; a server that is
+      // still running but refuses the signal has escaped containment.
+      if (code === 'EPERM' && !processRefusesSignals(proc.pid)) return false;
       throw error;
+    }
+  }
+
+  // Called first in the server's 'exit' listener: the server has just been
+  // reaped and its descendants may still hold the group number.
+  private killReapedServerGroup(proc: ChildProcess): void {
+    if (process.platform === 'win32' || !proc.pid) return;
+    try {
+      process.kill(-proc.pid, 'SIGKILL');
+    } catch (error) {
+      // ESRCH: no member is left. EPERM: none can be signalled (macOS: the
+      // remaining members have exited and wait to be reaped by their new parent).
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ESRCH' && code !== 'EPERM') throw error;
     }
   }
 

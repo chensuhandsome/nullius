@@ -233,6 +233,25 @@ def git_z(args: "list[str]", cwd: Path) -> "list[str]":
     return [item for item in out.split("\0") if item]
 
 
+def case_insensitive(directory: Path) -> bool:
+    """Whether names differing only in letter case are one file in `directory`:
+    a lowercase probe file is created, its uppercase spelling looked up, and the
+    probe removed. Unknown (cannot write here) counts as case-sensitive."""
+    probe = directory / f".nullius-case-probe-{secrets.token_hex(4)}"
+    try:
+        fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError:
+        return False
+    try:
+        os.close(fd)
+        return os.path.lexists(directory / probe.name.upper())
+    finally:
+        try:
+            os.unlink(probe)
+        except FileNotFoundError:
+            pass
+
+
 class Repo:
     """A checkout (main or linked worktree) of a git repository."""
 
@@ -255,10 +274,20 @@ class Repo:
         # files in composed (NFC) form whatever form the file system returns.
         self.precompose = git(["config", "--bool", "core.precomposeunicode"], self.toplevel,
                               check=False).stdout.decode().strip() == "true"
-        # On a case-insensitive file system names differing only in case are one file.
-        self.ignorecase = git(["config", "--bool", "core.ignorecase"], self.toplevel,
-                              check=False).stdout.decode().strip() == "true"
+        self._ignorecase: "bool | None" = None
         self.policy = load_policy(self.toplevel)
+
+    @property
+    def ignorecase(self) -> bool:
+        """On a case-insensitive file system names differing only in case are one
+        file. git records this as core.ignorecase; when the key does not say
+        true (unset, or carried over from another file system) the checkout is
+        measured directly, once."""
+        if self._ignorecase is None:
+            configured = git(["config", "--bool", "core.ignorecase"], self.toplevel,
+                             check=False).stdout.decode().strip() == "true"
+            self._ignorecase = configured or case_insensitive(self.toplevel)
+        return self._ignorecase
 
     def symlinked_run_roots(self) -> "list[str]":
         """Run roots whose path passes through a symbolic link anywhere below the
@@ -307,10 +336,19 @@ class Repo:
         if inside_of(real, common) and not inside_of(real, common / "worktrees"):
             return
         holders = [w for w in [*self.worktree_paths(), common / "worktrees"] if inside_of(real, w)]
+        # Any other repository's working tree counts too: its owner's `git clean`, worktree removal, or
+        # deletion would take the store along. Judged from the nearest existing ancestor of the path.
+        existing = real
+        while not existing.exists() and existing != existing.parent:
+            existing = existing.parent
+        probe = git(["rev-parse", "--show-toplevel"], existing, check=False)
+        other = probe.stdout.decode("utf-8", errors="surrogateescape").strip() if probe.returncode == 0 else ""
+        if other:
+            holders.append(Path(other))
         if holders:
-            raise StorageError(f"content store {store} lies inside {holders[0]}, which a worktree removal or a "
-                               "commit would take with it; use a path outside every checkout (or the default "
-                               "store in the common git directory)")
+            raise StorageError(f"content store {store} lies inside {holders[0]}, which a worktree removal, a "
+                               "clean, or a commit would take with it; use a path outside every git working "
+                               "tree (or the default store in this repository's common git directory)")
 
     def rel(self, path: Path) -> str:
         """Repository-relative path; the final component is never followed,
@@ -711,7 +749,8 @@ def blob_ids(repo: Repo, args: "list[str]") -> "dict[str, tuple[str, str]]":
 def is_ignored(repo: Repo, path: Path) -> bool:
     """True when git's ignore rules exclude this (tracked or not, existing or
     not) path; a tracked path is never excluded."""
-    proc = git(["check-ignore", "-q", "--", os.path.relpath(path, repo.toplevel)], repo.toplevel,
+    # "./" keeps a leading ':' from being read as pathspec magic; glob characters are taken literally.
+    proc = git(["check-ignore", "-q", "--", "./" + os.path.relpath(path, repo.toplevel)], repo.toplevel,
                check=False, literal_pathspecs=False)
     if proc.returncode not in (0, 1):
         raise StorageError(f"git check-ignore failed for {path}: {proc.stderr.decode(errors='replace').strip()}")
@@ -1022,15 +1061,18 @@ def cmd_stow(args) -> int:
             restore.append(rel_run)  # good bytes in place, store copy lost: store again
 
     # 2. New bulk candidates.
-    candidates, legacy, uncommitted, unexpressible, links = [], [], [], [], []
+    candidates, legacy, uncommitted, unexpressible, links, respelled = [], [], [], [], [], []
     for dirpath, dirnames, filenames in os.walk(run_dir, followlinks=False, onerror=walk_error):
         links += [repo.git_form((Path(dirpath) / n).relative_to(run_dir).as_posix())
                   for n in dirnames + filenames if (Path(dirpath) / n).is_symlink()]
         for name in sorted(filenames):
             full = Path(dirpath) / name
             rel_run = repo.git_form(full.relative_to(run_dir).as_posix())
-            if rel_run in (MANIFEST_NAME, ".gitignore") or rel_run in entries or rel_run.casefold() in folded:
-                continue  # a recorded file (on a case-insensitive file system, in any letter case)
+            if rel_run in (MANIFEST_NAME, ".gitignore") or rel_run in entries:
+                continue
+            if rel_run.casefold() in folded:  # a recorded file, renamed only in letter case
+                respelled.append(rel_run)
+                continue
             st = full.lstat()
             if not stat.S_ISREG(st.st_mode) or st.st_size < threshold:
                 continue
@@ -1113,6 +1155,15 @@ def cmd_stow(args) -> int:
     changed = update_ignore_block(run_dir, [e["path"] for e in manifest["entries"]])
     changed = write_if_changed(run_dir / MANIFEST_NAME, json_bytes(manifest)) or changed
     not_ignored = [e["path"] for e in manifest["entries"] if not is_ignored(repo, run_dir / e["path"])]
+    # The spelling on disk is what git will see; unless git treats case as equal it is not covered.
+    case_uncovered = [rel for rel in respelled if not is_ignored(repo, run_dir / rel)]
+    if case_uncovered:
+        print(f"run-storage: {case_uncovered} are recorded files renamed only in letter case, and git here does "
+              "not treat letter case as equal (core.ignorecase is not true), so the ignore block does not cover "
+              "them and a plain `git add` would commit them: rename them back to the recorded spelling (or set "
+              "core.ignorecase=true).", file=sys.stderr)
+        if not not_ignored:
+            return EXIT_FINDINGS
     if not_ignored:
         # git never applies ignore rules to a tracked path (e.g. one added with `git add -f`).
         in_index = repo.tracked([repo.rel(run_dir / rel) for rel in not_ignored])

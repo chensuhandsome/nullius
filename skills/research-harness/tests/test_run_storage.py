@@ -1368,6 +1368,79 @@ def test_commit_needed_follows_the_record_as_it_ends_up(tmp_path, monkeypatch, c
     assert sh("git", "status", "--porcelain", cwd=repo).stdout == ""
 
 
+@pytest.mark.parametrize("how", ["policy", "option"])
+def test_a_store_inside_another_repository_working_tree_is_refused(tmp_path, monkeypatch, how):
+    repo = make_repo(tmp_path)
+    other = tmp_path / "other-repository"
+    other.mkdir()
+    sh("git", "init", "-q", cwd=other)
+    store = other / "cache" / "not-yet-created"  # judged from its nearest existing ancestor
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 63))
+    argv = ["stow", str(run)]
+    if how == "policy":
+        (repo / ".nullius" / "storage_policy.json").write_text(json.dumps(
+            {"schema": rs.POLICY_SCHEMA, "bulk_threshold_bytes": THRESHOLD, "store_root": str(store)}))
+    else:
+        argv += ["--store", str(store)]
+    assert run_main(argv, repo, monkeypatch) == rs.EXIT_ERROR
+    assert not store.exists() and not (run / rs.MANIFEST_NAME).exists()
+    assert stat.S_IMODE((run / "a.bin").stat().st_mode) & 0o200
+
+
+def test_ignore_checks_take_glob_characters_and_a_leading_colon_literally(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    (repo / ".gitignore").write_text("/a1x.bin\n/x.bin\n")
+    for name in ("a1x.bin", "a[1]*.bin", "x.bin", ":x.bin"):
+        (repo / name).write_bytes(b"x")
+    r = rs.Repo(repo)
+    assert rs.is_ignored(r, repo / "a1x.bin") and rs.is_ignored(r, repo / "x.bin")
+    assert not rs.is_ignored(r, repo / "a[1]*.bin"), "a glob name is not the file it would match"
+    assert not rs.is_ignored(r, repo / ":x.bin"), "a leading ':' is not pathspec magic"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="needs a case-insensitive file system")
+def test_case_sensitivity_is_measured_when_the_config_does_not_say(tmp_path, monkeypatch, capsys):
+    (tmp_path / "probe").write_text("")
+    if not (tmp_path / "PROBE").exists():
+        pytest.skip("this file system is case-sensitive")
+    repo = make_repo(tmp_path)
+    sh("git", "config", "--unset", "core.ignorecase", cwd=repo)
+    assert rs.case_insensitive(repo) is True and rs.Repo(repo).ignorecase is True
+    assert not list(repo.glob(".nullius-case-probe-*")), "the probe file is removed"
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "out.bin").write_bytes(blob(THRESHOLD, 64))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    commit_records(repo)
+    os.rename(run / "out.bin", run / "OUT.bin")
+    capsys.readouterr()
+    # git matches ignore rules case-sensitively here, so a plain `git add` would commit OUT.bin
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert "renamed only in letter case" in capsys.readouterr().err
+    assert [e["path"] for e in json.loads((run / rs.MANIFEST_NAME).read_text())["entries"]] == ["out.bin"]
+    assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert [r["path"] for r in json.loads(capsys.readouterr().out)["untracked"]] == ["artifacts/runs/r1/OUT.bin"]
+    sh("git", "config", "core.ignorecase", "true", cwd=repo)  # git now treats case as equal: covered
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    assert run_main(["check", "--strict"], repo, monkeypatch) == rs.EXIT_OK
+
+
+def test_case_probe_reports_what_the_file_system_does(tmp_path):
+    (tmp_path / "lower").write_text("")
+    observed = (tmp_path / "LOWER").exists()
+    sub = tmp_path / "probe-here"
+    sub.mkdir()
+    assert rs.case_insensitive(sub) is observed and list(sub.iterdir()) == []
+    os.chmod(sub, 0o500)
+    try:
+        if os.geteuid() != 0:
+            assert rs.case_insensitive(sub) is False, "unknown (cannot write) counts as case-sensitive"
+    finally:
+        os.chmod(sub, 0o700)
+
+
 # ------------------------------------------------------- verify / materialize
 
 def test_verify_reports_every_state(tmp_path, monkeypatch, capsys):

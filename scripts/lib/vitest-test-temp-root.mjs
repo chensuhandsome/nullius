@@ -13,8 +13,8 @@
 // (vitest sets it before teardown, e.g. for a coverage threshold, and never
 // resets it), and no earlier rerun of a watch session ended unclean. A
 // failing, interrupted, or unreadable run keeps it for inspection, even when
-// empty; the one exception is a
-// command in which no test ran at all (e.g. `vitest list`) and which left the
+// empty; the one exception is a clean command (not cancelled, clean exit
+// status) in which no test ran at all (e.g. `vitest list`) and which left the
 // root empty: it is removed silently, since there is nothing to inspect.
 // Kept roots whose newest entry is older than the retention window, and whose
 // creating process is no longer alive, are swept when a later run starts, but
@@ -308,7 +308,10 @@ export default function setup(project) {
       return;
     }
     if (earlierRunUnclean || !runPassed(project)) {
-      if (!earlierRunUnclean && noTestRan(project) && isEmptyDirectory(root)) {
+      // Only a clean command (not cancelled, clean exit status) in which nothing ran and nothing was
+      // written; an interrupted or failed run keeps even an empty root, as documented above.
+      if (!earlierRunUnclean && project?.vitest?.isCancelling !== true && exitStatusClean()
+        && noTestRan(project) && isEmptyDirectory(root)) {
         removeTree(root);  // nothing ran and nothing was written: nothing to inspect
         return;
       }

@@ -340,6 +340,18 @@ test('setup gives a fresh short root; teardown removes it only after a pass', t 
   const listing = fakeProject({ files: [{ type: 'suite', mode: 'run', tasks: [{ type: 'test', mode: 'run' }] }] });
   assert.equal(fs.existsSync(runOnce(listing, false)), false, 'a listing command leaves no empty root behind');
   assert.equal(fs.existsSync(runOnce(listing, true)), true, 'but a root holding files is kept');
+  const nothingStarted = () => [{ type: 'suite', mode: 'run', tasks: [{ type: 'test', mode: 'run' }] }];
+  const cancelled = fakeProject({ files: nothingStarted(), isCancelling: true });
+  assert.equal(fs.existsSync(runOnce(cancelled, false)), true, 'a run cancelled before any test keeps its empty root');
+  const savedExit = process.exitCode;
+  process.exitCode = 1;  // e.g. a configuration error before any test started
+  let failedRoot;
+  try {
+    failedRoot = runOnce(fakeProject({ files: nothingStarted() }), false);
+  } finally {
+    process.exitCode = savedExit;
+  }
+  assert.equal(fs.existsSync(failedRoot), true, 'a failed command keeps its empty root');
   process.env.NULLIUS_KEEP_TEST_TMP = '1';
   assert.equal(fs.existsSync(runOnce(fakeProject({ files: [{ result: { state: 'pass' } }] }))), true);
 });

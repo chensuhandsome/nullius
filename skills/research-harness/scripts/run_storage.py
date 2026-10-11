@@ -722,10 +722,13 @@ RECORD_NAMES = (MANIFEST_NAME, ".gitignore")
 
 
 def committed_and_pending(repo: Repo, pathspecs: "list[str]") -> "tuple[set[str], set[str]]":
-    """Split tracked paths into committed ones (HEAD holds exactly the staged
-    and checked-out file: same bytes and same mode) and pending ones (the next
-    commit would change it: newly staged, staged changes, or changes in the
-    working tree, a mode change included)."""
+    """Split tracked paths into committed ones and pending ones. Committed:
+    HEAD holds the path with the index's content and mode, git reports no
+    working-tree change, and no index flag lets git hide one (an entry marked
+    assume-unchanged or skip-worktree is never taken as committed, since its
+    working-tree bytes may differ from every commit). Everything else tracked
+    is pending: newly staged, staged or working-tree changes, mode changes as
+    git records them, or a flagged entry."""
     tracked = repo.tracked(pathspecs)
     if not tracked:
         return set(), set()
@@ -734,8 +737,21 @@ def committed_and_pending(repo: Repo, pathspecs: "list[str]") -> "tuple[set[str]
     head = blob_ids(repo, ["ls-tree", "-r", "-z", "HEAD", "--", *pathspecs]) if born else {}
     index = blob_ids(repo, ["ls-files", "--stage", "-z", "--", *pathspecs])
     modified = set(git_z(["diff", "--name-only", "-z", "--", *pathspecs], repo.toplevel))
-    committed = {p for p in tracked if p in head and head[p] == index.get(p) and p not in modified}
+    # `ls-files -v` tags a plain entry "H"; assume-unchanged entries get a
+    # lowercase tag and skip-worktree entries "S". Only plain entries are trusted.
+    flagged = {item[2:] for item in git_z(["ls-files", "-v", "-z", "--", *pathspecs], repo.toplevel)
+               if not item.startswith("H ")}
+    committed = {p for p in tracked
+                 if p in head and head[p] == index.get(p) and p not in modified and p not in flagged}
     return committed, tracked - committed
+
+
+def record_needs_commit(repo: Repo, run_dir: Path) -> bool:
+    """True when the run's manifest or ignore file on disk is not committed as it is."""
+    rels = [repo.rel(run_dir / name) for name in RECORD_NAMES]
+    committed, pending = committed_and_pending(repo, rels)
+    return any(rel not in committed and (rel in pending or (repo.toplevel / rel).exists()
+                                         or (repo.toplevel / rel).is_symlink()) for rel in rels)
 
 
 def staged_bulk(repo: Repo, threshold: int) -> "list[dict]":
@@ -871,7 +887,8 @@ def cmd_check(args) -> int:
               "store": str(store), **classes}
     labels = {
         "tracked": "already committed (every checkout and the object store hold a copy)",
-        "pending": "staged or modified but not yet committed (the next commit would put these bytes into history)",
+        "pending": "staged, modified, or marked so git hides changes (assume-unchanged / skip-worktree): not "
+                   "known to be committed as they are",
         "untracked": "untracked and not ignored (a plain `git add` would commit them)",
         "ignored_unstowed": "ignored but not stowed (lost if this checkout is removed)",
         "stowed_damaged": "recorded in a bulk manifest but changed, missing, recorded twice, or without a valid "
@@ -1041,7 +1058,9 @@ def cmd_stow(args) -> int:
         print("run-storage: these bulk files are staged or changed but not committed, so the next commit would "
               "put them into history (nothing was changed). For a new file, `git rm --cached <path>` unstages it "
               "(the file stays on disk), then stow again; a committed file that was changed is a changed result "
-              "and belongs in a new run:", file=sys.stderr)
+              "and belongs in a new run. A path marked assume-unchanged or skip-worktree counts as changed (git "
+              "hides its working-tree state); clear the mark with `git update-index --no-assume-unchanged` or "
+              "`--no-skip-worktree <path>` to have it judged:", file=sys.stderr)
         for rel_run in uncommitted:
             print(f"  {rel_run}", file=sys.stderr)
         return EXIT_FINDINGS
@@ -1064,12 +1083,14 @@ def cmd_stow(args) -> int:
     if not plan and existing is None:  # nothing to record: no manifest or ignore block is written
         lines.append("  nothing to stow; no manifest written")
         emit({"stowed": [], "already_tracked": legacy, "symlinks_not_followed": sorted(links), "store": str(store),
-              "manifest": None}, args.json, lines)
+              "manifest": None, "commit_needed": False}, args.json, lines)
         return EXIT_OK
     if args.dry_run:
         lines += [f"  would stow {human(sizes[r]):>12}  {r}" for r, _ in plan]
+        # After the real stow: a new entry changes the record; otherwise the record stays as it is now.
         emit({"dry_run": True, "planned": [{"path": r, "size": sizes[r]} for r, _ in plan],
-              "already_tracked": legacy, "symlinks_not_followed": sorted(links), "store": str(store)}, args.json, lines)
+              "already_tracked": legacy, "symlinks_not_followed": sorted(links), "store": str(store),
+              "commit_needed": bool(plan) or record_needs_commit(repo, run_dir)}, args.json, lines)
         return EXIT_OK
 
     # 3. Store, then record. The manifest is written after every store step
@@ -1105,13 +1126,13 @@ def cmd_stow(args) -> int:
             print(f"run-storage: the ignore block does not cover {reincluded}; a negation rule elsewhere "
                   "re-includes them. Fix the ignore rules before committing.", file=sys.stderr)
         return EXIT_FINDINGS
-    records = [repo.rel(run_dir / name) for name in RECORD_NAMES]
-    commit_needed = changed or committed_and_pending(repo, records)[0] != set(records)
+    # Judged on the files as they now are: a rewrite that restores the committed bytes needs no commit.
+    commit_needed = record_needs_commit(repo, run_dir)
     if commit_needed:
-        lines.append(f"  commit {records[0]} and {records[1]}; stowed files are read-only (a corrected result "
-                     "goes to a new run)")
+        lines.append(f"  commit {repo.rel(run_dir / MANIFEST_NAME)} and {repo.rel(run_dir / '.gitignore')}; "
+                     "stowed files are read-only (a corrected result goes to a new run)")
     else:
-        lines.append("  nothing changed; the stow record is already committed")
+        lines.append("  the stow record is already committed as it is" + ("" if changed else "; nothing changed"))
     emit({"stowed": stowed, "already_tracked": legacy, "symlinks_not_followed": sorted(links), "store": str(store),
           "manifest": str(run_dir / MANIFEST_NAME), "commit_needed": commit_needed}, args.json, lines)
     return EXIT_OK

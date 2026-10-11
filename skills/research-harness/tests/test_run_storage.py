@@ -1188,7 +1188,7 @@ def test_symbolic_links_under_run_roots_are_listed_not_followed(tmp_path, monkey
     assert run_main(["check"], repo, monkeypatch) == rs.EXIT_OK
     assert "artifacts/runs/r1/data is a symbolic link, not followed" in capsys.readouterr().out
     doc = stow_json(run, repo, monkeypatch, capsys)
-    assert doc["symlinks_not_followed"] == ["data"] and doc["stowed"] == []
+    assert doc["symlinks_not_followed"] == ["data"] and doc["stowed"] == [] and doc["commit_needed"] is False
     assert not (run / rs.MANIFEST_NAME).exists() and not (run / ".gitignore").exists(), "nothing to record"
 
 
@@ -1303,6 +1303,64 @@ def test_a_mode_only_change_to_a_stow_record_is_not_committed(tmp_path, monkeypa
     assert "  commit " in out and "nothing changed" not in out
     assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
     assert [r["status"] for r in json.loads(capsys.readouterr().out)["uncommitted_records"]] == ["pending"]
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_a_path_whose_index_flag_hides_changes_is_never_taken_as_committed(tmp_path, monkeypatch, capsys, flag):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "old.bin").write_bytes(blob(THRESHOLD, 59))
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "bulk", cwd=repo)
+    sh("git", "update-index", flag, "artifacts/runs/r1/old.bin", cwd=repo)
+    overwrite_in_place(run / "old.bin", blob(THRESHOLD, 60))  # git status stays silent about this
+    assert sh("git", "status", "--porcelain", cwd=repo).stdout == ""
+    capsys.readouterr()
+    assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    doc = json.loads(capsys.readouterr().out)
+    assert [r["path"] for r in doc["pending"]] == ["artifacts/runs/r1/old.bin"] and doc["tracked"] == []
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert "--no-assume-unchanged" in capsys.readouterr().err
+    assert not (run / rs.MANIFEST_NAME).exists()
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_a_flagged_stow_record_is_not_committed_as_it_is(tmp_path, monkeypatch, capsys, flag):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "big.bin").write_bytes(blob(THRESHOLD, 61))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    commit_records(repo)
+    sh("git", "update-index", flag, "artifacts/runs/r1/.gitignore", cwd=repo)
+    with open(run / ".gitignore", "a") as fh:
+        fh.write("*.tmp\n")  # a user rule git status does not show
+    capsys.readouterr()
+    assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    found = {r["path"]: r["status"] for r in json.loads(capsys.readouterr().out)["uncommitted_records"]}
+    assert found == {"artifacts/runs/r1/.gitignore": "pending"}
+    assert stow_json(run, repo, monkeypatch, capsys)["commit_needed"] is True
+
+
+def test_commit_needed_follows_the_record_as_it_ends_up(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "big.bin").write_bytes(blob(THRESHOLD, 62))
+    capsys.readouterr()
+    assert run_main(["stow", str(run), "--dry-run", "--json"], repo, monkeypatch) == rs.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["commit_needed"] is True, "the real stow would write a record"
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    commit_records(repo)
+    capsys.readouterr()
+    assert run_main(["stow", str(run), "--dry-run", "--json"], repo, monkeypatch) == rs.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["commit_needed"] is False
+    with open(run / rs.MANIFEST_NAME, "a") as fh:
+        fh.write("\n\n")  # harmless whitespace; stow rewrites the committed bytes
+    doc = stow_json(run, repo, monkeypatch, capsys)
+    assert doc["commit_needed"] is False
+    assert sh("git", "status", "--porcelain", cwd=repo).stdout == ""
 
 
 # ------------------------------------------------------- verify / materialize

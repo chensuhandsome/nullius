@@ -542,16 +542,22 @@ def place_from_store(obj: Path, target: Path, sha: str) -> str:
 
 # ------------------------------------------------------------- manifests
 
+RESERVED_NOTE = (f"under a run root the file name {MANIFEST_NAME} is reserved for run storage manifests; "
+                 "rename a data file that has this name")
+
+
 def load_manifest(run_dir: Path) -> "dict | None":
     path = run_dir / MANIFEST_NAME
+    if path.is_symlink():  # git would record the link, not the hashes
+        raise StorageError(f"{path} is a symbolic link; a bulk manifest must be a regular, tracked file")
     if not path.exists():
         return None
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise StorageError(f"{path}: unreadable ({exc})")
+        raise StorageError(f"{path}: unreadable ({exc}); {RESERVED_NOTE}")
     if not isinstance(doc, dict) or doc.get("schema") != MANIFEST_SCHEMA or not isinstance(doc.get("entries"), list):
-        raise StorageError(f"{path}: expected schema '{MANIFEST_SCHEMA}' with an entries list")
+        raise StorageError(f"{path}: expected schema '{MANIFEST_SCHEMA}' with an entries list; {RESERVED_NOTE}")
     seen: "set[str]" = set()
     for entry in doc["entries"]:
         rel = entry.get("path") if isinstance(entry, dict) else None
@@ -619,6 +625,9 @@ def check_ignore_markers(run_dir: Path) -> None:
     """The managed block must be absent or exactly one BEGIN ... END pair in
     that order; anything else would make the rewrite drop user rules."""
     path = run_dir / ".gitignore"
+    if path.is_symlink():  # git does not read a symlinked .gitignore, and stow never replaces one
+        raise StorageError(f"{path} is a symbolic link; git does not read a symlinked .gitignore, so the managed "
+                           "block could not take effect: make it a regular file, then stow again")
     if not path.exists():
         return
     inside, blocks = False, 0
@@ -745,6 +754,8 @@ def working_tree_bulk(repo: Repo, threshold: int, store: Path) -> "dict[str, lis
     committed, pending = committed_and_pending(repo, roots)
     untracked = repo.untracked(roots)
     stowed = manifests_under(repo)
+    # On a case-insensitive file system a file renamed only in letter case is still the recorded one.
+    stowed_folded = {k.casefold() for k in stowed} if repo.ignorecase else set()
     # Every recorded entry is checked by full hash, whatever its current size:
     # a stowed output that changed, shrank, vanished, lost its store copy, or
     # is recorded twice is not "stowed" any more.
@@ -776,7 +787,7 @@ def working_tree_bulk(repo: Repo, threshold: int, store: Path) -> "dict[str, lis
                     classes["pending"].append(record)
                 elif rel in untracked:
                     classes["untracked"].append(record)
-                elif rel in stowed:
+                elif rel in stowed or rel.casefold() in stowed_folded:
                     continue  # classified above by hash
                 else:
                     classes["ignored_unstowed"].append(record)
@@ -869,8 +880,9 @@ def resolve_run_dir(repo: Repo, run_dir: str) -> Path:
     ancestor = path.parent
     while inside_of(ancestor, base):  # up to and including the run root
         if (ancestor / MANIFEST_NAME).exists():
-            raise StorageError(f"{path} lies inside the stowed run directory {ancestor}; stow that directory "
-                               "(a run is recorded by one manifest)")
+            raise StorageError(f"{path} lies inside the stowed run directory {ancestor} (it holds a "
+                               f"{MANIFEST_NAME}); stow that directory, since a run is recorded by one manifest "
+                               f"({RESERVED_NOTE})")
         if ancestor == base:
             break
         ancestor = ancestor.parent
@@ -880,8 +892,9 @@ def resolve_run_dir(repo: Repo, run_dir: str) -> Path:
         if ".git" in dirnames or ".git" in filenames:
             raise StorageError(f"{dirpath} holds a nested repository; its files follow that repository's rules")
         if Path(dirpath) != path and MANIFEST_NAME in filenames:
-            raise StorageError(f"{dirpath} is itself a stowed run directory inside {path}; a run is recorded by "
-                               "one manifest — stow the inner directory on its own or move it out")
+            raise StorageError(f"{dirpath} holds a {MANIFEST_NAME}, which marks a stowed run directory inside "
+                               f"{path}; a run is recorded by one manifest — stow the inner directory on its own or "
+                               f"move it out ({RESERVED_NOTE})")
     return path
 
 

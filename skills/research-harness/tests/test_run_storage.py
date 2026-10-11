@@ -792,7 +792,7 @@ def test_stow_reports_a_deeper_negation_rule_that_re_includes_a_stowed_file(tmp_
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="needs a case-insensitive file system")
-def test_a_case_only_rename_on_a_case_insensitive_file_system_is_not_recorded_twice(tmp_path, monkeypatch):
+def test_a_case_only_rename_on_a_case_insensitive_file_system_is_not_recorded_twice(tmp_path, monkeypatch, capsys):
     (tmp_path / "probe").write_text("")
     if not (tmp_path / "PROBE").exists():
         pytest.skip("this file system is case-sensitive")
@@ -804,6 +804,10 @@ def test_a_case_only_rename_on_a_case_insensitive_file_system_is_not_recorded_tw
     os.rename(run / "out.bin", run / "OUT.bin")
     assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
     assert [e["path"] for e in json.loads((run / rs.MANIFEST_NAME).read_text())["entries"]] == ["out.bin"]
+    capsys.readouterr()
+    assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    assert len(doc["stowed"]) == 1 and doc["ignored_unstowed"] == [], "one file, classified once"
 
 
 @pytest.mark.parametrize("variant", ["repository_above_the_run_dir", "run_dir_is_a_repository", "git_file"])
@@ -1030,7 +1034,7 @@ def test_check_staged_flags_a_run_root_behind_a_symlinked_ancestor(tmp_path, mon
 
 
 @pytest.mark.parametrize("where", ["main_checkout", "linked_worktree", "worktree_private_git_dir",
-                                   "common_git_dir", "outside"])
+                                   "relative_inside_the_checkout", "common_git_dir", "outside"])
 @pytest.mark.parametrize("how", ["policy", "option"])
 def test_a_store_inside_any_checkout_is_refused(tmp_path, monkeypatch, where, how):
     repo = make_repo(tmp_path)
@@ -1039,6 +1043,7 @@ def test_a_store_inside_any_checkout_is_refused(tmp_path, monkeypatch, where, ho
     store = {"main_checkout": repo / "kept-store",
              "linked_worktree": wt / "kept-store",
              "worktree_private_git_dir": repo / ".git" / "worktrees" / "wt" / "kept-store",
+             "relative_inside_the_checkout": Path("kept-store"),
              "common_git_dir": repo / ".git" / "kept-store",
              "outside": tmp_path / "kept-store"}[where]
     run = repo / "artifacts" / "runs" / "r1"
@@ -1050,9 +1055,11 @@ def test_a_store_inside_any_checkout_is_refused(tmp_path, monkeypatch, where, ho
             {"schema": rs.POLICY_SCHEMA, "bulk_threshold_bytes": THRESHOLD, "store_root": str(store)}))
     else:
         argv += ["--store", str(store)]
+    if where == "relative_inside_the_checkout" and how == "policy":
+        pytest.skip("the policy refuses relative paths outright (test_policy_file_is_validated)")
     expected = rs.EXIT_OK if where in ("common_git_dir", "outside") else rs.EXIT_ERROR
     assert run_main(argv, repo, monkeypatch) == expected
-    assert store.exists() == (expected == rs.EXIT_OK)
+    assert (repo / store if not store.is_absolute() else store).exists() == (expected == rs.EXIT_OK)
     if expected == rs.EXIT_ERROR:
         assert stat.S_IMODE((run / "a.bin").stat().st_mode) & 0o200 and not (run / rs.MANIFEST_NAME).exists()
 
@@ -1075,6 +1082,39 @@ def test_stow_refuses_bulk_files_the_next_commit_would_add(tmp_path, monkeypatch
     assert "\n  a.bin\n" in capsys.readouterr().err, "the uncommitted file is named"
     assert not (run / rs.MANIFEST_NAME).exists() and not (run / ".gitignore").exists()
     assert stat.S_IMODE((run / "a.bin").stat().st_mode) & 0o200 and stat.S_IMODE((run / "b.bin").stat().st_mode) & 0o200
+
+
+def test_a_data_file_with_the_reserved_manifest_name_is_explained(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    (run / "sub").mkdir(parents=True)
+    (run / "sub" / rs.MANIFEST_NAME).write_bytes(blob(5000, 44))  # a data file that happens to have the name
+    (run / "big.bin").write_bytes(blob(THRESHOLD, 45))
+    for argv in (["check"], ["stow", str(run)]):
+        capsys.readouterr()
+        assert run_main(argv, repo, monkeypatch) == rs.EXIT_ERROR, argv
+        assert "is reserved for run storage manifests" in capsys.readouterr().err, argv
+    assert stat.S_IMODE((run / "big.bin").stat().st_mode) & 0o200
+
+
+def test_symlinked_ignore_file_or_manifest_is_refused_and_left_alone(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "big.bin").write_bytes(blob(THRESHOLD, 46))
+    shared = repo / "shared-ignore"
+    shared.write_text("*.tmp\n")
+    os.symlink("../../../shared-ignore", run / ".gitignore")
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_ERROR
+    assert (run / ".gitignore").is_symlink() and shared.read_text() == "*.tmp\n"
+    assert stat.S_IMODE((run / "big.bin").stat().st_mode) & 0o200 and not (run / rs.MANIFEST_NAME).exists()
+    (run / ".gitignore").unlink()
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    real = repo / "manifest-elsewhere.json"
+    os.replace(run / rs.MANIFEST_NAME, real)
+    os.symlink("../../../manifest-elsewhere.json", run / rs.MANIFEST_NAME)
+    for argv in (["verify", str(run)], ["check"], ["stow", str(run)]):
+        assert run_main(argv, repo, monkeypatch) == rs.EXIT_ERROR, argv
 
 
 # ------------------------------------------------------- verify / materialize

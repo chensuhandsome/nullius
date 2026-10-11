@@ -264,6 +264,7 @@ export const InspireParseLatexToolSchema = z.object({
       max_depth: optionalBudgetInt({ min: 1 }),
       cross_validate: z.boolean().optional(),
     })
+    .strict()
     .optional(),
 }).strict();
 

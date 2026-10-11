@@ -183,17 +183,27 @@ export function outputFilePath(out: OutputDir, name: string): string {
 }
 
 /**
- * Refuse a set of output file names in which two coincide: one file would
- * silently replace the other while the result reported both.
+ * How a file system may identify a name: Unicode-normalized and case-folded,
+ * the conservative reading (macOS and Windows file systems ignore both).
+ */
+function nameKey(name: string): string {
+  return name.normalize('NFC').toLowerCase();
+}
+
+/**
+ * Refuse a set of output file names in which two would name the same entry
+ * (one file would silently replace the other while the result reported
+ * both), or in which one would name the external_api/ subdirectory.
  */
 export function assertDistinctOutputNames(names: Record<string, string>): void {
-  const seen = new Map<string, string>();
+  const seen = new Map<string, string>([[nameKey(EXTERNAL_API_SUBDIR), 'the external_api/ record directory']]);
   for (const [role, name] of Object.entries(names)) {
-    const other = seen.get(name);
+    const key = nameKey(name);
+    const other = seen.get(key);
     if (other !== undefined) {
-      throw invalidParams(`output file names collide: ${other} and ${role} are both '${name}'`, { names });
+      throw invalidParams(`output file names collide: ${role} '${name}' names the same entry as ${other}`, { names });
     }
-    seen.set(name, role);
+    seen.set(key, role);
   }
 }
 

@@ -77,8 +77,10 @@ function searchPage<T>(response: T, operation: string): T {
   const { total, papers, has_more: hasMore, next_url: nextUrl, warning } = page as Record<string, unknown>;
   if (typeof total !== 'number' || !Number.isSafeInteger(total) || total < 0) malformed('total is not a non-negative integer');
   if (!Array.isArray(papers)) malformed('papers is not an array');
-  if (hasMore !== undefined && typeof hasMore !== 'boolean') malformed('has_more is not a boolean');
-  if (nextUrl !== undefined && typeof nextUrl !== 'string') malformed('next_url is not a string');
+  // INSPIRE pages carry has_more exactly when they carry a next_url.
+  if (typeof hasMore !== 'boolean') malformed('has_more is not a boolean');
+  if (hasMore && (typeof nextUrl !== 'string' || nextUrl.length === 0)) malformed('has_more without a next_url');
+  if (!hasMore && nextUrl !== undefined) malformed('next_url without has_more');
   if (warning !== undefined && typeof warning !== 'string') malformed('warning is not a string');
   (papers as unknown[]).forEach((paper, index) => {
     if (!PaperSummarySchema.safeParse(paper).success) malformed(`papers[${index}] is not a paper record`);

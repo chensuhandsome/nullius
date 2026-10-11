@@ -804,6 +804,21 @@ describe('Tool Handlers (current exposure)', () => {
     expect(parseLatexContent.parseLatexContent).not.toHaveBeenCalled();
   });
 
+  it('inspire_parse_latex refuses an unknown nested option instead of dropping it', async () => {
+    const res = await handleToolCall('inspire_parse_latex', {
+      project_root: projectRoot,
+      output_dir: 'parsed',
+      identifier: '123',
+      components: ['sections'],
+      options: { max_dept: 3 },
+    } as any);
+    expect(res.isError).toBe(true);
+    const payload = JSON.parse(readTextBlock(res)) as { error?: { code?: string } };
+    expect(payload.error?.code).toBe('INVALID_PARAMS');
+    expect(readTextBlock(res)).toContain('max_dept');
+    expect(parseLatexContent.parseLatexContent).not.toHaveBeenCalled();
+  });
+
   it('inspire_parse_latex should write its result into output_dir and return path+summary', async () => {
     vi.mocked(parseLatexContent.parseLatexContent).mockResolvedValueOnce({
       metadata: {

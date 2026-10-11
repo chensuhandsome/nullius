@@ -557,6 +557,33 @@ describe('round-5 argument, name and response checks', () => {
   });
 
   it.each([
+    ['hep_inspire_search_export', { query: 't:x', artifact_name: 'Result.json', meta_artifact_name: 'result.json' }],
+    ['hep_inspire_resolve_identifiers', { identifiers: ['1'], artifact_name: 'r\u00e9sum\u00e9.json', meta_artifact_name: 're\u0301sume\u0301.json' }],
+    ['hep_inspire_search_export', { query: 't:x', artifact_name: 'external_api' }],
+    ['hep_inspire_resolve_identifiers', { identifiers: ['1'], meta_artifact_name: 'External_API' }],
+  ])('%s refuses output names that name the same entry or the external_api directory: %j', async (tool, args) => {
+    const result = await handleToolCall(tool, { project_root: alias, output_dir: 'out', ...args });
+    expect(errorOf(result).message).toMatch(/output file names collide/);
+    expect(api.search).not.toHaveBeenCalled();
+    expect(api.getPaper).not.toHaveBeenCalled();
+  });
+
+  const VALID_PAPER = { recid: '1', title: 'T', authors: [] };
+  const NEXT = 'https://inspirehep.net/api/literature?q=x&size=1&page=2';
+  it.each([
+    [{ total: 2, papers: [VALID_PAPER], next_url: NEXT }, /has_more is not a boolean/],
+    [{ total: 2, papers: [VALID_PAPER], has_more: true }, /has_more without a next_url/],
+    [{ total: 2, papers: [VALID_PAPER], has_more: false, next_url: NEXT }, /next_url without has_more/],
+  ])('a search export refuses inconsistent pagination %j', async (page, detail) => {
+    vi.mocked(api.search).mockResolvedValueOnce(page as any);
+    const result = await handleToolCall('hep_inspire_search_export', { project_root: alias, output_dir: 'out', query: 't:x' });
+    const error = errorOf(result);
+    expect(error.message).toMatch(/malformed search page/);
+    expect(error.message).toMatch(detail);
+    expect(fs.readdirSync(path.join(tmpDir, 'project', 'out')).filter(name => name.endsWith('.jsonl'))).toEqual([]);
+  });
+
+  it.each([
     [{ total: 1, papers: [null], has_more: false }, /papers\[0\]/],
     [{ total: -1, papers: [], has_more: false }, /total/],
     [{ total: 1, papers: [], has_more: 'no' }, /has_more/],

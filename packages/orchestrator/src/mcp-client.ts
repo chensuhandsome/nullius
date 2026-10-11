@@ -565,7 +565,9 @@ export class McpClient {
   // exited child before running any of their callbacks, so inside that pass a
   // reaped child can still show unset fields. Callers signal only from a fresh
   // timer or immediate callback, where every reaped child has had its
-  // callback, so unset fields mean the anchor is unreaped.
+  // callback, so unset fields mean the anchor is unreaped. A member running
+  // under credentials this process may not signal is out of reach and cannot
+  // be detected either: kill(2) succeeds for a group when any member accepts.
   private signalProcessTree(proc: ChildProcess, signal: NodeJS.Signals): boolean {
     if (!proc.pid) return false;
     if (process.platform === 'win32') return proc.kill(signal);

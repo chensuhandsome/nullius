@@ -233,6 +233,16 @@ def git_z(args: "list[str]", cwd: Path) -> "list[str]":
     return [item for item in out.split("\0") if item]
 
 
+def same_file(a: Path, b: Path) -> bool:
+    """Whether two paths name one file: the same device and inode, links not
+    followed. A path that cannot be examined names no file here."""
+    try:
+        sa, sb = os.lstat(a), os.lstat(b)
+    except OSError:
+        return False
+    return (sa.st_dev, sa.st_ino) == (sb.st_dev, sb.st_ino)
+
+
 def case_insensitive(directory: Path) -> bool:
     """Whether names differing only in letter case are one file in `directory`:
     a lowercase probe file is created, its uppercase spelling looked up, and the
@@ -839,7 +849,14 @@ def working_tree_bulk(repo: Repo, threshold: int, store: Path) -> "dict[str, lis
     untracked = repo.untracked(roots)
     stowed = manifests_under(repo)
     # On a case-insensitive file system a file renamed only in letter case is still the recorded one.
-    stowed_folded = {k.casefold() for k in stowed} if repo.ignorecase else set()
+    # Recorded files by case-folded path. A file whose name folds to a recorded one is that file only
+    # when it is the same file on disk; with core.ignorecase carried onto a case-sensitive file system
+    # it can be a different file, which must be classified (and so reported), never skipped.
+    stowed_folded: "dict[str, list[Path]]" = {}
+    if repo.ignorecase:
+        for rel, records in stowed.items():
+            for run_dir, entry in records:
+                stowed_folded.setdefault(rel.casefold(), []).append(run_dir / entry["path"])
     # Every recorded entry is checked by full hash, whatever its current size:
     # a stowed output that changed, shrank, vanished, lost its store copy, or
     # is recorded twice is not "stowed" any more.
@@ -890,7 +907,7 @@ def working_tree_bulk(repo: Repo, threshold: int, store: Path) -> "dict[str, lis
                     classes["pending"].append(record)
                 elif rel in untracked:
                     classes["untracked"].append(record)
-                elif rel in stowed or rel.casefold() in stowed_folded:
+                elif rel in stowed or any(same_file(full, p) for p in stowed_folded.get(rel.casefold(), ())):
                     continue  # classified above by hash
                 else:
                     classes["ignored_unstowed"].append(record)
@@ -1038,7 +1055,10 @@ def cmd_stow(args) -> int:
     existing = load_manifest(run_dir)
     manifest = existing or {"schema": MANIFEST_SCHEMA, "entries": []}
     entries = {e["path"]: e for e in manifest["entries"]}
-    folded = {k.casefold() for k in entries} if repo.ignorecase else set()
+    folded: "dict[str, list[str]]" = {}
+    if repo.ignorecase:
+        for k in entries:
+            folded.setdefault(k.casefold(), []).append(k)
     check_ignore_markers(run_dir)  # before anything is changed
     # The manifest and ignore file are the record: if git ignores them, nothing could be committed.
     hidden = [name for name in RECORD_NAMES if is_ignored(repo, run_dir / name)]
@@ -1070,7 +1090,9 @@ def cmd_stow(args) -> int:
             rel_run = repo.git_form(full.relative_to(run_dir).as_posix())
             if rel_run in (MANIFEST_NAME, ".gitignore") or rel_run in entries:
                 continue
-            if rel_run.casefold() in folded:  # a recorded file, renamed only in letter case
+            # A recorded file renamed only in letter case is the same file on disk; a different file whose
+            # name merely folds to a recorded one is a new candidate like any other.
+            if any(same_file(full, run_dir / k) for k in folded.get(rel_run.casefold(), ())):
                 respelled.append(rel_run)
                 continue
             st = full.lstat()

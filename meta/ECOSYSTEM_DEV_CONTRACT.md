@@ -547,15 +547,15 @@ grep -rn 'writeFile\|writeFileSync' packages/hep-mcp/src/ \
 
 ### ART-04: 载荷大小限制
 
-**规则**: MCP tool result 最大 100KB（`STDIO_MAX_RESULT_BYTES`）。会产生大量记录的工具把完整结果写入调用方指定的位置（如 hep-mcp 的 `output_dir`），只返回路径与摘要；其余结果超过 `HARD_CAP_RESULT_BYTES` 时截断并附截断标记，任何结果都不得超过 stdio 上限。
+**规则**: 会产生大量记录的工具把完整结果写入调用方指定的位置（如 hep-mcp 的 `output_dir`），只返回路径与摘要。其余 tool result 文本超过 `HARD_CAP_RESULT_BYTES`（按 UTF-8 字节计）时在字符边界截断并附截断标记，在 `MAX_INLINE_RESULT_BYTES` 与 `HARD_CAP_RESULT_BYTES` 之间则原样返回。`STDIO_MAX_RESULT_BYTES`（100KB）是这组上限的上界常量；stdio 封装另加的转义开销不在上述字节数内，目前也没有单独的运行时拦截。
 
 **CI 验证**:
 ```bash
-# 契约测试: 内联上限 < 截断上限 < stdio 上限 的层级
-pnpm --filter @nullius/hep-mcp test -- tests/contracts/payloadBackpressure.test.ts
+# 契约测试: 内联上限 < 截断上限 < stdio 上限 的层级，以及按 UTF-8 字节截断
+pnpm --filter @nullius/hep-mcp test -- tests/contracts/payloadBackpressure.test.ts tests/contracts/resultTruncation.test.ts
 ```
 
-**违规行为**: **fail-closed** — 超过截断上限仍未截断的 tool result 阻断（运行时拦截）
+**违规行为**: 超过截断上限而未截断的 tool result 属缺陷，须在合入前修正
 
 ### ART-05: 完整性验证
 

@@ -117,19 +117,25 @@ function classifyIdentifier(raw: string): { kind: IdentifierType; normalized: st
   return { kind: 'unknown', normalized: trimmed };
 }
 
-// Only a failed INSPIRE lookup becomes an item-level status. Anything else
-// (a refused or failed write of the output files, a corrupted cache entry, an
+// Only a failed INSPIRE lookup becomes an item-level status: the cached-call
+// boundary (cachedExternalApiJsonCall) turns every error raised by the remote
+// call into one of these codes. Anything else (a refused or failed write of
+// the output files, a corrupted cache entry, an unexpected response, an
 // internal fault) aborts the whole call: reporting it per identifier would
-// return success while the recorded evidence is missing.
+// return success while the recorded evidence is missing or wrong.
 const PROVIDER_FAILURE_CODES = new Set(['UPSTREAM_ERROR', 'RATE_LIMIT', 'NOT_FOUND']);
 
 function isProviderFailure(err: unknown): boolean {
-  if (err instanceof McpError) return PROVIDER_FAILURE_CODES.has(err.code);
-  // Node system errors (EACCES, ENOSPC, ...) come from the local filesystem.
-  if (err && typeof err === 'object' && 'syscall' in err) return false;
-  // Remaining plain errors come from the network layer (fetch failures, the
-  // INSPIRE circuit breaker).
-  return err instanceof Error;
+  return err instanceof McpError && PROVIDER_FAILURE_CODES.has(err.code);
+}
+
+function paperRecid(response: unknown, operation: string): string | undefined {
+  if (!response || typeof response !== 'object' || Array.isArray(response)) {
+    throw invalidParams(`INSPIRE ${operation} returned a non-object response (fail-fast)`, { operation });
+  }
+  const recid = (response as { recid?: unknown }).recid;
+  if (recid === undefined || recid === null) return undefined;
+  return String(recid);
 }
 
 function resolveStatusFromError(err: unknown): { status: ResolveStatusV1; message?: string } {
@@ -247,8 +253,7 @@ export async function hepInspireResolveIdentifiers(params: {
             request_path: requestRef.path,
             response_path: responseRef.path,
           });
-          const paper = cached.response;
-          item.recid = paper.recid ?? classified.normalized;
+          item.recid = paperRecid(cached.response, 'getPaper') ?? classified.normalized;
           item.status = item.recid ? 'matched' : 'not_found';
         } else if (classified.kind === 'doi' && classified.doi) {
           const doi = classified.doi;
@@ -270,8 +275,7 @@ export async function hepInspireResolveIdentifiers(params: {
             request_path: requestRef.path,
             response_path: responseRef.path,
           });
-          const paper = cached.response;
-          item.recid = paper.recid;
+          item.recid = paperRecid(cached.response, 'lookup');
           item.status = item.recid ? 'matched' : 'not_found';
         } else if (classified.kind === 'arxiv' && classified.arxiv_id) {
           const arxivId = classified.arxiv_id;
@@ -293,8 +297,7 @@ export async function hepInspireResolveIdentifiers(params: {
             request_path: requestRef.path,
             response_path: responseRef.path,
           });
-          const paper = cached.response;
-          item.recid = paper.recid;
+          item.recid = paperRecid(cached.response, 'lookup');
           item.status = item.recid ? 'matched' : 'not_found';
         } else {
           item.status = 'not_found';

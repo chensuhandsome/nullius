@@ -61,11 +61,20 @@ function lstatOrNull(entry: string): fs.Stats | null {
  * to hold somewhere else, so it is refused; a missing component is created as
  * a real directory.
  */
-function realDirectoryChain(base: string, segments: readonly string[], label: string, projectRoot: string): void {
+function realDirectoryChain(
+  base: string,
+  segments: readonly string[],
+  label: string,
+  projectRoot: string,
+  create = true,
+): void {
   let cursor = base;
   for (const segment of segments) {
     cursor = path.join(cursor, segment);
     let stat = lstatOrNull(cursor);
+    if (stat === null && !create) {
+      throw unsafeFs(`${label} is missing`, { project_root: projectRoot, path: cursor });
+    }
     if (stat === null) {
       try {
         fs.mkdirSync(cursor);
@@ -177,14 +186,26 @@ export function outputArtifactRef(out: OutputDir, name: string, mimeType: string
   return { name, path: `${out.relative}/${name}`, mimeType };
 }
 
+/**
+ * Write serialized bytes: the path is checked right before the temporary
+ * file is opened and again right before it replaces the target.
+ */
+function writeOutputBytes(out: OutputDir, name: string, bytes: string): void {
+  const file = outputFilePath(out, name);
+  writeBytesAtomicDurable(file, bytes, undefined, () => {
+    outputFilePath(out, name);
+  });
+}
+
 export function writeOutputJson(out: OutputDir, name: string, data: unknown): OutputArtifactRef {
-  writeBytesAtomicDurable(outputFilePath(out, name), JSON.stringify(data, null, 2));
+  // Serialize first, so no time-consuming step separates the check from the write.
+  writeOutputBytes(out, name, JSON.stringify(data, null, 2));
   return outputArtifactRef(out, name, 'application/json');
 }
 
 export function writeOutputJsonl(out: OutputDir, name: string, rows: unknown[]): OutputArtifactRef {
   const body = rows.map(row => JSON.stringify(row)).join('\n');
-  writeBytesAtomicDurable(outputFilePath(out, name), rows.length > 0 ? `${body}\n` : '');
+  writeOutputBytes(out, name, rows.length > 0 ? `${body}\n` : '');
   return outputArtifactRef(out, name, 'application/x-ndjson');
 }
 
@@ -192,8 +213,11 @@ export function writeOutputJsonl(out: OutputDir, name: string, rows: unknown[]):
  * A streamed output file. Bytes go to a temporary file beside the target,
  * which is flushed to disk and then replaces the target only on `commit`;
  * `abort` removes it. A stream error at any time (opening, writing, or
- * finishing) is held until `commit`, which then rejects with it; the
- * temporary file is removed on every failure path.
+ * finishing) is held until `commit`, which then rejects with it. On every
+ * failure path the temporary file is removed, provided it is still the file
+ * this stream created, reached through the same real directories; if the
+ * directory was swapped meanwhile, nothing is deleted through the new path
+ * and the temporary file stays where it was created.
  */
 export function openOutputStream(out: OutputDir, name: string): {
   stream: fs.WriteStream;
@@ -202,11 +226,27 @@ export function openOutputStream(out: OutputDir, name: string): {
 } {
   const target = outputFilePath(out, name);
   const temp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${randomUUID()}.tmp`);
+  let created: { dev: number; ino: number } | null = null;
   const removeTemp = (): void => {
-    try { fs.rmSync(temp, { force: true }); } catch { /* best effort */ }
+    try {
+      if (created === null) return;
+      realDirectoryChain(out.projectRoot, out.relative.split('/'), 'output_dir', out.projectRoot, false);
+      const stat = fs.lstatSync(temp);
+      if (!stat.isFile() || stat.dev !== created.dev || stat.ino !== created.ino) return;
+      fs.unlinkSync(temp);
+    } catch { /* leave it in place */ }
   };
   let failure: unknown = null;
+  let aborted = false;
   const stream = fs.createWriteStream(temp, { encoding: 'utf-8', flags: 'wx' });
+  stream.on('open', fd => {
+    try {
+      const stat = fs.fstatSync(fd);
+      created = { dev: stat.dev, ino: stat.ino };
+    } catch { /* identity unknown: never delete */ }
+    // Aborted before the file existed: remove it now that it does.
+    if (aborted) removeTemp();
+  });
   // Listen from the start: an error while the caller is still producing
   // bytes must neither go unhandled nor leave the temporary file behind.
   stream.on('error', error => {
@@ -241,6 +281,7 @@ export function openOutputStream(out: OutputDir, name: string): {
       stream.end();
     }),
     abort: () => {
+      aborted = true;
       try { stream.destroy(); } catch { /* best effort */ }
       removeTemp();
     },

@@ -231,6 +231,16 @@ function tryFormatMarkdown(
 // formatToolResult — H-13 L0+L1+L3 unified
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** The longest prefix of `text` whose UTF-8 encoding fits in `maxBytes`. */
+function truncateUtf8(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, 'utf-8');
+  if (bytes.length <= maxBytes) return text;
+  let end = maxBytes;
+  // Step back over continuation bytes (10xxxxxx) to a character start.
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+  return bytes.subarray(0, end).toString('utf-8');
+}
+
 function formatToolResult(
   name: string,
   result: unknown,
@@ -263,11 +273,11 @@ function formatToolResult(
     return { content: [{ type: 'text', text: json }] };
   }
 
-  // L3: over soft limit — hard truncate if beyond hard cap
+  // L3: over soft limit — hard truncate if beyond hard cap, counting UTF-8
+  // bytes (as `size` does) and cutting on a character boundary.
   if (size > HARD_CAP_RESULT_BYTES) {
-    const truncated = json.slice(0, HARD_CAP_RESULT_BYTES);
     return {
-      content: [{ type: 'text', text: truncated + '\n... [TRUNCATED, original: ' + size + ' bytes]' }],
+      content: [{ type: 'text', text: truncateUtf8(json, HARD_CAP_RESULT_BYTES) + '\n... [TRUNCATED, original: ' + size + ' bytes]' }],
     };
   }
 
@@ -448,6 +458,14 @@ async function handleToolCallInResolvedDataRoot(
       reportProgress(0, 1, `started: ${name}`);
     }
 
+    // hep-mcp keeps no runs: a run_id argument (accepted by earlier versions)
+    // is refused instead of being silently dropped by schema parsing, which
+    // could change what the call does.
+    if (Object.prototype.hasOwnProperty.call(cleanArgs, 'run_id')) {
+      throw invalidParams('run_id is not accepted: hep-mcp keeps no runs. Tools that write files take project_root + output_dir; runs belong to the orchestrator.', {
+        tool: name,
+      });
+    }
     const parsedArgs = parseToolArgs(name, spec.zodSchema, cleanArgs) as unknown as Record<string, unknown>;
     const loopbackCallTool = ctx?.callTool
       ? (toolName: string, toolArgs: Record<string, unknown>) => ctx.callTool!(

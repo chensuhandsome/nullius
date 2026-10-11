@@ -242,6 +242,55 @@ describe('output files are checked again at write time and streamed outputs fail
     });
   });
 
+  it('refuses a write when the directory is swapped while the data is being serialized', async () => {
+    const outside = path.join(tmpDir, 'outside');
+    fs.mkdirSync(outside);
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('serial');
+      const data = {
+        toJSON: () => {
+          fs.renameSync(path.join(projectRoot, 'serial'), path.join(tmpDir, 'serial-moved'));
+          fs.symlinkSync(outside, path.join(projectRoot, 'serial'), 'dir');
+          return { x: 1 };
+        },
+      };
+      expect(() => writeOutputJson(out, 'late.json', data)).toThrow(/symbolic link/);
+    });
+    expect(fs.readdirSync(outside)).toEqual([]);
+  });
+
+  it('does not delete through a swapped directory when a streamed commit fails', async () => {
+    const outside = path.join(tmpDir, 'outside');
+    fs.mkdirSync(outside);
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('swap');
+      const file = openOutputStream(out, 'records.jsonl');
+      file.stream.write('{"a":1}\n');
+      await new Promise(resolve => file.stream.once('ready', resolve));
+      const temp = temporaryFiles(out.dir)[0]!;
+      const moved = path.join(tmpDir, 'swap-moved');
+      fs.renameSync(out.dir, moved);
+      fs.symlinkSync(outside, out.dir, 'dir');
+      fs.writeFileSync(path.join(outside, temp), 'sentinel');
+      await expect(file.commit()).rejects.toThrow(/symbolic link/);
+      // The same-named file behind the symlink is untouched; the real
+      // temporary file stays where it was created.
+      expect(fs.readFileSync(path.join(outside, temp), 'utf-8')).toBe('sentinel');
+      expect(fs.existsSync(path.join(moved, temp))).toBe(true);
+      expect(fs.existsSync(path.join(outside, 'records.jsonl'))).toBe(false);
+    });
+  });
+
+  it('leaves no temporary file when aborted before the file was opened', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('early');
+      const file = openOutputStream(out, 'records.jsonl');
+      file.abort();
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(temporaryFiles(out.dir)).toEqual([]);
+    });
+  });
+
   it('commits a streamed file in place of the target and leaves no temporary file', async () => {
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('ok');
@@ -287,6 +336,34 @@ describe('identifier resolution does not turn a refused write into a per-identif
     expect(fs.readFileSync(victim, 'utf-8')).toBe('original');
   });
 
+  it('fails the call when a cached response is malformed', async () => {
+    vi.mocked(api.getPaper).mockResolvedValue({ recid: '123' } as any);
+    const first = await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids', identifiers: ['123'] });
+    expect(first.isError).toBeFalsy();
+    const cacheRoot = path.join(projectRoot, 'artifacts', 'hep-mcp', 'cache', 'external_api_v1', 'inspire', 'getPaper');
+    const shard = fs.readdirSync(cacheRoot)[0]!;
+    const entryPath = path.join(cacheRoot, shard, fs.readdirSync(path.join(cacheRoot, shard))[0]!);
+    const entry = JSON.parse(fs.readFileSync(entryPath, 'utf-8')) as Record<string, unknown>;
+    fs.writeFileSync(entryPath, JSON.stringify({ ...entry, response: null }));
+
+    const second = await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids', identifiers: ['123'] });
+    expect(errorOf(second).message).toMatch(/non-object response/);
+  });
+
+  it('fails the call when INSPIRE returns something that is not a record', async () => {
+    vi.mocked(api.getPaper).mockResolvedValue(null as any);
+    const result = await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids', identifiers: ['123'] });
+    expect(errorOf(result).message).toMatch(/non-object response/);
+  });
+
+  it('reports a network failure of the lookup per identifier', async () => {
+    vi.mocked(api.getPaper).mockRejectedValue(new TypeError('fetch failed'));
+    const result = await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids', identifiers: ['123'] });
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(result.content[0]!.text) as { summary: { errors: number }; mapping_path: string };
+    expect(payload.summary.errors).toBe(1);
+  });
+
   it('still reports an INSPIRE lookup failure per identifier', async () => {
     vi.mocked(api.getPaper).mockRejectedValue(upstreamError('INSPIRE API error: 503', { status: 503 }));
     const result = await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids', identifiers: ['123'] });
@@ -323,9 +400,35 @@ describe('inspire_search export mode refuses parameters that do not apply', () =
     expect(api.search).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [{ output_format: 'json' }, 'output_format'],
+    [{ artifact_name: 'a.jsonl' }, 'artifact_name'],
+    [{ meta_artifact_name: 'm.json' }, 'meta_artifact_name'],
+  ])('refuses the export-only %j without output_dir', async (extra, key) => {
+    const result = await handleToolCall('inspire_search', { query: 't:x', ...extra });
+    expect(errorOf(result).code).toBe('INVALID_PARAMS');
+    expect(result.content[0]!.text).toContain(key);
+    expect(api.search).not.toHaveBeenCalled();
+  });
+
   it('accepts an explicit JSON format with output_dir', async () => {
     vi.mocked(api.search).mockResolvedValueOnce({ total: 0, papers: [], has_more: false } as any);
     const result = await handleToolCall('inspire_search', { project_root: alias, output_dir: 'out', query: 't:x', format: 'json' });
     expect(result.isError).toBeFalsy();
+  });
+});
+
+describe('a run_id argument is refused rather than silently dropped', () => {
+  it.each([
+    ['inspire_search', { query: 't:x', run_id: 'run_abc' }],
+    ['hep_project_query_evidence', { project_id: 'p1', query: 'x', run_id: 'run_abc' }],
+    ['hep_inspire_search_export', { query: 't:x', run_id: 'run_abc' }],
+  ])('%s with run_id', async (tool, args) => {
+    vi.resetAllMocks();
+    const result = await handleToolCall(tool, args);
+    const error = errorOf(result);
+    expect(error.code).toBe('INVALID_PARAMS');
+    expect(error.message).toMatch(/run_id is not accepted/);
+    expect(api.search).not.toHaveBeenCalled();
   });
 });

@@ -69,6 +69,15 @@ Example combined query: "a:Feng.Kun.Guo.1 topcite:250+ authorcount:1->10"`,
       const maxResultsProvided = Object.prototype.hasOwnProperty.call(raw, 'max_results');
       const effectivePageSize = maxResultsProvided ? Math.min(params.size, params.max_results) : params.size;
 
+      if (params.output_dir === undefined) {
+        const exportOnly = ['output_format', 'artifact_name', 'meta_artifact_name'].filter(key => Object.prototype.hasOwnProperty.call(raw, key));
+        if (exportOnly.length > 0) {
+          throw invalidParams('output_format, artifact_name and meta_artifact_name apply only to a file export; pass output_dir (with project_root) or drop them', {
+            export_only_params: exportOnly,
+          });
+        }
+      }
+
       if (params.output_dir !== undefined) {
         // The export writes every record up to max_results into files and
         // returns paths as JSON, so paging, review ordering and Markdown

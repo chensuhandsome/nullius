@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
 import { pathToFileURL } from 'url';
-import { invalidParams, writeBytesAtomicDurable } from '@nullius/shared';
+import { invalidParams, McpError, upstreamError, writeBytesAtomicDurable } from '@nullius/shared';
 
 import { ensureDir, getCacheDir } from '../../data/dataDir.js';
 import { assertSafePathSegment } from '../paths.js';
@@ -220,7 +220,20 @@ export async function cachedExternalApiJsonCall<T>(params: {
     cacheHit = true;
     response = cached.response as T;
   } else {
-    response = await params.fetch();
+    try {
+      response = await params.fetch();
+    } catch (err) {
+      // The provider boundary: whatever the remote call raised is a provider
+      // failure. Callers may report these per item; any other error (a
+      // refused output write, a corrupted cache entry, a programming fault)
+      // keeps its own type and aborts the call.
+      if (err instanceof McpError) throw err;
+      throw upstreamError(`${namespace}.${operation} request failed: ${err instanceof Error ? err.message : String(err)}`, {
+        namespace,
+        operation,
+        request_hash: requestHash,
+      });
+    }
 
     const entry: ExternalApiCacheEntryV1 = {
       version: 1,

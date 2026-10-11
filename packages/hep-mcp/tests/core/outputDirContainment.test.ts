@@ -354,6 +354,51 @@ describe('output files are checked again at write time and streamed outputs fail
     });
   });
 
+  it('flushes every directory from the project root down to each published file', async () => {
+    const { _setAtomicWriteAuditHook } = await import('@nullius/shared');
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('deep/er/out');
+      const batch = new OutputBatch(out);
+      batch.json('a.json', { x: 1 });
+      batch.json('external_api/r.json', { x: 2 });
+      const fsynced = new Set<string>();
+      const opened = new Map<number, string>();
+      const restore = _setAtomicWriteAuditHook(event => {
+        if (event.kind === 'open') opened.set(event.fd, event.path);
+        if (event.kind === 'fsync' && opened.has(event.fd)) fsynced.add(opened.get(event.fd)!);
+      });
+      try {
+        await batch.publish();
+      } finally {
+        restore();
+      }
+      for (const rel of ['', 'deep', 'deep/er', 'deep/er/out', 'deep/er/out/external_api']) {
+        expect(fsynced.has(path.join(projectRoot, rel)), rel || '(project root)').toBe(true);
+      }
+    });
+  });
+
+  it('caches a provider response that is absent as null, so the next identical call is a clean cache hit', async () => {
+    const { cachedExternalApiJsonCall } = await import('../../src/core/cache/externalApiCache.js');
+    await withHepDataRoot(alias, async () => {
+      const call = (dir: string) => {
+        const batch = new OutputBatch(resolveOutputDir(dir));
+        return cachedExternalApiJsonCall({
+          batch,
+          namespace: 'inspire',
+          operation: 'getByDoi',
+          request: { doi: '10.1/absent' },
+          fetch: async () => undefined,
+          validate: response => response ?? null,
+        }).then(result => { batch.discard(); return result; });
+      };
+      expect((await call('first')).cache_hit).toBe(false);
+      const second = await call('second');
+      expect(second.cache_hit).toBe(true);
+      expect(second.response).toBeNull();
+    });
+  });
+
   it('publishes a piecewise-written file and leaves no staging file', async () => {
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('ok');

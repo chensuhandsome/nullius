@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 import { latexParser } from 'latex-utensils';
 import { invalidParams, notFound, writeBytesAtomicDurable, writeJsonAtomicDurable } from '@nullius/shared';
 import pLimit from 'p-limit';
-import { resolvePathWithinParent } from '../data/pathGuard.js';
+import { isPathInside, resolvePathWithinParent } from '../data/pathGuard.js';
 import { getProject, updateProjectUpdatedAt } from './projects.js';
 import {
   getProjectPaperDir,
@@ -38,7 +38,7 @@ import {
 import { ensureDir } from '../data/dataDir.js';
 import { ARXIV_ID_REGEX } from '@nullius/arxiv-mcp/tooling';
 import { ensureInCache } from '../data/papersCacheFetch.js';
-import { readMetaJson } from '../data/papersCache.js';
+import { getPapersCacheRoot, readMetaJson } from '../data/papersCache.js';
 import { BudgetTrackerV1, writeProjectDiagnosticsArtifact } from './diagnostics.js';
 import { normalizeTextPreserveUnits } from '../utils/textNormalization.js';
 
@@ -259,7 +259,7 @@ function mapLocatorToCatalogLocator(
 ): LatexLocatorV1 {
   const mapped = mapLocatorToSource(locator, sourceMap, getFileContent);
   const rel = path.relative(latexExtractedDir, mapped.file);
-  if (rel.startsWith('..')) {
+  if (!isPathInside(latexExtractedDir, mapped.file)) {
     throw new Error(`Mapped locator points outside extracted LaTeX dir: ${mapped.file}`);
   }
   return {
@@ -304,14 +304,14 @@ function copyProjectFiles(params: {
 
   let copied = 0;
   let mainTexRel = path.relative(baseDir, sourceMainTexPath);
-  if (mainTexRel.startsWith('..')) {
+  if (!isPathInside(baseDir, sourceMainTexPath)) {
     mainTexRel = path.basename(sourceMainTexPath);
     warnings.push('main_tex_path is outside inferred baseDir; flattening to basename');
   }
 
   for (const file of files) {
     const rel = path.relative(baseDir, file.path);
-    if (rel.startsWith('..')) {
+    if (!isPathInside(baseDir, file.path)) {
       warnings.push(`skipped file outside baseDir: ${file.path}`);
       continue;
     }
@@ -471,6 +471,13 @@ export async function resolveLatexSourceForPaper(params: {
   // Compute the relative path of main.tex INSIDE the extracted/ dir.
   const mainTexRelInExtracted = path.posix.relative('latex/extracted', mainPathRel);
   const destMainTexPath = path.join(cacheLatexExtractedDir, mainTexRelInExtracted);
+  // main_path comes from the cache's meta.json; a value that leaves
+  // latex/extracted/ (`../`, an absolute path) must not pull an outside file
+  // into the evidence build.
+  const mainPathOutside = new Error(
+    `cache entry for ${cacheResult.canonical_id} has main_path ${JSON.stringify(mainPathRel)}, which does not name a file inside latex/extracted/`,
+  );
+  if (!isPathInside(cacheLatexExtractedDir, destMainTexPath)) throw mainPathOutside;
 
   // Ensure the symlink at latexExtractedDir is correct.
   if (existingMode === 'symlink') {
@@ -491,6 +498,20 @@ export async function resolveLatexSourceForPaper(params: {
 
   if (!fs.existsSync(destMainTexPath)) {
     throw new Error(`cache content for ${cacheResult.canonical_id} is missing expected main file ${mainPathRel}`);
+  }
+  // The same holds for where the main file really is: latex/extracted/ must
+  // be reached from the configured cache root (itself possibly an alias)
+  // through no link at all, and the main file must really lie inside it and
+  // be a regular file.
+  const cacheRoot = getPapersCacheRoot();
+  const realExtractedDir = fs.realpathSync(cacheLatexExtractedDir);
+  const realMainTexPath = fs.realpathSync(destMainTexPath);
+  if (
+    realExtractedDir !== path.join(fs.realpathSync(cacheRoot), path.relative(cacheRoot, cacheLatexExtractedDir)) ||
+    !isPathInside(realExtractedDir, realMainTexPath) ||
+    !fs.statSync(realMainTexPath).isFile()
+  ) {
+    throw mainPathOutside;
   }
   return {
     destExtractedDir: latexExtractedDir,

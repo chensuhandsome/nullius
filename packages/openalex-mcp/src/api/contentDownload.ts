@@ -2,17 +2,18 @@
  * Handler for openalex_content tool.
  *
  * Downloads full-text PDF or TEI-XML from content.openalex.org with:
- * - Streaming to temp file (atomic write via rename)
+ * - Streaming to a freshly created staging file (atomic write via rename)
  * - MIME type validation
  * - Size limit enforcement via Content-Length header
  * - Path guard (no symlink escape from data dir)
  * - Redirect limit enforcement
  */
 
+import { randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { z } from 'zod';
-import { commitStagedDurable, invalidParams, upstreamError } from '@nullius/shared';
+import { fsyncParentDirectoryDurable, invalidParams, upstreamError } from '@nullius/shared';
 import type { OpenAlexContentSchema } from '../tools/schemas.js';
 import { openalexFetchFullUrl, getCostSummary, getResponseMeta } from './rateLimiter.js';
 import { getDataDir } from './client.js';
@@ -26,9 +27,11 @@ function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+// Exact escape test: the parent itself, a path through the parent, or another
+// root. A name that merely begins with two dots (`..downloads`) stays inside.
 function isPathInside(parent: string, candidate: string): boolean {
   const rel = path.relative(parent, candidate);
-  return !rel.startsWith('..') && !path.isAbsolute(rel);
+  return !(rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel));
 }
 
 function guardPath(parentDir: string, candidatePath: string, what: string): string {
@@ -38,14 +41,23 @@ function guardPath(parentDir: string, candidatePath: string, what: string): stri
     throw invalidParams(`${what} must be within ${resolvedParent}`);
   }
   // Walk from candidate upward to find the deepest existing path component,
-  // then realpath-check it. This catches symlinks in intermediate ancestors
-  // that point outside the parent (e.g. dataDir/link/subdir where link → /etc).
+  // then compare where it really lands with where the parent really is. This
+  // catches symlinks in intermediate ancestors that point outside the parent
+  // (e.g. dataDir/link/subdir where link → /etc), while a parent reached
+  // through a link (dataDir/link/sub where link → dataDir/real, or a data dir
+  // under /var → /private/var) still contains its own existing entries.
   let check = resolvedCandidate;
   while (check !== resolvedParent && check !== path.dirname(check)) {
     if (fs.existsSync(check)) {
+      let realParent: string;
       let real: string;
-      try { real = fs.realpathSync(check); } catch { real = check; }
-      if (!isPathInside(resolvedParent, real)) {
+      try {
+        realParent = fs.realpathSync(resolvedParent);
+        real = fs.realpathSync(check);
+      } catch {
+        throw invalidParams(`${what}: cannot resolve the real location of ${check}`);
+      }
+      if (!isPathInside(realParent, real)) {
         throw invalidParams(`${what}: symlink escape detected`);
       }
       break; // deepest existing component is safe; ancestors towards parent are pre-approved
@@ -82,18 +94,20 @@ export async function handleContent(
   const contentPath = `/${args.type}/${encodeURIComponent(workId)}`;
   const url = `${CONTENT_BASE_URL}${contentPath}`;
 
-  // Resolve output directory
-  const baseDir = path.join(getDataDir(), 'content');
+  // Resolve output directory; the default one is held to the data dir too, so
+  // a `content` link that leads out of it is refused like an out_dir would be.
   const outDirResolved = args.out_dir
     ? guardPath(getDataDir(), path.resolve(args.out_dir), 'out_dir')
-    : baseDir;
+    : guardPath(getDataDir(), path.join(getDataDir(), 'content'), 'content dir');
   ensureDir(outDirResolved);
 
   // Safe filename: workId with non-alphanumeric chars replaced
   const safeId = workId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 100);
   const fileName = `${safeId}.${ext}`;
   const destPath = guardPath(outDirResolved, path.join(outDirResolved, fileName), 'output file');
-  const tmpPath = `${destPath}.tmp`;
+  // Fresh staging name beside the destination, so the rename stays within one
+  // directory and no entry left at a predictable name is reused.
+  const tmpPath = `${destPath}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
 
   // Fetch with HEAD-based size check first
   const response = await openalexFetchFullUrl(url);
@@ -128,11 +142,24 @@ export async function handleContent(
   // Stream response body to temp file
   if (!response.body) throw upstreamError('OpenAlex content response has no body');
 
-  const fd = fs.openSync(tmpPath, 'w');
+  // 'wx' is O_CREAT|O_EXCL: the open fails on any existing entry at tmpPath,
+  // a symlink included (whatever it points to), so the bytes can only land in
+  // a file created here.
+  const fd = fs.openSync(tmpPath, 'wx');
+  // Cleanup removes tmpPath only while it still names the file created here
+  // (same device and inode); an entry someone else put at that name stays.
+  let staged: fs.Stats | undefined;
+  const removeStaged = (): void => {
+    try {
+      const current = fs.lstatSync(tmpPath);
+      if (staged && current.dev === staged.dev && current.ino === staged.ino) fs.unlinkSync(tmpPath);
+    } catch { /* best-effort */ }
+  };
   let totalBytes = 0;
   const limitBytes = args.max_size_mb * 1024 * 1024;
   let streamSuccess = false;
   try {
+    staged = fs.fstatSync(fd);
     const reader = response.body.getReader();
     while (true) {
       const { done, value } = await reader.read();
@@ -151,13 +178,20 @@ export async function handleContent(
     streamSuccess = true;
   } finally {
     fs.closeSync(fd);
-    if (!streamSuccess) {
-      try { fs.unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
-    }
+    if (!streamSuccess) removeStaged();
   }
 
-  // commitStagedDurable: rename + parent-dir fsync.
-  commitStagedDurable(tmpPath, destPath);
+  // Commit: rename, then fsync the parent directory. A staging file whose
+  // rename failed is removed, since each attempt has its own name and none is
+  // reused. Once the rename has returned, the staging name is never touched
+  // again, whatever the directory fsync does.
+  try {
+    fs.renameSync(tmpPath, destPath);
+  } catch (err) {
+    removeStaged();
+    throw err;
+  }
+  fsyncParentDirectoryDurable(destPath);
 
   const uri = `openalex://content/${workId}/${fileName}`;
 

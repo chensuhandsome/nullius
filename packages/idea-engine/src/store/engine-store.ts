@@ -1,10 +1,10 @@
 import { existsSync, mkdirSync } from 'fs';
-import { isAbsolute, relative, resolve } from 'path';
+import { relative, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { appendJsonLine, readJsonFile, writeJsonFileAtomic } from './file-io.js';
 import { withLock } from './file-lock.js';
 import { loadNodeLogEntriesStrict, repairTornFinalNodeLogEntry } from './node-log-store.js';
-import { defaultProjectRoot, encodeProjectPath, insideOrEqual } from './store-paths.js';
+import { defaultProjectRoot, encodeProjectPath, escapesBase, insideOrEqual } from './store-paths.js';
 
 export { NodeLogCorruptionError, type NodeLogCorruptionKind } from './node-log-store.js';
 
@@ -131,7 +131,7 @@ export class IdeaEngineStore {
       throw new Error(`artifact path outside store root: ${path}`);
     }
     const rel = relative(this.projectRoot, absolutePath);
-    if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+    if (!rel || escapesBase(rel)) {
       throw new Error(`artifact path is not project-relative: ${path}`);
     }
     return `project://${encodeProjectPath(rel)}#${contentHash}`;

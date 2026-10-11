@@ -17,7 +17,11 @@
 // command in which no test ran at all (e.g. `vitest list`) and which left the
 // root empty: it is removed silently, since there is nothing to inspect.
 // Kept roots whose newest entry is older than the retention window, and whose
-// creating process is no longer alive, are swept when a later run starts.
+// creating process is no longer alive, are swept when a later run starts, but
+// only roots that carry this module's origin marker (a regular file written at
+// creation with exactly the expected content): a directory that merely matches
+// the name pattern, or whose marker is missing, altered, a symlink, or not a
+// regular file, is never deleted.
 // NULLIUS_KEEP_TEST_TMP=1 keeps every root: the run's own and, since no sweep
 // runs in that mode, every earlier one.
 //
@@ -29,8 +33,33 @@ import path from 'node:path';
 export const TEST_RUNS_PARENT_PREFIX = 'ntest';
 const PARENT_README = 'Per-run temporary roots of the nullius test suites '
   + '(scripts/lib/vitest-test-temp-root.mjs). A passing run removes its root; a failing run keeps it, '
-  + 'and roots unchanged for 7 days whose creating process has exited are removed by a later run. '
+  + 'and roots unchanged for 7 days whose creating process has exited are removed by a later run, '
+  + 'only when they carry the origin marker file written at creation. '
   + 'NULLIUS_KEEP_TEST_TMP=1 keeps every root.\n';
+
+/** Origin marker written into every root at creation; the sweep deletes nothing without it. */
+export const ROOT_MARKER = '.nullius-test-root';
+const MARKER_MAX_BYTES = 256;
+
+export function rootMarkerText(pid) {
+  return `nullius test temp root\npid ${pid}\n`;
+}
+
+/** True only when `dir` holds this module's marker for `pid`: a regular file
+ *  (never followed through a symlink) whose content is exactly the expected text. */
+export function hasRootMarker(dir, pid) {
+  let fd;
+  try {
+    fd = fs.openSync(path.join(dir, ROOT_MARKER), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > MARKER_MAX_BYTES) return false;
+    return fs.readFileSync(fd, 'utf-8') === rootMarkerText(pid);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
 
 /** Create (or accept) the per-user parent only as a real directory owned by
  *  this user with mode 0700; a planted symlink or someone else's directory
@@ -151,6 +180,7 @@ export function sweepStaleRoots(parent, { now = Date.now(), retentionDays = RETE
     if (!match) continue;
     if (isAlive(Number(match[1]))) continue;
     const full = path.join(parent, entry.name);
+    if (!hasRootMarker(full, match[1])) continue;  // not positively ours: never deleted
     if (now - newestMtime(full) > retentionDays * DAY_MS && removeTree(full)) removed.push(full);
   }
   return removed;
@@ -222,9 +252,10 @@ export function noTestRan(project) {
   }
 }
 
+/** Empty apart from this module's own marker. */
 function isEmptyDirectory(dir) {
   try {
-    return fs.readdirSync(dir).length === 0;
+    return fs.readdirSync(dir).every(name => name === ROOT_MARKER);
   } catch {
     return false;
   }
@@ -241,6 +272,12 @@ export default function setup(project) {
 
   const label = path.basename(project?.config?.root ?? process.cwd()).replace(/[^A-Za-z0-9._]/g, '').slice(0, 6) || 'tests';
   const root = fs.mkdtempSync(path.join(parent, `${label}-${process.pid}-`));
+  try {
+    fs.writeFileSync(path.join(root, ROOT_MARKER), rootMarkerText(process.pid), { flag: 'wx', mode: 0o600 });
+  } catch (error) {
+    // Without its marker the root is simply never swept; the run itself is unaffected.
+    warn(`could not mark ${root}: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const previous = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP };
   process.env.TMPDIR = root;
   process.env.TMP = root;

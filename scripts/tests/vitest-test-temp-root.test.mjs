@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import setup, {
   RETENTION_DAYS,
+  ROOT_MARKER,
   ensurePrivateParent,
   noTestRan,
   removeTree,
@@ -59,6 +60,14 @@ function withEnv(t, values) {
 function age(target, days) {
   const past = new Date(Date.now() - days * DAY_MS);
   fs.utimesSync(target, past, past);
+}
+
+// The origin marker exactly as the module writes it (pinned here, not imported).
+function mark(dir, days) {
+  const pid = /-(\d+)-[A-Za-z0-9]{6}$/.exec(dir)[1];
+  const file = path.join(dir, ROOT_MARKER);
+  fs.writeFileSync(file, `nullius test temp root\npid ${pid}\n`);
+  if (days !== undefined) age(file, days);
 }
 
 test('runPassed is true only for a positively clean run', () => {
@@ -135,6 +144,7 @@ test('sweep removes only old, finished roots created by this module', t => {
   const live = path.join(parent, `orches-${process.ppid}-MnOpQr`);
   const foreign = path.join(parent, 'someone-elses-dir');
   for (const dir of [old, recentInside, live, foreign]) fs.mkdirSync(dir);
+  for (const dir of [old, recentInside, live]) mark(dir, RETENTION_DAYS + 1);
   fs.writeFileSync(path.join(old, 'evidence.txt'), 'x');
   age(path.join(old, 'evidence.txt'), RETENTION_DAYS + 1);
   age(old, RETENTION_DAYS + 1);
@@ -151,12 +161,49 @@ test('sweep removes only old, finished roots created by this module', t => {
   for (const dir of [recentInside, live, foreign]) assert.equal(fs.existsSync(dir), true, dir);
 });
 
+test('only roots carrying an exact, regular origin marker are ever swept', t => {
+  const parent = scratch(t);
+  const dead = 999_999_999;
+  const named = suffix => path.join(parent, `orches-${dead}-${suffix}`);
+  const cases = {
+    marked: named('MaRkEd'),
+    unmarked: named('NoMaRk'),           // a same-pattern directory someone else made
+    symlinked: named('SyMlNk'),          // the marker is a symlink to a correct-looking file
+    directory: named('DiRmRk'),          // the marker is a directory
+    otherPid: named('OtHpId'),           // the marker names another process
+    extraText: named('ExTrAt'),          // the marker carries more than the expected text
+  };
+  for (const dir of Object.values(cases)) fs.mkdirSync(dir);
+  mark(cases.marked);
+  const lookalike = path.join(parent, 'lookalike');
+  fs.writeFileSync(lookalike, `nullius test temp root\npid ${dead}\n`);
+  fs.symlinkSync(lookalike, path.join(cases.symlinked, ROOT_MARKER));
+  fs.mkdirSync(path.join(cases.directory, ROOT_MARKER));
+  fs.writeFileSync(path.join(cases.otherPid, ROOT_MARKER), 'nullius test temp root\npid 12345\n');
+  fs.writeFileSync(path.join(cases.extraText, ROOT_MARKER), `nullius test temp root\npid ${dead}\nmore\n`);
+  for (const dir of Object.values(cases)) {
+    for (const name of fs.readdirSync(dir)) {
+      const entry = path.join(dir, name);
+      const past = new Date(Date.now() - (RETENTION_DAYS + 1) * DAY_MS);
+      fs.lutimesSync(entry, past, past);
+    }
+    age(dir, RETENTION_DAYS + 1);
+  }
+  age(lookalike, RETENTION_DAYS + 1);
+  assert.deepEqual(sweepStaleRoots(parent, { isAlive: () => false }), [cases.marked]);
+  for (const [label, dir] of Object.entries(cases)) {
+    if (label !== 'marked') assert.equal(fs.existsSync(dir), true, label);
+  }
+});
+
 test('the retention window is the documented number of days', t => {
   const parent = scratch(t);
   const dead = 999_999_999;
   const almost = path.join(parent, `orches-${dead}-AlMoSt`);
   const past = path.join(parent, `orches-${dead}-PaStXx`);
   for (const dir of [almost, past]) fs.mkdirSync(dir);
+  mark(almost, RETENTION_DAYS - 1);
+  mark(past, RETENTION_DAYS + 1);
   age(almost, RETENTION_DAYS - 1);
   age(past, RETENTION_DAYS + 1);
   assert.deepEqual(sweepStaleRoots(parent, { isAlive: () => false }), [past]);
@@ -168,6 +215,7 @@ test('a root that cannot be fully inspected is never judged old', t => {
   const root = path.join(parent, 'orches-999999999-UnReAd');
   const locked = path.join(root, 'locked');
   fs.mkdirSync(locked, { recursive: true });
+  mark(root, RETENTION_DAYS + 1);
   fs.writeFileSync(path.join(locked, 'recent.txt'), 'modified just now');
   age(locked, RETENTION_DAYS + 1);
   age(root, RETENTION_DAYS + 1);
@@ -184,6 +232,7 @@ test('a child that vanishes during inspection keeps the root', t => {
   const parent = scratch(t);
   const root = path.join(parent, 'orches-999999999-VaNiSh');
   fs.mkdirSync(path.join(root, 'sub'), { recursive: true });
+  mark(root, RETENTION_DAYS + 1);
   age(path.join(root, 'sub'), RETENTION_DAYS + 1);
   age(root, RETENTION_DAYS + 1);
   const real = fs.lstatSync;
@@ -204,6 +253,7 @@ test('a root of a live process (this one included) is never swept', t => {
   const parent = scratch(t);
   const own = path.join(parent, `orches-${process.pid}-StUvWx`);
   fs.mkdirSync(own);
+  mark(own, RETENTION_DAYS + 1);
   age(own, RETENTION_DAYS + 1);
   assert.deepEqual(sweepStaleRoots(parent), []);
   assert.equal(fs.existsSync(own), true);
@@ -216,6 +266,7 @@ test('keep mode sweeps nothing, not even old finished roots', t => {
   fs.mkdirSync(parent, { recursive: true });
   const old = path.join(parent, 'orches-999999999-YzAbCd');
   fs.mkdirSync(old);
+  mark(old, RETENTION_DAYS + 30);
   age(old, RETENTION_DAYS + 30);
   const teardown = setup(fakeProject({ files: [{ result: { state: 'pass' } }] }));
   teardown();
@@ -267,6 +318,8 @@ test('setup gives a fresh short root; teardown removes it only after a pass', t 
     const teardown = setup(project);
     const root = os.tmpdir();
     assert.ok(root.startsWith(testRunsParent(base) + path.sep), root);
+    assert.equal(fs.readFileSync(path.join(root, '.nullius-test-root'), 'utf-8'),
+      `nullius test temp root\npid ${process.pid}\n`, 'every root carries its origin marker');
     // Unix-domain sockets under TMPDIR must stay bindable (about 104 bytes on macOS): the
     // suffix is exactly /ntest-<uid>/<label<=6>-<pid>-XXXXXX (22 fixed characters at most), nothing longer.
     const uidDigits = String(process.getuid?.() ?? 'user').length;

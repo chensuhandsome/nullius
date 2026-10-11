@@ -53,7 +53,7 @@ describe('decision landing fault boundaries', () => {
       if (
         !injected
         && event.kind === 'open'
-        && event.flags === 'w'
+        && event.flags === 'wx'
         && event.path.startsWith(`${ledgerPath}.tmp.`)
       ) {
         injected = true;

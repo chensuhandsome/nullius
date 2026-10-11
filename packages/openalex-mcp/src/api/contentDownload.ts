@@ -13,10 +13,12 @@ import { randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { z } from 'zod';
-import { fsyncParentDirectoryDurable, invalidParams, upstreamError } from '@nullius/shared';
+import { commitStagedDurable, fileIdentityOfFd, invalidParams, unlinkIfSameFile, upstreamError } from '@nullius/shared';
+import type { FileIdentity } from '@nullius/shared';
 import type { OpenAlexContentSchema } from '../tools/schemas.js';
 import { openalexFetchFullUrl, getCostSummary, getResponseMeta } from './rateLimiter.js';
 import { getDataDir } from './client.js';
+import { guardPath } from './pathGuard.js';
 import { detectIdentifier } from './identifiers.js';
 
 const CONTENT_BASE_URL = 'https://content.openalex.org';
@@ -25,46 +27,6 @@ const ACCEPTED_MIME_TEI = ['application/xml', 'text/xml', 'application/tei+xml']
 
 function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
-
-// Exact escape test: the parent itself, a path through the parent, or another
-// root. A name that merely begins with two dots (`..downloads`) stays inside.
-function isPathInside(parent: string, candidate: string): boolean {
-  const rel = path.relative(parent, candidate);
-  return !(rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel));
-}
-
-function guardPath(parentDir: string, candidatePath: string, what: string): string {
-  const resolvedParent = path.resolve(parentDir);
-  const resolvedCandidate = path.resolve(candidatePath);
-  if (!isPathInside(resolvedParent, resolvedCandidate)) {
-    throw invalidParams(`${what} must be within ${resolvedParent}`);
-  }
-  // Walk from candidate upward to find the deepest existing path component,
-  // then compare where it really lands with where the parent really is. This
-  // catches symlinks in intermediate ancestors that point outside the parent
-  // (e.g. dataDir/link/subdir where link → /etc), while a parent reached
-  // through a link (dataDir/link/sub where link → dataDir/real, or a data dir
-  // under /var → /private/var) still contains its own existing entries.
-  let check = resolvedCandidate;
-  while (check !== resolvedParent && check !== path.dirname(check)) {
-    if (fs.existsSync(check)) {
-      let realParent: string;
-      let real: string;
-      try {
-        realParent = fs.realpathSync(resolvedParent);
-        real = fs.realpathSync(check);
-      } catch {
-        throw invalidParams(`${what}: cannot resolve the real location of ${check}`);
-      }
-      if (!isPathInside(realParent, real)) {
-        throw invalidParams(`${what}: symlink escape detected`);
-      }
-      break; // deepest existing component is safe; ancestors towards parent are pre-approved
-    }
-    check = path.dirname(check);
-  }
-  return resolvedCandidate;
 }
 
 function normalizeWorkId(rawId: string): string {
@@ -148,18 +110,12 @@ export async function handleContent(
   const fd = fs.openSync(tmpPath, 'wx');
   // Cleanup removes tmpPath only while it still names the file created here
   // (same device and inode); an entry someone else put at that name stays.
-  let staged: fs.Stats | undefined;
-  const removeStaged = (): void => {
-    try {
-      const current = fs.lstatSync(tmpPath);
-      if (staged && current.dev === staged.dev && current.ino === staged.ino) fs.unlinkSync(tmpPath);
-    } catch { /* best-effort */ }
-  };
+  let staged: FileIdentity | undefined;
+  const removeStaged = (): void => unlinkIfSameFile(tmpPath, staged);
   let totalBytes = 0;
   const limitBytes = args.max_size_mb * 1024 * 1024;
-  let streamSuccess = false;
   try {
-    staged = fs.fstatSync(fd);
+    staged = fileIdentityOfFd(fd);
     const reader = response.body.getReader();
     while (true) {
       const { done, value } = await reader.read();
@@ -175,23 +131,24 @@ export async function handleContent(
       }
     }
     fs.fsyncSync(fd);
-    streamSuccess = true;
-  } finally {
+  } catch (err) {
+    try { fs.closeSync(fd); } catch { /* best-effort */ }
+    removeStaged();
+    throw err;
+  }
+  // A staging file that cannot be closed is not committed.
+  try {
     fs.closeSync(fd);
-    if (!streamSuccess) removeStaged();
+  } catch (err) {
+    removeStaged();
+    throw err;
   }
 
   // Commit: rename, then fsync the parent directory. A staging file whose
   // rename failed is removed, since each attempt has its own name and none is
   // reused. Once the rename has returned, the staging name is never touched
   // again, whatever the directory fsync does.
-  try {
-    fs.renameSync(tmpPath, destPath);
-  } catch (err) {
-    removeStaged();
-    throw err;
-  }
-  fsyncParentDirectoryDurable(destPath);
+  commitStagedDurable(tmpPath, destPath, removeStaged);
 
   const uri = `openalex://content/${workId}/${fileName}`;
 

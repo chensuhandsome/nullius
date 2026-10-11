@@ -89,6 +89,9 @@ export {
   commitStagedDurable,
   moveEntryDurable,
   fsyncParentDirectoryDurable,
+  fileIdentityOfFd,
+  unlinkIfSameFile,
+  type FileIdentity,
   // Test-only: audit hook for sequence-locking regression tests.
   _setAtomicWriteAuditHook,
   type AtomicWriteAudit,

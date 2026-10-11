@@ -203,12 +203,15 @@ function waitForProcessExit(proc: ChildProcess, timeoutMs: number): Promise<bool
 
 // POSIX servers run under an anchor: a small Node process spawned with setsid
 // (`detached`), so it leads the server's session and process group and the
-// group number is the anchor's pid. The anchor starts the server in that
-// group, reports on fd 3 how the server ended, and then stays in the group,
-// ignoring the signals that end the server, until the client sends SIGKILL or
-// closes fd 3. The anchor's pid cannot be reissued before the client reaps
-// it, so a group signal sent while the anchor is unreaped reaches the server's
-// group, also after the server itself has exited and left descendants behind.
+// group number is the anchor's pid. The anchor reads the server's environment
+// as one JSON line on fd 3 (the anchor itself runs with an empty one, which
+// the runtime may extend), starts the server in its group with exactly that
+// environment, reports on fd 3 how the server ended, and then stays in the
+// group, ignoring the signals that end the server, until the client sends
+// SIGKILL or closes fd 3. The anchor's pid cannot be reissued before the
+// client reaps it, so a group signal sent while the anchor is unreaped
+// reaches the server's group, also after the server itself has exited and
+// left descendants behind.
 const SERVER_ANCHOR_SOURCE = `
 'use strict';
 const { spawn } = require('node:child_process');
@@ -216,7 +219,6 @@ const net = require('node:net');
 const control = new net.Socket({ fd: 3, readable: true, writable: true });
 control.on('error', () => process.exit(1));
 control.on('end', () => process.exit(0));
-control.resume();
 for (const signal of ['SIGHUP', 'SIGINT', 'SIGTERM']) process.on(signal, () => {});
 let reported = false;
 const report = status => {
@@ -225,13 +227,24 @@ const report = status => {
   control.write(JSON.stringify(status) + '\\n');
 };
 const [command, ...args] = process.argv.slice(1);
-try {
-  const server = spawn(command, args, { stdio: ['inherit', 'inherit', 'inherit', 'ignore'] });
-  server.on('error', error => report({ error: error.message }));
-  server.on('exit', (code, signal) => report({ code, signal }));
-} catch (error) {
-  report({ error: error.message });
-}
+let received = '';
+const start = chunk => {
+  received += chunk;
+  const end = received.indexOf('\\n');
+  if (end < 0) return;
+  control.off('data', start);
+  control.resume();
+  try {
+    const env = JSON.parse(received.slice(0, end));
+    const server = spawn(command, args, { env, stdio: ['inherit', 'inherit', 'inherit', 'ignore'] });
+    server.on('error', error => report({ error: error.message }));
+    server.on('exit', (code, signal) => report({ code, signal }));
+  } catch (error) {
+    report({ error: error.message });
+  }
+};
+control.setEncoding('utf8');
+control.on('data', start);
 `;
 
 type ServerExit = { code: number | null; signal: NodeJS.Signals | null } | { error: string };
@@ -342,7 +355,7 @@ export class McpClient {
     const proc = anchored
       ? spawn(process.execPath, ['-e', SERVER_ANCHOR_SOURCE, '--', command, ...args], {
           stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
-          env,
+          env: {},
           cwd,
           detached: true,
         })
@@ -351,6 +364,7 @@ export class McpClient {
       throw new Error('No stdout from MCP process');
     }
     this.proc = proc;
+    if (anchored) (proc.stdio[3] as NodeJS.WritableStream).write(`${JSON.stringify(env)}\n`);
     const serverExit = watchServerExit(proc, anchored);
     this.serverExits.set(proc, serverExit);
     proc.stderr?.resume();

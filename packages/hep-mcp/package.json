@@ -50,7 +50,6 @@
     "@modelcontextprotocol/sdk": "^1.25.2",
     "@napi-rs/canvas": "^0.1.80",
     "dotenv": "^17.3.1",
-    "fflate": "^0.8.2",
     "latex-utensils": "^6.2.0",
     "p-limit": "^7.2.0",
     "pdfjs-dist": "^5.4.296",

@@ -265,7 +265,7 @@ make codegen-check  # 重新生成 → git diff --exit-code */generated/
 
 | 键 | 类型 | 默认值 | 优先级 | 组件 |
 |---|---|---|---|---|
-| `HEP_DATA_DIR` | path | `~/.hep-mcp` | env > .env > default | hep-mcp |
+| `HEP_DATA_DIR` | path | `~/.nullius/hep-mcp` | env > .env > default | hep-mcp |
 | `HEP_TOOL_MODE` | enum | `standard` | env > .env > default | hep-mcp |
 | `HEP_ENABLE_ZOTERO` | bool | `true` | env > .env > default | hep-mcp |
 | `PDG_DB_PATH` | path | (必需) | env > .env | pdg-mcp |

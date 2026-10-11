@@ -1087,10 +1087,10 @@ def cmd_stow(args) -> int:
         return EXIT_OK
     if args.dry_run:
         lines += [f"  would stow {human(sizes[r]):>12}  {r}" for r, _ in plan]
-        # After the real stow: a new entry changes the record; otherwise the record stays as it is now.
+        # A dry run writes nothing, so it does not predict the record's state: null, never a guess.
         emit({"dry_run": True, "planned": [{"path": r, "size": sizes[r]} for r, _ in plan],
               "already_tracked": legacy, "symlinks_not_followed": sorted(links), "store": str(store),
-              "commit_needed": bool(plan) or record_needs_commit(repo, run_dir)}, args.json, lines)
+              "commit_needed": None}, args.json, lines)
         return EXIT_OK
 
     # 3. Store, then record. The manifest is written after every store step

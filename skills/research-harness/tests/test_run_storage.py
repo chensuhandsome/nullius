@@ -1350,12 +1350,17 @@ def test_commit_needed_follows_the_record_as_it_ends_up(tmp_path, monkeypatch, c
     (run / "big.bin").write_bytes(blob(THRESHOLD, 62))
     capsys.readouterr()
     assert run_main(["stow", str(run), "--dry-run", "--json"], repo, monkeypatch) == rs.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["commit_needed"] is True, "the real stow would write a record"
+    assert json.loads(capsys.readouterr().out)["commit_needed"] is None, "a dry run predicts nothing"
     assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    commit_records(repo)
+    policy = repo / ".nullius" / "storage_policy.json"  # a committed threshold change rewrites the manifest
+    policy.write_text(json.dumps({"schema": rs.POLICY_SCHEMA, "bulk_threshold_bytes": THRESHOLD - 1}))
     commit_records(repo)
     capsys.readouterr()
     assert run_main(["stow", str(run), "--dry-run", "--json"], repo, monkeypatch) == rs.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["commit_needed"] is False
+    assert json.loads(capsys.readouterr().out)["commit_needed"] is None
+    assert stow_json(run, repo, monkeypatch, capsys)["commit_needed"] is True, "threshold_bytes was updated"
+    commit_records(repo)
     with open(run / rs.MANIFEST_NAME, "a") as fh:
         fh.write("\n\n")  # harmless whitespace; stow rewrites the committed bytes
     doc = stow_json(run, repo, monkeypatch, capsys)

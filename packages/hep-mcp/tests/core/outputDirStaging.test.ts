@@ -234,4 +234,22 @@ describe('output staging files are created exclusively', () => {
       }
     });
   });
+
+  it('keeps a final report true: a later discard neither retries nor changes it, and the files it names exist', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('report-kept');
+      const batch = new OutputBatch(out);
+      batch.json('a.json', { x: 1 });
+      batch.json('b.json', { x: 2 });
+      linkFault.failOnCall = 2;
+      linkFault.before = () => { unlinkFault.failNext = 100; };
+      const error = await batch.publish().then(() => null, (e: unknown) => e as Error & { data?: { files_left?: string[]; staging_left?: string[] } });
+      unlinkFault.failNext = 0;
+      expect(error?.message).toMatch(/outputs are incomplete/);
+      expect(batch.discard(error)).toBe(error);
+      const named = [...(error?.data?.files_left ?? []), ...(error?.data?.staging_left ?? [])];
+      expect(named.length).toBeGreaterThan(0);
+      for (const rel of named) expect(fs.existsSync(path.join(out.projectRoot, rel)), rel).toBe(true);
+    });
+  });
 });

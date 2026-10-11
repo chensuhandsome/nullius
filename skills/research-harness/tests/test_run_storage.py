@@ -1369,7 +1369,7 @@ def test_commit_needed_follows_the_record_as_it_ends_up(tmp_path, monkeypatch, c
 
 
 @pytest.mark.parametrize("how", ["policy", "option"])
-def test_a_store_inside_another_repository_working_tree_is_refused(tmp_path, monkeypatch, how):
+def test_a_store_inside_another_repository_working_tree_is_refused(tmp_path, monkeypatch, capsys, how):
     repo = make_repo(tmp_path)
     other = tmp_path / "other-repository"
     other.mkdir()
@@ -1384,7 +1384,9 @@ def test_a_store_inside_another_repository_working_tree_is_refused(tmp_path, mon
             {"schema": rs.POLICY_SCHEMA, "bulk_threshold_bytes": THRESHOLD, "store_root": str(store)}))
     else:
         argv += ["--store", str(store)]
+    capsys.readouterr()
     assert run_main(argv, repo, monkeypatch) == rs.EXIT_ERROR
+    assert f"lies inside {other.resolve()}" in capsys.readouterr().err
     assert not store.exists() and not (run / rs.MANIFEST_NAME).exists()
     assert stat.S_IMODE((run / "a.bin").stat().st_mode) & 0o200
 

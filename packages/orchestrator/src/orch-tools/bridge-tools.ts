@@ -30,6 +30,7 @@ import type {
 } from '../computation/feedback-followup-progression.js';
 import { resolveUnderRoot } from '../computation/path-safety.js';
 import { utcNowIso } from '../util.js';
+import { resolveProjectRoot } from './common.js';
 
 function resolvePathWithinParent(parentDir: string, candidatePath: string, field: string): string {
   const resolvedParent = path.resolve(parentDir);
@@ -94,9 +95,12 @@ export async function handleOrchRunPlanComputation(params: {
   run_dir: string;
   dry_run?: boolean;
 }) {
+  // Admitted like every other front door: canonical form, outside any
+  // nullius checkout.
+  const projectRoot = resolveProjectRoot(params.project_root);
   return planComputationFromRunDir({
     dryRun: params.dry_run,
-    projectRoot: params.project_root,
+    projectRoot,
     runDir: params.run_dir,
     runId: params.run_id,
   });
@@ -109,12 +113,13 @@ export async function handleOrchRunExecuteManifest(params: {
   manifest_path: string;
   dry_run?: boolean;
 }) {
+  const projectRoot = resolveProjectRoot(params.project_root);
   const manifestPath = resolvePathWithinParent(params.run_dir, params.manifest_path, 'manifest_path');
   resolvePathWithinParent(path.join(params.run_dir, 'computation'), manifestPath, 'manifest_path');
   return executeComputationManifest({
     dryRun: params.dry_run,
     manifestPath,
-    projectRoot: params.project_root,
+    projectRoot,
     runDir: params.run_dir,
     runId: params.run_id,
   });
@@ -308,6 +313,7 @@ export async function handleOrchRunProgressFollowups(
   },
   ctx: AgentToolHandlerContext = {},
 ) {
+  const projectRoot = resolveProjectRoot(params.project_root);
   if (!ctx.createMessage || !ctx.callTool) {
     throw invalidParams('orch_run_progress_followups requires host sampling/createMessage support and tool-call loopback.', {
       missing_context: [
@@ -322,7 +328,7 @@ export async function handleOrchRunProgressFollowups(
   });
   const result = await progressRunFollowups({
     computationResult,
-    projectRoot: params.project_root,
+    projectRoot,
     runId: params.run_id,
     runDir: params.run_dir,
     launchFeedbackTask: async launchParams => launchFollowupTaskViaTeamRuntime({

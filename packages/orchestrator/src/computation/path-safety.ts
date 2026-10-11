@@ -191,12 +191,19 @@ export function resolveProjectContainedPath(rootPath: string, targetPath: string
   return path.join(root, relative);
 }
 
+/**
+ * A workspace path as a manifest or method spec gives it: refused when empty,
+ * when it contains NUL, or when any of its segments (split at either slash)
+ * is `..`. A name that merely contains two dots (`..data.csv`) is an ordinary
+ * file name. Every caller still resolves the result under its root and
+ * refuses symbolic links on the way.
+ */
 export function sanitizeRelativePath(relativePath: string, label: string): string {
   const normalized = relativePath.trim();
   if (!normalized) {
     throw unsafeFs(`${label} cannot be empty`, { label });
   }
-  if (normalized.includes('\0') || normalized.includes('..')) {
+  if (normalized.includes('\0') || normalized.split(/[\\/]/).includes('..')) {
     throw unsafeFs(`${label} contains unsafe path traversal`, { label, path: relativePath });
   }
   return normalized;

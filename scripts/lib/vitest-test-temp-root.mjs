@@ -7,8 +7,12 @@
 // tests (and in child processes they spawn) lands inside it. The names are
 // deliberately short: tools create Unix-domain sockets under TMPDIR, and a
 // socket path longer than about 104 bytes (macOS) cannot be bound. At teardown
-// the root is removed only when the run is known to have passed; a failing,
-// interrupted, or unreadable run keeps it for inspection, even when empty.
+// the root is removed only when the run is known to have passed: every test
+// finished (passed, skipped, or todo), nothing failed, and the run was not
+// being cancelled (Ctrl-C in watch mode). A failing, interrupted, or unreadable
+// run keeps it for inspection, even when empty; the one exception is a
+// command in which no test ran at all (e.g. `vitest list`) and which left the
+// root empty: it is removed silently, since there is nothing to inspect.
 // Kept roots whose newest entry is older than the retention window, and whose
 // creating process is no longer alive, are swept when a later run starts.
 // NULLIUS_KEEP_TEST_TMP=1 keeps every root: the run's own and, since no sweep
@@ -149,27 +153,70 @@ export function sweepStaleRoots(parent, { now = Date.now(), retentionDays = RETE
   return removed;
 }
 
+const FINISHED_STATES = ['pass', 'skip', 'todo'];
+
+function readableState(project) {
+  const state = project?.vitest?.state;
+  if (!state
+    || typeof state.getCountOfFailedTests !== 'function'
+    || typeof state.getFailedFilepaths !== 'function'
+    || typeof state.getUnhandledErrors !== 'function'
+    || typeof state.getFiles !== 'function') {
+    return null;
+  }
+  return state;
+}
+
+/** A task finished when it was skipped or marked todo, or when it ended in a
+ *  finished state and so did every task inside it (a cancelled run leaves
+ *  tests that never started without a result inside files marked 'pass'). */
+function taskFinished(task) {
+  if (task?.mode === 'skip' || task?.mode === 'todo') return true;
+  if (!FINISHED_STATES.includes(task?.result?.state)) return false;
+  return !Array.isArray(task.tasks) || task.tasks.every(taskFinished);
+}
+
+function taskStarted(task) {
+  return task?.result?.state !== undefined || (Array.isArray(task?.tasks) && task.tasks.some(taskStarted));
+}
+
 /** True only when the vitest state positively reports a clean run. Any
  *  missing accessor (an API change) counts as "not known to have passed",
  *  so the root is kept rather than deleted. */
 export function runPassed(project) {
   try {
-    const state = project?.vitest?.state;
-    if (!state
-      || typeof state.getCountOfFailedTests !== 'function'
-      || typeof state.getFailedFilepaths !== 'function'
-      || typeof state.getUnhandledErrors !== 'function'
-      || typeof state.getFiles !== 'function') {
-      return false;
-    }
+    if (project?.vitest?.isCancelling === true) return false;
+    const state = readableState(project);
+    if (!state) return false;
     const files = state.getFiles();
     if (files.length === 0) return false;
-    const everyFileFinished = files.every(file => ['pass', 'skip', 'todo'].includes(file?.result?.state)
-      || file?.mode === 'skip' || file?.mode === 'todo');
-    return everyFileFinished
+    return files.every(taskFinished)
       && state.getCountOfFailedTests() === 0
       && state.getFailedFilepaths().length === 0
       && state.getUnhandledErrors().length === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** True only when the state positively shows that no test (and no file)
+ *  started and nothing failed, as in a listing command. */
+export function noTestRan(project) {
+  try {
+    const state = readableState(project);
+    if (!state) return false;
+    return !state.getFiles().some(taskStarted)
+      && state.getCountOfFailedTests() === 0
+      && state.getFailedFilepaths().length === 0
+      && state.getUnhandledErrors().length === 0;
+  } catch {
+    return false;
+  }
+}
+
+function isEmptyDirectory(dir) {
+  try {
+    return fs.readdirSync(dir).length === 0;
   } catch {
     return false;
   }
@@ -201,6 +248,10 @@ export default function setup(project) {
       return;
     }
     if (!runPassed(project)) {
+      if (noTestRan(project) && isEmptyDirectory(root)) {
+        removeTree(root);  // nothing ran and nothing was written: nothing to inspect
+        return;
+      }
       warn(`run did not pass; kept ${root} (swept after ${RETENTION_DAYS} days without changes)`);
       return;
     }

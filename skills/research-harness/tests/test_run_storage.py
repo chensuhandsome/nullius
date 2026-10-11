@@ -95,6 +95,7 @@ def test_check_staged_warns_and_strict_blocks(tmp_path, monkeypatch, capsys):
     assert run_main(["check", "--staged"], repo, monkeypatch) == rs.EXIT_OK
     out = capsys.readouterr().out
     assert "artifacts/runs/r1/big.dat" in out and "small.txt" not in out
+    assert "git rm --cached <path>" in out, "the hint keeps the file on disk"
     assert run_main(["check", "--staged", "--strict"], repo, monkeypatch) == rs.EXIT_FINDINGS
     sh("git", "restore", "--staged", "artifacts/runs/r1/big.dat", cwd=repo)
     capsys.readouterr()
@@ -204,6 +205,185 @@ def test_policy_file_is_validated(tmp_path, monkeypatch):
                 {"schema": rs.POLICY_SCHEMA, "store_root": ".nullius/store"}):
         policy.write_text(json.dumps(doc))
         assert run_main(["check"], repo, monkeypatch) == rs.EXIT_ERROR, doc
+
+
+@pytest.mark.parametrize("mode", ["staged", "working_tree"])
+def test_check_counts_a_file_of_exactly_the_threshold_as_bulk(tmp_path, monkeypatch, capsys, mode):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "at.bin").write_bytes(blob(THRESHOLD, 1))
+    (run / "below.bin").write_bytes(blob(THRESHOLD - 1, 2))
+    sh("git", "add", "-A", cwd=repo)
+    capsys.readouterr()
+    argv = ["check", "--json"] + (["--staged"] if mode == "staged" else [])
+    assert run_main(argv, repo, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    found = doc["staged_bulk"] if mode == "staged" else doc["pending"]
+    assert [r["path"] for r in found] == ["artifacts/runs/r1/at.bin"]
+
+
+def test_check_staged_treats_names_with_glob_characters_literally(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 3))  # committed bulk that a glob "[ab].bin" would match
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "legacy", cwd=repo)
+    (run / "[ab].bin").write_bytes(blob(THRESHOLD, 4))
+    sh("git", "add", "-A", cwd=repo)
+    capsys.readouterr()
+    assert run_main(["check", "--staged", "--json"], repo, monkeypatch) == rs.EXIT_OK
+    assert [r["path"] for r in json.loads(capsys.readouterr().out)["staged_bulk"]] == ["artifacts/runs/r1/[ab].bin"]
+
+
+def test_check_separates_committed_bulk_from_bulk_the_next_commit_would_add(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    runs = repo / "artifacts" / "runs"
+    (runs / "old").mkdir()
+    (runs / "old" / "kept.bin").write_bytes(blob(THRESHOLD, 5))
+    (runs / "old" / "edited.bin").write_bytes(blob(THRESHOLD, 6))
+    (runs / "old" / "restaged.bin").write_bytes(blob(THRESHOLD, 7))
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "legacy", cwd=repo)
+    (runs / "old" / "edited.bin").write_bytes(blob(THRESHOLD, 8))  # modified in the working tree only
+    (runs / "old" / "restaged.bin").write_bytes(blob(THRESHOLD, 9))
+    (runs / "new").mkdir()
+    (runs / "new" / "added.bin").write_bytes(blob(THRESHOLD, 10))
+    sh("git", "add", "artifacts/runs/old/restaged.bin", "artifacts/runs/new/added.bin", cwd=repo)
+    capsys.readouterr()
+    assert run_main(["check", "--json"], repo, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    assert [r["path"] for r in doc["tracked"]] == ["artifacts/runs/old/kept.bin"]
+    assert sorted(r["path"] for r in doc["pending"]) == [
+        "artifacts/runs/new/added.bin", "artifacts/runs/old/edited.bin", "artifacts/runs/old/restaged.bin"]
+    assert run_main(["check", "--strict"], repo, monkeypatch) == rs.EXIT_FINDINGS
+
+
+@pytest.mark.parametrize("state", ["tracked", "stowed", "pending", "untracked", "ignored_unstowed",
+                                   "stowed_damaged", "symlinked_run_root"])
+def test_check_strict_fails_on_exactly_the_classes_that_need_attention(tmp_path, monkeypatch, state):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "big.bin").write_bytes(blob(THRESHOLD, 11))
+    if state == "tracked":
+        sh("git", "add", "-A", cwd=repo)
+        sh("git", "commit", "-q", "-m", "bulk", cwd=repo)
+    elif state in ("stowed", "stowed_damaged"):
+        assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+        if state == "stowed_damaged":
+            rs.store_path(store_of(repo), rs.sha256_file(run / "big.bin")).unlink()
+    elif state == "pending":
+        sh("git", "add", "-A", cwd=repo)
+    elif state == "ignored_unstowed":
+        (run / ".gitignore").write_text("*.bin\n")
+    elif state == "symlinked_run_root":
+        shutil.move(str(repo / "artifacts"), str(repo / "real-artifacts"))
+        os.symlink("real-artifacts", repo / "artifacts")  # an ancestor of the run root, inside the checkout
+    expected = rs.EXIT_OK if state in ("tracked", "stowed") else rs.EXIT_FINDINGS
+    assert run_main(["check", "--strict"], repo, monkeypatch) == expected
+
+
+def test_check_lists_but_never_classifies_files_of_a_nested_repository(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    nested = repo / "artifacts" / "runs" / "dep"
+    nested.mkdir()
+    sh("git", "init", "-q", cwd=nested)
+    (nested / "big.bin").write_bytes(blob(THRESHOLD, 12))
+    capsys.readouterr()
+    assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["nested_repositories"] == [{"path": "artifacts/runs/dep", "size": 0}]
+    assert all(doc[k] == [] for k in ("tracked", "pending", "untracked", "ignored_unstowed", "stowed"))
+
+
+def test_check_never_counts_the_manifest_or_ignore_file_as_bulk(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / ".gitignore").write_text("# a long user ignore file\n" + "*.tmp\n" * THRESHOLD)
+    sh("git", "add", "-A", cwd=repo)
+    for argv in (["check", "--staged", "--strict"], ["check", "--strict"]):
+        assert run_main(argv, repo, monkeypatch) == rs.EXIT_OK, argv
+
+
+def test_a_path_recorded_by_two_manifests_is_damaged_and_neither_record_hides_the_other(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    outer = repo / "artifacts" / "runs" / "r1"
+    (outer / "inner").mkdir(parents=True)
+    (outer / "inner" / "a.bin").write_bytes(blob(THRESHOLD, 13))
+    assert run_main(["stow", str(outer / "inner")], repo, monkeypatch) == rs.EXIT_OK
+    inner_entry = json.loads((outer / "inner" / rs.MANIFEST_NAME).read_text())["entries"][0]
+    (outer / rs.MANIFEST_NAME).write_text(json.dumps(  # a second record of the same file, with other bytes
+        {"schema": rs.MANIFEST_SCHEMA, "entries": [{**inner_entry, "path": "inner/a.bin", "sha256": "e" * 64}]}))
+    capsys.readouterr()
+    assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    doc = json.loads(capsys.readouterr().out)
+    assert [(r["path"], r["status"]) for r in doc["stowed_damaged"]] == [
+        ("artifacts/runs/r1/inner/a.bin", "recorded_more_than_once")] and doc["stowed"] == []
+
+
+@pytest.mark.parametrize("layout", ["enclosing", "nested"])
+def test_stow_refuses_a_run_inside_or_around_another_stowed_run(tmp_path, monkeypatch, layout):
+    repo = make_repo(tmp_path)
+    outer = repo / "artifacts" / "runs" / "r1"
+    (outer / "sub").mkdir(parents=True)
+    (outer / "a.bin").write_bytes(blob(THRESHOLD, 14))
+    (outer / "sub" / "b.bin").write_bytes(blob(THRESHOLD, 15))
+    first, second = (outer, outer / "sub") if layout == "enclosing" else (outer / "sub", outer)
+    assert run_main(["stow", str(first)], repo, monkeypatch) == rs.EXIT_OK
+    before = (first / rs.MANIFEST_NAME).read_text()
+    assert run_main(["stow", str(second)], repo, monkeypatch) == rs.EXIT_ERROR
+    assert not (second / rs.MANIFEST_NAME).exists() and (first / rs.MANIFEST_NAME).read_text() == before
+
+
+def test_policy_run_roots_must_be_plain_and_disjoint(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    policy = repo / ".nullius" / "storage_policy.json"
+    for roots in ([], ["."], ["./artifacts/runs"], ["artifacts//runs"], ["artifacts/./runs"], ["/abs"],
+                  ["artifacts/../runs"], ["artifacts", "artifacts/runs"], ["artifacts/runs", "artifacts/runs/"],
+                  [""], [7]):
+        policy.write_text(json.dumps({"schema": rs.POLICY_SCHEMA, "run_roots": roots}))
+        assert run_main(["check"], repo, monkeypatch) == rs.EXIT_ERROR, roots
+    for doc in ({"schema": rs.POLICY_SCHEMA, "bulk_threshold_bytes": True},
+                {"schema": rs.POLICY_SCHEMA, "bulk_threshold_bytes": "5"},
+                {"schema": rs.POLICY_SCHEMA, "unknown": 1},
+                {"schema": rs.POLICY_SCHEMA, "store_root": 5},
+                ["not an object"]):
+        policy.write_text(json.dumps(doc))
+        assert run_main(["check"], repo, monkeypatch) == rs.EXIT_ERROR, doc
+    policy.write_text(json.dumps({"schema": rs.POLICY_SCHEMA, "run_roots": ["artifacts/runs/", "outputs"],
+                                  "store_root": str(tmp_path / "shared-store")}))
+    assert run_main(["check"], repo, monkeypatch) == rs.EXIT_OK
+
+
+@pytest.mark.parametrize("defect", ["schema", "entries_not_list", "size_string", "hash_uppercase", "path_absolute",
+                                    "path_parent", "path_nul"])
+def test_manifest_fields_are_checked_one_by_one(tmp_path, monkeypatch, defect):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 16))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    manifest = json.loads((run / rs.MANIFEST_NAME).read_text())
+    entry = manifest["entries"][0]
+    if defect == "schema":
+        manifest["schema"] = "other"
+    elif defect == "entries_not_list":
+        manifest["entries"] = {"a.bin": entry}
+    elif defect == "size_string":
+        entry["size"] = str(entry["size"])
+    elif defect == "hash_uppercase":
+        entry["sha256"] = entry["sha256"].upper()
+    elif defect == "path_absolute":
+        entry["path"] = "/a.bin"
+    elif defect == "path_parent":
+        entry["path"] = "../a.bin"
+    else:
+        entry["path"] = "a\x00.bin"
+    (run / rs.MANIFEST_NAME).write_text(json.dumps(manifest))
+    assert run_main(["verify", str(run)], repo, monkeypatch) == rs.EXIT_ERROR
 
 
 # ------------------------------------------------------------------- stow
@@ -368,24 +548,37 @@ def test_materialize_without_clone_support_places_an_independent_read_only_copy(
     assert stat.S_IMODE(placed.stat().st_mode) & 0o222 == 0
 
 
-def test_stow_rehashes_the_source_on_the_existing_object_branch(tmp_path, monkeypatch, capsys):
+def test_store_put_rehashes_the_source_when_the_object_already_exists(tmp_path, monkeypatch):
+    src = tmp_path / "out.bin"
+    src.write_bytes(blob(THRESHOLD, 69))
+    store = tmp_path / "store"
+    rs.store_put(src, store)
+    real_verify = rs.verify_store_object
+
+    def writer_during_verify(obj, sha, size=None):  # an open writer changes the source meanwhile
+        src.write_bytes(blob(THRESHOLD, 70))
+        return real_verify(obj, sha, size)
+
+    monkeypatch.setattr(rs, "verify_store_object", writer_during_verify)
+    with pytest.raises(rs.StorageError, match="changed while being stored"):
+        rs.store_put(src, store)
+
+
+def test_stow_rehashes_what_is_in_place_after_storing(tmp_path, monkeypatch, capsys):
     repo = make_repo(tmp_path)
-    runs = repo / "artifacts" / "runs"
-    original = blob(THRESHOLD, 69)
-    for name in ("a", "b"):
-        (runs / name).mkdir()
-        (runs / name / "out.bin").write_bytes(original)
-    stow_json(runs / "a", repo, monkeypatch, capsys)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "out.bin").write_bytes(blob(THRESHOLD, 71))
+    real_put = rs.store_put
 
-    def writer_then_no_clone(src, dst):  # an open writer changes run b between hashing and recording
-        target = runs / "b" / "out.bin"
-        os.chmod(target, 0o644)
-        target.write_bytes(blob(THRESHOLD, 70))
-        return False
+    def put_then_writer(path, store):  # the bytes change after a clean store step
+        result = real_put(path, store)
+        overwrite_in_place(path, blob(THRESHOLD, 72))
+        return result
 
-    monkeypatch.setattr(rs, "clone_file", writer_then_no_clone)
-    assert run_main(["stow", str(runs / "b")], repo, monkeypatch) == rs.EXIT_ERROR
-    assert not (runs / "b" / rs.MANIFEST_NAME).exists(), "nothing recorded for bytes that are not in place"
+    monkeypatch.setattr(rs, "store_put", put_then_writer)
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_ERROR
+    assert not (run / rs.MANIFEST_NAME).exists(), "nothing recorded for bytes that are not in place"
 
 
 @pytest.mark.parametrize("command", ["verify", "check", "stow", "materialize"])
@@ -476,6 +669,9 @@ def test_symlinked_run_root_is_refused_cleanly(tmp_path, monkeypatch):
     os.symlink(outside, repo / "artifacts" / "runs")
     assert run_main(["stow", "artifacts/runs/r1"], repo, monkeypatch) == rs.EXIT_ERROR
     assert run_main(["check"], repo, monkeypatch) == rs.EXIT_OK
+    for argv in (["check", "--strict"], ["check", "--staged", "--strict"]):
+        assert run_main(argv, repo, monkeypatch) == rs.EXIT_FINDINGS, argv
+    assert stat.S_IMODE((outside / "r1" / "big.bin").stat().st_mode) & 0o200
 
 
 def test_ignore_block_escapes_special_names(tmp_path, monkeypatch):
@@ -524,6 +720,309 @@ def test_store_put_copies_across_file_systems(tmp_path, monkeypatch):
     sha, dest, method = rs.store_put(src, tmp_path / "store")
     assert method == "copy" and dest.read_bytes() == src.read_bytes()
     assert not os.path.samestat(dest.stat(), src.stat())
+
+
+@pytest.mark.parametrize("state", ["missing", "store_mismatch"])
+def test_stow_refuses_while_a_recorded_entry_is_unavailable(tmp_path, monkeypatch, state):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 17))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    obj = rs.store_path(store_of(repo), rs.sha256_file(run / "a.bin"))
+    (run / "a.bin").unlink()
+    os.chmod(obj, 0o644)
+    if state == "missing":
+        obj.unlink()
+    else:
+        obj.write_bytes(blob(THRESHOLD, 18))
+    (run / "new.bin").write_bytes(blob(THRESHOLD, 19))
+    before = (run / rs.MANIFEST_NAME).read_text()
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert (run / rs.MANIFEST_NAME).read_text() == before
+    assert stat.S_IMODE((run / "new.bin").stat().st_mode) & 0o200, "nothing is changed"
+
+
+def test_stow_stores_again_an_entry_whose_store_copy_was_lost(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 20))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    obj = rs.store_path(store_of(repo), rs.sha256_file(run / "a.bin"))
+    obj.unlink()
+    capsys.readouterr()
+    assert run_main(["verify", str(run), "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert [e["status"] for e in json.loads(capsys.readouterr().out)["entries"]] == ["ok_in_place_only"]
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    capsys.readouterr()
+    assert run_main(["verify", str(run), "--json"], repo, monkeypatch) == rs.EXIT_OK
+    assert [e["status"] for e in json.loads(capsys.readouterr().out)["entries"]] == ["ok"]
+    assert stat.S_IMODE(obj.stat().st_mode) == 0o444
+
+
+def test_restow_keeps_user_rules_around_the_managed_block_and_anchors_entries(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "out.bin").write_bytes(blob(THRESHOLD, 21))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    with open(run / ".gitignore", "a") as fh:
+        fh.write("# user rules after the block\n*.log\n")
+    (run / "more.bin").write_bytes(blob(THRESHOLD, 22))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    text = (run / ".gitignore").read_text()
+    assert text.endswith("# user rules after the block\n*.log\n") and text.count(rs.GITIGNORE_BEGIN) == 1
+    (run / "sub").mkdir()
+    (run / "sub" / "out.bin").write_bytes(b"a different, small file of the same name")
+    assert sh("git", "check-ignore", "-q", "artifacts/runs/r1/sub/out.bin", cwd=repo, check=False).returncode == 1
+
+
+def test_stow_reports_a_deeper_negation_rule_that_re_includes_a_stowed_file(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    (run / "sub").mkdir(parents=True)
+    (run / "sub" / ".gitignore").write_text("!big.bin\n")
+    (run / "sub" / "big.bin").write_bytes(blob(THRESHOLD, 23))
+    capsys.readouterr()
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert "sub/big.bin" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="needs a case-insensitive file system")
+def test_a_case_only_rename_on_a_case_insensitive_file_system_is_not_recorded_twice(tmp_path, monkeypatch):
+    (tmp_path / "probe").write_text("")
+    if not (tmp_path / "PROBE").exists():
+        pytest.skip("this file system is case-sensitive")
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "out.bin").write_bytes(blob(THRESHOLD, 24))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    os.rename(run / "out.bin", run / "OUT.bin")
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    assert [e["path"] for e in json.loads((run / rs.MANIFEST_NAME).read_text())["entries"]] == ["out.bin"]
+
+
+@pytest.mark.parametrize("variant", ["run_dir_is_a_repository", "git_file"])
+def test_stow_refuses_run_directories_that_belong_to_another_repository(tmp_path, monkeypatch, variant):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "big.bin").write_bytes(blob(THRESHOLD, 25))
+    if variant == "run_dir_is_a_repository":
+        sh("git", "init", "-q", cwd=run)
+    else:
+        (run / "dep").mkdir()
+        (run / "dep" / ".git").write_text("gitdir: /nonexistent/elsewhere\n")
+    assert run_main(["stow", str(run), "--project-root", str(repo)], repo, monkeypatch) == rs.EXIT_ERROR
+    assert stat.S_IMODE((run / "big.bin").stat().st_mode) & 0o200 and not (run / rs.MANIFEST_NAME).exists()
+
+
+def test_a_symlinked_store_object_is_never_trusted(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    data = blob(THRESHOLD, 26)
+    (run / "a.bin").write_bytes(data)
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    obj = rs.store_path(store_of(repo), rs.sha256_file(run / "a.bin"))
+    elsewhere = tmp_path / "elsewhere.bin"
+    elsewhere.write_bytes(data)  # the right bytes, but not a store object
+    obj.unlink()
+    os.symlink(elsewhere, obj)
+    (run / "a.bin").unlink()
+    capsys.readouterr()
+    assert run_main(["verify", str(run), "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert [e["status"] for e in json.loads(capsys.readouterr().out)["entries"]] == ["store_mismatch"]
+    assert run_main(["materialize", str(run)], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert not (run / "a.bin").exists()
+
+
+def test_a_store_object_of_another_size_than_recorded_is_not_restored(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 27))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    (run / "a.bin").unlink()
+    manifest = json.loads((run / rs.MANIFEST_NAME).read_text())
+    manifest["entries"][0]["size"] += 1  # inconsistent record, right hash
+    (run / rs.MANIFEST_NAME).write_text(json.dumps(manifest))
+    capsys.readouterr()
+    assert run_main(["verify", str(run), "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert [e["status"] for e in json.loads(capsys.readouterr().out)["entries"]] == ["store_mismatch"]
+    assert run_main(["materialize", str(run)], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert not (run / "a.bin").exists()
+
+
+def test_materialize_never_opens_a_special_file_at_a_recorded_path(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "out.bin").write_bytes(blob(THRESHOLD, 28))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    (run / "out.bin").unlink()
+    os.mkfifo(run / "out.bin")  # opening it for reading would block
+    capsys.readouterr()
+    assert run_main(["materialize", str(run), "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert [p["status"] for p in json.loads(capsys.readouterr().out)["unavailable"]] == ["occupied_by_non_file"]
+
+
+def test_store_put_publishes_nothing_under_the_old_hash_when_the_source_changes_while_copied(tmp_path, monkeypatch):
+    src = tmp_path / "out.bin"
+    src.write_bytes(blob(THRESHOLD, 29))
+    sha = rs.sha256_file(src)
+    store = tmp_path / "store"
+
+    def writer_during_clone(a, b):  # the source changes after hashing, before the copy
+        src.write_bytes(blob(THRESHOLD, 30))
+        return False
+
+    monkeypatch.setattr(rs, "clone_file", writer_during_clone)
+    with pytest.raises(rs.StorageError, match="changed while being stored"):
+        rs.store_put(src, store)
+    assert not rs.store_path(store, sha).exists()
+    assert list(rs.store_path(store, sha).parent.iterdir()) == [], "no incoming copy is left behind"
+
+
+@pytest.mark.parametrize("racer", ["same_bytes", "other_bytes"])
+def test_publish_never_replaces_an_object_that_appears_meanwhile(tmp_path, monkeypatch, capsys, racer):
+    src = tmp_path / "out.bin"
+    data = blob(THRESHOLD, 31)
+    src.write_bytes(data)
+    sha = rs.sha256_file(src)
+    store = tmp_path / "store"
+    dest = rs.store_path(store, sha)
+
+    def concurrent_stow(a, b):  # another worktree publishes the same name in between
+        dest.write_bytes(data if racer == "same_bytes" else blob(THRESHOLD, 32))
+        return False
+
+    monkeypatch.setattr(rs, "clone_file", concurrent_stow)
+    got_sha, obj, method = rs.store_put(src, store)
+    assert got_sha == sha and obj.read_bytes() == data
+    if racer == "same_bytes":
+        assert method == "existing"
+    else:
+        assert method == "copy" and len(list(dest.parent.glob(f"{sha}.damaged-*"))) == 1, "set aside, not deleted"
+
+
+def test_materialize_never_replaces_a_file_that_appears_meanwhile(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 33))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    (run / "a.bin").unlink()
+    real_copy = rs.copy_file_durably
+
+    def writer_appears(src, dst):  # a program writes the path after materialize looked
+        (run / "a.bin").write_bytes(b"new bytes from elsewhere")
+        return real_copy(src, dst)
+
+    monkeypatch.setattr(rs, "clone_file", lambda a, b: False)
+    monkeypatch.setattr(rs, "copy_file_durably", writer_appears)
+    assert run_main(["materialize", str(run)], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert (run / "a.bin").read_bytes() == b"new bytes from elsewhere"
+
+
+def test_materialize_places_nothing_from_a_damaged_store_object(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 34))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    obj = rs.store_path(store_of(repo), rs.sha256_file(run / "a.bin"))
+    (run / "a.bin").unlink()
+    os.chmod(obj, 0o644)
+    overwrite_in_place(obj, blob(THRESHOLD, 35))
+    capsys.readouterr()
+    assert run_main(["materialize", str(run), "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert [p["status"] for p in json.loads(capsys.readouterr().out)["unavailable"]] == ["store_mismatch"]
+    assert not (run / "a.bin").exists()
+
+
+def test_stow_refuses_a_restored_entry_whose_bytes_changed_before_storing(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 36))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    rs.store_path(store_of(repo), rs.sha256_file(run / "a.bin")).unlink()  # ok_in_place_only
+    real_put = rs.store_put
+
+    def writer_then_put(path, store):  # changed after it was judged intact, before it is stored
+        overwrite_in_place(path, blob(THRESHOLD, 37))
+        return real_put(path, store)
+
+    monkeypatch.setattr(rs, "store_put", writer_then_put)
+    before = (run / rs.MANIFEST_NAME).read_text()
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_ERROR
+    assert (run / rs.MANIFEST_NAME).read_text() == before
+
+
+def test_git_calls_never_fetch_lock_or_expand_patterns(monkeypatch, tmp_path):
+    seen = {}
+
+    def capture(args, **kwargs):
+        seen["args"], seen["env"] = args, kwargs["env"]
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    monkeypatch.setattr(rs.subprocess, "run", capture)
+    rs.git(["status"], tmp_path)
+    assert seen["env"]["GIT_NO_LAZY_FETCH"] == "1" and seen["env"]["GIT_OPTIONAL_LOCKS"] == "0"
+    assert seen["env"]["GIT_LITERAL_PATHSPECS"] == "1" and seen["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    assert "protocol.allow=never" in seen["args"]
+
+
+def test_check_staged_in_a_partial_clone_fetches_nothing(tmp_path, monkeypatch, capsys):
+    origin = make_repo(tmp_path)
+    run = origin / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "old.bin").write_bytes(blob(THRESHOLD, 38))
+    sh("git", "add", "-A", cwd=origin)
+    sh("git", "commit", "-q", "-m", "bulk", cwd=origin)
+    sh("git", "config", "uploadpack.allowFilter", "true", cwd=origin)
+    sh("git", "config", "uploadpack.allowAnySHA1InWant", "true", cwd=origin)
+    clone = tmp_path / "clone"
+    sh("git", "clone", "-q", "--no-checkout", "--filter=blob:none", origin.resolve().as_uri(), str(clone), cwd=tmp_path)
+    sh("git", "read-tree", "HEAD", cwd=clone)  # index from HEAD; blobs stay on the remote
+    missing = lambda: sh("git", "rev-list", "--objects", "--all", "--missing=print", cwd=clone).stdout.count("\n?")
+    before = missing()
+    assert before >= 1
+    sh("git", "rm", "-q", "--cached", "artifacts/runs/r1/old.bin", cwd=clone)
+    (clone / "artifacts" / "runs" / "r1").mkdir(parents=True)
+    (clone / "artifacts" / "runs" / "r1" / "new.bin").write_bytes(blob(THRESHOLD, 38)[:-8] + b"changed!")
+    sh("git", "add", "artifacts/runs/r1/new.bin", cwd=clone)  # a rename candidate of a blob that is not here
+    capsys.readouterr()
+    # the policy file is not checked out here, so the threshold is given explicitly
+    assert run_main(["check", "--staged", "--json", "--threshold", str(THRESHOLD)], clone, monkeypatch) == rs.EXIT_OK
+    assert [r["path"] for r in json.loads(capsys.readouterr().out)["staged_bulk"]] == ["artifacts/runs/r1/new.bin"]
+    assert missing() == before, "nothing was fetched from the remote"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="decomposed file names are a macOS file-system behaviour")
+def test_decomposed_unicode_run_directory_names_are_matched_in_git_form(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "e\u0301t\u00e9"  # NFD and NFC mixed on disk
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 39))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    capsys.readouterr()
+    assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["ignored_unstowed"] == [] and len(doc["stowed"]) == 1
+
+
+def test_check_staged_flags_a_run_root_behind_a_symlinked_ancestor(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    shutil.move(str(repo / "artifacts"), str(repo / "real-artifacts"))
+    os.symlink("real-artifacts", repo / "artifacts")
+    capsys.readouterr()
+    assert run_main(["check", "--staged", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert json.loads(capsys.readouterr().out)["symlinked_run_roots"] == ["artifacts/runs"]
+    assert run_main(["check", "--staged"], repo, monkeypatch) == rs.EXIT_OK
 
 
 # ------------------------------------------------------- verify / materialize
@@ -627,22 +1126,7 @@ def test_materialize_in_linked_worktree(tmp_path, monkeypatch, capsys):
     assert [e["status"] for e in json.loads(capsys.readouterr().out)["entries"]] == ["ok"]
 
 
-# ------------------------------------------------------------- worktrees
-
-def _worktree(repo: Path, tmp_path: Path, name: str, *extra) -> Path:
-    wt = tmp_path / name
-    sh("git", "worktree", "add", "-q", *extra, "-b", name, str(wt), cwd=repo)
-    return wt
-
-
-# ----------------------------------------------------------------- sparse
-
-
-# ----------------------------------------------------------------- report
-
-
-# --------------------------------------------------------------- closeout
-
+# ---------------------------------------------------------- unusual input
 
 @pytest.mark.parametrize("layout", ["begin_only", "end_before_begin", "two_blocks"])
 def test_stow_refuses_malformed_managed_block_markers_before_changing_anything(tmp_path, monkeypatch, layout):

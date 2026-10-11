@@ -24,27 +24,39 @@ Size policy
   carries the hashes of the bulk inputs, while the bulk bytes stay out of
   history.
 
-  Optional ``.nullius/storage_policy.json``:
+  Optional ``.nullius/storage_policy.json`` (commit it: every checkout reads
+  its own copy, so an uncommitted policy leaves other worktrees on the
+  defaults):
     {"schema": "storage_policy_v1", "bulk_threshold_bytes": 5242880,
      "run_roots": ["artifacts/runs"], "store_root": "/absolute/path"}
+  Run roots are plain relative paths, none inside another, and must not pass
+  through a symbolic link (files behind one are refused or flagged).
 
 Subcommands
   check             report bulk files under the run roots (``--staged``: in
                     the index, i.e. about to be committed). Warns; exits 1
-                    only with ``--strict``.
+                    only with ``--strict``. Nested repositories are listed,
+                    never classified.
   stow              place a finished run's bulk outputs in the store (an
                     independent clone or verified copy; the run's file stays
                     in place, read-only) + manifest + ignore block.
   verify            check every manifest entry against its sha256, in place
                     or in the store.
   materialize       recreate missing manifest entries in place from the
-                    store (e.g. in another worktree or clone).
+                    store (e.g. in another worktree; in a clone, even on the
+                    same machine, pass ``--store`` with the original store).
 
-Exit codes: 0 clean; 1 findings (strict-check violations, verification
-problems, refused changes); 2 usage or environment error. POSIX (macOS/Linux)
-only. Nothing here deletes data: a damaged store object is renamed aside,
-never removed, and the only replacement of a run file is by a verified
-clone of the same bytes.
+``--store PATH`` overrides the policy's store for ``stow``, ``verify``,
+``materialize``, and ``check`` without ``--staged``.
+
+Exit codes: 0 clean; 1 findings (strict-check violations, verification or
+restore problems, a stow refused because recorded outputs changed or are
+unavailable, an ignore rule that re-includes a stowed file); 2 usage or
+environment errors and inputs refused before any change (unrecordable file
+names, damaged ignore-block markers, a run directory inside or around another
+stowed run, a malformed manifest or policy). POSIX (macOS/Linux) only.
+Nothing here deletes data: a damaged store object is renamed aside, never
+removed, and run files are never replaced (stow only makes them read-only).
 
 Operating assumptions: one user's own files (not an adversarial setting),
 and nothing still writing into a run directory that is being stowed. Hashes
@@ -160,19 +172,22 @@ def is_sha256_hex(value) -> bool:
 
 
 def is_under(child: Path, parent: Path) -> bool:
+    # os.path.realpath (unlike Path.resolve) does not raise on a symlink loop.
     try:
-        child.resolve().relative_to(parent.resolve())
+        Path(os.path.realpath(child)).relative_to(Path(os.path.realpath(parent)))
         return True
     except ValueError:
         return False
 
 
 def emit(result: dict, as_json: bool, lines: "list[str]") -> None:
+    # File names that are not valid UTF-8 arrive as surrogate escapes; they are
+    # shown escaped rather than crashing the report.
     if as_json:
-        print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False))
+        print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=True))
     else:
         for line in lines:
-            print(line)
+            print(line.encode("utf-8", "backslashreplace").decode("utf-8"))
 
 
 # ---------------------------------------------------------------------- git
@@ -225,7 +240,21 @@ class Repo:
         # files in composed (NFC) form whatever form the file system returns.
         self.precompose = git(["config", "--bool", "core.precomposeunicode"], self.toplevel,
                               check=False).stdout.decode().strip() == "true"
+        # On a case-insensitive file system names differing only in case are one file.
+        self.ignorecase = git(["config", "--bool", "core.ignorecase"], self.toplevel,
+                              check=False).stdout.decode().strip() == "true"
         self.policy = load_policy(self.toplevel)
+
+    def symlinked_run_roots(self) -> "list[str]":
+        """Run roots whose path passes through a symbolic link anywhere below the
+        checkout: bulk under them would be checked at one path and tracked at
+        another, so every command refuses or flags them."""
+        found = []
+        for root in self.run_roots:
+            lexical = self.toplevel / root
+            if (lexical.exists() or lexical.is_symlink()) and Path(os.path.realpath(lexical)) != lexical:
+                found.append(root)
+        return found
 
     def git_form(self, rel: str) -> str:
         return unicodedata.normalize("NFC", rel) if self.precompose else rel
@@ -290,11 +319,20 @@ def load_policy(toplevel: Path) -> dict:
         policy["bulk_threshold_bytes"] = value
     if "run_roots" in doc:
         roots = doc["run_roots"]
+        # Plain relative paths below the checkout, written once each and never
+        # one inside another (a file must be classified exactly once).
         if (not isinstance(roots, list) or not roots
-                or not all(isinstance(r, str) and r and not r.startswith("/") and ".." not in r.split("/")
-                           for r in roots)):
-            raise StorageError(f"{POLICY_REL}: run_roots must be a non-empty list of relative paths")
-        policy["run_roots"] = [r.strip("/") for r in roots]
+                or not all(isinstance(r, str) and r and not r.startswith("/") and "\x00" not in r
+                           and posixpath.normpath(r.rstrip("/")) == r.rstrip("/") and r.rstrip("/") not in ("", ".")
+                           and ".." not in r.split("/") for r in roots)):
+            raise StorageError(f"{POLICY_REL}: run_roots must be a non-empty list of plain relative paths "
+                               "(no '.', '..', or empty components)")
+        clean = [r.rstrip("/") for r in roots]
+        for i, a in enumerate(clean):
+            for b in clean[i + 1:]:
+                if a == b or b.startswith(a + "/") or a.startswith(b + "/"):
+                    raise StorageError(f"{POLICY_REL}: run_roots {a!r} and {b!r} overlap; list each tree once")
+        policy["run_roots"] = clean
     if doc.get("store_root") is not None:
         root = doc["store_root"]
         if not isinstance(root, str) or not Path(root).expanduser().is_absolute():
@@ -319,14 +357,15 @@ def store_path(store: Path, sha: str) -> Path:
     return store / "sha256" / sha[:2] / sha
 
 
-def verify_store_object(obj: Path, sha: str) -> bool:
+def verify_store_object(obj: Path, sha: str, size: "int | None" = None) -> bool:
     """A store object counts only when it is a regular file (never a symlink)
-    whose full sha256 equals the hash it is filed under."""
+    whose full sha256 equals the hash it is filed under and, when a recorded
+    size is given, whose size equals it."""
     try:
         st = obj.lstat()
     except OSError:
         return False
-    if not stat.S_ISREG(st.st_mode):
+    if not stat.S_ISREG(st.st_mode) or (size is not None and st.st_size != size):
         return False
     try:
         return sha256_file(obj) == sha
@@ -492,7 +531,7 @@ def load_manifest(run_dir: Path) -> "dict | None":
     seen: "set[str]" = set()
     for entry in doc["entries"]:
         rel = entry.get("path") if isinstance(entry, dict) else None
-        if (not isinstance(rel, str) or not rel or posixpath.normpath(rel) != rel or rel.startswith("/")
+        if (not isinstance(rel, str) or not rel or "\x00" in rel or posixpath.normpath(rel) != rel or rel.startswith("/")
                 or ".." in rel.split("/") or not is_sha256_hex(entry.get("sha256"))
                 or not isinstance(entry.get("size"), int) or isinstance(entry.get("size"), bool) or entry["size"] < 0):
             raise StorageError(f"{path}: malformed entry {entry!r}")
@@ -502,22 +541,26 @@ def load_manifest(run_dir: Path) -> "dict | None":
     return doc
 
 
-def manifests_under(repo: Repo) -> "dict[str, tuple[Path, dict]]":
-    """Map repository-relative path -> (run directory, manifest entry) for
-    every bulk manifest under the run roots."""
+def manifests_under(repo: Repo) -> "dict[str, list[tuple[Path, dict]]]":
+    """Map repository-relative path -> every (run directory, manifest entry)
+    that records it, across all bulk manifests under the run roots (a path
+    recorded by two manifests must not hide either record)."""
     found: dict = {}
     for root in repo.run_roots:
         base = repo.toplevel / root
-        if not base.is_dir() or base.is_symlink():
+        if not base.is_dir() or root in repo.symlinked_run_roots():
             continue
         for dirpath, dirnames, filenames in os.walk(base, followlinks=False, onerror=walk_error):
+            if ".git" in dirnames or ".git" in filenames:  # a nested repository keeps its own records
+                dirnames[:] = []
+                continue
             if MANIFEST_NAME in filenames:
                 run_dir = Path(dirpath)
                 doc = load_manifest(run_dir)
                 run_rel = run_dir.relative_to(repo.toplevel).as_posix()  # walked inside the checkout
                 for entry in doc["entries"]:
                     # Lexical path: a symlinked ancestor must not move the key elsewhere.
-                    found[repo.git_form(posixpath.join(run_rel, entry["path"]))] = (run_dir, entry)
+                    found.setdefault(repo.git_form(posixpath.join(run_rel, entry["path"])), []).append((run_dir, entry))
     return found
 
 
@@ -535,6 +578,19 @@ def gitignore_escape(rel: str) -> str:
     return "/" + stripped + "\\ " * (len(escaped) - len(stripped))
 
 
+def read_ignore_lines(path: Path) -> "list[str]":
+    """The file's lines split on "\\n" only (git's rule), each with one trailing
+    "\\r" kept; a file that is not UTF-8 is refused rather than rewritten."""
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        raise StorageError(f"{path} is not UTF-8 text; it is left untouched")
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def check_ignore_markers(run_dir: Path) -> None:
     """The managed block must be absent or exactly one BEGIN ... END pair in
     that order; anything else would make the rewrite drop user rules."""
@@ -542,7 +598,8 @@ def check_ignore_markers(run_dir: Path) -> None:
     if not path.exists():
         return
     inside, blocks = False, 0
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in read_ignore_lines(path):
+        line = line[:-1] if line.endswith("\r") else line
         if line == GITIGNORE_BEGIN:
             if inside:
                 break
@@ -560,31 +617,61 @@ def check_ignore_markers(run_dir: Path) -> None:
 
 
 def update_ignore_block(run_dir: Path, rel_paths: "list[str]") -> None:
+    """Write the managed block where it already stands (rule order decides
+    which rule wins), or append it; user lines are kept exactly."""
     check_ignore_markers(run_dir)
     path = run_dir / ".gitignore"
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    kept: "list[str]" = []
-    inside = False
-    for line in lines:
-        if line == GITIGNORE_BEGIN:
-            inside = True
-            continue
-        if line == GITIGNORE_END:
-            inside = False
-            continue
-        if not inside:
-            kept.append(line)
-    while kept and not kept[-1].strip():
-        kept.pop()
+    lines = read_ignore_lines(path) if path.exists() else []
     block = [GITIGNORE_BEGIN, *[gitignore_escape(p) for p in sorted(rel_paths)], GITIGNORE_END]
-    text = "\n".join(kept + ([""] if kept else []) + block) + "\n"
-    write_atomic(path, text.encode("utf-8"))
+    out: "list[str]" = []
+    inside = placed = False
+    for line in lines:  # a trailing "\r" on a user line is kept
+        bare = line[:-1] if line.endswith("\r") else line
+        if bare == GITIGNORE_BEGIN:
+            inside = placed = True
+            out.extend(block)
+        elif bare == GITIGNORE_END:
+            inside = False
+        elif not inside:
+            out.append(line)
+    if not placed:
+        while out and out[-1] in ("", "\r"):
+            out.pop()
+        out += ([""] if out else []) + block
+    elif out and out[-1] == "":
+        out.pop()  # the final newline is written below
+    write_atomic(path, ("\n".join(out) + "\n").encode("utf-8"))
 
 
 # ------------------------------------------------------------------ check
 
+def is_storage_record(rel: str) -> bool:
+    """The manifest and ignore file stow asks you to commit are never bulk."""
+    return posixpath.basename(rel) in (MANIFEST_NAME, ".gitignore")
+
+
+def blob_ids(repo: Repo, args: "list[str]") -> "dict[str, str]":
+    out = git(args, repo.toplevel, check=False)
+    found = {}
+    if out.returncode != 0:
+        return found
+    for item in out.stdout.decode("utf-8", errors="surrogateescape").split("\0"):
+        meta, _, path = item.partition("\t")
+        parts = meta.split()
+        if path and len(parts) >= 3:
+            found[path] = parts[2] if args[0] == "ls-tree" else parts[1]
+    return found
+
+
 def staged_bulk(repo: Repo, threshold: int) -> "list[dict]":
-    changed = git_z(["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMRT", "--", *repo.run_roots],
+    # git cannot stage a file behind a symbolic link; such roots are reported separately.
+    symlinked = repo.symlinked_run_roots()
+    roots = [r for r in repo.run_roots if r not in symlinked]
+    if not roots:
+        return []
+    # --no-renames: an added file is listed as added, and no blob is needed for
+    # rename detection (in a partial clone that would require a fetch).
+    changed = git_z(["diff", "--cached", "--no-renames", "--name-only", "-z", "--diff-filter=ACMT", "--", *roots],
                     repo.toplevel)
     if not changed:
         return []
@@ -593,7 +680,7 @@ def staged_bulk(repo: Repo, threshold: int) -> "list[dict]":
     for item in stage:
         meta, _, path = item.partition("\t")
         parts = meta.split()
-        if len(parts) >= 2 and parts[0] != "160000":
+        if len(parts) >= 2 and parts[0] != "160000" and not is_storage_record(path):
             shas[path] = parts[1]
     if not shas:
         return []
@@ -608,37 +695,51 @@ def staged_bulk(repo: Repo, threshold: int) -> "list[dict]":
                   key=lambda r: (-r["size"], r["path"]))
 
 
-def working_tree_bulk(repo: Repo, threshold: int) -> "dict[str, list[dict]]":
-    roots = [r for r in repo.run_roots if (repo.toplevel / r).is_dir() and not (repo.toplevel / r).is_symlink()]
-    skipped = [r for r in repo.run_roots if (repo.toplevel / r).is_symlink()]
-    classes: "dict[str, list[dict]]" = {"tracked": [], "untracked": [], "ignored_unstowed": [],
+def working_tree_bulk(repo: Repo, threshold: int, store: Path) -> "dict[str, list[dict]]":
+    symlinked = repo.symlinked_run_roots()
+    roots = [r for r in repo.run_roots if (repo.toplevel / r).is_dir() and r not in symlinked]
+    classes: "dict[str, list[dict]]" = {"tracked": [], "pending": [], "untracked": [], "ignored_unstowed": [],
                                         "stowed": [], "stowed_damaged": [],
-                                        "skipped_symlinked_roots": [{"path": r, "size": 0} for r in skipped]}
+                                        "symlinked_run_roots": [{"path": r, "size": 0} for r in symlinked],
+                                        "nested_repositories": []}
     if not roots:
         return classes
     tracked = repo.tracked(roots)
     untracked = repo.untracked(roots)
+    # Tracked bulk is already in history only when HEAD holds exactly the
+    # staged and checked-out bytes; anything else the next commit would add.
+    head = blob_ids(repo, ["ls-tree", "-r", "-z", "HEAD", "--", *roots])
+    index = blob_ids(repo, ["ls-files", "--stage", "-z", "--", *roots])
+    modified = set(git_z(["diff", "--name-only", "-z", "--", *roots], repo.toplevel))
     stowed = manifests_under(repo)
-    store = repo.store()
     # Every recorded entry is checked by full hash, whatever its current size:
-    # a stowed output that changed, shrank, vanished, or lost its store copy
-    # is not "stowed" any more.
-    for rel, (run_dir, entry) in sorted(stowed.items()):
-        status = entry_status(run_dir, store, entry)
-        record = {"path": rel, "size": entry["size"], "status": status["status"]}
-        good = status["status"] in ("ok", "in_store_only")
+    # a stowed output that changed, shrank, vanished, lost its store copy, or
+    # is recorded twice is not "stowed" any more.
+    for rel, records in sorted(stowed.items()):
+        statuses = [entry_status(run_dir, store, entry)["status"] for run_dir, entry in records]
+        status = "recorded_more_than_once" if len(records) > 1 else statuses[0]
+        record = {"path": rel, "size": records[0][1]["size"], "status": status}
+        good = status in GOOD_ENTRY_STATUSES
         classes["stowed" if good else "stowed_damaged"].append(record)
     for root in roots:
         for dirpath, dirnames, filenames in os.walk(repo.toplevel / root, followlinks=False, onerror=walk_error):
+            here = Path(dirpath)
+            if ".git" in dirnames or ".git" in filenames:  # a nested repository follows its own rules
+                classes["nested_repositories"].append({"path": repo.rel(here), "size": 0})
+                dirnames[:] = []
+                continue
             for name in filenames:
-                full = Path(dirpath) / name
+                full = here / name
                 st = full.lstat()
                 if not stat.S_ISREG(st.st_mode) or st.st_size < threshold:
                     continue
                 rel = repo.rel(full)
+                if is_storage_record(rel):
+                    continue
                 record = {"path": rel, "size": st.st_size}
                 if rel in tracked:
-                    classes["tracked"].append(record)
+                    committed = rel in head and head[rel] == index.get(rel) and rel not in modified
+                    classes["tracked" if committed else "pending"].append(record)
                 elif rel in untracked:
                     classes["untracked"].append(record)
                 elif rel in stowed:
@@ -655,32 +756,42 @@ def cmd_check(args) -> int:
     threshold = resolve_threshold(repo, args.threshold)
     if args.staged:
         found = staged_bulk(repo, threshold)
-        result = {"mode": "staged", "threshold_bytes": threshold, "run_roots": repo.run_roots, "staged_bulk": found}
-        lines = []
+        symlinked = repo.symlinked_run_roots()
+        result = {"mode": "staged", "threshold_bytes": threshold, "run_roots": repo.run_roots, "staged_bulk": found,
+                  "symlinked_run_roots": symlinked}
+        lines = [f"run-storage: run root {r} passes through a symbolic link; files staged behind it are not "
+                 "checked (configure the real path in run_roots)" for r in symlinked]
         if found:
             lines.append(f"run-storage: {len(found)} staged file(s) under {', '.join(repo.run_roots)} at or above "
                          f"{human(threshold)} would enter git history permanently:")
             lines += [f"  {human(r['size']):>12}  {r['path']}" for r in found]
-            lines.append("  Keep bulk outputs out of history: git restore --staged <path>, then "
-                         "run_storage.py stow <run_dir> (see research-harness: Run Storage).")
-        else:
+            lines.append("  Keep bulk outputs out of history: git rm --cached <path> (the file stays on disk; for a "
+                         "path already in a commit, git restore --staged <path> keeps the committed version "
+                         "instead), then run_storage.py stow <run_dir> (see research-harness: Run Storage).")
+        elif not symlinked:
             lines.append(f"run-storage: no staged file at or above {human(threshold)} under the run roots.")
-        emit(result, args.json, lines if (found or not args.quiet) else [])
-        return EXIT_FINDINGS if (found and args.strict) else EXIT_OK
-    classes = working_tree_bulk(repo, threshold)
+        emit(result, args.json, lines if (found or symlinked or not args.quiet) else [])
+        return EXIT_FINDINGS if ((found or symlinked) and args.strict) else EXIT_OK
+    store = repo.store(args.store)
+    classes = working_tree_bulk(repo, threshold, store)
     result = {"mode": "working_tree", "threshold_bytes": threshold, "run_roots": repo.run_roots,
-              **{k: v for k, v in classes.items()}}
+              "store": str(store), **classes}
     labels = {
-        "tracked": "already in git history (every checkout and the object store hold a copy)",
+        "tracked": "already committed (every checkout and the object store hold a copy)",
+        "pending": "staged or modified but not yet committed (the next commit would put these bytes into history)",
         "untracked": "untracked and not ignored (a plain `git add` would commit them)",
         "ignored_unstowed": "ignored but not stowed (lost if this checkout is removed)",
-        "stowed_damaged": "recorded in a bulk manifest but changed, missing, or without a valid store copy",
-        "stowed": "stowed (bytes match the manifest; valid copy in the content store)",
+        "stowed_damaged": "recorded in a bulk manifest but changed, missing, recorded twice, or without a valid "
+                          "store copy",
+        "stowed": "stowed (valid copy in the content store; the copy in place, where present, matches the manifest)",
     }
     lines = [f"run-storage: bulk files (>= {human(threshold)}) under {', '.join(repo.run_roots)}:"]
-    for r in classes.get("skipped_symlinked_roots", []):
-        lines.append(f"  run root {r['path']} is a symbolic link; git does not track content behind it (skipped)")
-    for key in ("stowed_damaged", "untracked", "ignored_unstowed", "tracked", "stowed"):
+    for r in classes["symlinked_run_roots"]:
+        lines.append(f"  run root {r['path']} passes through a symbolic link; its content is not checked "
+                     "(configure the real path in run_roots)")
+    for r in classes["nested_repositories"]:
+        lines.append(f"  {r['path']} is a nested repository; its files follow that repository's rules (not classified)")
+    for key in ("stowed_damaged", "pending", "untracked", "ignored_unstowed", "tracked", "stowed"):
         records = classes[key]
         lines.append(f"  {len(records):5d} files {human(sum(r['size'] for r in records)):>12}  {labels[key]}")
         for r in records[: args.limit]:
@@ -688,11 +799,20 @@ def cmd_check(args) -> int:
         if len(records) > args.limit:
             lines.append(f"        ... {len(records) - args.limit} more")
     emit(result, args.json, lines)
-    violations = classes["untracked"] or classes["ignored_unstowed"] or classes["stowed_damaged"]
+    violations = (classes["untracked"] or classes["ignored_unstowed"] or classes["stowed_damaged"]
+                  or classes["pending"] or classes["symlinked_run_roots"])
     return EXIT_FINDINGS if (violations and args.strict) else EXIT_OK
 
 
 # ------------------------------------------------------------------ stow
+
+def inside_of(child: Path, base: Path) -> bool:
+    try:
+        child.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
 
 def resolve_run_dir(repo: Repo, run_dir: str) -> Path:
     path = Path(run_dir)
@@ -700,17 +820,34 @@ def resolve_run_dir(repo: Repo, run_dir: str) -> Path:
         path = Path.cwd() / path
     if path.is_symlink() or not path.is_dir():
         raise StorageError(f"run directory must be a real directory: {path}")
-    path = path.resolve()
+    path = Path(os.path.realpath(path))
     if not is_under(path, repo.toplevel):
         raise StorageError(f"{path} resolves outside the repository {repo.toplevel} (a symlinked run root?)")
-    if not any(is_under(path, repo.toplevel / root) for root in repo.run_roots):
-        raise StorageError(f"{path} is not under a run root ({', '.join(repo.run_roots)}); "
-                           f"add its root to {POLICY_REL} if it should follow the bulk policy")
+    # Both sides are real paths: run roots passing through a symbolic link are excluded.
+    symlinked = repo.symlinked_run_roots()
+    roots = [repo.toplevel / root for root in repo.run_roots if root not in symlinked]
+    if not any(inside_of(path, base) for base in roots):
+        hint = (f"; run root(s) {', '.join(symlinked)} pass through a symbolic link and are refused"
+                if symlinked else "")
+        raise StorageError(f"{path} is not under a run root ({', '.join(repo.run_roots)}){hint}; "
+                           f"add its real root to {POLICY_REL} if it should follow the bulk policy")
+    base = next(b for b in roots if inside_of(path, b))
+    ancestor = path.parent
+    while inside_of(ancestor, base):  # up to and including the run root
+        if (ancestor / MANIFEST_NAME).exists():
+            raise StorageError(f"{path} lies inside the stowed run directory {ancestor}; stow that directory "
+                               "(a run is recorded by one manifest)")
+        if ancestor == base:
+            break
+        ancestor = ancestor.parent
     if Repo(path).toplevel != repo.toplevel:
         raise StorageError(f"{path} belongs to a nested repository (a submodule?), not to {repo.toplevel}")
     for dirpath, dirnames, filenames in os.walk(path, followlinks=False, onerror=walk_error):
         if ".git" in dirnames or ".git" in filenames:
             raise StorageError(f"{dirpath} holds a nested repository; its files follow that repository's rules")
+        if Path(dirpath) != path and MANIFEST_NAME in filenames:
+            raise StorageError(f"{dirpath} is itself a stowed run directory inside {path}; a run is recorded by "
+                               "one manifest — stow the inner directory on its own or move it out")
     return path
 
 
@@ -733,30 +870,6 @@ def make_read_only(path: Path) -> None:
         os.chmod(path, stat.S_IMODE(st.st_mode) & ~0o222)
 
 
-def share_store_blocks(full: Path, obj: Path, sha: str) -> str:
-    """Replace a run file whose bytes equal a verified store object with a
-    copy-on-write clone of that object, so identical outputs of different
-    runs occupy their data blocks once while remaining independent files.
-    Without clone support the file is left as it is."""
-    tmp = incoming_path(full.parent)
-    try:
-        if clone_file(obj, tmp):
-            os.chmod(tmp, 0o444)
-            method = "existing-shared-clone"
-        else:
-            return "existing-separate-copy-kept"
-        if sha256_file(tmp) != sha or sha256_file(full) != sha:
-            raise StorageError(f"{full} changed while being stowed")
-        os.replace(tmp, full)
-        fsync_dir(full.parent)
-        return method
-    finally:
-        try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-
-
 def cmd_stow(args) -> int:
     repo = Repo(args.project_root if args.project_root else args.run_dir)
     run_dir = resolve_run_dir(repo, args.run_dir)
@@ -765,6 +878,7 @@ def cmd_stow(args) -> int:
     tracked = repo.tracked([repo.rel(run_dir)])
     manifest = load_manifest(run_dir) or {"schema": MANIFEST_SCHEMA, "entries": []}
     entries = {e["path"]: e for e in manifest["entries"]}
+    folded = {k.casefold() for k in entries} if repo.ignorecase else set()
     check_ignore_markers(run_dir)  # before anything is changed
 
     # 1. Every entry already recorded must still hold its recorded bytes,
@@ -784,8 +898,8 @@ def cmd_stow(args) -> int:
         for name in sorted(filenames):
             full = Path(dirpath) / name
             rel_run = repo.git_form(full.relative_to(run_dir).as_posix())
-            if rel_run in (MANIFEST_NAME, ".gitignore") or rel_run in entries:
-                continue
+            if rel_run in (MANIFEST_NAME, ".gitignore") or rel_run in entries or rel_run.casefold() in folded:
+                continue  # a recorded file (on a case-insensitive file system, in any letter case)
             st = full.lstat()
             if not stat.S_ISREG(st.st_mode) or st.st_size < threshold:
                 continue
@@ -831,8 +945,6 @@ def cmd_stow(args) -> int:
         sha, obj, method = store_put(full, store)
         if rel_run in entries and entries[rel_run]["sha256"] != sha:
             raise StorageError(f"{full} changed while being stowed")
-        if method == "existing":
-            method = share_store_blocks(full, obj, sha)
         if sha256_file(full) != sha:  # every branch: what is recorded is what is in place
             raise StorageError(f"{full} changed while being stowed; stow it after the run has finished writing")
         size = full.lstat().st_size
@@ -880,7 +992,7 @@ def entry_status(run_dir: Path, store: Path, entry: dict) -> dict:
     ok_in_place_only    in place with the recorded bytes, store copy absent or damaged
     in_store_only       absent in place, valid store copy (`materialize` restores it)
     mismatch            something else occupies the path (other bytes, a symlink, a special file)
-    store_mismatch      absent in place, store object damaged
+    store_mismatch      absent in place, store object damaged or not of the recorded size
     missing             absent in place and in the store
     unsafe_path         the recorded path leads out of the run directory"""
     target = run_dir / entry["path"]
@@ -888,7 +1000,8 @@ def entry_status(run_dir: Path, store: Path, entry: dict) -> dict:
     if not entry_path_is_safe(run_dir, entry["path"]):
         status["status"] = "unsafe_path"
         return status
-    store_ok = verify_store_object(store_path(store, entry["sha256"]), entry["sha256"])
+    obj = store_path(store, entry["sha256"])
+    store_ok = verify_store_object(obj, entry["sha256"], entry["size"])
     try:
         lst = target.lstat()
     except FileNotFoundError:
@@ -906,7 +1019,6 @@ def entry_status(run_dir: Path, store: Path, entry: dict) -> dict:
         else:
             status["status"] = "ok" if store_ok else "ok_in_place_only"
         return status
-    obj = store_path(store, entry["sha256"])
     if store_ok:
         status["status"] = "in_store_only"
     elif obj.exists() or obj.is_symlink():
@@ -973,7 +1085,7 @@ def materialize_entry(run_dir: Path, store: Path, entry: dict, dry_run: bool, do
             problems.append({"path": entry["path"], "status": "occupied_by_different_bytes"})
         return
     dest = store_path(store, entry["sha256"])
-    if not verify_store_object(dest, entry["sha256"]):
+    if not verify_store_object(dest, entry["sha256"], entry["size"]):
         exists = dest.exists() or dest.is_symlink()
         problems.append({"path": entry["path"], "status": "store_mismatch" if exists else "missing"})
         return
@@ -985,6 +1097,9 @@ def materialize_entry(run_dir: Path, store: Path, entry: dict, dry_run: bool, do
 
 
 # ------------------------------------------------------------------- main
+
+STORE_HELP = "content store (default: the policy's store_root, else <git common dir>/nullius/store)"
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="run_storage.py", description=__doc__.split("\n\n")[0])
@@ -1002,28 +1117,32 @@ def build_parser() -> argparse.ArgumentParser:
     common(p)
     p.add_argument("--staged", action="store_true", help="only files staged for the next commit")
     p.add_argument("--threshold", type=int, default=None, help="bytes (default: policy, 5 MiB)")
-    p.add_argument("--strict", action="store_true", help="exit 1 when bulk files would enter history")
+    p.add_argument("--strict", action="store_true",
+                   help="exit 1 when something needs attention: with --staged, bulk files staged for the next "
+                        "commit; otherwise bulk that is damaged, pending, untracked, or ignored but unstowed; "
+                        "in both modes, a run root that passes through a symbolic link")
     p.add_argument("--quiet", action="store_true", help="print nothing when there is nothing to report")
+    p.add_argument("--store", default=None, help=STORE_HELP)
     p.set_defaults(func=cmd_check)
 
     p = sub.add_parser("stow", help="store a finished run's bulk outputs (independent copy; the file stays in place, read-only)")
     common(p)
     p.add_argument("run_dir")
     p.add_argument("--threshold", type=int, default=None)
-    p.add_argument("--store", default=None, help="content store (default: policy or <git common dir>/nullius/store)")
+    p.add_argument("--store", default=None, help=STORE_HELP)
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_stow)
 
     p = sub.add_parser("verify", help="check manifest entries against their sha256")
     common(p, limit=False)
     p.add_argument("run_dir")
-    p.add_argument("--store", default=None)
+    p.add_argument("--store", default=None, help=STORE_HELP)
     p.set_defaults(func=cmd_verify)
 
     p = sub.add_parser("materialize", help="recreate missing manifest entries from the store")
     common(p, limit=False)
     p.add_argument("run_dir")
-    p.add_argument("--store", default=None)
+    p.add_argument("--store", default=None, help=STORE_HELP)
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_materialize)
 
@@ -1045,6 +1164,9 @@ def main(argv: "list[str] | None" = None) -> int:
         return EXIT_ERROR
     except OSError as exc:
         print(f"run-storage: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except (ValueError, RuntimeError, UnicodeError) as exc:  # unusual input: an error, never "findings"
+        print(f"run-storage: cannot process this input ({type(exc).__name__}: {exc})", file=sys.stderr)
         return EXIT_ERROR
 
 

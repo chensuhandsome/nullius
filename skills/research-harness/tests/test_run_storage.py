@@ -291,6 +291,8 @@ def test_check_lists_but_never_classifies_files_of_a_nested_repository(tmp_path,
     nested.mkdir()
     sh("git", "init", "-q", cwd=nested)
     (nested / "big.bin").write_bytes(blob(THRESHOLD, 12))
+    (nested / "run").mkdir()
+    (nested / "run" / rs.MANIFEST_NAME).write_text("{ that repository's own records, not read here")
     capsys.readouterr()
     assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_OK
     doc = json.loads(capsys.readouterr().out)

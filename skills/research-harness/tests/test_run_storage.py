@@ -1273,6 +1273,25 @@ def test_a_stow_that_changes_nothing_rewrites_nothing_and_asks_for_no_commit(tmp
     assert {n: os.stat(run / n, follow_symlinks=False).st_mtime_ns for n in (rs.MANIFEST_NAME, ".gitignore")} == stamps
 
 
+@pytest.mark.parametrize("staged", [True, False])
+def test_a_mode_only_change_to_a_stow_record_is_not_committed(tmp_path, monkeypatch, capsys, staged):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "big.bin").write_bytes(blob(THRESHOLD, 56))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    commit_records(repo)
+    os.chmod(run / rs.MANIFEST_NAME, 0o755)
+    if staged:
+        sh("git", "add", "artifacts/runs/r1/bulk_manifest.json", cwd=repo)
+    capsys.readouterr()
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    out = capsys.readouterr().out
+    assert "  commit " in out and "nothing changed" not in out
+    assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert [r["status"] for r in json.loads(capsys.readouterr().out)["uncommitted_records"]] == ["pending"]
+
+
 # ------------------------------------------------------- verify / materialize
 
 def test_verify_reports_every_state(tmp_path, monkeypatch, capsys):

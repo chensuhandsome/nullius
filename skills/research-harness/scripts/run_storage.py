@@ -696,14 +696,15 @@ def is_storage_record(rel: str) -> bool:
     return posixpath.basename(rel) in (MANIFEST_NAME, ".gitignore")
 
 
-def blob_ids(repo: Repo, args: "list[str]") -> "dict[str, str]":
+def blob_ids(repo: Repo, args: "list[str]") -> "dict[str, tuple[str, str]]":
+    """Map path -> (file mode, object id) from ls-tree or ls-files --stage."""
     out = git(args, repo.toplevel)  # a failure is an error, never "nothing committed"
     found = {}
     for item in out.stdout.decode("utf-8", errors="surrogateescape").split("\0"):
         meta, _, path = item.partition("\t")
         parts = meta.split()
         if path and len(parts) >= 3:
-            found[path] = parts[2] if args[0] == "ls-tree" else parts[1]
+            found[path] = (parts[0], parts[2] if args[0] == "ls-tree" else parts[1])
     return found
 
 
@@ -722,8 +723,9 @@ RECORD_NAMES = (MANIFEST_NAME, ".gitignore")
 
 def committed_and_pending(repo: Repo, pathspecs: "list[str]") -> "tuple[set[str], set[str]]":
     """Split tracked paths into committed ones (HEAD holds exactly the staged
-    and checked-out bytes) and pending ones (the next commit would add bytes:
-    newly staged, staged changes, or changes in the working tree)."""
+    and checked-out file: same bytes and same mode) and pending ones (the next
+    commit would change it: newly staged, staged changes, or changes in the
+    working tree, a mode change included)."""
     tracked = repo.tracked(pathspecs)
     if not tracked:
         return set(), set()

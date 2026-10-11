@@ -9,11 +9,11 @@
  */
 
 import { invalidParams } from '@nullius/shared';
-import type { Paper } from '@nullius/shared';
 import pLimit from 'p-limit';
 
 import * as inspireApi from '../../api/client.js';
 import { cachedExternalApiJsonCall } from '../cache/externalApiCache.js';
+import { paperRecid } from '../inspire/resolveIdentifiers.js';
 import { BudgetTrackerV1, writeOutputDiagnosticsArtifact } from '../diagnostics.js';
 import { resolveOutputDir, writeOutputJson, type OutputArtifactRef } from '../outputDir.js';
 
@@ -138,8 +138,8 @@ export async function hepImportFromZotero(params: {
               request_path: requestRef.path,
               response_path: responseRef.path,
             });
-            const paper = cached.response as unknown as Paper;
-            return { recid: paper.recid, method: 'doi', confidence: 1 };
+            const recid = paperRecid(cached.response, 'getByDoi');
+            return recid === undefined ? null : { recid, method: 'doi', confidence: 1 };
           }
           if (ids.arxiv_id) {
             const arxivId = ids.arxiv_id;
@@ -161,8 +161,8 @@ export async function hepImportFromZotero(params: {
               request_path: requestRef.path,
               response_path: responseRef.path,
             });
-            const paper = cached.response as unknown as Paper;
-            return { recid: paper.recid, method: 'arxiv', confidence: 1 };
+            const recid = paperRecid(cached.response, 'getByArxiv');
+            return recid === undefined ? null : { recid, method: 'arxiv', confidence: 1 };
           }
           return null;
         })();

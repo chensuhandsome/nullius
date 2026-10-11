@@ -118,6 +118,42 @@ describe('vNext: Zotero integration', () => {
     expect(vi.mocked(api.getByArxiv)).toHaveBeenCalledTimes(0);
   });
 
+  function stubZoteroItem(): void {
+    const item = readFixtureJson<any>('zotero_item.min.json');
+    const children = readFixtureJson<any>('zotero_children.min.json');
+    vi.stubGlobal('fetch', vi.fn(async (input: any) => {
+      const u = new URL(typeof input === 'string' ? input : input?.url);
+      if (u.pathname === '/api/users/0/items/ITEM1234') {
+        return new Response(JSON.stringify(item), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (u.pathname === '/api/users/0/items/ITEM1234/children') {
+        return new Response(JSON.stringify(children), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('not found', { status: 404 });
+    }) as any);
+  }
+
+  it('hep_import_from_zotero does not count an INSPIRE record without a recid as resolved', async () => {
+    stubZoteroItem();
+    vi.mocked(api.getByDoi).mockResolvedValueOnce({} as any);
+    const projectRoot = makeProjectRoot(dataDir);
+    const res = await handleToolCall('hep_import_from_zotero', { project_root: projectRoot, output_dir: 'z', item_keys: ['ITEM1234'] });
+    expect(res.isError).not.toBe(true);
+    const payload = JSON.parse(res.content[0].text) as { summary: { resolved_recids: number } };
+    expect(payload.summary.resolved_recids).toBe(0);
+    const map = JSON.parse(readProjectFile(projectRoot, 'z/zotero_map_v1.json')) as any;
+    expect(map.items[0].resolve).toBeNull();
+  });
+
+  it('hep_import_from_zotero fails when INSPIRE returns something that is not a record', async () => {
+    stubZoteroItem();
+    vi.mocked(api.getByDoi).mockResolvedValueOnce(null as any);
+    const projectRoot = makeProjectRoot(dataDir);
+    const res = await handleToolCall('hep_import_from_zotero', { project_root: projectRoot, output_dir: 'z', item_keys: ['ITEM1234'] });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).error.message).toMatch(/non-object response/);
+  });
+
   it('zotero_local(list_collections) is available (aggregated from zotero-mcp)', async () => {
     const fetchStub = vi.fn(async (input: any) => {
       const url = typeof input === 'string' ? input : input?.url;

@@ -129,7 +129,12 @@ function isProviderFailure(err: unknown): boolean {
   return err instanceof McpError && PROVIDER_FAILURE_CODES.has(err.code);
 }
 
-function paperRecid(response: unknown, operation: string): string | undefined {
+/**
+ * The recid of an INSPIRE record from the cache or INSPIRE; a response that
+ * is not a record aborts the call (fail-fast), a record without a recid
+ * resolves to nothing.
+ */
+export function paperRecid(response: unknown, operation: string): string | undefined {
   if (!response || typeof response !== 'object' || Array.isArray(response)) {
     throw invalidParams(`INSPIRE ${operation} returned a non-object response (fail-fast)`, { operation });
   }

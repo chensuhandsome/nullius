@@ -31,13 +31,14 @@ const HepAdminMigratePapersCacheToolSchema = z.object({
     .string()
     .min(1)
     .describe(
-      'Absolute path to the nullius project root whose <project_root>/artifacts/hep-mcp/projects/*/papers/*/sources/latex/extracted/ directories are to be converted from pre-cache real-dirs to Tier 3 cache symlinks.',
+      'Absolute path to the nullius project root whose <project_root>/artifacts/hep-mcp/projects/*/papers/*/sources/latex/extracted/ directories are to be converted from pre-cache real-dirs to Tier 3 cache symlinks. Admitted like every hep-mcp project_root: an initialized nullius project outside any nullius checkout, in canonical (symlink-resolved) form.',
     ),
   hep_data_root: z
     .string()
+    .min(1)
     .optional()
     .describe(
-      'Override the HEP data root resolution; defaults to <project_root>/artifacts/hep-mcp/. Useful when HEP_DATA_DIR was customized for this project.',
+      'Absolute (or ~-prefixed) path overriding the HEP data root resolution; defaults to <project_root>/artifacts/hep-mcp/. Useful when HEP_DATA_DIR was customized for this project. An override inside the project must be reached through real directories; one outside the project is used as an independent data root.',
     ),
   apply: z
     .boolean()
@@ -60,13 +61,14 @@ const HepAdminPrunePaperCacheToolSchema = z.object({
     .array(z.string().min(1))
     .min(1)
     .describe(
-      'One or more absolute paths to nullius project roots. The union of paper.json catalogs under <project_root>/artifacts/hep-mcp/projects/<id>/papers/<paper_id>/ forms the live set; any cache entry not referenced by this set is treated as an orphan. The list must be non-empty: calling with no roots would mark every entry as orphan and is rejected.',
+      'One or more absolute paths to nullius project roots. The union of paper.json catalogs under <project_root>/artifacts/hep-mcp/projects/<id>/papers/<paper_id>/ forms the live set; any cache entry not referenced by this set is treated as an orphan. The list must be non-empty: calling with no roots would mark every entry as orphan and is rejected. Each entry is admitted like project_root: an initialized nullius project outside any nullius checkout, in canonical (symlink-resolved) form.',
     ),
   hep_data_root: z
     .string()
+    .min(1)
     .optional()
     .describe(
-      'Override the HEP data root for ALL supplied project roots (rarely useful; default per-root <project_root>/artifacts/hep-mcp/).',
+      'Absolute (or ~-prefixed) path overriding the HEP data root for ALL supplied project roots (rarely useful; default per-root <project_root>/artifacts/hep-mcp/). An override inside a project must be reached through real directories; one outside it is used as an independent data root.',
     ),
   apply: z
     .boolean()
@@ -84,13 +86,14 @@ const HepAdminLinkKbNotesToolSchema = z.object({
     .string()
     .min(1)
     .describe(
-      'Absolute path to the nullius project root. The tool scans <project_root>/artifacts/hep-mcp/projects/*/papers/*/paper.json for Tier 2 catalog entries and a configurable knowledge_base directory for Tier 1 markdown notes.',
+      'Absolute path to the nullius project root. The tool scans <project_root>/artifacts/hep-mcp/projects/*/papers/*/paper.json for Tier 2 catalog entries and a configurable knowledge_base directory for Tier 1 markdown notes. Admitted like every hep-mcp project_root: an initialized nullius project outside any nullius checkout, in canonical (symlink-resolved) form.',
     ),
   hep_data_root: z
     .string()
+    .min(1)
     .optional()
     .describe(
-      'Override the HEP data root resolution; defaults to <project_root>/artifacts/hep-mcp/.',
+      'Absolute (or ~-prefixed) path overriding the HEP data root resolution; defaults to <project_root>/artifacts/hep-mcp/. An override inside the project must be reached through real directories; one outside the project is used as an independent data root.',
     ),
   kb_dir: z
     .string()
@@ -133,15 +136,14 @@ const RAW_ADMIN_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
     name: HEP_ADMIN_MIGRATE_PAPERS_CACHE,
     tier: 'core',
     exposure: 'standard',
+    resolvesOwnDataRoot: true,
     description:
       'Convert pre-Step-2 per-project sources/latex/extracted/ real directories into the user-global Tier 3 cache + project-local symlinks. Dry-run by default; pass apply=true to commit. Only affects hep-mcp\'s own state (paper.json, evidence/catalog.jsonl, knowledge_base/ are untouched).',
     zodSchema: HepAdminMigratePapersCacheToolSchema,
     handler: async params => {
-      // withProjectRootContract overrides our required project_root with
-      // optional() at the shared registry layer (shared.ts:48-56), so we must
-      // validate it ourselves at the handler. An MCP call with no project_root
-      // would otherwise reach migratePapersCache() and crash on
-      // path.resolve(undefined).
+      // The schema requires project_root, but the handler is also reachable
+      // directly (tests, other callers), so it validates the value itself
+      // rather than letting migratePapersCache() see undefined.
       if (!params.project_root || !params.project_root.trim()) {
         throw invalidParams(
           'hep_admin_migrate_papers_cache requires project_root (absolute path to the nullius project root).',
@@ -171,6 +173,7 @@ const RAW_ADMIN_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
     name: HEP_ADMIN_PRUNE_PAPER_CACHE,
     tier: 'core',
     exposure: 'standard',
+    resolvesOwnDataRoot: true,
     description:
       'Delete cache entries under ~/.nullius/hep-mcp/papers_cache/ that no supplied project_root references (orphans + leftover tmp staging dirs). Dry-run by default; apply=true requires _confirm=true. Unrecognized / corrupted-meta entries are preserved for manual inspection.',
     zodSchema: HepAdminPrunePaperCacheToolSchema,
@@ -258,13 +261,14 @@ const RAW_ADMIN_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = [
     name: HEP_ADMIN_LINK_KB_NOTES,
     tier: 'core',
     exposure: 'standard',
+    resolvesOwnDataRoot: true,
     description:
       "Read-only reconciliation report between hep-mcp's Tier 2 paper.json catalog and the project's Tier 1 knowledge_base markdown notes. Matches by canonical_id, surfaces papers without notes (curator gap), notes without papers (orphan), and notes with no parseable identifier. Performs NO mutations.",
     zodSchema: HepAdminLinkKbNotesToolSchema,
     handler: async params => {
-      // Same defensive validation pattern as the rest of the admin family —
-      // withProjectRootContract may relax project_root to optional() at the
-      // shared layer, so the handler enforces it explicitly.
+      // Same defensive validation pattern as the rest of the admin family:
+      // the handler is reachable without schema parsing, so it enforces
+      // project_root explicitly.
       if (!params.project_root || !params.project_root.trim()) {
         throw invalidParams(
           'hep_admin_link_kb_notes requires project_root (absolute path to the nullius project root).',

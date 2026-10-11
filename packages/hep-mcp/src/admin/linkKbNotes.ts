@@ -43,6 +43,8 @@ import * as path from 'node:path';
 
 import { ARXIV_ID_REGEX } from '@nullius/arxiv-mcp/tooling';
 
+import { admitProjectRoot, resolveAdminHepDataRoot } from '../data/dataDir.js';
+
 export const KB_LINK_REPORT_SCHEMA_VERSION = 1 as const;
 
 export interface KbLinkMatched {
@@ -363,13 +365,8 @@ function resolveKbDir(
 }
 
 export async function linkKbNotes(opts: KbLinkOptions): Promise<KbLinkReport> {
-  if (!opts.project_root || !path.isAbsolute(opts.project_root)) {
-    throw new Error(`linkKbNotes: project_root must be an absolute path, got ${JSON.stringify(opts.project_root)}`);
-  }
-  const projectRoot = path.resolve(opts.project_root);
-  const hepDataRoot = opts.hep_data_root
-    ? path.resolve(opts.hep_data_root)
-    : path.join(projectRoot, 'artifacts', 'hep-mcp');
+  const projectRoot = admitProjectRoot(opts.project_root);
+  const hepDataRoot = resolveAdminHepDataRoot(projectRoot, opts.hep_data_root);
 
   const { kbDir, source: kbDirSource } = resolveKbDir(projectRoot, opts.kb_dir);
 

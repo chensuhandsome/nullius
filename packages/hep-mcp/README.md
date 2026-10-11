@@ -40,6 +40,22 @@ Resolved per tool call, in this order:
 
 `PDG_DATA_DIR` follows the resolved root by default at `<resolved root>/pdg`.
 
+A `project_root` is admitted as at the other nullius front doors: in canonical
+(symlink-resolved) form, outside any nullius checkout, and initialized. The
+admin tools (`hep_admin_migrate_papers_cache`, `hep_admin_prune_paper_cache`,
+`hep_admin_link_kb_notes`) admit their project roots the same way. The
+project-local directories a call actually uses must be reached through real
+directories: for ordinary tool calls these are `artifacts/`,
+`artifacts/hep-mcp/` and `artifacts/hep-mcp/pdg/`, and a symlink there
+(dangling or not) is refused rather than followed out of the project. An admin
+tool uses `artifacts/hep-mcp/` unless its `hep_data_root` override selects
+another directory; an override inside the project is held to the same rule,
+and an override outside the project is an independent data root chosen by the
+caller, as `HEP_DATA_DIR` is. Absolute
+paths compared with the data root, such as `output_dir`, may name the project
+through any alias of its root, while a path that really lands outside it,
+including through a dangling symlink, is refused.
+
 ## Build & run
 
 ```bash

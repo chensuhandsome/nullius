@@ -11,6 +11,8 @@ import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { makeInitializedProjectRoot } from './adminTestSupport.js';
+
 import { getToolSpec } from '../../src/tools/registry/shared.js';
 import { HEP_ADMIN_LINK_KB_NOTES } from '../../src/tool-names.js';
 
@@ -18,7 +20,7 @@ describe('hep_admin_link_kb_notes MCP tool', () => {
   let tmpProject: string;
 
   beforeEach(() => {
-    tmpProject = fs.mkdtempSync(path.join(os.tmpdir(), 'kblink-tool-'));
+    tmpProject = makeInitializedProjectRoot('kblink-tool-');
   });
 
   afterEach(() => {
@@ -37,7 +39,7 @@ describe('hep_admin_link_kb_notes MCP tool', () => {
     expect(spec!.riskLevel).toBe('read');
   });
 
-  it('rejects calls with no project_root (regression for withProjectRootContract optional override)', async () => {
+  it('rejects calls with no project_root at the handler', async () => {
     const handler = getHandler();
     await expect(handler({}, {})).rejects.toThrow(/project_root/);
   });

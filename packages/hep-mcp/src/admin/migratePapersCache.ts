@@ -33,6 +33,8 @@ import * as path from 'node:path';
 
 import { ARXIV_ID_REGEX } from '@nullius/arxiv-mcp/tooling';
 
+import { admitProjectRoot, resolveAdminHepDataRoot } from '../data/dataDir.js';
+
 import {
   type Fetcher,
   cacheEntryPaths,
@@ -396,10 +398,8 @@ function computeSummary(plans: MigrationPlan[]): MigrationSummary {
 }
 
 export async function migratePapersCache(opts: MigrationOptions): Promise<MigrationReport> {
-  const projectRoot = path.resolve(opts.project_root);
-  const hepDataRoot = opts.hep_data_root
-    ? path.resolve(opts.hep_data_root)
-    : path.join(projectRoot, 'artifacts', 'hep-mcp');
+  const projectRoot = admitProjectRoot(opts.project_root);
+  const hepDataRoot = resolveAdminHepDataRoot(projectRoot, opts.hep_data_root);
   const projectsDir = path.join(hepDataRoot, 'projects');
 
   const plans: MigrationPlan[] = [];

@@ -4,6 +4,8 @@ import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { makeInitializedProjectRoot } from './adminTestSupport.js';
+
 import { migratePapersCache } from '../../src/admin/migratePapersCache.js';
 import {
   HEP_PAPERS_CACHE_DIR_ENV,
@@ -43,7 +45,7 @@ describe('migratePapersCache', () => {
 
   beforeEach(() => {
     originalCacheDir = process.env[HEP_PAPERS_CACHE_DIR_ENV];
-    tmpProjectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-project-'));
+    tmpProjectRoot = makeInitializedProjectRoot('mig-project-');
     tmpCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-cache-'));
     process.env[HEP_PAPERS_CACHE_DIR_ENV] = tmpCacheDir;
   });

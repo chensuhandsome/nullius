@@ -116,8 +116,8 @@ export const InspireLiteratureToolSchema = z
     })();
 
     const extraKeys = Object.keys(v)
-      // The registry adds project_root to every tool as a common routing field.
-      // It is independent of this tool's mode-specific provider arguments.
+      // The registry adds project_root to this tool as the common routing
+      // field; it is independent of the mode-specific provider arguments.
       .filter(k => k !== 'mode' && k !== 'project_root')
       .filter(k => !allowed.has(k))
       .sort((a, b) => a.localeCompare(b));

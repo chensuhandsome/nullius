@@ -115,6 +115,7 @@ HEP_LIVE_SMOKE=1 pnpm -r test
 
 - `/Users/<you>/tmp/hep_data_test_001`
 - `project_root=/absolute/path/to/external-project` -> `/absolute/path/to/external-project/artifacts/hep-mcp`
+- `project_root` 按规范（解析掉符号链接后的）形式接纳，必须位于 nullius 开发仓之外；工具结果与报告里显示的是规范路径。本次调用实际使用的项目内目录必须经真实目录到达：普通工具调用使用 `artifacts/`、`artifacts/hep-mcp/` 与 `artifacts/hep-mcp/pdg/`，其中任何一级是符号链接（含悬空链接）时调用以 `UNSAFE_FS` 拒绝；`hep_admin_*` 管理工具若用 `hep_data_root` 指定了别的数据根，则检查的是该数据根（项目内的按同一规则检查，项目外的视为调用方指定的独立数据根）。
 
 ### 0.3 在 MCP 客户端里接入当前 domain MCP front door
 

@@ -43,10 +43,14 @@ const PROJECT_CORE_PREFIX_TOOL_SPECS = PROJECT_CORE_TOOL_SPECS.slice(0, projectC
 const PROJECT_CORE_RENDER_EXPORT_TOOL_SPECS = PROJECT_CORE_TOOL_SPECS.slice(projectCoreRenderLatexIndex);
 
 const PROJECT_ROOT_DESCRIPTION =
-  'Optional absolute path to an initialized nullius project root. When set, HEP/PDG artifacts for this call are stored under <project_root>/artifacts/hep-mcp; otherwise HEP_DATA_DIR or the scratch default is used.';
+  'Optional absolute path to an initialized nullius project root outside any nullius checkout; it is admitted in canonical (symlink-resolved) form. When set, HEP/PDG artifacts for this call are stored under <project_root>/artifacts/hep-mcp, which must be reached through real directories (a symlinked artifacts/, artifacts/hep-mcp/ or pdg/ is refused); otherwise HEP_DATA_DIR or the scratch default is used.';
 
 function withProjectRootContract(spec: ToolSpec): ToolSpec {
   if (!(spec.zodSchema instanceof z.ZodObject)) return spec;
+  // A tool that resolves its own data root does not take the per-call
+  // routing field, and one that declares its own project_root (the admin
+  // tools, where it is required) keeps that contract and description.
+  if (spec.resolvesOwnDataRoot || 'project_root' in spec.zodSchema.shape) return spec;
   return {
     ...spec,
     zodSchema: spec.zodSchema.extend({

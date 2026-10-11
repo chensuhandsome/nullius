@@ -32,6 +32,35 @@ function inside(base: string, candidate: string): boolean {
   }
 }
 
+/** Highest existing ancestor of `target` that is the same directory as `dir`, or null. */
+function sameDirectoryAncestor(dir: string, target: string): string | null {
+  const identity = fs.statSync(dir);
+  let boundary: string | null = null;
+  for (let current = target; ; current = path.dirname(current)) {
+    if (fs.existsSync(current)) {
+      const actual = fs.statSync(current);
+      if (actual.dev === identity.dev && actual.ino === identity.ino) boundary = current;
+    }
+    if (path.dirname(current) === current) return boundary;
+  }
+}
+
+/**
+ * Re-spell an absolute path that reaches `dirPath` through an alias above it
+ * (a symlinked ancestor, or another spelling of the same directory, letter
+ * case included) under `dirPath` itself; null when no ancestor of the path is
+ * that directory, or when the directory does not exist and so has no identity
+ * to recognize. Components below the directory are kept verbatim, so a
+ * caller's own symlink check still sees every one of them.
+ */
+export function respellUnderDirectory(dirPath: string, targetPath: string): string | null {
+  const dir = path.resolve(dirPath);
+  if (!fs.existsSync(dir)) return null;
+  const target = path.resolve(targetPath);
+  const boundary = sameDirectoryAncestor(dir, target);
+  return boundary === null ? null : path.join(dir, path.relative(boundary, target));
+}
+
 function packageName(directory: string): string | null {
   try {
     const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(fs.readFileSync(path.join(directory, 'package.json'))));

@@ -685,10 +685,8 @@ def is_storage_record(rel: str) -> bool:
 
 
 def blob_ids(repo: Repo, args: "list[str]") -> "dict[str, str]":
-    out = git(args, repo.toplevel, check=False)
+    out = git(args, repo.toplevel)  # a failure is an error, never "nothing committed"
     found = {}
-    if out.returncode != 0:
-        return found
     for item in out.stdout.decode("utf-8", errors="surrogateescape").split("\0"):
         meta, _, path = item.partition("\t")
         parts = meta.split()
@@ -717,7 +715,9 @@ def committed_and_pending(repo: Repo, pathspecs: "list[str]") -> "tuple[set[str]
     tracked = repo.tracked(pathspecs)
     if not tracked:
         return set(), set()
-    head = blob_ids(repo, ["ls-tree", "-r", "-z", "HEAD", "--", *pathspecs])
+    # Before the first commit HEAD names no commit and nothing is committed.
+    born = git(["rev-parse", "--verify", "-q", "HEAD^{commit}"], repo.toplevel, check=False).returncode == 0
+    head = blob_ids(repo, ["ls-tree", "-r", "-z", "HEAD", "--", *pathspecs]) if born else {}
     index = blob_ids(repo, ["ls-files", "--stage", "-z", "--", *pathspecs])
     modified = set(git_z(["diff", "--name-only", "-z", "--", *pathspecs], repo.toplevel))
     committed = {p for p in tracked if p in head and head[p] == index.get(p) and p not in modified}
@@ -762,7 +762,8 @@ def working_tree_bulk(repo: Repo, threshold: int, store: Path) -> "dict[str, lis
     classes: "dict[str, list[dict]]" = {"tracked": [], "pending": [], "untracked": [], "ignored_unstowed": [],
                                         "stowed": [], "stowed_damaged": [],
                                         "symlinked_run_roots": [{"path": r, "size": 0} for r in symlinked],
-                                        "nested_repositories": [], "uncommitted_records": []}
+                                        "nested_repositories": [], "uncommitted_records": [],
+                                        "symlinks_not_followed": []}
     if not roots:
         return classes
     committed, pending = committed_and_pending(repo, roots)
@@ -802,6 +803,9 @@ def working_tree_bulk(repo: Repo, threshold: int, store: Path) -> "dict[str, lis
                 classes["nested_repositories"].append({"path": repo.rel(here), "size": 0})
                 dirnames[:] = []
                 continue
+            for name in dirnames + filenames:  # git records a link, never its target's content
+                if (here / name).is_symlink():
+                    classes["symlinks_not_followed"].append({"path": repo.rel(here / name), "size": 0})
             for name in filenames:
                 full = here / name
                 st = full.lstat()
@@ -868,6 +872,11 @@ def cmd_check(args) -> int:
                      "(configure the real path in run_roots)")
     for r in classes["nested_repositories"]:
         lines.append(f"  {r['path']} is a nested repository; its files follow that repository's rules (not classified)")
+    links = classes["symlinks_not_followed"]
+    for r in links[: args.limit]:
+        lines.append(f"  {r['path']} is a symbolic link, not followed: its target's content is neither checked nor stowed")
+    if len(links) > args.limit:
+        lines.append(f"  ... {len(links) - args.limit} more symbolic links")
     for key in ("stowed_damaged", "uncommitted_records", "pending", "untracked", "ignored_unstowed", "tracked",
                 "stowed"):
         records = classes[key]
@@ -956,7 +965,8 @@ def cmd_stow(args) -> int:
     threshold = resolve_threshold(repo, args.threshold)
     store = repo.store(args.store)
     committed, pending = committed_and_pending(repo, [repo.rel(run_dir)])
-    manifest = load_manifest(run_dir) or {"schema": MANIFEST_SCHEMA, "entries": []}
+    existing = load_manifest(run_dir)
+    manifest = existing or {"schema": MANIFEST_SCHEMA, "entries": []}
     entries = {e["path"]: e for e in manifest["entries"]}
     folded = {k.casefold() for k in entries} if repo.ignorecase else set()
     check_ignore_markers(run_dir)  # before anything is changed
@@ -981,8 +991,10 @@ def cmd_stow(args) -> int:
             restore.append(rel_run)  # good bytes in place, store copy lost: store again
 
     # 2. New bulk candidates.
-    candidates, legacy, uncommitted, unexpressible = [], [], [], []
+    candidates, legacy, uncommitted, unexpressible, links = [], [], [], [], []
     for dirpath, dirnames, filenames in os.walk(run_dir, followlinks=False, onerror=walk_error):
+        links += [repo.git_form((Path(dirpath) / n).relative_to(run_dir).as_posix())
+                  for n in dirnames + filenames if (Path(dirpath) / n).is_symlink()]
         for name in sorted(filenames):
             full = Path(dirpath) / name
             rel_run = repo.git_form(full.relative_to(run_dir).as_posix())
@@ -1030,10 +1042,18 @@ def cmd_stow(args) -> int:
     if legacy:
         lines.append(f"  {len(legacy)} bulk file(s) are already committed and stay as they are "
                      "(history is never rewritten here)")
+    if links:
+        lines.append(f"  {len(links)} symbolic link(s) are not followed; their targets' content is not stowed: "
+                     + ", ".join(sorted(links)[:5]) + (" ..." if len(links) > 5 else ""))
+    if not plan and existing is None:  # nothing to record: no manifest or ignore block is written
+        lines.append("  nothing to stow; no manifest written")
+        emit({"stowed": [], "already_tracked": legacy, "symlinks_not_followed": sorted(links), "store": str(store),
+              "manifest": None}, args.json, lines)
+        return EXIT_OK
     if args.dry_run:
         lines += [f"  would stow {human(sizes[r]):>12}  {r}" for r, _ in plan]
         emit({"dry_run": True, "planned": [{"path": r, "size": sizes[r]} for r, _ in plan],
-              "already_tracked": legacy, "store": str(store)}, args.json, lines)
+              "already_tracked": legacy, "symlinks_not_followed": sorted(links), "store": str(store)}, args.json, lines)
         return EXIT_OK
 
     # 3. Store, then record. The manifest is written after every store step
@@ -1067,7 +1087,7 @@ def cmd_stow(args) -> int:
         return EXIT_FINDINGS
     lines.append(f"  commit {repo.rel(run_dir / MANIFEST_NAME)} and {repo.rel(run_dir / '.gitignore')}; "
                  "stowed files are read-only (a corrected result goes to a new run)")
-    emit({"stowed": stowed, "already_tracked": legacy, "store": str(store),
+    emit({"stowed": stowed, "already_tracked": legacy, "symlinks_not_followed": sorted(links), "store": str(store),
           "manifest": str(run_dir / MANIFEST_NAME)}, args.json, lines)
     return EXIT_OK
 
@@ -1160,7 +1180,8 @@ def cmd_materialize(args) -> int:
             materialize_entry(run_dir, store, entry, args.dry_run, done, problems)
         except OSError as exc:  # e.g. an unreadable file or an ancestor that became a file
             problems.append({"path": entry["path"], "status": f"not_placed ({exc.strerror or exc})"})
-    lines = [f"run-storage materialize {repo.rel(run_dir)}: {len(done)} restored, {len(problems)} unavailable"]
+    verb = "would be restored (dry run)" if args.dry_run else "restored"
+    lines = [f"run-storage materialize {repo.rel(run_dir)}: {len(done)} {verb}, {len(problems)} unavailable"]
     lines += [f"  {d['method']:>8}  {d['path']}" for d in done]
     lines += [f"  {p['status']}  {p['path']} (left untouched)" for p in problems]
     emit({"restored": done, "unavailable": problems, "store": str(store)}, args.json, lines)
@@ -1197,6 +1218,13 @@ def materialize_entry(run_dir: Path, store: Path, entry: dict, dry_run: bool, do
 
 # ------------------------------------------------------------------- main
 
+def non_negative_int(text: str) -> int:
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError("must be 0 or more")
+    return value
+
+
 STORE_HELP = "content store (default: the policy's store_root, else <git common dir>/nullius/store)"
 
 
@@ -1210,7 +1238,7 @@ def build_parser() -> argparse.ArgumentParser:
         if json_flag:
             p.add_argument("--json", action="store_true", help="machine-readable output")
         if limit:
-            p.add_argument("--limit", type=int, default=20, help="rows listed per category")
+            p.add_argument("--limit", type=non_negative_int, default=20, help="rows listed per category")
 
     p = sub.add_parser("check", help="report bulk files under the run roots")
     common(p)

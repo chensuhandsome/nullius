@@ -11,8 +11,9 @@
 // finished (passed, skipped, or todo), nothing failed, the run was not being
 // cancelled (Ctrl-C in watch mode), the command's exit status is still clean
 // (vitest sets it before teardown, e.g. for a coverage threshold, and never
-// resets it), and no earlier rerun of a watch session ended unclean. A failing, interrupted, or unreadable
-// run keeps it for inspection, even when empty; the one exception is a
+// resets it), and no earlier rerun of a watch session ended unclean. A
+// failing, interrupted, or unreadable run keeps it for inspection, even when
+// empty; the one exception is a
 // command in which no test ran at all (e.g. `vitest list`) and which left the
 // root empty: it is removed silently, since there is nothing to inspect.
 // Kept roots whose newest entry is older than the retention window, and whose
@@ -182,14 +183,14 @@ function taskStarted(task) {
   return task?.result?.state !== undefined || (Array.isArray(task?.tasks) && task.tasks.some(taskStarted));
 }
 
-/** True only when the vitest state positively reports a clean run. Any
- *  missing accessor (an API change) counts as "not known to have passed",
- *  so the root is kept rather than deleted. */
 function exitStatusClean() {
   const code = process.exitCode;
   return code === undefined || code === null || Number(code) === 0;
 }
 
+/** True only when the vitest state positively reports a clean run. Any
+ *  missing accessor (an API change) counts as "not known to have passed",
+ *  so the root is kept rather than deleted. */
 export function runPassed(project) {
   try {
     if (project?.vitest?.isCancelling === true || !exitStatusClean()) return false;

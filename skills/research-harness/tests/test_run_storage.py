@@ -407,7 +407,7 @@ def test_stow_stores_once_and_keeps_the_file_readable_in_place(tmp_path, monkeyp
     [stowed] = stow_json(run, repo, monkeypatch, capsys)["stowed"]
     target = run / "sub" / "field.bin"
     obj = rs.store_path(store_of(repo), stowed["sha256"])
-    assert stowed["method"] in ("clone", "link", "copy")
+    assert stowed["method"] in ("clone", "copy")
     assert rs.verify_store_object(obj, stowed["sha256"]) and target.read_bytes() == data
     assert stat.S_IMODE(target.stat().st_mode) & 0o222 == 0, "stowed output is read-only"
     if stowed["method"] == "clone":
@@ -1169,6 +1169,72 @@ def test_check_strict_flags_stow_records_not_committed_as_they_are(tmp_path, mon
     (run / ".gitignore").unlink()
     code, found = records()
     assert code == rs.EXIT_FINDINGS and found == {ignore: "missing"}
+
+
+def test_symbolic_links_under_run_roots_are_listed_not_followed(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "big.bin").write_bytes(blob(THRESHOLD, 50))
+    os.symlink(elsewhere, run / "data")
+    commit_records(repo)  # the link itself is committed
+    capsys.readouterr()
+    assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_OK
+    assert [r["path"] for r in json.loads(capsys.readouterr().out)["symlinks_not_followed"]] == ["artifacts/runs/r1/data"]
+    assert run_main(["check"], repo, monkeypatch) == rs.EXIT_OK
+    assert "artifacts/runs/r1/data is a symbolic link, not followed" in capsys.readouterr().out
+    doc = stow_json(run, repo, monkeypatch, capsys)
+    assert doc["symlinks_not_followed"] == ["data"] and doc["stowed"] == []
+    assert not (run / rs.MANIFEST_NAME).exists() and not (run / ".gitignore").exists(), "nothing to record"
+
+
+def test_an_unreadable_head_tree_is_an_error_but_no_commit_yet_is_not(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 51))
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "bulk", cwd=repo)
+    real_git = rs.git
+
+    def tree_missing(args, cwd, **kw):  # e.g. a partial clone without trees, with fetching disabled
+        if args[0] == "ls-tree":  # the real call, made to fail as a missing tree object would
+            args = [a if a != "HEAD" else "0" * 40 for a in args]
+        return real_git(args, cwd, **kw)
+
+    monkeypatch.setattr(rs, "git", tree_missing)
+    assert run_main(["check", "--strict"], repo, monkeypatch) == rs.EXIT_ERROR
+    monkeypatch.setattr(rs, "git", real_git)
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    sh("git", "init", "-q", "-b", "main", cwd=fresh)
+    (fresh / "artifacts" / "runs" / "r1").mkdir(parents=True)
+    (fresh / "artifacts" / "runs" / "r1" / "a.bin").write_bytes(blob(rs.DEFAULT_THRESHOLD, 52))
+    sh("git", "add", "-A", cwd=fresh)
+    capsys.readouterr()
+    assert run_main(["check", "--json"], fresh, monkeypatch) == rs.EXIT_OK
+    assert [r["path"] for r in json.loads(capsys.readouterr().out)["pending"]] == ["artifacts/runs/r1/a.bin"]
+
+
+def test_limit_must_not_be_negative(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        run_main(["check", "--limit", "-1"], repo, monkeypatch)
+    assert exc.value.code == 2
+
+
+def test_materialize_dry_run_says_what_it_would_restore(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 53))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    (run / "a.bin").unlink()
+    capsys.readouterr()
+    assert run_main(["materialize", str(run), "--dry-run"], repo, monkeypatch) == rs.EXIT_OK
+    assert "1 would be restored (dry run)" in capsys.readouterr().out and not (run / "a.bin").exists()
 
 
 # ------------------------------------------------------- verify / materialize

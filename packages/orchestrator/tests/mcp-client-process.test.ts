@@ -75,7 +75,7 @@ function killError(code: 'EPERM'): NodeJS.ErrnoException {
   return Object.assign(new Error(`kill ${code}`), { code, errno: -1, syscall: 'kill' });
 }
 
-function isRunning(proc: ChildProcess): boolean {
+function isUnreaped(proc: ChildProcess): boolean {
   return proc.exitCode === null && proc.signalCode === null;
 }
 
@@ -410,7 +410,7 @@ describe('McpClient subprocess containment', () => {
     const realKill = process.kill.bind(process);
     let signalsToExitedUnreapedGroup = 0;
     vi.spyOn(process, 'kill').mockImplementation((target, signal) => {
-      if (target === -pid && isRunning(server) && isZombie(pid)) {
+      if (target === -pid && isUnreaped(server) && isZombie(pid)) {
         signalsToExitedUnreapedGroup += 1;
         // macOS refuses a signal to a group whose members have all exited
         // (EPERM); Linux accepts it. Give other kernels the macOS answer.
@@ -438,7 +438,7 @@ describe('McpClient subprocess containment', () => {
     }));
     await expect(closing).resolves.toBeUndefined();
     expect(signalsToExitedUnreapedGroup).toBeGreaterThan(0);
-    expect(isRunning(server)).toBe(false);
+    expect(isUnreaped(server)).toBe(false);
   });
 
   it('does not signal a reaped server group number while draining before a reconnect', async () => {
@@ -474,7 +474,7 @@ describe('McpClient subprocess containment', () => {
       expect(client.isConnected).toBe(true);
       await client.close();
       expect(lateSignals).toEqual([]);
-      expect(isRunning(unrelated)).toBe(true);
+      expect(isUnreaped(unrelated)).toBe(true);
     } finally {
       unrelated.kill('SIGKILL');
     }
@@ -500,13 +500,13 @@ describe('McpClient subprocess containment', () => {
       const first = serverProcess(client);
       const lateSignals = redirectSignalsAfterReap(first, unrelated);
       const deadline = Date.now() + 5_000;
-      while (isRunning(first) && Date.now() < deadline) {
+      while (isUnreaped(first) && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 10));
       }
-      expect(isRunning(first)).toBe(false);
+      expect(isUnreaped(first)).toBe(false);
       await client.close();
       expect(lateSignals).toEqual([]);
-      expect(isRunning(unrelated)).toBe(true);
+      expect(isUnreaped(unrelated)).toBe(true);
     } finally {
       unrelated.kill('SIGKILL');
     }
@@ -562,10 +562,10 @@ describe('McpClient subprocess containment', () => {
     });
     try {
       await expect(client.close()).rejects.toMatchObject({ code: 'EPERM' });
-      expect(isRunning(server)).toBe(true);
+      expect(isUnreaped(server)).toBe(true);
     } finally {
       vi.restoreAllMocks();
-      if (isRunning(server)) {
+      if (isUnreaped(server)) {
         const exited = new Promise(resolve => server.once('exit', resolve));
         // Still unreaped, so the number is this server's group.
         process.kill(-pid, 'SIGKILL');

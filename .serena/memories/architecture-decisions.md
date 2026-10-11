@@ -403,6 +403,8 @@
 
 ### [2026-03-26] Verification kernel Batch 2 invariant: computation-result producer, bridge pass-through, writing-metadata consumer
 
+> **Superseded 2026-10-11**: the consumer named here, `buildRunWritingEvidence()` (and `hep_run_build_writing_evidence`), was removed together with hep-mcp's own run substrate. The computation-result producer and the bridge `verification_refs` pass-through remain; there is no hep-mcp consumer of them now.
+
 **Decision**:
 - Batch 2's sole first live producer is `writeComputationResultArtifact()` on the computation-result path; it is not a multi-provider rollout and does not reopen generic runtime authority.
 - Batch 2's first and only consumer is the `buildRunWritingEvidence()` metadata path in `packages/hep-mcp/src/core/writing/evidence.ts`.
@@ -415,6 +417,8 @@
 **Why**: The current repo already exposes one canonical upstream seam and one bounded downstream consumer. Locking that narrow path gives a credible first proof of typed verification flow without inventing fake check-run authority or widening into broader evidence/runtime redesign.
 
 ### [2026-03-26] Verification kernel Batch 3 invariant: delete heuristic residue once typed metadata authority is live
+
+> **Superseded in part 2026-10-11**: the `buildRunWritingEvidence()` end of the "surviving first live verification authority" chain below no longer exists (removed with hep-mcp's run substrate). The deletion of `physicsValidator` stands.
 
 **Decision**:
 - Once the typed verification path is live, `physicsValidator` must be fully deleted rather than retained as fallback, diagnostic residue, wrapper, or renamed helper.

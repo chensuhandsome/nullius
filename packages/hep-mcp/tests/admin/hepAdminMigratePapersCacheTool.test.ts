@@ -1,7 +1,8 @@
 /**
- * MCP-tool-level tests for hep_admin_migrate_papers_cache. Exercises the
- * dispatched path that goes through withProjectRootContract + the H-11a
- * destructive-tool gate, NOT just the pure migratePapersCache() function.
+ * Tool-level tests for hep_admin_migrate_papers_cache: the registered handler
+ * with its H-11a apply/_confirm gate, NOT just the pure migratePapersCache()
+ * function. The handler is called directly; the full dispatched path
+ * (handleToolCall) is covered in tests/contracts/projectRootAdmission.test.ts.
  */
 
 import * as fs from 'node:fs';
@@ -9,6 +10,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { makeInitializedProjectRoot } from './adminTestSupport.js';
 
 import { getToolSpec } from '../../src/tools/registry/shared.js';
 import { HEP_ADMIN_MIGRATE_PAPERS_CACHE } from '../../src/tool-names.js';
@@ -21,7 +24,7 @@ describe('hep_admin_migrate_papers_cache MCP tool', () => {
 
   beforeEach(() => {
     originalCacheDir = process.env[HEP_PAPERS_CACHE_DIR_ENV];
-    tmpProjectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-tool-project-'));
+    tmpProjectRoot = makeInitializedProjectRoot('mig-tool-project-');
     tmpCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-tool-cache-'));
     process.env[HEP_PAPERS_CACHE_DIR_ENV] = tmpCacheDir;
   });
@@ -45,11 +48,11 @@ describe('hep_admin_migrate_papers_cache MCP tool', () => {
     expect(spec!.riskLevel).toBe('write');
   });
 
-  it('rejects calls with no project_root (regression for withProjectRootContract optional override)', async () => {
-    // withProjectRootContract.extend() makes project_root optional at the
-    // schema layer. Without a handler-level guard, the call would reach
-    // migratePapersCache(undefined) and crash with TypeError. We assert the
-    // handler returns a friendly invalidParams instead.
+  it('rejects calls with no project_root at the handler', async () => {
+    // The schema requires project_root, but the handler is reachable without
+    // schema parsing. Without a handler-level guard, the call would reach
+    // migratePapersCache(undefined). We assert the handler returns a friendly
+    // invalidParams instead.
     const handler = getHandler();
     await expect(handler({}, {})).rejects.toThrow(/project_root/);
   });

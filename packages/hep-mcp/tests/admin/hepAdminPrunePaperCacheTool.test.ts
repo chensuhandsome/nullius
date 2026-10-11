@@ -9,6 +9,8 @@ import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { makeInitializedProjectRoot } from './adminTestSupport.js';
+
 import { getToolSpec } from '../../src/tools/registry/shared.js';
 import { HEP_ADMIN_PRUNE_PAPER_CACHE } from '../../src/tool-names.js';
 import { HEP_PAPERS_CACHE_DIR_ENV } from '../../src/data/papersCache.js';
@@ -20,7 +22,7 @@ describe('hep_admin_prune_paper_cache MCP tool', () => {
 
   beforeEach(() => {
     originalCacheDir = process.env[HEP_PAPERS_CACHE_DIR_ENV];
-    tmpProject = fs.mkdtempSync(path.join(os.tmpdir(), 'prune-tool-project-'));
+    tmpProject = makeInitializedProjectRoot('prune-tool-project-');
     tmpCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'prune-tool-cache-'));
     process.env[HEP_PAPERS_CACHE_DIR_ENV] = tmpCacheDir;
   });

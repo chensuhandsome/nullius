@@ -69,4 +69,4 @@ This writes:
 The packet is a Markdown file. Recommended sections:
 - `## Paper diff`
 - `## References` (short bibliography or notes)
-- `## Artifact pointers` (one per line, e.g. `- hep://...`)
+- `## Artifact pointers` (one per line, e.g. `- /absolute/path/to/artifact` or `- file:///absolute/path/to/artifact`)

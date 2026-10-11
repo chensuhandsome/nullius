@@ -48,7 +48,7 @@ describe('emitJsonlLog', () => {
   it('emits ERROR level on failure', () => {
     emitJsonlLog({
       traceId: 'test-trace-002',
-      toolName: 'hep_run_create',
+      toolName: 'hep_project_create',
       toolArgs: { project_id: 'P1' },
       durationMs: 100,
       resultStatus: 'error',
@@ -63,7 +63,7 @@ describe('emitJsonlLog', () => {
   it('redacts sensitive params before writing JSONL', () => {
     emitJsonlLog({
       traceId: 'test-trace-003',
-      toolName: 'hep_run_stage_content',
+      toolName: 'inspire_parse_latex',
       toolArgs: {
         api_key: 'sk-abcdefghijklmnopqrstuvwxyz123456',
         path: '/Users/example/private/project.txt',
@@ -82,7 +82,8 @@ describe('emitJsonlLog', () => {
   });
 
   it('omits internal _confirm from logged params on confirmed destructive calls', async () => {
-    const res = await handleToolCall('hep_export_project', { run_id: 'nonexistent-run', _confirm: true }, 'standard');
+    // Fails argument validation after the gate (hepdata_id must be positive): no network call.
+    const res = await handleToolCall('hepdata_download', { hepdata_id: -1, _confirm: true }, 'standard');
 
     expect(res.isError).toBe(true);
     expect(stderrSpy).toHaveBeenCalled();
@@ -93,8 +94,8 @@ describe('emitJsonlLog', () => {
       .find(entry => entry.event === 'tool_call');
 
     expect(jsonlEntry).toBeDefined();
-    expect(jsonlEntry.data.tool_name).toBe('hep_export_project');
-    expect(jsonlEntry.data.params.run_id).toBe('nonexistent-run');
+    expect(jsonlEntry.data.tool_name).toBe('hepdata_download');
+    expect(jsonlEntry.data.params.hepdata_id).toBe(-1);
     expect(jsonlEntry.data.params).not.toHaveProperty('_confirm');
     expect(jsonlEntry.data.result_status).toBe('error');
   });

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "meta/schemas/paper_manifest_v2.schema.json",
   "title": "Paper Manifest v2",
-  "$comment": "Documentary contract for paper_manifest.json artifacts written by packages/hep-mcp/src/core/export/exportPaperScaffold.ts. The TypeScript type generated from this schema (PaperManifestV2 in packages/shared/src/generated/) is intentionally not imported by name; the schema serves as the canonical artifact-format reference for both runtime writers and tests.",
+  "$comment": "Documentary contract for paper_manifest.json artifacts of an externally produced paper/ scaffold, consumed by skills/research-writer (research_writer_consume_paper_manifest). No in-repo writer remains since the hep-mcp paper scaffold export was removed. The TypeScript type generated from this schema (PaperManifestV2 in packages/shared/src/generated/) is intentionally not imported by name; the schema serves as the canonical artifact-format reference for external producers of paper/ scaffolds and for tests.",
   "type": "object",
   "additionalProperties": true,
   "required": [

@@ -16,8 +16,8 @@
 | orchestrator run-tool family | `@nullius/orchestrator` | Project-root run lifecycle, approvals, export, and bounded agent runtime execution |
 | orchestrator policy-tool family | `@nullius/orchestrator` | Read-only policy inspection for approval/operation gates |
 | orchestrator fleet-tool family | `@nullius/orchestrator` | Queue and worker coordination for the per-project fleet substrate |
-| `hep_run_*` | `@nullius/hep-mcp` | Evidence-first run artifacts and run-scoped research assets |
-| `hep_project_*` | `@nullius/hep-mcp` | Project-level evidence/query/export operations |
+| `hep_project_*` | `@nullius/hep-mcp` | Paper/evidence project catalogs, evidence build, query, and playback |
+| `hep_inspire_*` / `hep_import_from_zotero` | `@nullius/hep-mcp` | Search exports and identifier mappings written into a caller-chosen `output_dir` inside the project; hep-mcp keeps no runs of its own |
 | `inspire_*` / `hepdata_*` / `openalex_*` / `arxiv_*` | provider packages | Network/data retrieval and literature analysis |
 | `pdg_*` | `@nullius/pdg-mcp` | PDG offline lookups |
 | `zotero_*` | `@nullius/zotero-mcp` | Zotero Local API integration |
@@ -100,7 +100,7 @@ Fleet tools operate on queue items and worker ids rather than on artifact ids or
 | Layer | Responsibility | Implemented by |
 |---|---|---|
 | **Run-infra / control plane** | State transitions, approval gates, checkpointed agent runtime, project-root queueing, worker liveness, export summaries | `@nullius/orchestrator` via `orch_*` |
-| **Strategy / domain execution** | Evidence retrieval, plan resolution, writing/export, literature analysis, domain packs, measurement extraction | `hep_*`, `inspire_*`, `openalex_*`, `pdg_*`, `zotero_*`, etc. |
+| **Strategy / domain execution** | Evidence retrieval, plan resolution, literature search exports, literature analysis, domain packs, measurement-tension checks | `hep_*`, `inspire_*`, `openalex_*`, `pdg_*`, `zotero_*`, etc. |
 
 ### 2.2 Invariants
 
@@ -125,7 +125,7 @@ Agent / operator
   ├──► orch_run_record_verification(...)                → record adjacent snapshots plus checker self-reported matching observations
   ├──► orch_run_request_final_conclusions(...)          → return A5 unavailable while dependency closure is incomplete
   ├──► orch_run_status(project_root)                    → lifecycle snapshot
-  ├──► hep_run_* / hep_project_* / inspire_* ...        → strategy/domain work
+  ├──► hep_project_* / hep_inspire_* / inspire_* ...   → strategy/domain work (file outputs into an output_dir inside the run directory)
   ├──► orch_run_approvals_list(project_root, run_id)    → inspect pending gates
   ├──► orch_run_approve(...) or orch_run_reject(...)    → resolve approval
   ├──► orch_run_execute_agent(...)                      → bounded orchestrator runtime
@@ -229,10 +229,10 @@ orch://runs/export                  → export summary pointer
 
 ```
 hep://projects/<project_id>         → project root / evidence-facing project identity
-hep://runs/<run_id>/manifest        → evidence/run manifest view
-hep://runs/<run_id>/artifact/<name> → evidence artifact view
 orch://runs/<run_id>                → lifecycle / control-plane view
 ```
+
+hep-mcp no longer creates `hep://runs/...` identifiers; historical ones are resolved by the reading rule in `docs/URI_REGISTRY.md`.
 
 `hep://` and `orch://` are intentionally separate owned namespaces. Cross-scheme correlation must be carried explicitly by workflow metadata or operator context, not by implicit aliasing.
 

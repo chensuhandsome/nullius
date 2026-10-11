@@ -269,31 +269,6 @@ describe('literature workflow resolver', () => {
     ]);
   });
 
-  it('keeps review-cycle task kinds explicit in the recipe layer', () => {
-    const plan = resolveWorkflowRecipe({
-      recipe_id: 'review_cycle',
-      inputs: { recid: '1234', run_id: 'RUN-1' },
-    });
-
-    expect(plan.resolved_steps).toMatchObject([
-      {
-        id: 'critical_review',
-        task_kind: 'review',
-        tool: 'inspire_critical_analysis',
-      },
-      {
-        id: 'render_latex',
-        task_kind: 'draft_update',
-        tool: 'hep_render_latex',
-      },
-      {
-        id: 'export_project',
-        task_kind: 'draft_update',
-        tool: 'hep_export_project',
-      },
-    ]);
-  });
-
   it('keeps landscape provenance and network task kinds explicit in the recipe layer', () => {
     const plan = resolveWorkflowRecipe({
       recipe_id: 'literature_landscape',
@@ -388,8 +363,6 @@ describe('literature workflow resolver', () => {
         suggested_next_recipe: [
           'literature_landscape',
           'literature_gap_analysis',
-          'derivation_cycle',
-          'review_cycle',
         ],
         recommended_lane: 'operator_approved_followup',
         lane_type: 'workflow_recipe_handoff',

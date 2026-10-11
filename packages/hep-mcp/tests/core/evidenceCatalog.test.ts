@@ -5,7 +5,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 
 import { handleToolCall } from '../../src/tools/index.js';
-import { readHepUri } from '../../src/core/uriReader.js';
+import { readHepProjectUri } from '../support/hepProjectUri.js';
 
 describe('vNext M6: Evidence Catalog v1 (LaTeX)', () => {
   let dataDir: string;
@@ -54,7 +54,7 @@ describe('vNext M6: Evidence Catalog v1 (LaTeX)', () => {
     expect(buildPayload.catalog_uri).toContain('/evidence/catalog');
     expect(buildPayload.summary.by_type).toBeTruthy();
 
-    const catalog = readHepUri(buildPayload.catalog_uri) as any;
+    const catalog = readHepProjectUri(buildPayload.catalog_uri) as any;
     const lines = String(catalog.text)
       .trim()
       .split('\n')
@@ -103,32 +103,6 @@ describe('vNext M6: Evidence Catalog v1 (LaTeX)', () => {
     expect(queryPayload.total_hits).toBeGreaterThan(0);
     expect(queryPayload.hits.some(h => h.text_preview.includes('Content from subfile'))).toBe(true);
 
-    // Semantic query falls back to lexical when embeddings are missing (SEM-06 policy).
-    const runRes = await handleToolCall('hep_run_create', { project_id: project.project_id });
-    const run = JSON.parse(runRes.content[0].text) as { run_id: string };
-
-    const semanticRes = await handleToolCall('hep_project_query_evidence_semantic', {
-      run_id: run.run_id,
-      project_id: project.project_id,
-      query: 'Content from subfile',
-      limit: 3,
-      types: ['paragraph'],
-    });
-    const semanticPayload = JSON.parse(semanticRes.content[0].text) as { artifacts?: Array<{ uri?: string }> };
-    const semanticArtifactUri = semanticPayload.artifacts?.[0]?.uri;
-    expect(semanticArtifactUri).toBeTruthy();
-    const semanticArtifact = JSON.parse(String((readHepUri(semanticArtifactUri!) as any).text)) as {
-      semantic?: { implemented?: boolean };
-      fallback?: { used?: boolean; reason?: string; data?: { next_actions?: Array<{ tool: string }> } };
-      result?: { hits?: Array<{ text_preview?: string }> };
-    };
-    expect(semanticArtifact.semantic?.implemented).toBe(false);
-    expect(semanticArtifact.fallback?.used).toBe(true);
-    expect(semanticArtifact.fallback?.reason).toBe('missing_semantic_prerequisites');
-    const nextTools = (semanticArtifact.fallback?.data?.next_actions ?? []).map(a => a.tool);
-    expect(nextTools).toContain('hep_run_build_writing_evidence');
-    expect(nextTools).toContain('hep_project_query_evidence');
-    expect(semanticArtifact.result?.hits?.some(h => (h.text_preview ?? '').includes('Content from subfile'))).toBe(true);
   });
 
   it('regression: hep_project_query_evidence lexical mode matches default lexical path', async () => {
@@ -164,7 +138,6 @@ describe('vNext M6: Evidence Catalog v1 (LaTeX)', () => {
     const lexicalRes = await handleToolCall('hep_project_query_evidence', {
       ...baseArgs,
       mode: 'lexical',
-      include_explanation: true,
     });
     expect(lexicalRes.isError).not.toBe(true);
     const lexicalPayload = JSON.parse(lexicalRes.content[0].text) as {
@@ -178,68 +151,10 @@ describe('vNext M6: Evidence Catalog v1 (LaTeX)', () => {
     expect(lexicalPayload.hits.some(h => h.text_preview.includes('Content from subfile'))).toBe(true);
   });
 
-  it('hep_project_query_evidence semantic mode fails fast without embeddings (compatible with legacy semantic tool)', async () => {
-    const fixtureDir = new URL('../fixtures/latex/multifile/', import.meta.url);
-    const mainTexPath = fileURLToPath(new URL('main.tex', fixtureDir));
-
+  it('mode=semantic is refused rather than silently answered by lexical search', async () => {
     const projectRes = await handleToolCall('hep_project_create', {
-      name: 'Evidence Catalog Unified Semantic FailFast',
-      description: 'phase4 semantic fail-fast',
-    });
-    const project = JSON.parse(projectRes.content[0].text) as { project_id: string };
-
-    await handleToolCall('hep_project_build_evidence', {
-      project_id: project.project_id,
-      main_tex_path: mainTexPath,
-      include_cross_refs: true,
-    });
-
-    const runRes = await handleToolCall('hep_run_create', { project_id: project.project_id });
-    const run = JSON.parse(runRes.content[0].text) as { run_id: string };
-
-    const queryArgs = {
-      run_id: run.run_id,
-      project_id: project.project_id,
-      query: 'Content from subfile',
-      limit: 3,
-      types: ['paragraph'],
-      include_explanation: true,
-    };
-
-    const unifiedRes = await handleToolCall('hep_project_query_evidence', {
-      ...queryArgs,
-      mode: 'semantic',
-    });
-    const unifiedPayload = JSON.parse(unifiedRes.content[0].text) as { artifacts?: Array<{ uri?: string }> };
-    const unifiedArtifactUri = unifiedPayload.artifacts?.[0]?.uri;
-    expect(unifiedArtifactUri).toBeTruthy();
-    const unifiedArtifact = JSON.parse(String((readHepUri(unifiedArtifactUri!) as any).text)) as {
-      semantic?: { implemented?: boolean };
-      fallback?: { used?: boolean; reason?: string; data?: { next_actions?: Array<{ tool: string }> } };
-    };
-    expect(unifiedArtifact.semantic?.implemented).toBe(false);
-    expect(unifiedArtifact.fallback?.used).toBe(true);
-    expect(unifiedArtifact.fallback?.reason).toBe('missing_semantic_prerequisites');
-    const unifiedNextTools = (unifiedArtifact.fallback?.data?.next_actions ?? []).map(a => a.tool);
-    expect(unifiedNextTools).toContain('hep_run_build_writing_evidence');
-
-    const legacyRes = await handleToolCall('hep_project_query_evidence_semantic', queryArgs);
-    const legacyPayload = JSON.parse(legacyRes.content[0].text) as { artifacts?: Array<{ uri?: string }> };
-    const legacyArtifactUri = legacyPayload.artifacts?.[0]?.uri;
-    expect(legacyArtifactUri).toBeTruthy();
-    const legacyArtifact = JSON.parse(String((readHepUri(legacyArtifactUri!) as any).text)) as {
-      semantic?: { implemented?: boolean };
-      fallback?: { used?: boolean; reason?: string };
-    };
-    expect(legacyArtifact.semantic?.implemented).toBe(false);
-    expect(legacyArtifact.fallback?.used).toBe(true);
-    expect(legacyArtifact.fallback?.reason).toBe(unifiedArtifact.fallback?.reason);
-  });
-
-  it('mode=semantic without run_id returns actionable error and next_actions', async () => {
-    const projectRes = await handleToolCall('hep_project_create', {
-      name: 'Evidence Catalog Semantic Missing Run',
-      description: 'phase4 run_id guidance',
+      name: 'Evidence Catalog Semantic Refused',
+      description: 'lexical-only query',
     });
     const project = JSON.parse(projectRes.content[0].text) as { project_id: string };
 
@@ -253,26 +168,10 @@ describe('vNext M6: Evidence Catalog v1 (LaTeX)', () => {
     expect(res.isError).toBe(true);
 
     const payload = JSON.parse(res.content[0].text) as {
-      error: {
-        code: string;
-        message: string;
-        data?: {
-          next_actions?: Array<{ tool: string; args?: Record<string, unknown> }>;
-        };
-      };
+      error: { code: string; data?: { issues?: Array<{ path?: unknown[] }> } };
     };
-
     expect(payload.error.code).toBe('INVALID_PARAMS');
-    expect(payload.error.message).toBe('run_id is required. Create one with hep_run_create first.');
-
-    const nextActions = payload.error.data?.next_actions ?? [];
-    const tools = nextActions.map(a => a.tool);
-    expect(tools).toContain('hep_run_create');
-    expect(tools).toContain('hep_project_query_evidence');
-
-    const retry = nextActions.find(a => a.tool === 'hep_project_query_evidence');
-    expect(retry?.args?.mode).toBe('semantic');
-    expect(String(retry?.args?.run_id ?? '')).toContain('hep_run_create');
+    expect(payload.error.data?.issues?.some(issue => issue.path?.includes('mode'))).toBe(true);
   });
 
   it('R9: query tool supports concurrency + deterministic ordering and writes diagnostics', async () => {
@@ -323,7 +222,7 @@ describe('vNext M6: Evidence Catalog v1 (LaTeX)', () => {
 
     expect(p1.hits.map(h => h.evidence_id)).toEqual(p2.hits.map(h => h.evidence_id));
 
-    const diag = JSON.parse(String((readHepUri(p1.diagnostics_uri!) as any).text)) as {
+    const diag = JSON.parse(String((readHepProjectUri(p1.diagnostics_uri!) as any).text)) as {
       project_id: string;
       operation: string;
       budgets: Array<{ key: string; source?: { kind?: string } }>;
@@ -358,7 +257,7 @@ describe('vNext M6: Evidence Catalog v1 (LaTeX)', () => {
     };
     expect(buildPayload.diagnostics_uri).toBeTruthy();
 
-    const diag = JSON.parse(String((readHepUri(buildPayload.diagnostics_uri) as any).text)) as {
+    const diag = JSON.parse(String((readHepProjectUri(buildPayload.diagnostics_uri) as any).text)) as {
       project_id: string;
       operation: string;
       budgets: Array<{ key: string; source?: { kind?: string } }>;
@@ -407,7 +306,7 @@ describe('vNext M6: Evidence Catalog v1 (LaTeX)', () => {
       expect(buildPayload.summary.copied_files).toBe(2);
       expect(buildPayload.summary.main_tex).toBe('..paper.tex');
 
-      const items = String((readHepUri(buildPayload.catalog_uri) as any).text)
+      const items = String(readHepProjectUri(buildPayload.catalog_uri).text)
         .trim()
         .split('\n')
         .filter(Boolean)

@@ -32,7 +32,7 @@ Nullius 是一个面向理论研究的 domain-neutral、evidence-first monorepo�
 | Stateful 文献规划入口 | `nullius workflow-plan` | 通过 `@nullius/literature-workflows` 解析 checked-in workflow authority，并写入 `.nullius/state.json#/plan` / `.nullius/plan.md` |
 | Agent research project harness skill | `research-harness` | 面向 Codex / Claude Code / OpenCode 的薄客户端 skill，用于恢复外部项目状态、把工作路由到 `nullius` / `research-team` / `markdown-hygiene` / `hep-mcp`，并把结果折回长期 artifacts |
 | 实验性 idea runtime bridge | `node /absolute/path/to/nullius/packages/idea-mcp/dist/server.js` | 面向显式外部数据根的 TS hosted campaign lifecycle bridge，覆盖 `idea_campaign_*`；posterior 排序的 rank/promote、节点 posterior/lifecycle/grounding-audit/card-revision 更新、溯源修正与 generation-pack 导入（`node.import_generated`）属于 `idea-engine` runtime-contract truth，不是 root front door |
-| 当前最成熟的领域 MCP front door | `node /absolute/path/to/nullius/packages/hep-mcp/dist/index.js` | 面向研究、证据、写作、导出与 provider-local 组合的 HEP 领域 MCP server |
+| 当前最成熟的领域 MCP front door | `node /absolute/path/to/nullius/packages/hep-mcp/dist/index.js` | 面向文献研究、论文 evidence catalog 与 provider-local 组合的 HEP 领域 MCP server；其研究输出工具把文件写入调用方指定的项目内 `output_dir` |
 | Bounded provider MCP operators | `@nullius/openalex-mcp`、`@nullius/arxiv-mcp`、`@nullius/hepdata-mcp`、`@nullius/pdg-mcp`、`@nullius/zotero-mcp` | 保持 MCP-first 的原子化文献、数据、参考与证据 operators |
 
 HEP 工具清单由代码拥有，并由 `HEP_TOOL_MODE` 做模式过滤；精确工具数量只保留在生成的分类/状态文档里，不写入本 README。
@@ -75,13 +75,11 @@ Skill 源码面与分发面是分离的：
     papers/<paper_id>/
       paper.json
       evidence/
-  runs/<run_id>/
-    manifest.json
-    artifacts/
 ```
 
 - Project 根位于 `projects/<project_id>/...`。
-- Run 状态位于 `runs/<run_id>/manifest.json` 与 `runs/<run_id>/artifacts/...`。
+- `hep-mcp` 没有自己的 run：run、审批与生命周期属于 orchestrator，位于 `<project_root>/artifacts/runs/<run_id>/`。HEP 研究输出工具（检索导出、标识符映射、Zotero 映射、LaTeX 解析、冲突图）把文件写入调用方指定的项目内 `output_dir`（通常是当前 run 目录下的子目录），并返回项目相对路径。`output_dir` 需要 `project_root`，不能是 project root 本身，不得经过 project root 以下的符号链接，也不得位于 `.nullius/`、`team/runs/` 或 `artifacts/hep-mcp/` 之下（比较时不区分大小写）；调用从不覆盖已有文件。`inspire_paper_source` 的下载、缓存、PDG 数据与 hep 论文/evidence project 仍位于 hep-mcp 的数据根（`<project_root>/artifacts/hep-mcp` 或 `HEP_DATA_DIR`）。
+- 旧版本留下的 HEP run 目录（HEP 数据根下的 `runs/<run_id>/`）是历史证据：原位读取，不再被任何工具创建或改写。历史 `hep://runs/...` 引用的解析规则见 [`docs/URI_REGISTRY.md`](./URI_REGISTRY.md)。
 - `PDG_DATA_DIR` 是 PDG 的本地 companion root；未单独设置时跟随 resolved HEP data root，即 `<resolved HEP data root>/pdg`。
 - 文本与二进制 artifacts 都保留在 package-owned artifact root 下；tool result 保持紧凑，只指回 project artifacts，避免把大 payload 内联进上下文。
 - 论文原文、抽取文本、arXiv source tarball 和源码树都是普通本机文件。若只服务于本轮检查，放在本机临时目录；若后续验证或接续还需要，则放在外部 project root 中合适的 project/run artifact 子目录下。
@@ -147,7 +145,7 @@ Approval packet 会落在该 run 的 `artifacts/runs/<run_id>/approvals/<approva
 说明：
 
 - 先构建：`pnpm -r build`。
-- MCP env 里的路径是 filesystem roots，不是 URI/protocol 设置。持久 nullius 项目工作应在 HEP tool call 中传入已初始化的 `project_root`，让 artifacts 写到 `<project_root>/artifacts/hep-mcp`。`HEP_DATA_DIR` 只作为 scratch fallback，或用于一次性检查、CI、迁移等显式 override。
+- MCP env 里的路径是 filesystem roots，不是 URI/protocol 设置。持久 nullius 项目工作应在 HEP tool call 中传入已初始化的 `project_root`，让 HEP project 数据写到 `<project_root>/artifacts/hep-mcp`，工具输出文件写到你在项目内指定的 `output_dir`。`HEP_DATA_DIR` 只作为 scratch fallback，或用于一次性检查、CI、迁移等显式 override。
 - 如果 `nullius` 不在 `PATH` 中，构建后创建本地 wrapper：
 
 ```bash
@@ -231,7 +229,7 @@ via: nullius decision list) until resolved.
 
 新 decision 条目先使用 6 字符的 branch-local handle，其原始抽样为 30 个无偏随机 bit（$32^6 = 2^{30}$）。与 durable `D<n>` 同形的候选、本地已有 id 与既有映射都会重抽，因此精确的逐对碰撞概率依上下文而变；无本地占位时为 $1/(2^{30}-90{,}000)\approx 9.314\times 10^{-10}$，略高于 $2^{-30}$。这是概率保证而非结构保证，碰撞时 fail closed。`--resolves` 是关闭关系，只接受仍然 open 的 `pending` 目标；`--relates` 是非关闭关系，可以指向更早且可读的 `decided` 或 `pending` 条目。回放时若持久化关系格式错误或语义不成立，工具会在 `unrecognized_relations` 中报告并忽略该链接，但不会让整条记录失效。旧版或未知的非空字符串 `kind` 会继续按当前 `decided` 语义读取，并通过 `source_kind` 与 `normalized_kinds` 保留原始拼写；只有精确的持久化 `pending` 才会创建 open item，而归一化条目上其余合法的 `resolves` 仍会关闭对应 pending。分支内容进入权威主干后，`decision land` 原子分配后续 durable `D<n>`、改写指向 handle 的关系，并以 `provisional_id` 保留映射。既有 `D<n>` ledger 无需迁移，仍可读取和 resolve。若同一 provisional id 映射到多条记录或又被用作当前 id，list/status 会具名冲突行，land 在零改写下拒绝。初始化完成后，接续是 local-first 的：`.nullius/HARNESS`、`.nullius/bin/nullius`、`AGENTS.md`、`project_index.md`、`research_plan.md`、`research_contract.md`、已登记报告和 `artifacts/runs/<run_id>/` 足以让 agent 在关闭会话或断网后恢复项目状态；只有真实需要外部文献/数据时才需要网络。
 
-- 对 stateful 文献工作流，先用 `nullius init` 初始化目标外部 project root，再在该 root 内或通过 `--project-root` 调用 `nullius workflow-plan`。它会直接通过 `@nullius/literature-workflows` 解析 recipe，并写入 `.nullius/state.json#/plan` / `.nullius/plan.md`。有意义的外部研究运行应显式传 `--run-id`；如果省略，派生的 `<recipe>-<phase>` 只作为 planning placeholder。`research_brainstorm` 是 planning-only 的轻量 durable harness：`nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-topic-r1 --topic "<topic>"` 会记录 brainstorm context、candidate angles、screening、单一 recommendation 与 `next_contract` handoff。`.nullius/plan.md` 是给人读的派生 read model，不是机器编排 SSOT。这个 contract 可以建议后续进入 `literature_landscape`、`literature_gap_analysis`、`derivation_cycle` 或 `review_cycle` 等更重 recipe，但不会自动启动它们，也不依赖 host-native thinking process。持久化的 `research_brainstorm.*` step tools 是 handoff authority，不是内置 runtime tools，除非未来有外部 tool caller 明确实现它们。
+- 对 stateful 文献工作流，先用 `nullius init` 初始化目标外部 project root，再在该 root 内或通过 `--project-root` 调用 `nullius workflow-plan`。它会直接通过 `@nullius/literature-workflows` 解析 recipe，并写入 `.nullius/state.json#/plan` / `.nullius/plan.md`。有意义的外部研究运行应显式传 `--run-id`；如果省略，派生的 `<recipe>-<phase>` 只作为 planning placeholder。`research_brainstorm` 是 planning-only 的轻量 durable harness：`nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-topic-r1 --topic "<topic>"` 会记录 brainstorm context、candidate angles、screening、单一 recommendation 与 `next_contract` handoff。`.nullius/plan.md` 是给人读的派生 read model，不是机器编排 SSOT。这个 contract 可以建议后续进入 `literature_landscape` 或 `literature_gap_analysis` 等更重 recipe，但不会自动启动它们，也不依赖 host-native thinking process。持久化的 `research_brainstorm.*` step tools 是 handoff authority，不是内置 runtime tools，除非未来有外部 tool caller 明确实现它们。
 - delegated agent 执行现在在 tool 边界持久化：attempt 明确区分 `not_started`、`outcome_unknown` 与 `committed`；副作用结果未知时停机交 operator 核对，已提交的 MCP result 原样 replay 而不再次派发。direct 与 team journal 分别位于 `artifacts/delegated-runs/direct/<run_id>/` 和 `artifacts/delegated-runs/team/<runtime_run_id>/`，caller 自选的 root/direct run id 无法冒充 team checkpoint；approval resolver 只允许 host/operator 调用。`nullius run` 启动配置的 stdio MCP server 时，非敏感配置写入 `NULLIUS_RUN_MCP_ENV_JSON`，凭据写入 `NULLIUS_RUN_MCP_CREDENTIALS_JSON`，必需凭据名可用 `NULLIUS_RUN_MCP_REQUIRED_CREDENTIALS_JSON` 声明；缺值会在 spawn 前失败。
 
 持久化 workflow-plan 的每次派发也使用 `artifacts/runs/<run_id>/manifest.json`：未知副作用停止等待核对，已提交响应原样回放而不重调工具；每个派发边界检查暂停，审批请求在真实批准前不会完成步骤。溢出恢复逐字保留原始用户约束和完整工具配对；指令自身超出窗口时停止，不能静默截断。
@@ -274,17 +272,10 @@ pnpm --filter @nullius/hep-mcp docs:tool-counts:check
 1. 调用 `hep_health`
 1. 若是持久项目工作，每次 HEP tool call 都传入 `project_root=/absolute/path/to/external-project`
 1. 调用 `hep_project_create`
-1. 调用 `hep_run_create`
-1. 从 tool result 或 `<project_root>/artifacts/hep-mcp/runs/<run_id>/manifest.json` 检查刚创建的 run manifest；不传 `project_root` 的 scratch 检查才看 resolved `HEP_DATA_DIR` run 目录
+1. 对一篇论文调用 `hep_project_build_evidence`，再用 `hep_project_query_evidence`（词法检索）与 `hep_project_playback_evidence` 定位并回读段落
+1. 调用 `hep_inspire_search_export`，传入 `project_root` 与 `output_dir`（如 `artifacts/runs/<run_id>/literature`）；检查返回的项目相对 `export_path` / `meta_path`，以及 `<output_dir>/external_api/` 下的逐次外部 API 记录
 
-如果你想直接走当前最强的端到端 workflow family，再继续：
-
-1. `hep_run_build_citation_mapping`
-1. `hep_run_build_writing_evidence` 或 `hep_project_build_evidence`
-1. `hep_render_latex`
-1. `hep_export_project`
-
-HEP 项目与 run 保存领域输入和产物目录，通用生命周期与审批仍归 orchestrator。草稿渲染保留调用方的 grounding 声明，省略时保持未知，不核验论断；导出要求 BibTeX 覆盖全部引用键。
+HEP 项目保存论文与 evidence 目录；run、通用生命周期与审批仍归 orchestrator。`hep-mcp` 不提供草稿渲染、项目导出或论文打包工具。
 
 ## 文档
 

@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { handleToolCall } from '../../src/tools/index.js';
-import { readHepUri } from '../../src/core/uriReader.js';
+import { makeProjectRoot, readProjectFile } from '../support/hepProjectUri.js';
 
 const LIVE_SMOKE_ENABLED = process.env.HEP_LIVE_SMOKE === '1';
 const describeLive = LIVE_SMOKE_ENABLED ? describe : describe.skip;
@@ -33,21 +33,18 @@ describeLive('R8 live smoke: INSPIRE corpus (optional)', () => {
   it(
     'resolves a small real corpus to recids and writes evidence-first artifacts',
     async () => {
-      const projectRes = await handleToolCall('hep_project_create', { name: 'Live INSPIRE smoke', description: 'r8' });
-      const project = JSON.parse(projectRes.content[0].text) as { project_id: string };
-
-      const runRes = await handleToolCall('hep_run_create', { project_id: project.project_id });
-      const run = JSON.parse(runRes.content[0].text) as { run_id: string };
+      const projectRoot = makeProjectRoot(dataDir);
 
       const identifiers = ['1238419', '1258603'];
       const res = await handleToolCall('hep_inspire_resolve_identifiers', {
-        run_id: run.run_id,
+        project_root: projectRoot,
+        output_dir: 'smoke',
         identifiers,
       });
 
       expect(res.isError).not.toBe(true);
       const payload = JSON.parse(res.content[0].text) as {
-        mapping_uri: string;
+        mapping_path: string;
         summary: { total: number; matched: number; not_found: number; errors: number };
       };
 
@@ -56,7 +53,7 @@ describeLive('R8 live smoke: INSPIRE corpus (optional)', () => {
       expect(payload.summary.not_found).toBe(0);
       expect(payload.summary.errors).toBe(0);
 
-      const mappingText = String((readHepUri(payload.mapping_uri) as any).text);
+      const mappingText = readProjectFile(projectRoot, payload.mapping_path);
       const lines = mappingText
         .split('\n')
         .filter(Boolean)

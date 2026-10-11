@@ -4,6 +4,8 @@ import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { makeInitializedProjectRoot } from './adminTestSupport.js';
+
 import { linkKbNotes, formatKbLinkReport } from '../../src/admin/linkKbNotes.js';
 
 function makePaperJson(projectRoot: string, projectId: string, paperId: string, identifier?: string): string {
@@ -28,7 +30,7 @@ describe('linkKbNotes', () => {
   let tmpProject: string;
 
   beforeEach(() => {
-    tmpProject = fs.mkdtempSync(path.join(os.tmpdir(), 'kblink-proj-'));
+    tmpProject = makeInitializedProjectRoot('kblink-proj-');
   });
 
   afterEach(() => {

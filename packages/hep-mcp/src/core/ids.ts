@@ -1,18 +1,12 @@
 import { randomUUID } from 'crypto';
 import { shortId } from '@nullius/shared';
 
-// proj_/run_ follow the EcosystemID `{prefix}_{opaque}` convention. The opaque
+// proj_ follows the EcosystemID `{prefix}_{opaque}` convention. The opaque
 // part is a human-referenced handle id, so it uses a compact shortId (Crockford
-// base32 — a strict subset of the EcosystemID opaque charset, so `proj_<id>` /
-// `run_<id>` stay valid EcosystemIDs and remain parseable downstream).
+// base32 — a strict subset of the EcosystemID opaque charset, so `proj_<id>`
+// stays a valid EcosystemID and remains parseable downstream).
 export function newProjectId(): string {
   return `proj_${shortId()}`;
-}
-
-// Provider-internal fallback ID. Do not present this as the recommended
-// project-local, human-facing research run_id.
-export function newRunId(): string {
-  return `run_${shortId()}`;
 }
 
 function randomSuffix(): string {

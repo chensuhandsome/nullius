@@ -7,7 +7,7 @@ import {
   TopicAnalysisToolSchema,
   TraceOriginalSourceToolSchema,
 } from '../research/schemas.js';
-import { SafePathSegmentSchema, SearchExportFormatSchema } from './projectSchemas.js';
+import { OutputDirSchema, SafePathSegmentSchema, SearchExportFormatSchema, strictBudgetInt } from './projectSchemas.js';
 
 const SortSchema = z.enum(['mostrecent', 'mostcited']);
 const JsonMarkdownSchema = z.enum(['json', 'markdown']);
@@ -15,16 +15,20 @@ const JsonMarkdownSchema = z.enum(['json', 'markdown']);
 export const InspireSearchToolSchema = z.object({
   query: z.string().min(1),
   sort: SortSchema.optional(),
-  size: optionalBudgetInt({ min: 1, max: 1000 }).default(25),
-  page: optionalBudgetInt({ min: 1 }).default(1),
+  size: strictBudgetInt({ min: 1, max: 1000 }).default(25).describe(
+    'Results per page. Default 25 when listing; in a file export (output_dir), if omitted: HEP_BUDGET_INSPIRE_SEARCH_PAGE_SIZE when set, otherwise 1000.'
+  ),
+  page: strictBudgetInt({ min: 1 }).default(1),
   format: JsonMarkdownSchema.optional().default('json'),
   review_mode: z.enum(['mixed', 'separate', 'deprioritize', 'exclude']).optional().default('mixed'),
-  run_id: SafePathSegmentSchema.optional(),
+  output_dir: OutputDirSchema.optional(),
   output_format: SearchExportFormatSchema.optional().default('jsonl'),
   artifact_name: SafePathSegmentSchema.optional(),
   meta_artifact_name: SafePathSegmentSchema.optional(),
-  max_results: optionalBudgetInt({ min: 1 }).default(100),
-});
+  max_results: strictBudgetInt({ min: 1 }).default(100).describe(
+    'When listing: if given (and page is not), pages are combined up to max_results results; if omitted, one page of size results is returned. In a file export (output_dir): at most 10000; if omitted, HEP_BUDGET_INSPIRE_SEARCH_MAX_RESULTS when set, otherwise 10000.'
+  ),
+}).strict();
 
 export const InspireSearchNextToolSchema = z.object({
   next_url: z.string().min(1),
@@ -116,8 +120,8 @@ export const InspireLiteratureToolSchema = z
     })();
 
     const extraKeys = Object.keys(v)
-      // The registry adds project_root to every tool as a common routing field.
-      // It is independent of this tool's mode-specific provider arguments.
+      // The registry adds project_root to this tool as the common routing
+      // field; it is independent of the mode-specific provider arguments.
       .filter(k => k !== 'mode' && k !== 'project_root')
       .filter(k => !allowed.has(k))
       .sort((a, b) => a.localeCompare(b));
@@ -214,14 +218,14 @@ export const InspireClassifyReviewsToolSchema = z.object({
 }).strict();
 
 export const InspireTheoreticalConflictsToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
-  recids: z.array(z.string().min(1)).min(1),
-  subject_entity: z.string().min(1).optional(),
-  inputs: z.array(z.enum(['title', 'abstract'])).optional(),
-  max_papers: optionalBudgetInt({ min: 1 }).optional(),
-  max_claim_candidates_per_paper: optionalBudgetInt({ min: 1 }).optional(),
-  max_candidates_total: optionalBudgetInt({ min: 1 }).optional(),
-  max_llm_requests: optionalBudgetInt({ min: 1 }).optional(),
+  output_dir: OutputDirSchema,
+  recids: z.array(z.string().trim().regex(/^\d+$/, 'an INSPIRE recid is a string of digits')).min(1),
+  subject_entity: z.string().trim().min(1).optional(),
+  inputs: z.array(z.enum(['title', 'abstract'])).min(1).optional(),
+  max_papers: strictBudgetInt({ min: 1 }).optional(),
+  max_claim_candidates_per_paper: strictBudgetInt({ min: 1, max: 200 }).optional(),
+  max_candidates_total: strictBudgetInt({ min: 1, max: 5000 }).optional(),
+  max_llm_requests: strictBudgetInt({ min: 1 }).optional(),
   prompt_version: z.string().min(1).optional(),
   stable_sort: z.boolean().optional(),
 }).strict();
@@ -241,7 +245,7 @@ export const PaperSourceToolSchema = z.object({
 });
 
 export const InspireParseLatexToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
+  output_dir: OutputDirSchema,
   identifier: z.string().min(1),
   components: z
     .array(
@@ -257,15 +261,20 @@ export const InspireParseLatexToolSchema = z.object({
       ])
     )
     .min(1),
+  // Exactly the options the parser reads; anything else is refused.
   options: z
     .object({
-      format: JsonMarkdownSchema.optional(),
-      include_external: z.boolean().optional(),
-      max_depth: optionalBudgetInt({ min: 1 }),
-      cross_validate: z.boolean().optional(),
+      include_key_equations: z.boolean().optional(),
+      include_inline_math: z.boolean().optional(),
+      include_section_content: z.boolean().optional(),
+      max_section_content: strictBudgetInt({ min: 1 }),
+      include_proofs: z.boolean().optional(),
+      citation_context_window: strictBudgetInt({ min: 0 }),
+      parse_table_data: z.boolean().optional(),
     })
+    .strict()
     .optional(),
-});
+}).strict();
 
 export const FindCrossoverTopicsToolSchema = z.object({
   categories: z.array(z.string().min(1)).length(2).optional(),

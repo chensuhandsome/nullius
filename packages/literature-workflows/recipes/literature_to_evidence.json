@@ -8,7 +8,7 @@
       "id": "search_export",
       "task_kind": "literature",
       "action": "discover.seed_search",
-      "purpose": "Run search and write export artifacts",
+      "purpose": "Run the seed search; the workflow runtime records the result in the run directory",
       "required_capabilities": [
         "supports_keyword_search"
       ],
@@ -83,9 +83,7 @@
       },
       "params": {
         "query": "<query>",
-        "run_id": "<run_id>",
-        "size": 50,
-        "output_format": "jsonl"
+        "size": 50
       }
     },
     {

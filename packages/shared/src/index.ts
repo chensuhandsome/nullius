@@ -171,4 +171,4 @@ export {
   readIntegrityReceipts,
 } from './integrity-receipt.js';
 
-export { canonicalProjectPath, assertExternalProjectRoot } from './project-root.js';
+export { canonicalProjectPath, assertExternalProjectRoot, respellUnderDirectory } from './project-root.js';

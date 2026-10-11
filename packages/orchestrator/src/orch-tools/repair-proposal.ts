@@ -1,6 +1,6 @@
 import { resolveEvidencePath } from '../run-directories.js';
+import { resolveUnderRoot } from '../computation/path-safety.js';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import type { MutationProposalV1 } from '@nullius/shared';
 import { invalidParams } from '@nullius/shared';
 import type { RunState } from '../types.js';
@@ -12,10 +12,8 @@ function readMutationProposalPointer(state: RunState, artifactKey: string): stri
 }
 
 function resolveMutationProposalPath(projectRoot: string, pointer: string): string {
-  const resolvedRoot = path.resolve(projectRoot);
-  const resolved = path.resolve(projectRoot, pointer);
-  const relative = path.relative(resolvedRoot, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+  const resolved = resolveUnderRoot(projectRoot, pointer);
+  if (resolved === null) {
     throw invalidParams('mutation proposal pointer escapes project root.', {
       project_root: projectRoot,
       pointer,

@@ -10,6 +10,7 @@ import { buildProductionEnvironment } from '../src/computation/dependency-closur
 import type { NativeRuntimeIdentity } from '../src/computation/runtime-identity.js';
 import { handleOrchRunRequestFinalConclusions } from '../src/orch-tools/final-conclusions.js';
 import { handleOrchRunRecordVerification } from '../src/orch-tools/verification.js';
+import { resolveVerifiedRunArtifact } from '../src/orch-tools/validation-chain-binding.js';
 import { StateManager } from '../src/state-manager.js';
 
 type CheckerStatus = 'pass' | 'fail' | 'blocked';
@@ -318,6 +319,23 @@ describe('Nullius-owned validation-chain binding at the A5 boundary', () => {
     fs.symlinkSync(fixture.checkerPath, linkedChecker);
     await expect(record({ ...aliased, checkerPath: viaAlias(linkedChecker) }))
       .rejects.toThrow(/checker_path must not traverse a symbolic link/);
+  });
+
+  it('admits a checker whose name begins with two dots at entry and again at re-verification of the receipt', async () => {
+    const fixture = await prepareCompletedRun();
+    writeChecker(fixture);
+    const dotted = path.join(fixture.runDir, '..checker.py');
+    fs.renameSync(fixture.checkerPath, dotted);
+    for (const checkerPath of [dotted, '..checker.py']) {
+      await expect(record({ ...fixture, checkerPath })).resolves.toMatchObject({ status: 'passed' });
+      const receipt = readJson<Record<string, any>>(path.join(fixture.runDir, 'artifacts', 'validation_chain_binding_v1.json'));
+      expect(receipt.checker_ref.uri).toBe(`rep://runs/${fixture.runId}/artifact/${encodeURIComponent('..checker.py')}`);
+      const verified = resolveVerifiedRunArtifact(fixture.runDir, fixture.runId, receipt.checker_ref, 'checker');
+      expect(verified.filePath).toBe(dotted);
+      expect(sha256File(verified.filePath)).toBe(receipt.checker_ref.sha256);
+    }
+    await expect(record({ ...fixture, checkerPath: '../..checker.py' }))
+      .rejects.toThrow(/checker_path must stay within the run directory/);
   });
 
   it('rejects a checker verdict whose self-reported output observations do not match held hashes', async () => {

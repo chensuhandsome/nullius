@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { RUNS_ROOT_RELATIVE } from './run-paths.js';
+import { resolveUnderRoot } from './computation/path-safety.js';
 
 /** Run-directory enumeration and the slug family stem — extracted from the
  *  traceability view so the run-index renderer shares ONE definition of
@@ -138,13 +139,15 @@ export function slugFamilyOf(runId: string): string {
 }
 
 
-/** Original project evidence must never be read through a filesystem alias. */
+/** Original project evidence must never be read through a filesystem alias
+ *  below the project root. An absolute value may still spell the root itself
+ *  the way the caller spelled it (respelled under the admitted root). */
 export function resolveEvidencePath(projectRoot: string, value: string): string {
-  const target = path.resolve(projectRoot, value);
-  const relative = path.relative(projectRoot, target);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+  const target = resolveUnderRoot(projectRoot, value);
+  if (target === null) {
     throw new RunDirectoryError('EVIDENCE_PATH_UNSAFE', 'evidence path escapes the project');
   }
+  const relative = path.relative(path.resolve(projectRoot), target);
   let current = projectRoot;
   for (const segment of relative.split(path.sep).filter(Boolean)) {
     current = path.join(current, segment);

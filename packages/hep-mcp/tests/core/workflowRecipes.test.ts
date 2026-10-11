@@ -175,12 +175,10 @@ describe('workflow recipe schema and fixtures', () => {
       .map(name => path.join(recipeDir, name));
 
     expect(recipeFiles.map(filePath => path.basename(filePath))).toEqual([
-      'derivation_cycle.json',
       'literature_gap_analysis.json',
       'literature_landscape.json',
       'literature_to_evidence.json',
       'research_brainstorm.json',
-      'review_cycle.json',
     ]);
 
     for (const recipeFile of recipeFiles) {

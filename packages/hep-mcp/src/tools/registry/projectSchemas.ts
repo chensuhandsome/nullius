@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { optionalBudgetInt } from '@nullius/shared';
-import { ReportDraftSchema, SectionDraftSchema } from '../../core/writing/draftSchemas.js';
 
 const SortSchema = z.enum(['mostrecent', 'mostcited']);
 
@@ -31,152 +30,87 @@ export const HepHealthToolSchema = z.object({
   inspire_timeout_ms: optionalBudgetInt({ min: 1 }).default(5000),
 });
 
-export const HepRunCreateToolSchema = z.object({
-  project_id: SafePathSegmentSchema,
-  args_snapshot: z.unknown().optional(),
-});
+/**
+ * A whole-number limit given as a number or a digit string. Unlike the
+ * lenient shared helper, a value that is not a whole number or lies outside
+ * [min, max] is refused (INVALID_PARAMS), never replaced by the default.
+ */
+export function strictBudgetInt(options: { min?: number; max?: number } = {}) {
+  let inner = z.number().int();
+  if (options.min !== undefined) inner = inner.min(options.min);
+  if (options.max !== undefined) inner = inner.max(options.max);
+  const parsed = z.preprocess(
+    value => (typeof value === 'string' && /^\s*[+-]?\d+\s*$/.test(value) ? Number(value.trim()) : value),
+    inner.optional(),
+  );
+  // Optional on the outside too, so the published input schema does not
+  // list the field as required (an omitted value takes the tool's default).
+  const schema = parsed.optional();
+  // Publish the bounds in the tool's input schema, as the shared helper does.
+  for (const node of [parsed, schema]) {
+    Object.defineProperty(node, '__mcpBudget', {
+      value: { ...options, integer: true },
+      configurable: true,
+    });
+  }
+  return schema;
+}
 
-export const HepRunReadArtifactChunkToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
-  artifact_name: SafePathSegmentSchema,
-  offset: optionalBudgetInt({ min: 0 }).default(0),
-  length: optionalBudgetInt({ min: 1 }).default(4096),
-});
+export const OutputDirSchema = z
+  .string()
+  .min(1)
+  .describe(
+    'Directory inside project_root (not the root itself) that receives this call\'s output files, relative to project_root or absolute '
+      + '(any spelling of the root). Requires project_root. Created if missing; it may not traverse a symbolic link, '
+      + 'and may not lie under .nullius/, team/runs/ or artifacts/hep-mcp/. A call never replaces an existing file '
+      + '(it is refused if any of its files already exists), and a call that fails removes what it had published and staged. '
+      + 'If that cleanup fails, the error says what is left: published files make it UNSAFE_FS "outputs are incomplete" with '
+      + 'files_left; staging files alone are added to the original error as staging_left (staging_path if unidentified); '
+      + 'removals that cannot be flushed to disk give UNSAFE_FS with unflushed_directories. '
+      + 'Only a crash during publication can leave part of a set unreported. Later calls naming leftover files are refused until they are removed. '
+      + 'The reserved areas are compared ignoring letter case.'
+  );
 
-export const HepRunClearManifestLockToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
-  force: z.boolean().optional().default(false),
-});
-
-export const HepRunStageContentToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
-  content_type: z.enum(['section_output', 'outline_plan', 'paperset_curation', 'revision_plan', 'reviewer_report', 'judge_decision']).default('section_output'),
-  content: z.string().min(1),
-  artifact_suffix: SafePathSegmentSchema.optional(),
-  task_id: z.string().min(1).optional(),
-  task_kind: z.enum(['draft_update', 'review']).optional(),
-});
-
-export const HepRunBuildCitationMappingToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
-  identifier: z.string().min(1),
-  allowed_citations_primary: z.array(z.string().min(1)).optional().default([]),
-  include_mapped_references: z.boolean().optional().default(true),
-});
-
-const CitekeyMappingSchema = z
-  .object({
-    status: z.enum(['matched', 'not_found', 'error']),
-    recid: z.string().optional(),
-  })
-  .passthrough();
-
-const CitekeyToInspireMappingsSchema = z.record(z.string().min(1), CitekeyMappingSchema);
-
-const CitekeyToInspireArtifactInputSchema = z
-  .object({
-    version: z.literal(1).optional(),
-    generated_at: z.string().optional(),
-    mappings: CitekeyToInspireMappingsSchema,
-  })
-  .passthrough();
-
-const CiteMappingInputSchema = z.union([CitekeyToInspireMappingsSchema, CitekeyToInspireArtifactInputSchema]);
-
-export const HepRenderLatexToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
-  draft: z.union([SectionDraftSchema, ReportDraftSchema]),
-  cite_mapping: CiteMappingInputSchema.optional(),
-  latex_artifact_name: SafePathSegmentSchema.optional().default('rendered_latex.tex'),
-  section_output_artifact_name: SafePathSegmentSchema.optional().default('rendered_section_output.json'),
-});
-
-export const HepExportProjectToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
-  rendered_latex_artifact_name: SafePathSegmentSchema.optional().default('rendered_latex.tex'),
-  rendered_latex_verification_artifact_name: SafePathSegmentSchema.optional().default('rendered_latex_verification.json'),
-  bibliography_raw_artifact_name: SafePathSegmentSchema.optional().default('bibliography_raw_v1.json'),
-  master_bib_artifact_name: SafePathSegmentSchema.optional().default('master.bib'),
-  report_tex_artifact_name: SafePathSegmentSchema.optional().default('report.tex'),
-  report_md_artifact_name: SafePathSegmentSchema.optional().default('report.md'),
-  research_pack_zip_artifact_name: SafePathSegmentSchema.optional().default('research_pack.zip'),
-  notebooklm_pack_prefix: SafePathSegmentSchema.optional().default('notebooklm_pack'),
-  max_chars_per_notebooklm_file: optionalBudgetInt({ min: 1 }).default(80_000),
-  include_evidence_digests: z.boolean().optional().default(true),
-  include_pdg_artifacts: z.boolean().optional().default(false),
-  include_paper_bundle: z.boolean().optional().default(false),
-  paper_bundle_zip_artifact_name: SafePathSegmentSchema.optional().default('paper_bundle.zip'),
-  paper_bundle_manifest_artifact_name: SafePathSegmentSchema.optional().default('paper_bundle_manifest.json'),
-  _confirm: z.boolean().optional(),
-});
-
-export const HepExportPaperScaffoldToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
-  output_dir_name: SafePathSegmentSchema.optional().default('paper'),
-  overwrite: z.boolean().optional().default(false),
-  integrated_latex_artifact_name: SafePathSegmentSchema.optional().default('writing_integrated.tex'),
-  writing_master_bib_artifact_name: SafePathSegmentSchema.optional().default('writing_master.bib'),
-  bibliography_raw_artifact_name: SafePathSegmentSchema.optional().default('bibliography_raw_v1.json'),
-  zip_artifact_name: SafePathSegmentSchema.optional().default('paper_scaffold.zip'),
-  paper_manifest_artifact_name: SafePathSegmentSchema.optional().default('paper_manifest.json'),
-  // Artifact schema versions are semantic selectors, not budget knobs.
-  version: z.number().int().min(1).optional(),
-  _confirm: z.boolean().optional(),
-});
-
-export const HepImportPaperBundleToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
-  paper_dir_name: SafePathSegmentSchema.optional().default('paper'),
-  // Keep version fail-closed for the same reason as export-paper-scaffold.
-  version: z.number().int().min(1).optional(),
-  zip_artifact_name: SafePathSegmentSchema.optional().default('paper_bundle.zip'),
-  bundle_manifest_artifact_name: SafePathSegmentSchema.optional().default('paper_bundle_manifest.json'),
-  pdf_artifact_name: SafePathSegmentSchema.optional().default('paper_final.pdf'),
-  overwrite: z.boolean().optional().default(false),
-  dereference_symlinks: z.boolean().optional().default(false),
-  allow_external_symlink_targets: z.boolean().optional().default(false),
-});
-
+// The tools that write into output_dir, and the lexical evidence query, use
+// strict schemas: an undeclared argument (a misspelled output_dir, a removed
+// parameter) is refused instead of being silently dropped.
 export const HepImportFromZoteroToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
+  // Declared here because the refinement below keeps the registry from
+  // adding its generic project_root field to this schema.
+  project_root: z.string().optional().describe('Absolute path to the initialized nullius project root that contains output_dir.'),
+  output_dir: OutputDirSchema,
   collection_key: SafePathSegmentSchema.optional(),
   item_keys: z.array(SafePathSegmentSchema).optional().default([]),
-  limit: optionalBudgetInt({ min: 1 }),
-  start: optionalBudgetInt({ min: 0 }),
-  concurrency: optionalBudgetInt({ min: 1, max: 16 }).default(4),
-}).refine(v => Boolean(v.collection_key) || v.item_keys.length > 0, {
+  limit: strictBudgetInt({ min: 1 }),
+  start: strictBudgetInt({ min: 0 }),
+  concurrency: strictBudgetInt({ min: 1, max: 16 }).default(4),
+}).strict().refine(v => Boolean(v.collection_key) || v.item_keys.length > 0, {
   message: 'Either collection_key or item_keys is required',
-});
-
-const PdfEvidenceTypeSchema = z.enum(['pdf_page', 'pdf_region']);
-
-export const HepRunIngestSkillArtifactsToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
-  skill_artifacts_dir: z.string().min(1).describe('Absolute path to skill artifacts directory (must be within run_dir)'),
-  manifest_path: z.string().optional().describe('Optional path to computation_manifest_v1.json (within run_dir)'),
-  step_id: z.string().min(1).optional().describe('Optional manifest step_id for traceability (generated short id if omitted)'),
-  tags: z.array(z.string()).max(20).optional().describe('Classification tags (e.g. feyncalc, one-loop)'),
 });
 
 export const SearchExportFormatSchema = z.enum(['jsonl', 'json']);
 
 export const HepInspireSearchExportToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
+  output_dir: OutputDirSchema,
   query: z.string().min(1),
   sort: SortSchema.optional(),
-  size: optionalBudgetInt({ min: 1, max: 1000 }).default(1000),
-  max_results: optionalBudgetInt({ min: 1, max: 10_000 }).default(10_000),
+  size: strictBudgetInt({ min: 1, max: 1000 }).default(1000).describe(
+    'Records per INSPIRE page. If omitted: HEP_BUDGET_INSPIRE_SEARCH_PAGE_SIZE when set, otherwise 1000.'
+  ),
+  max_results: strictBudgetInt({ min: 1, max: 10_000 }).default(10_000).describe(
+    'Most records to export (at most 10000). If omitted: HEP_BUDGET_INSPIRE_SEARCH_MAX_RESULTS when set, otherwise 10000.'
+  ),
   output_format: SearchExportFormatSchema.optional().default('jsonl'),
   artifact_name: SafePathSegmentSchema.optional(),
   meta_artifact_name: SafePathSegmentSchema.optional(),
-});
+}).strict();
 
 export const HepInspireResolveIdentifiersToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
+  output_dir: OutputDirSchema,
   identifiers: z.array(z.string().min(1)).min(1),
   artifact_name: SafePathSegmentSchema.optional(),
   meta_artifact_name: SafePathSegmentSchema.optional(),
-});
+}).strict();
 
 const EvidenceTypeSchema = z.enum([
   'title',
@@ -189,74 +123,8 @@ const EvidenceTypeSchema = z.enum([
   'theorem',
   'citation_context',
 ]);
+const PdfEvidenceTypeSchema = z.enum(['pdf_page', 'pdf_region']);
 const QueryEvidenceTypeSchema = z.union([EvidenceTypeSchema, PdfEvidenceTypeSchema]);
-
-export const HepRunBuildMeasurementsToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
-  latex_catalog_artifact_name: SafePathSegmentSchema.optional().default('latex_evidence_catalog.jsonl'),
-  include_types: z
-    .array(EvidenceTypeSchema)
-    .optional()
-    .default(['paragraph', 'equation', 'figure', 'table', 'citation_context']),
-  target_quantities: z.array(z.string().min(1)).optional(),
-  max_results: optionalBudgetInt({ min: 1, max: 50_000 }).default(500),
-  measurements_artifact_name: SafePathSegmentSchema.optional(),
-  meta_artifact_name: SafePathSegmentSchema.optional(),
-});
-
-const HepProjectCompareMeasurementsInputRunSchema = z.object({
-  run_id: SafePathSegmentSchema,
-  measurements_artifact_name: SafePathSegmentSchema.optional(),
-  label: z.string().min(1).optional(),
-});
-
-export const HepProjectCompareMeasurementsToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
-  input_runs: z.array(HepProjectCompareMeasurementsInputRunSchema).min(2),
-  min_tension_sigma: z.number().positive().optional().default(2),
-  max_flags: optionalBudgetInt({ min: 1, max: 5_000 }).default(500),
-  include_not_comparable: z.boolean().optional().default(false),
-  output_artifact_name: SafePathSegmentSchema.optional(),
-});
-
-const WritingLatexSourceSchema = z
-  .object({
-    identifier: z.string().min(1).optional(),
-    main_tex_path: z.string().min(1).optional(),
-    paper_id: SafePathSegmentSchema.optional(),
-    include_inline_math: z.boolean().optional(),
-    include_cross_refs: z.boolean().optional(),
-    max_paragraph_length: optionalBudgetInt({ min: 0 }),
-  })
-  .refine(v => Boolean(v.identifier) || Boolean(v.main_tex_path), {
-    message: 'Either identifier or main_tex_path is required',
-  });
-
-export const HepRunBuildWritingEvidenceToolSchema = z
-  .object({
-    run_id: SafePathSegmentSchema,
-    latex_sources: z.array(WritingLatexSourceSchema).optional().default([]),
-    bridge_artifact_names: z.array(SafePathSegmentSchema).optional().default([]),
-    continue_on_error: z.boolean().optional().default(false),
-    latex_types: z
-      .array(EvidenceTypeSchema)
-      .optional()
-      .default(['paragraph', 'equation', 'figure', 'table', 'citation_context']),
-    max_evidence_items: optionalBudgetInt({ min: 1, max: 20000 }).default(2000),
-    // Embedding dimension is a bounded technical shape parameter, not an omit-to-default budget field.
-    embedding_dim: z
-      .number()
-      .int()
-      .optional()
-      .default(256)
-      .transform(v => Math.min(Math.max(v, 32), 1024)),
-    latex_catalog_artifact_name: SafePathSegmentSchema.optional().default('latex_evidence_catalog.jsonl'),
-    latex_embeddings_artifact_name: SafePathSegmentSchema.optional().default('latex_evidence_embeddings.jsonl'),
-    latex_enrichment_artifact_name: SafePathSegmentSchema.optional().default('latex_evidence_enrichment.jsonl'),
-  })
-  .refine(v => v.latex_sources.length > 0 || v.bridge_artifact_names.length > 0, {
-    message: 'At least one latex_sources entry or bridge_artifact_names entry is required',
-  });
 
 export const HepProjectBuildEvidenceToolSchema = z
   .object({
@@ -272,37 +140,16 @@ export const HepProjectBuildEvidenceToolSchema = z
     message: 'Either identifier or main_tex_path is required',
   });
 
-export const HepProjectQueryEvidenceToolSchema = z
-  .object({
-    project_id: SafePathSegmentSchema,
-    paper_id: SafePathSegmentSchema.optional(),
-    query: z.string().min(1),
-    types: z.array(QueryEvidenceTypeSchema).optional(),
-    mode: z.enum(['lexical', 'semantic']).optional().default('lexical'),
-    run_id: SafePathSegmentSchema.optional(),
-    include_explanation: z.boolean().optional().default(false),
-    concurrency: optionalBudgetInt({ min: 1, max: 16 }).default(4),
-    limit: optionalBudgetInt({ min: 1, max: 50 }).default(10),
-  })
-  .superRefine((v, ctx) => {
-    if (v.mode === 'semantic' && !v.run_id) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'run_id is required. Create one with hep_run_create first.',
-        path: ['run_id'],
-      });
-    }
-  });
-
-export const HepProjectQueryEvidenceSemanticToolSchema = z.object({
-  run_id: SafePathSegmentSchema,
+export const HepProjectQueryEvidenceToolSchema = z.object({
   project_id: SafePathSegmentSchema,
   paper_id: SafePathSegmentSchema.optional(),
   query: z.string().min(1),
   types: z.array(QueryEvidenceTypeSchema).optional(),
-  include_explanation: z.boolean().optional().default(false),
-  limit: optionalBudgetInt({ min: 1, max: 50 }).default(10),
-});
+  // Lexical search is the only mode; naming another one is refused rather than ignored.
+  mode: z.literal('lexical').optional(),
+  concurrency: strictBudgetInt({ min: 1, max: 16 }).default(4),
+  limit: strictBudgetInt({ min: 1, max: 50 }).default(10),
+}).strict();
 
 export const HepProjectPlaybackEvidenceToolSchema = z.object({
   project_id: SafePathSegmentSchema,

@@ -16,7 +16,9 @@ describe('project-aware HEP data root resolution', () => {
   let originalPdgDataDir: string | undefined;
 
   beforeEach(() => {
-    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hep-project-root-'));
+    // project_root is admitted in canonical form, so expected paths are built
+    // from the canonical spelling of the temp directory.
+    tmpRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-project-root-')));
     originalHepDataDir = process.env.HEP_DATA_DIR;
     originalPdgDataDir = process.env.PDG_DATA_DIR;
     delete process.env.HEP_DATA_DIR;
@@ -53,7 +55,6 @@ describe('project-aware HEP data root resolution', () => {
     fs.mkdirSync(path.join(projectRoot, '.nullius'), { recursive: true });
     process.env.HEP_DATA_DIR = path.join(tmpRoot, 'env-hep-data');
     process.env.HEP_DOWNLOAD_DIR = path.join(tmpRoot, 'env-downloads');
-    process.env.WRITING_PROGRESS_DIR = path.join(tmpRoot, 'env-writing-progress');
     process.env.PDG_DATA_DIR = path.join(tmpRoot, 'env-pdg');
 
     const result = await handleToolCall('hep_health', {

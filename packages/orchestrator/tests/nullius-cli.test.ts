@@ -905,8 +905,6 @@ describe('nullius CLI', () => {
             suggested_next_recipe: [
               'literature_landscape',
               'literature_gap_analysis',
-              'derivation_cycle',
-              'review_cycle',
             ],
             recommended_lane: 'operator_approved_followup',
             lane_type: 'workflow_recipe_handoff',
@@ -1106,39 +1104,33 @@ describe('nullius CLI', () => {
 
     const code = await runCli([
       'workflow-plan',
-      '--recipe', 'review_cycle',
-      '--run-id', 'M-REVIEW-1',
-      '--recid', '1234',
+      '--recipe', 'research_brainstorm',
+      '--run-id', 'M-BRAIN-2',
+      '--topic', 'cold atom response functions',
     ], io);
 
     expect(code).toBe(0);
     expect(JSON.parse(stdout.join(''))).toMatchObject({
-      recipe_id: 'review_cycle',
-      entry_tool: 'inspire_critical_analysis',
+      recipe_id: 'research_brainstorm',
     });
     const persistedSteps = (((manager.readState().plan as Record<string, unknown>).steps) ?? []) as Record<string, unknown>[];
     expect(persistedSteps[0]).toMatchObject({
-      step_id: 'critical_review',
+      step_id: 'open_brainstorm_context',
       task: {
-        task_id: 'critical_review',
-        task_kind: 'review',
-        task_intent: 'workflow_step.critical_review',
+        task_id: 'open_brainstorm_context',
+        task_kind: 'finding',
+        task_intent: 'workflow_step.open_brainstorm_context',
         preconditions: [],
       },
       execution: {
-        tool: 'inspire_critical_analysis',
-      },
-    });
-    expect(persistedSteps[1]).toMatchObject({
-      step_id: 'render_latex',
-      task: {
-        task_kind: 'draft_update',
+        action: null,
+        tool: 'research_brainstorm.open_context',
       },
     });
     expect(persistedSteps[2]).toMatchObject({
-      step_id: 'export_project',
+      step_id: 'screen_and_rank_angles',
       task: {
-        task_kind: 'draft_update',
+        task_kind: 'review',
       },
     });
   });

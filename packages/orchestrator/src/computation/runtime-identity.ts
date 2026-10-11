@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { invalidParams, type NativeRuntimeIdentityV1 } from '@nullius/shared';
+import { realLocationWithin } from './path-safety.js';
 
 export type NativeExecutableFormat = NativeRuntimeIdentityV1['executable_format'];
 export type NativeRuntimeIdentity = NativeRuntimeIdentityV1;
@@ -27,9 +28,15 @@ function nativeExecutableFormat(bytes: Buffer): NativeExecutableFormat | null {
   return null;
 }
 
-function inside(candidate: string, root: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+/** A runtime inside the run or the project is not a system runtime, whether
+ *  it is reached as spelled or through any symlink or alias. A comparison
+ *  that cannot be resolved never admits the candidate. */
+function insideRunOrProject(candidate: string, runDir: string, projectRoot: string): boolean {
+  try {
+    return realLocationWithin(runDir, candidate) || realLocationWithin(projectRoot, candidate);
+  } catch {
+    return true;
+  }
 }
 
 function candidateRuntimePaths(token: string): string[] {
@@ -67,10 +74,7 @@ export function resolveCanonicalNativeRuntime(params: {
     } catch {
       continue;
     }
-    if (inside(candidate, params.runDir) || inside(candidate, params.projectRoot)
-      || inside(canonicalPath, params.runDir) || inside(canonicalPath, params.projectRoot)) {
-      continue;
-    }
+    if (insideRunOrProject(candidate, params.runDir, params.projectRoot)) continue;
     const stat = fs.statSync(canonicalPath);
     if (!stat.isFile() || (process.platform !== 'win32' && (stat.mode & 0o111) === 0)) continue;
     const bytes = fs.readFileSync(canonicalPath);

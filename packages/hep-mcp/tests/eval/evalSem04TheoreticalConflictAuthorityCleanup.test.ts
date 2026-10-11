@@ -4,7 +4,7 @@ import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { runEvalSet, type EvalResult } from '../../src/eval/index.js';
-import { getRunArtifactPath } from '../../src/core/paths.js';
+import { makeProjectRoot } from '../support/hepProjectUri.js';
 import { readEvalSetFixture } from './evalSnapshots.js';
 
 vi.mock('../../src/api/client.js', () => ({
@@ -70,12 +70,7 @@ describe('eval: sem04 theoretical conflict authority cleanup', () => {
     if (fs.existsSync(dataDir)) fs.rmSync(dataDir, { recursive: true, force: true });
   });
 
-  async function createRun(): Promise<string> {
-    const projectRes = await handleToolCall('hep_project_create', { name: 'SEM04 Eval Project', description: 'Local-only' });
-    const projectPayload = JSON.parse(readTextBlock(projectRes)) as { project_id: string };
-    const runRes = await handleToolCall('hep_run_create', { project_id: projectPayload.project_id, args_snapshot: { eval: 'sem04' } });
-    return (JSON.parse(readTextBlock(runRes)) as { run_id: string }).run_id;
-  }
+  const OUTPUT_DIR = 'eval/sem04';
 
   async function runCase(input: Sem04Input): Promise<Sem04Actual> {
     vi.mocked(api.getPaper).mockImplementation(async (recid: string) => {
@@ -84,9 +79,10 @@ describe('eval: sem04 theoretical conflict authority cleanup', () => {
       return paper as never;
     });
 
-    const run_id = await createRun();
+    const projectRoot = makeProjectRoot(fs.mkdtempSync(path.join(dataDir, 'case-')));
     const res = await handleToolCall('inspire_theoretical_conflicts', {
-      run_id,
+      project_root: projectRoot,
+      output_dir: OUTPUT_DIR,
       recids: input.papers.map(paper => paper.recid),
       subject_entity: input.subject_entity,
       inputs: input.inputs,
@@ -104,14 +100,14 @@ describe('eval: sem04 theoretical conflict authority cleanup', () => {
     expect(res.isError).toBeFalsy();
 
     const candidates = readJsonl<{ candidate_provenance: { retrieval_strategy: string } }>(
-      getRunArtifactPath(run_id, 'theoretical_conflict_candidates.jsonl'),
+      path.join(projectRoot, OUTPUT_DIR, 'theoretical_conflict_candidates.jsonl'),
     );
     const conflicts = readJson<{
       conflicts: Array<{
         relation: string;
         provenance?: { decision_status?: string; reason_code?: string };
       }>;
-    }>(getRunArtifactPath(run_id, 'theoretical_conflicts_v1.json'));
+    }>(path.join(projectRoot, OUTPUT_DIR, 'theoretical_conflicts_v1.json'));
     const firstEdge = conflicts.conflicts[0];
 
     return {

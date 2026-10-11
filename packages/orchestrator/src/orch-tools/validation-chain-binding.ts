@@ -24,7 +24,7 @@ import verificationCheckRunSchema from '../../../../meta/schemas/verification_ch
 import { createRunArtifactRef } from '../computation/artifact-refs.js';
 import { assertDeclaredDependencyClosure, assertStepPathArgumentsDeclared, buildProductionEnvironment } from '../computation/dependency-closure.js';
 import { assertComputationManifestValid } from '../computation/manifest.js';
-import { assertNoSymlinkComponents, buildToolCommand, resolveWithinRoot } from '../computation/path-safety.js';
+import { assertNoSymlinkComponents, buildToolCommand, escapesBase, resolveUnderRoot, resolveWithinRoot } from '../computation/path-safety.js';
 import {
   assertNativeRuntimeIdentityLive,
   isNativeRuntimeIdentity,
@@ -134,10 +134,8 @@ export function buildSanitizedCheckerEnvironment(
 }
 
 function resolveInside(baseDir: string, candidate: string, label: string): string {
-  const resolvedBase = path.resolve(baseDir);
-  const resolved = path.resolve(resolvedBase, candidate);
-  const relative = path.relative(resolvedBase, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+  const resolved = resolveUnderRoot(baseDir, candidate);
+  if (resolved === null) {
     validationError(`${label} escapes its declared root.`, { candidate });
   }
   return resolved;
@@ -163,8 +161,7 @@ export function resolveVerifiedRunArtifact(
   }
   const canonicalRunDir = fs.realpathSync.native(runDir);
   const canonicalFilePath = fs.realpathSync.native(filePath);
-  const canonicalRelative = path.relative(canonicalRunDir, canonicalFilePath);
-  if (canonicalRelative.startsWith('..') || path.isAbsolute(canonicalRelative)) {
+  if (escapesBase(path.relative(canonicalRunDir, canonicalFilePath))) {
     validationError(`${label} resolves outside the current run directory.`, {
       uri: ref.uri,
       canonical_file_path: canonicalFilePath,

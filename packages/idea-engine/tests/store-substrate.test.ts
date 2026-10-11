@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { IdeaEngineStore } from '../src/store/engine-store.js';
@@ -145,6 +145,58 @@ describe('store substrate', () => {
     expect(store.artifactHashFromRef(portableRef)).toBe(artifactHash);
     expect(store.artifactPathFromRef(portableRef)).toBe(artifactPath);
     expect(store.loadArtifactFromRef(portableRef)).toEqual({ ok: true });
+  });
+
+  it('keeps a store directory whose name begins with two dots inside its project root', () => {
+    // Project-relative checks see `..ideas/...`; a prefix test on '..' reads it as outside.
+    const projectRoot = mkdtempSync(join(tmpdir(), 'idea-engine-dotdot-store-'));
+    tempDirs.push(projectRoot);
+    const store = new IdeaEngineStore(join(projectRoot, '..ideas'), { projectRoot });
+    const artifactPath = store.artifactPath('stcmp001', 'generation', 'pack-demo.json');
+    const artifactHash = `sha256:${'c'.repeat(64)}`;
+    store.writeArtifact('stcmp001', 'generation', 'pack-demo.json', { ok: true });
+
+    const portableRef = store.portableArtifactRef(artifactPath, artifactHash);
+
+    expect(portableRef).toBe(`project://..ideas/campaigns/stcmp001/artifacts/generation/pack-demo.json#${artifactHash}`);
+    expect(store.artifactPathFromRef(portableRef)).toBe(artifactPath);
+    expect(store.loadArtifactFromRef(portableRef)).toEqual({ ok: true });
+  });
+
+  it('keeps an entry whose name begins with two dots inside the store root', () => {
+    // Store-relative checks see `..notes/...`; project-relative ones see `idea-store/..notes/...`.
+    const projectRoot = mkdtempSync(join(tmpdir(), 'idea-engine-dotdot-entry-'));
+    tempDirs.push(projectRoot);
+    const store = new IdeaEngineStore(join(projectRoot, 'idea-store'));
+    const artifactPath = join(store.rootDir, '..notes', 'pack-demo.json');
+    mkdirSync(dirname(artifactPath), { recursive: true });
+    writeFileSync(artifactPath, JSON.stringify({ ok: true }), 'utf-8');
+    const artifactHash = `sha256:${'d'.repeat(64)}`;
+
+    const portableRef = store.portableArtifactRef(artifactPath, artifactHash);
+
+    expect(portableRef).toBe(`project://idea-store/..notes/pack-demo.json#${artifactHash}`);
+    expect(store.artifactPathFromRef(portableRef)).toBe(artifactPath);
+    expect(store.artifactPathFromRef(pathToFileURL(artifactPath).href)).toBe(artifactPath);
+    expect(store.loadArtifactFromRef(portableRef)).toEqual({ ok: true });
+  });
+
+  it('still rejects paths that leave the store or project root through the parent', () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'idea-engine-escape-'));
+    tempDirs.push(projectRoot);
+    const store = new IdeaEngineStore(join(projectRoot, 'idea-store'));
+    const hash = `sha256:${'e'.repeat(64)}`;
+
+    expect(() => new IdeaEngineStore(join(projectRoot, '..', 'sibling-store'), { projectRoot }))
+      .toThrow(/store root must be inside project root/);
+    expect(() => store.portableArtifactRef(join(store.rootDir, '..', 'outside.json'), hash))
+      .toThrow(/outside store root/);
+    expect(() => store.portableArtifactRef(join(projectRoot, '..', 'outside.json'), hash))
+      .toThrow(/outside project root/);
+    expect(() => store.artifactPathFromRef(pathToFileURL(join(projectRoot, 'outside.json')).href))
+      .toThrow(/outside store root/);
+    expect(() => store.artifactPathFromRef(`project://outside.json#${hash}`))
+      .toThrow(/outside store root/);
   });
 
   it('discovers a managed project root by .nullius before falling back to idea-store parent', () => {

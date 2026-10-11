@@ -127,6 +127,42 @@ describe('safeExtractZip (H-12)', () => {
     expect(() => safeExtractZip(zipPath, dest)).toThrow(ZipSafetyError);
   });
 
+  it('extracts entries whose names merely begin with two dots', () => {
+    const zip = buildZipBuffer([
+      { name: '..notes.md', data: Buffer.from('notes') },
+      { name: 'figs/..hidden/plot.txt', data: Buffer.from('plot'), compress: true },
+      { name: 'a..b/c..d.txt', data: Buffer.from('inner dots') },
+    ]);
+    const zipPath = path.join(tmpBase, 'dotnames.zip');
+    fs.mkdirSync(tmpBase, { recursive: true });
+    fs.writeFileSync(zipPath, zip);
+
+    const dest = path.join(tmpBase, 'out');
+    safeExtractZip(zipPath, dest);
+
+    expect(fs.readFileSync(path.join(dest, '..notes.md'), 'utf-8')).toBe('notes');
+    expect(fs.readFileSync(path.join(dest, 'figs', '..hidden', 'plot.txt'), 'utf-8')).toBe('plot');
+    expect(fs.readFileSync(path.join(dest, 'a..b', 'c..d.txt'), 'utf-8')).toBe('inner dots');
+  });
+
+  it('rejects a parent-directory segment under either separator convention, and all-dot segments', () => {
+    fs.mkdirSync(tmpBase, { recursive: true });
+    const dest = path.join(tmpBase, 'out');
+    for (const [index, name] of [
+      '..',
+      'figs/..',
+      'sub\\..\\..\\escape.txt',
+      'sub/..\\escape.txt',
+      // Read as `..` where trailing dots and spaces are trimmed (Windows).
+      '.../escape.txt',
+      'figs/.. /escape.txt',
+    ].entries()) {
+      const zipPath = path.join(tmpBase, `parent-${index}.zip`);
+      fs.writeFileSync(zipPath, buildZipBuffer([{ name, data: Buffer.from('sneaky') }]));
+      expect(() => safeExtractZip(zipPath, dest)).toThrow(/traversal/i);
+    }
+  });
+
   it('enforces file count limit', () => {
     const entries = Array.from({ length: 5 }, (_, i) => ({
       name: `file${i}.txt`,

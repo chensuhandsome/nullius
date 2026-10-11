@@ -143,6 +143,32 @@ describe('ensureInCache scheme dispatch', () => {
       expect(fs.existsSync(path.join(result.content_dir, 'latex', 'extracted', 'main.tex'))).toBe(true);
     });
 
+    it('caches a main file under a staging directory whose name begins with two dots', async () => {
+      mockGetPaperContent.mockImplementation(async (params) => {
+        const subdir = path.join(params.output_dir!, 'arxiv-2401.09012');
+        const mainAbs = path.join(subdir, '..src', 'main.tex');
+        fs.mkdirSync(path.dirname(mainAbs), { recursive: true });
+        fs.writeFileSync(mainAbs, '\\documentclass{article}\n');
+        return { success: true, source_type: 'latex', file_path: subdir, main_tex: mainAbs, arxiv_id: '2401.09012' };
+      });
+
+      const result = await ensureInCache('arxiv:2401.09012v1');
+
+      expect(readMetaJson('arxiv:2401.09012v1')?.main_path).toBe('latex/extracted/..src/main.tex');
+      expect(fs.existsSync(path.join(result.content_dir, 'latex', 'extracted', '..src', 'main.tex'))).toBe(true);
+    });
+
+    it('still rejects a main file outside the staging directory', async () => {
+      mockGetPaperContent.mockImplementation(async (params) => {
+        buildArxivStaging(params.output_dir!, '2401.09012');
+        const strayAbs = path.join(params.output_dir!, 'stray.tex');
+        fs.writeFileSync(strayAbs, '\\documentclass{article}\n');
+        return { success: true, source_type: 'latex', file_path: '', main_tex: strayAbs, arxiv_id: '2401.09012' };
+      });
+
+      await expect(ensureInCache('arxiv:2401.09012v1')).rejects.toThrow(/is not inside the expected staging dir/);
+    });
+
     it('throws when arxiv-mcp returns unsuccessful result', async () => {
       mockGetPaperContent.mockResolvedValue({
         success: false,

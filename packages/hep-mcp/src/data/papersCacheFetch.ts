@@ -33,6 +33,7 @@ import {
   materializeCacheEntry,
   readMetaJson,
 } from './papersCache.js';
+import { isPathInside } from './pathGuard.js';
 
 // Anchored variant of arxiv-mcp's SSOT ARXIV_ID_REGEX with explicit capture
 // groups for (bare_id, version). The SSOT regex already includes `^...$` and
@@ -170,7 +171,7 @@ function buildArxivFetcher(parsed: ParsedIdentifier & { scheme: 'arxiv' }, fetch
     // we can translate it to the cache-relative `latex/extracted/<rel>` form.
     const mainTexAbs = path.resolve(result.main_tex);
     const mainTexRelInExtracted = path.relative(arxivSubdir, mainTexAbs);
-    if (mainTexRelInExtracted.startsWith('..') || path.isAbsolute(mainTexRelInExtracted)) {
+    if (!isPathInside(arxivSubdir, mainTexAbs)) {
       fs.rmSync(stagingDir, { recursive: true, force: true });
       throw new Error(
         `arxiv-mcp main_tex ${mainTexAbs} is not inside the expected staging dir ${arxivSubdir}; cannot derive cache-relative main_path.`,

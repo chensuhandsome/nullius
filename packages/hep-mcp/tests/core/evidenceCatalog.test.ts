@@ -270,4 +270,53 @@ describe('vNext M6: Evidence Catalog v1 (LaTeX)', () => {
     expect(diag.hits.some(h => h.key === 'evidence.max_paragraph_length' && h.action === 'truncate')).toBe(true);
     expect(diag.warnings.some(w => w.code === 'budget_hit' && w.data?.key === 'evidence.max_paragraph_length')).toBe(true);
   });
+
+  it('keeps LaTeX sources whose names begin with two dots inside the project tree', async () => {
+    // Main file `..paper.tex` and input dir `..sections/` sit inside the source
+    // dir; a prefix test on '..' would flatten, skip, or reject them.
+    const srcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hep-dotdot-latex-'));
+    try {
+      fs.mkdirSync(path.join(srcDir, '..sections'));
+      fs.writeFileSync(path.join(srcDir, '..sections', 'intro.tex'), 'Content from a two-dot directory.\n');
+      const mainTexPath = path.join(srcDir, '..paper.tex');
+      fs.writeFileSync(mainTexPath, [
+        '\\documentclass{article}',
+        '\\begin{document}',
+        '\\section{Introduction}',
+        'Main body paragraph.',
+        '',
+        '\\input{..sections/intro}',
+        '\\end{document}',
+        '',
+      ].join('\n'));
+
+      const projectRes = await handleToolCall('hep_project_create', { name: 'Two-dot names' });
+      const project = JSON.parse(projectRes.content[0].text) as { project_id: string };
+      const buildRes = await handleToolCall('hep_project_build_evidence', {
+        project_id: project.project_id,
+        main_tex_path: mainTexPath,
+      });
+      expect(buildRes.isError).not.toBe(true);
+
+      const buildPayload = JSON.parse(buildRes.content[0].text) as {
+        catalog_uri: string;
+        summary: { copied_files: number; main_tex: string; warnings: string[] };
+      };
+      expect(buildPayload.summary.warnings.filter(w => /outside|flatten/i.test(w))).toEqual([]);
+      expect(buildPayload.summary.copied_files).toBe(2);
+      expect(buildPayload.summary.main_tex).toBe('..paper.tex');
+
+      const items = String((readHepUri(buildPayload.catalog_uri) as any).text)
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map(l => JSON.parse(l)) as Array<{ type: string; text: string; locator: { file: string } }>;
+      const inputParagraph = items.find(i => i.type === 'paragraph' && i.text.includes('Content from a two-dot directory'));
+      expect(inputParagraph?.locator.file).toBe('..sections/intro.tex');
+      const mainParagraph = items.find(i => i.type === 'paragraph' && i.text.includes('Main body paragraph'));
+      expect(mainParagraph?.locator.file).toBe('..paper.tex');
+    } finally {
+      fs.rmSync(srcDir, { recursive: true, force: true });
+    }
+  });
 });

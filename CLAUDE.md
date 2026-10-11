@@ -85,3 +85,8 @@
 - 本仓的本地 maintainer 材料可以存在于 gitignored 目录或仓外备份，但不要把它们重新纳入公开 Git 跟踪。
 - 若某项工作需要更细粒度的 lane plan、formal review packet、closeout tracker 或 branch/worktree queue，请在本地维护，不要把这些材料重新当作 public product docs。
 - 从 public repo 移除的开发过程文件，默认迁到 `~/.nullius-dev/`，优先按 `trackers/`、`plans/`、`reviews/`、`prompts/`、`closeouts/`、`archives/` 分区维护。
+- 开发过程暂存与验收运行的存储纪律：
+  - 要保留的证据不得放在 `/tmp` 或 `$TMPDIR`；验收运行若用临时根，判词落盘后把要保留的部分转入 `~/.nullius-dev/` 并删除临时根，不留两份。
+  - 隔离副本用 `git clone --shared --no-checkout` 或 `git worktree add --detach`，依赖目录用写时复制（APFS `cp -c -R`，Linux `cp --reflink=auto`）；不用 `--no-hardlinks` 全量克隆加整棵复制依赖目录。
+  - 新一次重试只引用上一次的结果（路径 + 哈希），不整目录复制上一次；被观测的文件同一内容只存一份、各用例只记哈希，前后对比只在不同时记录差异，不做逐次的全量清单。
+  - 测试临时文件由每次 vitest 运行的临时根管理（`<系统临时目录>/ntest-<uid>/`；通过即删，失败保留，7 天无改动且创建它的进程已结束后清除；`NULLIUS_KEEP_TEST_TMP=1` 一律保留）；测试通过 `os.tmpdir()` 取临时目录，不把临时目录硬写到这个根之外。

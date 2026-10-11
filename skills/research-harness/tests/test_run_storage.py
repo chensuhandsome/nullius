@@ -806,13 +806,15 @@ def test_a_case_only_rename_on_a_case_insensitive_file_system_is_not_recorded_tw
     assert [e["path"] for e in json.loads((run / rs.MANIFEST_NAME).read_text())["entries"]] == ["out.bin"]
 
 
-@pytest.mark.parametrize("variant", ["run_dir_is_a_repository", "git_file"])
+@pytest.mark.parametrize("variant", ["repository_above_the_run_dir", "run_dir_is_a_repository", "git_file"])
 def test_stow_refuses_run_directories_that_belong_to_another_repository(tmp_path, monkeypatch, variant):
     repo = make_repo(tmp_path)
-    run = repo / "artifacts" / "runs" / "r1"
-    run.mkdir()
+    run = repo / "artifacts" / "runs" / ("dep/r1" if variant == "repository_above_the_run_dir" else "r1")
+    run.mkdir(parents=True)
     (run / "big.bin").write_bytes(blob(THRESHOLD, 25))
-    if variant == "run_dir_is_a_repository":
+    if variant == "repository_above_the_run_dir":  # the run directory itself holds no .git
+        sh("git", "init", "-q", cwd=run.parent)
+    elif variant == "run_dir_is_a_repository":
         sh("git", "init", "-q", cwd=run)
     else:
         (run / "dep").mkdir()

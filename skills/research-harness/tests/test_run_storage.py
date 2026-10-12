@@ -1077,6 +1077,19 @@ def test_a_store_inside_any_checkout_is_refused(tmp_path, monkeypatch, where, ho
         assert stat.S_IMODE((run / "a.bin").stat().st_mode) & 0o200 and not (run / rs.MANIFEST_NAME).exists()
 
 
+def test_a_store_reached_through_a_symlink_into_a_worktree_private_git_directory_is_refused(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    wt = tmp_path / "wt"
+    sh("git", "worktree", "add", "-q", "-b", "side", str(wt), cwd=repo)
+    os.symlink(repo / ".git" / "worktrees" / "wt", tmp_path / "alias")  # removed with that worktree
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "a.bin").write_bytes(blob(THRESHOLD, 41))
+    assert run_main(["stow", str(run), "--store", str(tmp_path / "alias" / "kept-store")], repo,
+                    monkeypatch) == rs.EXIT_ERROR
+    assert not (repo / ".git" / "worktrees" / "wt" / "kept-store").exists()
+
+
 @pytest.mark.parametrize("state", ["staged_new", "committed_then_changed", "committed_then_changed_and_staged"])
 def test_stow_refuses_bulk_files_the_next_commit_would_add(tmp_path, monkeypatch, capsys, state):
     repo = make_repo(tmp_path)
@@ -1910,6 +1923,71 @@ def test_worktree_check_accepts_settings_that_hold_no_data(tmp_path, monkeypatch
     assert v["sparse"]["verdict"] == "safe_to_remove"
 
 
+@pytest.mark.parametrize("key,value", [("core.hooksPath", "elsewhere"), ("core.longpaths", "/a/path")])
+def test_worktree_check_keeps_settings_it_does_not_recognize(tmp_path, monkeypatch, capsys, key, value):
+    repo = make_repo(tmp_path)
+    sh("git", "config", "extensions.worktreeConfig", "true", cwd=repo)
+    wt = _worktree(repo, tmp_path, "lane")
+    if value == "elsewhere":  # a hooks directory other than the repository's own
+        (tmp_path / "other-hooks").mkdir()
+        value = str(tmp_path / "other-hooks")
+    sh("git", "config", "--worktree", key, value, cwd=wt)
+    capsys.readouterr()
+    assert run_main(["worktree-check", str(wt), "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    v = _verdicts(capsys)["lane"]
+    assert v["verdict"] == "keep" and any(u.startswith("config.worktree") for u in v["unassessed_git_state"])
+
+
+def test_worktree_check_compares_ignored_files_with_the_main_checkout_by_content(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    (repo / ".gitignore").write_text("*.out\n")
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "ignore rules", cwd=repo)
+    same = _worktree(repo, tmp_path, "same")
+    other = _worktree(repo, tmp_path, "other")
+    (repo / "result.out").write_text("value 1\n")
+    (same / "result.out").write_text("value 1\n")
+    (other / "result.out").write_text("value 2\n")  # same size, other bytes
+    capsys.readouterr()
+    assert run_main(["worktree-check", "--all", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    v = _verdicts(capsys)
+    assert v["same"]["verdict"] == "safe_to_remove"
+    assert [r["path"] for r in v["same"]["ignored"]["same_in_main_checkout"]] == ["result.out"]
+    assert v["other"]["verdict"] == "keep" and [r["path"] for r in v["other"]["ignored"]["unique"]] == ["result.out"]
+
+
+def test_worktree_check_does_not_credit_a_merge_between_rewritten_copies(tmp_path, monkeypatch, capsys):
+    # git cherry skips merge commits, so a change made in a merge (a conflict resolution, an edit)
+    # would pass unseen: a merge in the stretch keeps the worktree.
+    repo = make_repo(tmp_path)
+    wt = tmp_path / "lane"
+    sh("git", "worktree", "add", "-q", "-b", "lane", str(wt), "main", cwd=repo)
+    (wt / "one.txt").write_text("first change\n")
+    sh("git", "add", "-A", cwd=wt)
+    sh("git", "commit", "-q", "-m", "one", cwd=wt)
+    first = sh("git", "rev-parse", "HEAD", cwd=wt).stdout.strip()
+    sh("git", "switch", "-q", "-c", "side", "main", cwd=wt)
+    (wt / "two.txt").write_text("second change\n")
+    sh("git", "add", "-A", cwd=wt)
+    sh("git", "commit", "-q", "-m", "two", cwd=wt)
+    second = sh("git", "rev-parse", "HEAD", cwd=wt).stdout.strip()
+    sh("git", "switch", "-q", "lane", cwd=wt)
+    sh("git", "merge", "-q", "--no-ff", "--no-commit", "side", cwd=wt)  # neither parent is on main
+    (wt / "made-in-the-merge.txt").write_text("exists only in the merge commit\n")
+    sh("git", "add", "-A", cwd=wt)
+    sh("git", "commit", "-q", "-m", "merge with an edit", cwd=wt)
+    merge = sh("git", "rev-parse", "HEAD", cwd=wt).stdout.strip()
+    sh("git", "branch", "-q", "-D", "side", cwd=wt)
+    for commit in (first, second):  # equal patches on main: git cherry marks both "-"
+        sh("git", "cherry-pick", "-x", commit, cwd=repo)
+    assert [line[:1] for line in sh("git", "cherry", "main", merge, cwd=repo).stdout.split("\n") if line] == ["-", "-"]
+    sh("git", "reset", "-q", "--hard", "main", cwd=wt)  # the merge survives only in this worktree's reflog
+    capsys.readouterr()
+    assert run_main(["worktree-check", str(wt), "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    v = _verdicts(capsys)["lane"]
+    assert v["verdict"] == "keep" and merge in v["reflog_only_commits"]
+
+
 @pytest.mark.parametrize("applied", ["all", "part"])
 def test_worktree_check_credits_rewritten_commits_only_when_every_change_is_on_base(tmp_path, monkeypatch, capsys,
                                                                                    applied):
@@ -2230,6 +2308,24 @@ def test_a_case_only_rename_on_a_case_sensitive_file_system_is_the_same_output(t
     overwrite_in_place(run / "OUT.bin", blob(THRESHOLD, 146))  # now different bytes under the new name
     assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
     assert [r["path"] for r in json.loads(capsys.readouterr().out)["ignored_unstowed"]] == ["artifacts/runs/r1/OUT.bin"]
+
+
+def test_a_different_file_differing_only_in_case_with_the_same_bytes_is_a_new_output(tmp_path, monkeypatch, capsys):
+    if not case_sensitive_file_system(tmp_path):
+        pytest.skip("needs a case-sensitive file system (as on Linux)")
+    repo = make_repo(tmp_path)
+    sh("git", "config", "core.ignorecase", "true", cwd=repo)
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "out.bin").write_bytes(blob(THRESHOLD, 148))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    commit_records(repo)
+    (run / "OUT.bin").write_bytes(blob(THRESHOLD, 148))  # a second file; the recorded one is still there
+    capsys.readouterr()
+    assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert [r["path"] for r in json.loads(capsys.readouterr().out)["ignored_unstowed"]] == ["artifacts/runs/r1/OUT.bin"]
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    assert [e["path"] for e in json.loads((run / rs.MANIFEST_NAME).read_text())["entries"]] == ["OUT.bin", "out.bin"]
 
 
 # ---------------------------------------------------------- unusual input

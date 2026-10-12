@@ -427,14 +427,23 @@ describe('McpClient subprocess containment', () => {
     const scriptPath = path.join(tmpDir, 'server.mjs');
     writeServer(scriptPath, INITIALIZE_REPLY);
     const client = new McpClient({ shutdownGraceMs: 20, killGraceMs: 20 });
-    // Larger than a pipe buffer, so most of the line is still queued when the
-    // anchor dies and the rest of the write fails with EPIPE.
-    const starting = client.start(process.execPath, [scriptPath], {
-      configEnv: { LARGE_SETTING: 'x'.repeat(1 << 20) },
-      cwd: tmpDir,
-    });
-    realKill(serverProcess(client).pid!, 'SIGKILL');
-    await expect(starting).rejects.toThrow('MCP process exited');
+    const uncaught: unknown[] = [];
+    const recordUncaught = (error: unknown) => { uncaught.push(error); };
+    process.on('uncaughtException', recordUncaught);
+    try {
+      // Larger than a pipe buffer, so most of the line is still queued when
+      // the anchor dies and the rest of the write fails with EPIPE.
+      const starting = client.start(process.execPath, [scriptPath], {
+        configEnv: { LARGE_SETTING: 'x'.repeat(1 << 20) },
+        cwd: tmpDir,
+      });
+      realKill(serverProcess(client).pid!, 'SIGKILL');
+      await expect(starting).rejects.toThrow('MCP process exited');
+      await new Promise(resolve => setImmediate(resolve));
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off('uncaughtException', recordUncaught);
+    }
   });
 
   it('closes cleanly when the server has exited but nothing is reaped yet as its grace period ends', async () => {

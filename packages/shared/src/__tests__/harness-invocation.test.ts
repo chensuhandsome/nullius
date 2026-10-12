@@ -2,8 +2,8 @@
  * P3-C harness invocation marker — redesigned event-driven verifier tests.
  *
  * Covers:
- *   - skip layers (NODE_ENV=test, NULLIUS_HARNESS_VERIFY env,
- *     no .nullius/ at cwd → B, toolIsStateTouching=false → C)
+ *   - skip layers (NODE_ENV=test, NULLIUS_HARNESS_VERIFY env, cwd is the
+ *     home directory, no .nullius/ at cwd → B, toolIsStateTouching=false → C)
  *   - happy path (marker present, anchored_at ≥ state.json/ledger.jsonl
  *     mtime → no throw)
  *   - rejection paths (missing / invalid JSON / wrong contract / state
@@ -90,6 +90,47 @@ describe('skip layer B — no .nullius at cwd', () => {
     expect(() =>
       verifyHarnessInvocationMarker(bare, { env: FORCE_ON_ENV, toolIsStateTouching: true }),
     ).not.toThrow();
+  });
+});
+
+describe('skip — cwd is the home directory', () => {
+  // A home directory with ~/.nullius/ holding only user-level data (roster, provider data), no marker.
+  let home: string;
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-home-'));
+    fs.mkdirSync(path.join(home, '.nullius', 'hep-mcp'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.nullius', 'agents.json'), '{}\n');
+  });
+  afterEach(() => { fs.rmSync(home, { recursive: true, force: true }); });
+
+  it('skips verification when cwd is the home directory', () => {
+    expect(() => verifyHarnessInvocationMarker(home, { env: FORCE_ON_ENV, homeDir: home })).not.toThrow();
+  });
+
+  it('control: the same directory is verified (and refused) when it is not the home directory', () => {
+    const elsewhere = makeBareCwd();
+    try {
+      expect(() => verifyHarnessInvocationMarker(home, { env: FORCE_ON_ENV, homeDir: elsewhere }))
+        .toThrow(McpError);
+    } finally {
+      fs.rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('recognizes the home directory through a symbolic link', () => {
+    const alias = `${home}-alias`;
+    fs.symlinkSync(home, alias);
+    try {
+      expect(() => verifyHarnessInvocationMarker(alias, { env: FORCE_ON_ENV, homeDir: home })).not.toThrow();
+    } finally {
+      fs.unlinkSync(alias);
+    }
+  });
+
+  it('a project inside the home directory is still verified', () => {
+    const project = path.join(home, 'project');
+    fs.mkdirSync(path.join(project, '.nullius'), { recursive: true });
+    expect(() => verifyHarnessInvocationMarker(project, { env: FORCE_ON_ENV, homeDir: home })).toThrow(McpError);
   });
 });
 

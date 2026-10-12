@@ -332,7 +332,11 @@ describe('output staging files are created exclusively', () => {
       file.write('{"a":1}\n');
       fsyncFault.armed = true;
       const before = closeCount.calls;
-      expect(() => file.finish()).toThrow('simulated fsync failure');
+      expect(() => file.finish()).toThrow(expect.objectContaining({
+        code: 'UNSAFE_FS',
+        message: 'finishing a staging file failed: simulated fsync failure',
+        data: expect.objectContaining({ errno: 'EIO' }),
+      }));
       expect(closeCount.calls - before).toBe(1);
       expect(() => file.write('{"b":2}\n')).toThrow(/already finished or discarded/);
       expect(() => file.finish()).toThrow(/already finished or discarded/);

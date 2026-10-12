@@ -446,6 +446,77 @@ describe('McpClient subprocess containment', () => {
     }
   });
 
+  it('fails pending and later requests with the pipe failure, and keeps the host alive, when the server side dies under a large write', async () => {
+    if (process.platform === 'win32') return;
+    const tmpDir = makeTmpDir();
+    tmpDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, 'server.mjs');
+    const pidPath = path.join(tmpDir, 'server-pid');
+    writeServer(scriptPath, `${INITIALIZE_REPLY}
+      if (msg.method === 'initialize') fs.writeFileSync(process.env.PID_PATH, String(process.pid));
+    `);
+    const client = new McpClient({ shutdownGraceMs: 20, killGraceMs: 20 });
+    const uncaught: unknown[] = [];
+    const recordUncaught = (error: unknown) => { uncaught.push(error); };
+    process.on('uncaughtException', recordUncaught);
+    try {
+      await client.start(process.execPath, [scriptPath], { configEnv: { PID_PATH: pidPath }, cwd: tmpDir });
+      const serverPid = await waitForPid(pidPath);
+      const groupNumber = serverProcess(client).pid!;
+      // Kill the whole server-side tree, hold the event loop until nothing can
+      // read the server's stdin, then send about 1 MiB: the write fails with
+      // EPIPE before this process has reaped or read anything about the deaths.
+      const { pending } = await new Promise<{ pending: Promise<unknown> }>((resolve, reject) => setImmediate(() => {
+        try {
+          realKill(-groupNumber, 'SIGKILL');
+          const deadline = Date.now() + 10_000;
+          while (!(isZombie(groupNumber) && !processAlive(serverPid))) {
+            if (Date.now() > deadline) throw new Error('server side did not exit');
+            holdEventLoop(5);
+          }
+          const pending = client.request('test/large', { blob: 'x'.repeat(1 << 20) }, 5_000);
+          pending.catch(() => undefined);
+          resolve({ pending });
+        } catch (error) {
+          reject(error);
+        }
+      }));
+      const outcome = await pending.then(() => null, (error: Error) => error);
+      expect(uncaught).toEqual([]);
+      expect(outcome?.message).toMatch(/^MCP transport failed on stdin: /);
+      expect(['EPIPE', 'ECONNRESET']).toContain((outcome?.cause as NodeJS.ErrnoException | undefined)?.code);
+      await expect(client.request('test/again', {}, 5_000)).rejects.toThrow(/^MCP transport failed on stdin: /);
+    } finally {
+      process.off('uncaughtException', recordUncaught);
+      await client.close();
+    }
+  });
+
+  it('fails pending and later requests with a read failure on the server stdout', async () => {
+    if (process.platform === 'win32') return;
+    const tmpDir = makeTmpDir();
+    tmpDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, 'server.mjs');
+    writeServer(scriptPath, INITIALIZE_REPLY);
+    const client = new McpClient({ shutdownGraceMs: 20, killGraceMs: 20 });
+    const uncaught: unknown[] = [];
+    const recordUncaught = (error: unknown) => { uncaught.push(error); };
+    process.on('uncaughtException', recordUncaught);
+    try {
+      await client.start(process.execPath, [scriptPath], { cwd: tmpDir });
+      const pending = client.request('test/unanswered', {}, 5_000);
+      pending.catch(() => undefined);
+      serverProcess(client).stdout!.destroy(Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }));
+      const outcome = await pending.then(() => null, (error: Error) => error);
+      expect(uncaught).toEqual([]);
+      expect(outcome?.message).toBe('MCP transport failed on stdout: read ECONNRESET; client is unusable');
+      await expect(client.request('test/again', {}, 5_000)).rejects.toThrow(/^MCP transport failed on stdout: /);
+    } finally {
+      process.off('uncaughtException', recordUncaught);
+      await client.close();
+    }
+  });
+
   it('closes cleanly when the server has exited but nothing is reaped yet as its grace period ends', async () => {
     if (process.platform === 'win32') return;
     const tmpDir = makeTmpDir();

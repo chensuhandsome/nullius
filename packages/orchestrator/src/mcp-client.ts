@@ -300,6 +300,7 @@ export class McpClient {
   private closed = false;
   private unusable = false;
   private terminationPromise: Promise<void> | null = null;
+  private transportFailure: Error | null = null;
 
   constructor(options?: McpClientOptions) {
     const maxReconnects = options?.maxReconnects ?? 3;
@@ -371,6 +372,11 @@ export class McpClient {
     const serverExit = watchServerExit(proc, anchored);
     this.serverExits.set(proc, serverExit);
     proc.stderr?.resume();
+    // A failed write or read on the JSON-RPC pipes (EPIPE once nothing reads
+    // the server's stdin) ends the connection instead of escaping as an
+    // uncaught exception. readline re-emits its input's errors.
+    proc.stdin?.on('error', error => this.failTransport(proc, 'stdin', error));
+    proc.stdout.on('error', error => this.failTransport(proc, 'stdout', error));
     readline.createInterface({ input: proc.stdout }).on('line', line => {
       consumeJsonRpcLine({
         line,
@@ -381,7 +387,7 @@ export class McpClient {
           writeResponse: response => writeJsonRpcMessage(this.proc?.stdin ?? null, response),
         }),
       });
-    });
+    }).on('error', error => this.failTransport(proc, 'stdout', error));
     void serverExit.then(status => {
       // An anchor outlives its server: release the server's stdin as Node
       // does when a direct child exits.
@@ -461,6 +467,7 @@ export class McpClient {
 
   async request(method: string, params?: Record<string, unknown>, timeoutMs = 60_000): Promise<Record<string, unknown>> {
     if (this.closed || this.unusable || !this.proc?.stdin?.writable) {
+      if (this.transportFailure) throw new Error(this.transportFailure.message, { cause: this.transportFailure });
       throw new Error('McpClient is not usable');
     }
     const id = this.nextId++;
@@ -513,6 +520,18 @@ export class McpClient {
     this.closed = true;
     await this.terminateProcessTree();
     this.removeControlledHome();
+  }
+
+  // The first pipe failure of the current server makes the client unusable:
+  // pending requests and every later request fail with it. Pipes of a server
+  // this client has already replaced carry none of its requests.
+  private failTransport(proc: ChildProcess, stream: 'stdin' | 'stdout', error: Error): void {
+    if (this.proc !== proc || this.transportFailure) return;
+    this.transportFailure = new Error(
+      `MCP transport failed on ${stream}: ${error.message}; client is unusable`,
+      { cause: error },
+    );
+    this.invalidateAndTerminate(this.transportFailure);
   }
 
   private invalidateAndTerminate(error: Error): void {

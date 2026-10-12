@@ -82,6 +82,15 @@ test('declaration, test and __tests__ files carry no reachability, even when rea
   assert.deepEqual(result.unreachable, ['src/commented.ts', 'src/orphan.ts', 'src/quoted.ts']);
 });
 
+test('an extensionless declared launcher carries its imports', t => {
+  const { packageDir, write } = packageFixture(t);
+  write('pkg/package.json', JSON.stringify({ name: 'fixture', bin: { fixture: './bin/fixture' } }));
+  write('pkg/bin/fixture', "#!/usr/bin/env node\nimport '../dist/index.js';\n");
+  const result = scanPackage(packageDir);
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual(result.unreachable, ['src/cli.ts', 'src/commented.ts', 'src/orphan.ts', 'src/quoted.ts']);
+});
+
 test('a package that cannot be scanned is reported, not a crash', t => {
   const ws = workspace(t);
   ws.write('packages/broken/package.json', '{ not json');

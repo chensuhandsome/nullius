@@ -28,7 +28,7 @@
 // declaration files (`.d.ts`), test files (`*.test.*`, `*.spec.*`) and anything under a
 // `__tests__`, `__mocks__` or `__fixtures__` directory are never reported, and when one
 // is reached its own imports are not followed, so it cannot make another module look
-// used.
+// used. A declared entry or allowlisted file is always followed, whatever its name.
 //
 // A module that is started some other way is invisible to an import walk: a file a
 // shell script or a test suite runs, or one started as a separate process or worker
@@ -257,6 +257,9 @@ export function scanPackage(packageDir, { allow = [], ts } = {}) {
   }
   if (declaredRootCount === 0) problems.push('package.json declares no entry that resolves to a source file');
 
+  // A declared entry or allowlisted file always carries its imports, whatever its name
+  // (e.g. an extensionless `bin` launcher); any other file only if it is a candidate.
+  const rootSet = new Set(roots);
   const reached = new Set();
   const queue = [...roots];
   const unfollowedSites = [];
@@ -264,7 +267,7 @@ export function scanPackage(packageDir, { allow = [], ts } = {}) {
     const file = queue.pop();
     if (reached.has(file)) continue;
     reached.add(file);
-    if (!isCandidateModule(rel(file))) continue;
+    if (!rootSet.has(file) && !isCandidateModule(rel(file))) continue;
     const { specifiers, unfollowed } = collectSpecifiers(typescript, file);
     for (const { line, what } of unfollowed) unfollowedSites.push(`${rel(file)}:${line} has ${what}`);
     for (const spec of specifiers) {

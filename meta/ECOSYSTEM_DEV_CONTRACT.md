@@ -619,7 +619,7 @@ pnpm --filter @nullius/orchestrator test -- tests/nullius-cli.test.ts
 
 **CI 验证**: 目前没有自动检验。此前列出的 `tests/core/sandbox.test.ts` 检验的是一个从未接入任何摄入路径的 ZIP 解压器，已随该模块一并删除（2026-10-12）。当前在用的归档摄入路径是 arXiv 源码包解压（`packages/arxiv-mcp/src/source/tarExtractor.ts`）：拒绝越出目标目录的条目，只接收普通文件与目录；最大解压字节数与最大文件数尚未强制，越界拒绝也没有专门测试，两者仍待补充。
 
-**违规行为**: **fail-closed** — 未沙箱化的摄入路径阻断 CI
+**违规行为**: **fail-closed** — 未沙箱化的摄入路径阻断 CI（在上述检验补上之前，没有机制执行这一点）
 
 ### SEC-03: 工具风险分级与破坏性调用确认
 

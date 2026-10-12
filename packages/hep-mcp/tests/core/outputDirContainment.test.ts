@@ -791,6 +791,8 @@ describe('identifier resolution does not turn a refused write into a per-identif
       fs.chmodSync(entryPath, 0o644);
     }
     vi.mocked(api.getPaper).mockResolvedValue({ recid: '456' } as any);
+    // No shard directory may exist, so the new request must create one.
+    for (const shard of fs.readdirSync(cacheRoot)) fs.rmSync(path.join(cacheRoot, shard), { recursive: true, force: true });
     fs.chmodSync(cacheRoot, 0o555);
     try {
       const unmade = errorOf(await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids3', identifiers: ['456'] }));
@@ -1182,6 +1184,22 @@ describe('round-5 argument, name and response checks', () => {
     expect(summary.warnings).toEqual([
       'INSPIRE reported total=5, but its pages ended after 2 records (its last page said no more follow); rerunning the export will not reach the rest.',
     ]);
+  });
+
+  it('a search export that reaches max_results exactly where everything INSPIRE has ends gives no warning', async () => {
+    vi.mocked(api.search).mockResolvedValueOnce({ total: 2, papers: [P('1'), P('2')], has_more: false } as any);
+    const { summary, meta, diagnostics } = await exportResult({ output_dir: 'complete-exact', max_results: 2 });
+    expect(summary).toMatchObject({ total: 2, exported: 2, has_more: false });
+    expect(meta.next_url).toBeUndefined();
+    expect(summary.warnings).toEqual([]);
+    expect(diagnostics.hits).toEqual([]);
+  });
+
+  it('a search export names its cause first, ahead of INSPIRE\'s own page warnings', async () => {
+    vi.mocked(api.search).mockResolvedValueOnce({ total: 5, papers: [P('1'), P('2')], has_more: false, warning: 'an INSPIRE page notice' } as any);
+    const { summary } = await exportResult({ output_dir: 'cause-first' });
+    expect(summary.warnings[0]).toMatch(/its pages ended after 2 records/);
+    expect(summary.warnings).toContain('an INSPIRE page notice');
   });
 
   it('a search export whose total grew while its pages ended early names the largest total', async () => {

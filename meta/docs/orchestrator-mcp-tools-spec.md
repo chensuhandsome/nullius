@@ -34,7 +34,7 @@
 | `orch_run_stage_idea` | `write` | Stage IdeaHandoffC2 artifacts into the run's own directory, `<project_root>/artifacts/runs/<run_id>` |
 | `orch_run_stage_content` | `write` | Stage generic writing/review content into the run's own directory and return a `rep://runs/.../artifact/...` staging URI; loop-owned draft/review tasks may attach task-scoped provenance so completion and downstream review refresh can fail closed on missing outputs |
 | `orch_run_plan_computation` | `write` | Compile staged idea artifacts into `execution_plan_v1.json` and a run-local `computation/manifest.json`, requiring a supplied `method_spec` with files and `run_card`; missing methods are refused before executable artifacts are written |
-| `orch_run_execute_manifest` | `destructive` | Execute an approved run-local `computation_manifest_v1` from an existing run directory |
+| `orch_run_execute_manifest` | `destructive` | Execute an approved run-local `computation_manifest_v1` from the run's own directory |
 | `orch_run_progress_followups` | `destructive` | Progress exactly one computation-generated follow-up through the generic delegated runtime surface; delegated idea/literature feedback and writer/reviewer continuation are live |
 | `orch_run_record_proposal_decision` | `write` | Record one local operator decision for the current run's current repair/skill/optimize/innovate proposal and write proposal decision memory into `.nullius/proposal_decisions_v1.json` |
 | `orch_run_record_verification` | `write` | Execute one checker under a runtime environment allowlist and record adjacent production snapshots plus the checker's request-bound self-reported matching observations; `passed` does not prove actual reads or complete dependencies |

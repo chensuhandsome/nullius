@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { blockedCommand, unsafeFs } from '@nullius/shared';
+import { blockedCommand, McpError, unsafeFs } from '@nullius/shared';
 import type { ManifestTool } from './types.js';
 
 const BLOCKED_COMMAND_PATTERNS = [
@@ -185,9 +185,16 @@ export function resolveProjectContainedPath(rootPath: string, targetPath: string
     try {
       if (fs.lstatSync(cursor).isSymbolicLink()) throw unsafeFs(`${label} must not traverse a symbolic link`, { label, symlink_path: cursor });
     } catch (error) {
+      if (error instanceof McpError) throw error;
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'ENOTDIR') throw unsafeFs(`${label} passes through something that is not a directory`, { label, path: cursor });
-      if (code !== 'ENOENT') throw error;
+      if (code !== 'ENOENT') {
+        throw unsafeFs(`cannot inspect ${cursor}: ${error instanceof Error ? error.message : String(error)}`, {
+          label,
+          path: cursor,
+          ...(typeof code === 'string' ? { errno: code } : {}),
+        });
+      }
     }
   }
   return path.join(root, relative);
@@ -197,8 +204,9 @@ export function resolveProjectContainedPath(rootPath: string, targetPath: string
  * A workspace path as a manifest or method spec gives it: refused when empty,
  * when it contains NUL, or when any of its segments (split at either slash)
  * is `..`. A name that merely contains two dots (`..data.csv`) is an ordinary
- * file name. Every caller still resolves the result under its root and
- * refuses symbolic links on the way.
+ * file name. Every caller still resolves the result under its root, and
+ * every path that is then read, written or executed is also checked for
+ * symbolic links on the way.
  */
 export function sanitizeRelativePath(relativePath: string, label: string): string {
   const normalized = relativePath.trim();

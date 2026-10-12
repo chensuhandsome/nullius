@@ -273,6 +273,44 @@ describe('the computation bridge tools work only in a run directory inside the a
     expect(fs.readFileSync(outsideFile, 'utf-8')).toBe('{}\n');
   });
 
+  it('refuses a run directory reached through a symbolic link that points back inside the project', async () => {
+    const { root, alias, handoffPath } = projectWithHandoff();
+    fs.mkdirSync(path.join(root, 'artifacts', 'runs', 'r1link-target'), { recursive: true });
+    fs.symlinkSync(path.join(root, 'artifacts', 'runs', 'r1link-target'), path.join(root, 'artifacts', 'runs', 'r1link'), 'dir');
+    const result = await call('orch_run_stage_content', {
+      ...argsFor('orch_run_stage_content', alias, path.join(alias, 'artifacts', 'runs', 'r1link'), handoffPath), run_id: 'r1link',
+    });
+    expect(result.payload.error.message).toBe('run_dir must not traverse a symbolic link');
+    expect(fs.readdirSync(path.join(root, 'artifacts', 'runs', 'r1link-target'))).toEqual([]);
+  });
+
+  it('stages content through the alias into the canonical run directory', async () => {
+    const { root, alias, handoffPath } = projectWithHandoff();
+    const staged = await call('orch_run_stage_content', argsFor('orch_run_stage_content', alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
+    expect(staged.isError, JSON.stringify(staged.payload)).toBe(false);
+    expect(fs.readdirSync(path.join(root, 'artifacts', 'runs', 'r1', 'artifacts')).some(name => name.startsWith('staged_section_output'))).toBe(true);
+  });
+
+  it.skipIf(process.getuid?.() === 0)('reports a run path or historical run that cannot be inspected as an environment failure', async () => {
+    const { root, alias, handoffPath } = projectWithHandoff();
+    fs.mkdirSync(path.join(root, 'artifacts', 'runs'), { recursive: true });
+    fs.chmodSync(path.join(root, 'artifacts'), 0o000);
+    try {
+      const result = await call('orch_run_stage_content', argsFor('orch_run_stage_content', alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
+      expect(result.payload.error).toMatchObject({ code: 'UNSAFE_FS', message: expect.stringMatching(/^cannot inspect /), data: { errno: 'EACCES' } });
+    } finally {
+      fs.chmodSync(path.join(root, 'artifacts'), 0o755);
+    }
+    fs.mkdirSync(path.join(root, 'team', 'runs'), { recursive: true });
+    fs.chmodSync(path.join(root, 'team', 'runs'), 0o000);
+    try {
+      const result = await call('orch_run_stage_content', argsFor('orch_run_stage_content', alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
+      expect(result.payload.error).toMatchObject({ code: 'UNSAFE_FS', message: expect.stringMatching(/^HISTORICAL_RUN_UNAVAILABLE/) });
+    } finally {
+      fs.chmodSync(path.join(root, 'team', 'runs'), 0o755);
+    }
+  });
+
   it('refuses a relative run directory, and a project root that does not exist', async () => {
     const { parent, alias, handoffPath } = projectWithHandoff();
     const relative = await call('orch_run_stage_idea', argsFor('orch_run_stage_idea', alias, path.join('artifacts', 'runs', 'r1'), handoffPath));

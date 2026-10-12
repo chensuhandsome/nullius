@@ -306,12 +306,13 @@ export async function hepInspireSearchExport(params: {
     const resumeUrl = hasMore && !truncatedMidPage ? nextUrl : undefined;
     // One warning for the cause of the records not exported: max_results,
     // or INSPIRE's pages ending before the total it reported, which no rerun
-    // can reach.
+    // can reach. It comes first, ahead of INSPIRE's own page warnings, so a
+    // shortened warning list still carries it.
     if (stoppedAtMaxResults) {
       const msg = truncatedMidPage
-        ? `INSPIRE search export stopped at max_results=${maxResults} inside a page (total=${total}, exported=${exported}), so no continuation URL is given; rerun with a larger max_results to get the rest.`
+        ? `INSPIRE search export stopped at max_results=${maxResults} inside a page (total=${total}, exported=${exported}), so no continuation URL is given; rerun with a larger max_results to get the rest of what INSPIRE's pages return.`
         : `INSPIRE search export stopped at max_results=${maxResults} (total=${total}, exported=${exported}); next_url continues it.`;
-      warnings.push(msg);
+      warnings.unshift(msg);
       budget.recordHit({
         key: 'inspire.search_export.max_results',
         dimension: 'breadth',
@@ -324,7 +325,7 @@ export async function hepInspireSearchExport(params: {
       });
     } else if (hasMore) {
       const msg = `INSPIRE reported total=${total}, but its pages ended after ${exported} records (its last page said no more follow); rerunning the export will not reach the rest.`;
-      warnings.push(msg);
+      warnings.unshift(msg);
       budget.warn({ severity: 'warning', code: 'provider_pages_ended_early', message: msg, data: { total, exported } });
     }
 

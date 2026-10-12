@@ -168,9 +168,12 @@ function admitProjectRun(params: { project_root: string; run_id: string; run_dir
   try {
     ownRunDir = runDirFor(projectRoot, params.run_id);
   } catch (error) {
-    // An invalid run id, or one a historical run owns: the caller's to change.
+    // An invalid run id, or one a historical run owns: the caller's to change;
+    // a historical run that cannot be inspected is the environment's.
     if (error instanceof McpError) throw error;
-    throw invalidParams(error instanceof Error ? error.message : String(error), { project_root: projectRoot, run_id: params.run_id });
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith('HISTORICAL_RUN_UNAVAILABLE')) throw unsafeFs(message, { project_root: projectRoot, run_id: params.run_id });
+    throw invalidParams(message, { project_root: projectRoot, run_id: params.run_id });
   }
   if (runDir !== ownRunDir) {
     throw invalidParams('run_dir must be the run\'s own directory, <project_root>/artifacts/runs/<run_id>', {

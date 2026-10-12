@@ -58,7 +58,6 @@ A research session progresses through these stages:
 **Recommended workflow authority**:
 - `literature_landscape` recipe — build a curated reading list and anchor-map
 - `literature_gap_analysis` recipe — inspect tensions, omissions, and open seams
-- `literature_to_evidence` recipe — turn a curated paper set into evidence-ready artifacts
 
 **Recommended atomic tools**:
 - `inspire_search` / `inspire_search_next` — targeted queries
@@ -104,12 +103,12 @@ A research session progresses through these stages:
 
 **Recommended tools**:
 - `research-writer` skill — paper scaffold, section drafting, and LaTeX hygiene/compile checks
-- `hep_project_build_evidence` — evidence catalog for a cited paper's LaTeX source
-- `hep_project_query_evidence` (lexical) / `hep_project_playback_evidence` — section-level evidence retrieval and source playback
+- `arxiv_paper_source` / `inspire_paper_source` — LaTeX source or PDF of a cited paper, to read claims against
+- `claim-grounding` skill — check that each cited source actually supports the claim it is cited for
 - `inspire_resolve_citekey` — INSPIRE citekeys and BibTeX for cited recids
 
 **Typical flow**:
-1. Build or query evidence catalogs for the curated paper set / results
+1. Read the sources of the curated paper set and record the passages (section, equation, page) each claim rests on
 2. Generate outline candidates → judge → select
 3. Write sections with explicit evidence grounding
 4. Integrate sections → compile LaTeX

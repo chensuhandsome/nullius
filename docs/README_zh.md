@@ -32,7 +32,7 @@ Nullius 是一个面向理论研究的 domain-neutral、evidence-first monorepo�
 | Stateful 文献规划入口 | `nullius workflow-plan` | 通过 `@nullius/literature-workflows` 解析 checked-in workflow authority，并写入 `.nullius/state.json#/plan` / `.nullius/plan.md` |
 | Agent research project harness skill | `research-harness` | 面向 Codex / Claude Code / OpenCode 的薄客户端 skill，用于恢复外部项目状态、把工作路由到 `nullius` / `research-team` / `markdown-hygiene` / `hep-mcp`，并把结果折回长期 artifacts |
 | 实验性 idea runtime bridge | `node /absolute/path/to/nullius/packages/idea-mcp/dist/server.js` | 面向显式外部数据根的 TS hosted campaign lifecycle bridge，覆盖 `idea_campaign_*`；posterior 排序的 rank/promote、节点 posterior/lifecycle/grounding-audit/card-revision 更新、溯源修正与 generation-pack 导入（`node.import_generated`）属于 `idea-engine` runtime-contract truth，不是 root front door |
-| 当前最成熟的领域 MCP front door | `node /absolute/path/to/nullius/packages/hep-mcp/dist/index.js` | 面向文献研究、论文 evidence catalog 与 provider-local 组合的 HEP 领域 MCP server；其研究输出工具把文件写入调用方指定的项目内 `output_dir` |
+| 当前最成熟的领域 MCP front door | `node /absolute/path/to/nullius/packages/hep-mcp/dist/index.js` | 面向文献研究与 provider-local 组合的 HEP 领域 MCP server；其研究输出工具把文件写入调用方指定的项目内 `output_dir` |
 | Bounded provider MCP operators | `@nullius/openalex-mcp`、`@nullius/arxiv-mcp`、`@nullius/hepdata-mcp`、`@nullius/pdg-mcp`、`@nullius/zotero-mcp` | 保持 MCP-first 的原子化文献、数据、参考与证据 operators |
 
 HEP 工具清单由代码拥有，并由 `HEP_TOOL_MODE` 做模式过滤；精确工具数量只保留在生成的分类/状态文档里，不写入本 README。
@@ -69,17 +69,11 @@ Skill 源码面与分发面是分离的：
 <resolved HEP data root>/
   cache/
   downloads/
-  projects/<project_id>/
-    project.json
-    artifacts/
-    papers/<paper_id>/
-      paper.json
-      evidence/
+  pdg/
 ```
 
-- Project 根位于 `projects/<project_id>/...`。
-- `hep-mcp` 没有自己的 run：run、审批与生命周期属于 orchestrator，位于 `<project_root>/artifacts/runs/<run_id>/`。HEP 研究输出工具（检索导出、标识符映射、Zotero 映射、LaTeX 解析、冲突图）把文件写入调用方指定的项目内 `output_dir`（通常是当前 run 目录下的子目录），并返回项目相对路径。`output_dir` 需要 `project_root`，不能是 project root 本身，不得经过 project root 以下的符号链接，也不得位于 `.nullius/`、`team/runs/` 或 `artifacts/hep-mcp/` 之下（比较时不区分大小写）；调用从不覆盖已有文件。`inspire_paper_source` 的下载、缓存、PDG 数据与 hep 论文/evidence project 仍位于 hep-mcp 的数据根（`<project_root>/artifacts/hep-mcp` 或 `HEP_DATA_DIR`）。
-- 旧版本留下的 HEP run 目录（HEP 数据根下的 `runs/<run_id>/`）是历史证据：原位读取，不再被任何工具创建或改写。历史 `hep://runs/...` 引用的解析规则见 [`docs/URI_REGISTRY.md`](./URI_REGISTRY.md)。
+- `hep-mcp` 没有自己的 run：run、审批与生命周期属于 orchestrator，位于 `<project_root>/artifacts/runs/<run_id>/`。HEP 研究输出工具（检索导出、标识符映射、Zotero 映射、LaTeX 解析、冲突图）把文件写入调用方指定的项目内 `output_dir`（通常是当前 run 目录下的子目录），并返回项目相对路径。`output_dir` 需要 `project_root`，不能是 project root 本身，不得经过 project root 以下的符号链接，也不得位于 `.nullius/`、`team/runs/` 或 `artifacts/hep-mcp/` 之下（比较时不区分大小写）；调用从不覆盖已有文件。`inspire_paper_source` 的下载、缓存与 PDG 数据仍位于 hep-mcp 的数据根（`<project_root>/artifacts/hep-mcp` 或 `HEP_DATA_DIR`）。
+- 旧版本留下的 HEP run 目录（HEP 数据根下的 `runs/<run_id>/`）与论文/evidence 项目目录（`projects/<project_id>/`，含 evidence catalog）是历史证据：原位读取，不再被任何工具创建或改写。历史 `hep://runs/...` 与 `hep://projects/...` 引用的解析规则见 [`docs/URI_REGISTRY.md`](./URI_REGISTRY.md)。
 - `PDG_DATA_DIR` 是 PDG 的本地 companion root；未单独设置时跟随 resolved HEP data root，即 `<resolved HEP data root>/pdg`。
 - 文本与二进制 artifacts 都保留在 package-owned artifact root 下；tool result 保持紧凑，只指回 project artifacts，避免把大 payload 内联进上下文。
 - 论文原文、抽取文本、arXiv source tarball 和源码树都是普通本机文件。若只服务于本轮检查，放在本机临时目录；若后续验证或接续还需要，则放在外部 project root 中合适的 project/run artifact 子目录下。
@@ -145,7 +139,7 @@ Approval packet 会落在该 run 的 `artifacts/runs/<run_id>/approvals/<approva
 说明：
 
 - 先构建：`pnpm -r build`。
-- MCP env 里的路径是 filesystem roots，不是 URI/protocol 设置。持久 nullius 项目工作应在 HEP tool call 中传入已初始化的 `project_root`，让 HEP project 数据写到 `<project_root>/artifacts/hep-mcp`，工具输出文件写到你在项目内指定的 `output_dir`。`HEP_DATA_DIR` 只作为 scratch fallback，或用于一次性检查、CI、迁移等显式 override。
+- MCP env 里的路径是 filesystem roots，不是 URI/protocol 设置。持久 nullius 项目工作应在 HEP tool call 中传入已初始化的 `project_root`，让 hep-mcp 的下载、缓存与 PDG 数据写到 `<project_root>/artifacts/hep-mcp`，工具输出文件写到你在项目内指定的 `output_dir`。`HEP_DATA_DIR` 只作为 scratch fallback，或用于一次性检查、CI、迁移等显式 override。
 - 如果 `nullius` 不在 `PATH` 中，构建后创建本地 wrapper：
 
 ```bash
@@ -271,11 +265,9 @@ pnpm --filter @nullius/hep-mcp docs:tool-counts:check
 
 1. 调用 `hep_health`
 1. 若是持久项目工作，每次 HEP tool call 都传入 `project_root=/absolute/path/to/external-project`
-1. 调用 `hep_project_create`
-1. 对一篇论文调用 `hep_project_build_evidence`，再用 `hep_project_query_evidence`（词法检索）与 `hep_project_playback_evidence` 定位并回读段落
 1. 调用 `hep_inspire_search_export`，传入 `project_root` 与 `output_dir`（如 `artifacts/runs/<run_id>/literature`）；检查返回的项目相对 `export_path` / `meta_path`，以及 `<output_dir>/external_api/` 下的逐次外部 API 记录
 
-HEP 项目保存论文与 evidence 目录；run、通用生命周期与审批仍归 orchestrator。`hep-mcp` 不提供草稿渲染、项目导出或论文打包工具。
+run、通用生命周期与审批仍归 orchestrator。`hep-mcp` 不提供项目或 evidence catalog、草稿渲染、项目导出或论文打包工具；论文源码用 `arxiv_paper_source` / `inspire_paper_source` 读取，对照原文核对的结果记入项目自己的笔记。
 
 ## 文档
 

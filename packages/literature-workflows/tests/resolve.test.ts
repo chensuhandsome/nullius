@@ -1,7 +1,7 @@
 // CONTRACT-EXEMPT: CODE-01.1 sunset:2026-10-31 Pre-existing recipe-resolution suite; this change adds only literature closure assertions.
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { resolveWorkflowRecipe } from '../src/index.js';
+import { resolveWorkflowRecipe, WorkflowActionIdSchema } from '../src/index.js';
 import { getRecipeDir } from '../src/recipeLoader.js';
 
 describe('literature workflow resolver', () => {
@@ -82,16 +82,12 @@ describe('literature workflow resolver', () => {
     });
   });
 
-  it('carries source-first reading handoff in resolved literature evidence plans', () => {
+  it('carries source-first reading handoff in resolved literature discovery plans', () => {
     const plan = resolveWorkflowRecipe({
-      recipe_id: 'literature_to_evidence',
-      inputs: {
-        query: 'bootstrap amplitudes',
-        run_id: 'RUN-1',
-        project_id: 'project-1',
-        paper_id: 'paper-1',
-      },
-      available_tools: ['inspire_search', 'hep_project_build_evidence'],
+      recipe_id: 'literature_gap_analysis',
+      phase: 'discover',
+      inputs: { query: 'bootstrap amplitudes' },
+      available_tools: ['inspire_search'],
     });
 
     expect(plan.resolved_steps[0]?.consumer_hints?.reading_handoff_contract).toMatchObject({
@@ -240,33 +236,11 @@ describe('literature workflow resolver', () => {
     });
   });
 
-  it('keeps materialize.evidence_build on the current first-host adapter seam', () => {
-    const plan = resolveWorkflowRecipe({
-      recipe_id: 'literature_to_evidence',
-      inputs: {
-        query: 'bootstrap amplitudes',
-        run_id: 'RUN-1',
-        project_id: 'project-1',
-        paper_id: 'paper-1',
-      },
-      available_tools: ['inspire_search', 'hep_project_build_evidence'],
-    });
-
-    expect(plan.resolved_steps).toMatchObject([
-      {
-        id: 'search_export',
-        task_kind: 'literature',
-        action: 'discover.seed_search',
-        provider: 'inspire',
-        tool: 'inspire_search',
-      },
-      {
-        id: 'build_evidence',
-        task_kind: 'literature',
-        action: 'materialize.evidence_build',
-        tool: 'hep_project_build_evidence',
-      },
-    ]);
+  it('has no recipe or action that builds a project evidence catalog', () => {
+    expect(() => resolveWorkflowRecipe({ recipe_id: 'literature_to_evidence', inputs: {} })).toThrow(
+      'Workflow recipe not found: literature_to_evidence',
+    );
+    expect(WorkflowActionIdSchema.options).not.toContain('materialize.evidence_build');
   });
 
   it('keeps landscape provenance and network task kinds explicit in the recipe layer', () => {

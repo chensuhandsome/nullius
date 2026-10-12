@@ -314,6 +314,8 @@ describe('workflow run consumer', () => {
     manager.ensureDirs();
     const state = manager.readState();
     state.run_id = 'M-WF-SEARCH';
+    // A plan persisted by a recipe that has since been removed: a persisted
+    // plan carries its own steps, so it runs without the recipe file.
     state.workflow_id = 'literature_to_evidence';
     state.run_status = 'idle';
     state.plan = {

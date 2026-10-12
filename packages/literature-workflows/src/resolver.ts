@@ -16,7 +16,6 @@ const ACTION_CAPABILITIES: Record<WorkflowActionId, WorkflowCapabilityId[]> = {
   'analyze.paper_connections': ['analysis.paper_set_connections'],
   'analyze.provenance_trace': ['analysis.provenance_trace'],
   'analyze.paper_set_critical_review': ['analysis.paper_set_critical_review'],
-  'materialize.evidence_build': [],
 };
 
 function resolveTemplate(value: unknown, inputs: Record<string, unknown>): unknown {
@@ -63,10 +62,6 @@ function chooseProvider(
     if (!step.tool) throw new Error(`Workflow step ${step.id} is missing action/tool authority`);
     return { tool: step.tool, requiredCapabilities: [...step.required_capabilities] };
   }
-  if (step.action === 'materialize.evidence_build') {
-    return { tool: step.tool ?? 'hep_project_build_evidence', requiredCapabilities: [] };
-  }
-
   const profiles = getWorkflowProviderProfiles();
   const requiredCapabilities = [
     ...new Set([

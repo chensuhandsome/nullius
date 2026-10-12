@@ -14,17 +14,6 @@ export const SafePathSegmentSchema = z
     message: 'contains unsafe segment',
   });
 
-export const HepProjectCreateToolSchema = z.object({
-  name: z.string().min(1),
-  description: z.string().optional(),
-});
-
-export const HepProjectGetToolSchema = z.object({
-  project_id: SafePathSegmentSchema,
-});
-
-export const HepProjectListToolSchema = z.object({});
-
 export const HepHealthToolSchema = z.object({
   check_inspire: z.boolean().optional().default(false),
   inspire_timeout_ms: optionalBudgetInt({ min: 1 }).default(5000),
@@ -111,50 +100,3 @@ export const HepInspireResolveIdentifiersToolSchema = z.object({
   artifact_name: SafePathSegmentSchema.optional(),
   meta_artifact_name: SafePathSegmentSchema.optional(),
 }).strict();
-
-const EvidenceTypeSchema = z.enum([
-  'title',
-  'abstract',
-  'section',
-  'paragraph',
-  'equation',
-  'figure',
-  'table',
-  'theorem',
-  'citation_context',
-]);
-const PdfEvidenceTypeSchema = z.enum(['pdf_page', 'pdf_region']);
-const QueryEvidenceTypeSchema = z.union([EvidenceTypeSchema, PdfEvidenceTypeSchema]);
-
-export const HepProjectBuildEvidenceToolSchema = z
-  .object({
-    project_id: SafePathSegmentSchema,
-    paper_id: SafePathSegmentSchema.optional(),
-    identifier: z.string().min(1).optional(),
-    main_tex_path: z.string().min(1).optional(),
-    include_inline_math: z.boolean().optional().default(false),
-    include_cross_refs: z.boolean().optional().default(false),
-    max_paragraph_length: optionalBudgetInt({ min: 0 }).default(0),
-  })
-  .refine(p => Boolean(p.identifier) || Boolean(p.main_tex_path), {
-    message: 'Either identifier or main_tex_path is required',
-  });
-
-export const HepProjectQueryEvidenceToolSchema = z.object({
-  project_id: SafePathSegmentSchema,
-  paper_id: SafePathSegmentSchema.optional(),
-  query: z.string().min(1),
-  types: z.array(QueryEvidenceTypeSchema).optional(),
-  // Lexical search is the only mode; naming another one is refused rather than ignored.
-  mode: z.literal('lexical').optional(),
-  concurrency: strictBudgetInt({ min: 1, max: 16 }).default(4),
-  limit: strictBudgetInt({ min: 1, max: 50 }).default(10),
-}).strict();
-
-export const HepProjectPlaybackEvidenceToolSchema = z.object({
-  project_id: SafePathSegmentSchema,
-  paper_id: SafePathSegmentSchema,
-  evidence_id: z.string().min(1),
-  before_chars: optionalBudgetInt({ min: 0, max: 1000 }).default(40),
-  after_chars: optionalBudgetInt({ min: 0, max: 2000 }).default(120),
-});

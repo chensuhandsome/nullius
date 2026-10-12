@@ -96,7 +96,6 @@ for (const [relativePath, anchors] of anchoredFiles) {
 for (const relativePath of [
   'packages/literature-workflows/recipes/literature_landscape.json',
   'packages/literature-workflows/recipes/literature_gap_analysis.json',
-  'packages/literature-workflows/recipes/literature_to_evidence.json',
 ]) {
   let recipe;
   try {

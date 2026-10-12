@@ -1577,7 +1577,7 @@ def main() -> int:
     p.add_argument("--path", default=DEFAULT_SATURATION_PATH)
 
     p = sub.add_parser("workflow-plan", help="Resolve checked-in literature workflow authority through a lower-level consumer into an executable plan.")
-    p.add_argument("--recipe", required=True, choices=["literature_gap_analysis", "literature_landscape", "literature_to_evidence"])
+    p.add_argument("--recipe", required=True, choices=["literature_gap_analysis", "literature_landscape"])
     p.add_argument("--phase", required=True)
     p.add_argument("--query", default="")
     p.add_argument("--topic", default="")

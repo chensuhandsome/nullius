@@ -36,7 +36,7 @@ describe('WorkflowTaskProjectionInputSchema', () => {
         task_id: 'task-1',
         task_kind: 'literature',
         description: 'Find candidate literature for the topic.',
-        tool: 'hep_project_build_evidence',
+        tool: 'inspire_search',
       }),
     ).toThrow();
   });
@@ -81,7 +81,7 @@ describe('WorkflowStepTaskProjectionSchema', () => {
         required_capabilities: [],
         expected_artifacts: [],
         preconditions: [],
-        tool: 'hep_project_build_evidence',
+        tool: 'inspire_search',
       }),
     ).toThrow();
 
@@ -132,14 +132,14 @@ describe('buildWorkflowStepTaskProjection', () => {
 
   it('keeps task_kind explicit while allowing action-based task_intent', () => {
     const result = buildWorkflowStepTaskProjection({
-      task_id: 'build_evidence',
+      task_id: 'source_trace',
       task_kind: 'evidence_search',
-      action: 'materialize.evidence_build',
-      description: 'Materialize bounded evidence artifacts from the paper set.',
+      action: 'analyze.provenance_trace',
+      description: 'Trace the original source behind a cited claim.',
     });
 
     expect(result.task_kind).toBe('evidence_search');
-    expect(result.task_intent).toBe('materialize.evidence_build');
+    expect(result.task_intent).toBe('analyze.provenance_trace');
   });
 
   it('prefers explicit task intent and title when provided', () => {

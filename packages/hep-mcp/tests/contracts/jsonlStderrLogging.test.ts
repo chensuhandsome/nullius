@@ -48,8 +48,8 @@ describe('emitJsonlLog', () => {
   it('emits ERROR level on failure', () => {
     emitJsonlLog({
       traceId: 'test-trace-002',
-      toolName: 'hep_project_create',
-      toolArgs: { project_id: 'P1' },
+      toolName: 'hep_inspire_resolve_identifiers',
+      toolArgs: { output_dir: 'out' },
       durationMs: 100,
       resultStatus: 'error',
     });

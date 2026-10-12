@@ -14,7 +14,7 @@ vi.mock('../../src/api/rateLimiter.js', () => ({
 const rateLimiter = await import('../../src/api/rateLimiter.js');
 const { clearAllCaches } = await import('../../src/cache/memoryCache.js');
 const { handleToolCall } = await import('../../src/tools/index.js');
-const { makeProjectRoot, readProjectFile } = await import('../support/hepProjectUri.js');
+const { makeProjectRoot, readProjectFile } = await import('../support/projectFiles.js');
 
 type DatasetInput = { query: string; sort: string; size: number; max_results: number };
 type DatasetExpected = { total: number; exported: number; pages_fetched: number; has_more: boolean };

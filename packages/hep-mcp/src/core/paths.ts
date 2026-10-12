@@ -1,18 +1,4 @@
-import * as path from 'path';
-import { ensureDir, getDataDir } from '../data/dataDir.js';
-import { resolvePathWithinParent } from '../data/pathGuard.js';
 import { invalidParams } from '@nullius/shared';
-
-function ensureSubdir(name: string): string {
-  const dataDir = getDataDir();
-  const dirPath = resolvePathWithinParent(dataDir, path.join(dataDir, name), name);
-  ensureDir(dirPath);
-  return dirPath;
-}
-
-export function getProjectsDir(): string {
-  return ensureSubdir('projects');
-}
 
 export function assertSafePathSegment(segment: string, what: string): void {
   if (segment.length === 0) throw invalidParams(`${what} cannot be empty`);
@@ -23,79 +9,4 @@ export function assertSafePathSegment(segment: string, what: string): void {
   if (segment === '.' || segment === '..' || segment.includes('..')) {
     throw invalidParams(`${what} contains unsafe segment`);
   }
-}
-
-export function getProjectDir(projectId: string): string {
-  assertSafePathSegment(projectId, 'project_id');
-  const projectsDir = getProjectsDir();
-  return resolvePathWithinParent(projectsDir, path.join(projectsDir, projectId), 'project_dir');
-}
-
-export function getProjectJsonPath(projectId: string): string {
-  const projectDir = getProjectDir(projectId);
-  return resolvePathWithinParent(projectDir, path.join(projectDir, 'project.json'), 'project.json');
-}
-
-export function getProjectPapersDir(projectId: string): string {
-  const projectDir = getProjectDir(projectId);
-  const papersDir = resolvePathWithinParent(projectDir, path.join(projectDir, 'papers'), 'papers_dir');
-  ensureDir(papersDir);
-  return papersDir;
-}
-
-export function getProjectArtifactsDir(projectId: string): string {
-  const projectDir = getProjectDir(projectId);
-  const artifactsDir = resolvePathWithinParent(projectDir, path.join(projectDir, 'artifacts'), 'project_artifacts_dir');
-  ensureDir(artifactsDir);
-  return artifactsDir;
-}
-
-export function getProjectArtifactPath(projectId: string, artifactName: string): string {
-  assertSafePathSegment(artifactName, 'artifact_name');
-  const artifactsDir = getProjectArtifactsDir(projectId);
-  return resolvePathWithinParent(artifactsDir, path.join(artifactsDir, artifactName), 'project_artifact_path');
-}
-
-export function getProjectPaperDir(projectId: string, paperId: string): string {
-  assertSafePathSegment(paperId, 'paper_id');
-  const papersDir = getProjectPapersDir(projectId);
-  return resolvePathWithinParent(papersDir, path.join(papersDir, paperId), 'paper_dir');
-}
-
-export function getProjectPaperJsonPath(projectId: string, paperId: string): string {
-  const paperDir = getProjectPaperDir(projectId, paperId);
-  return resolvePathWithinParent(paperDir, path.join(paperDir, 'paper.json'), 'paper.json');
-}
-
-export function getProjectPaperSourcesDir(projectId: string, paperId: string): string {
-  const paperDir = getProjectPaperDir(projectId, paperId);
-  const sourcesDir = resolvePathWithinParent(paperDir, path.join(paperDir, 'sources'), 'paper_sources_dir');
-  ensureDir(sourcesDir);
-  return sourcesDir;
-}
-
-export function getProjectPaperLatexDir(projectId: string, paperId: string): string {
-  const sourcesDir = getProjectPaperSourcesDir(projectId, paperId);
-  const latexDir = resolvePathWithinParent(sourcesDir, path.join(sourcesDir, 'latex'), 'paper_latex_dir');
-  ensureDir(latexDir);
-  return latexDir;
-}
-
-export function getProjectPaperLatexExtractedDir(projectId: string, paperId: string): string {
-  const latexDir = getProjectPaperLatexDir(projectId, paperId);
-  const extractedDir = resolvePathWithinParent(latexDir, path.join(latexDir, 'extracted'), 'paper_latex_extracted_dir');
-  ensureDir(extractedDir);
-  return extractedDir;
-}
-
-export function getProjectPaperEvidenceDir(projectId: string, paperId: string): string {
-  const paperDir = getProjectPaperDir(projectId, paperId);
-  const evidenceDir = resolvePathWithinParent(paperDir, path.join(paperDir, 'evidence'), 'paper_evidence_dir');
-  ensureDir(evidenceDir);
-  return evidenceDir;
-}
-
-export function getProjectPaperEvidenceCatalogPath(projectId: string, paperId: string): string {
-  const evidenceDir = getProjectPaperEvidenceDir(projectId, paperId);
-  return resolvePathWithinParent(evidenceDir, path.join(evidenceDir, 'catalog.jsonl'), 'paper_evidence_catalog');
 }

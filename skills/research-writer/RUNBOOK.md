@@ -213,44 +213,33 @@ Then (agent/human step): manually merge selected high-confidence patterns into:
 
 ### 9) Evidence lookup via hep-mcp (detailed tool-call recipes)
 
-Payloads for the three-step evidence lookup summarized in `SKILL.md`. Prereq: a
-hep-mcp project (`hep_project_create`). Pass `project_root` on every call when
-the work belongs to an initialized Nullius project.
+Payloads for the three-step evidence lookup summarized in `SKILL.md`. Pass
+`project_root` on every call when the work belongs to an initialized Nullius
+project.
 
-**Step 1 — Build the evidence catalog** for each cited paper (writes
-`projects/<project_id>/papers/<paper_id>/evidence/catalog.jsonl` under the HEP
-data root):
+**Step 1 — Fetch each cited source** (LaTeX source preferred, PDF otherwise):
 
 ```
-hep_project_build_evidence({
-  project_id: "<project_id>",
-  identifier: "<arXiv_id_or_DOI>",   // or main_tex_path for a local LaTeX tree
-  paper_id: "<paper_id>",            // optional
-  include_inline_math: true,
-  include_cross_refs: false
+arxiv_paper_source({
+  arxiv_id: "<arXiv_id>",
+  mode: "content",
+  prefer: "latex"
 })
 ```
 
-**Step 2 — Retrieve evidence per section.** For each outline section, before
-writing prose, locate passages by lexical search (`mode` accepts only
-`"lexical"`), then reread each hit in context:
+or, starting from an INSPIRE recid, arXiv id or DOI:
 
 ```
-hep_project_query_evidence({
-  project_id: "<project_id>",
-  query: "<section topic keywords>",
-  types: ["paragraph", "equation", "citation_context"],
-  limit: 10
+inspire_paper_source({
+  identifier: "<recid_or_arXiv_id_or_DOI>",
+  mode: "content",
+  options: { prefer: "latex" }
 })
 ```
 
-```
-hep_project_playback_evidence({
-  project_id: "<project_id>",
-  paper_id: "<paper_id>",
-  evidence_id: "<evidence_id from the query hit>"
-})
-```
+**Step 2 — Read per section.** For each outline section, before writing prose,
+read in the fetched source the passages the section will rely on, and note
+where each one is (section, equation number, page).
 
 **Step 3 — Draft and cite.** Read the source and check that it supports the
 sentence before treating the sentence as supported. Cite with keys present in
@@ -262,17 +251,17 @@ inspire_resolve_citekey({
 })
 ```
 
-Note, next to the draft, the `evidence_id`s and recids each claim-bearing
+Note, next to the draft, the passage locations and recids each claim-bearing
 sentence relies on. hep-mcp has no draft rendering or export step; the
 manuscript is written and compiled in `paper/` (sections 1–2).
 
 End-to-end flow:
 
 ```
-source papers ──→ evidence catalog ──→ evidence query + playback (per section) ──→ checked draft in paper/
-(arXiv LaTeX)                                                                          │
-                                                                                       ↓
-                                                                    citekeys + BibTeX (INSPIRE recids)
+source papers ──→ read passages (per section) ──→ checked draft in paper/
+(arXiv LaTeX / PDF)                                     │
+                                                        ↓
+                                     citekeys + BibTeX (INSPIRE recids)
 ```
 
 ## Debugging

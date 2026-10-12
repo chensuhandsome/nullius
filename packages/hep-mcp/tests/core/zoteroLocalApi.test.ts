@@ -12,7 +12,7 @@ vi.mock('../../src/api/client.js', () => ({
 const api = await import('../../src/api/client.js');
 
 import { handleToolCall } from '../../src/tools/index.js';
-import { makeProjectRoot, readProjectFile } from '../support/hepProjectUri.js';
+import { makeProjectRoot, readProjectFile } from '../support/projectFiles.js';
 
 function readFixtureJson<T>(fileName: string): T {
   const fixtureDir = new URL('../fixtures/core/m8/', import.meta.url);

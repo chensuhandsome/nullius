@@ -12,7 +12,7 @@ const ProjectRootSchema = z
 const RunDirSchema = z
   .string()
   .min(1)
-  .describe('Absolute path to the run directory whose artifacts should be staged or executed, inside project_root (normally <project_root>/artifacts/runs/<run_id>); it may be spelled through an alias above project_root, but a symbolic link below project_root is refused.');
+  .describe('Absolute path to the run directory whose artifacts should be staged or executed: the run\'s own directory, <project_root>/artifacts/runs/<run_id>. It may be spelled through an alias above project_root, but a symbolic link below project_root is refused.');
 const RunIdSchema = z
   .string()
   .min(1)

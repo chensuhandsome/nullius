@@ -30,7 +30,7 @@ describe('orch_run_stage_idea', () => {
   it('stages outline and hints artifacts into an existing run directory', async () => {
     const tmpDir = makeTmpDir('orch-run-stage-idea-');
     CLEANUP_DIRS.push(tmpDir);
-    const runDir = path.join(tmpDir, 'domain-run-1');
+    const runDir = path.join(tmpDir, 'artifacts', 'runs', 'run-1');
     const handoffPath = path.join(tmpDir, 'idea_handoff_c2_v1.json');
     writeJson(handoffPath, {
       campaign_id: 'cccccc01',

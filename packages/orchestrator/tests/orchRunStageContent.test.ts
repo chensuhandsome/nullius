@@ -25,7 +25,7 @@ describe('orch_run_stage_content', () => {
   it('writes a staged content artifact into an existing run directory and returns a rep:// staging uri', async () => {
     const tmpDir = makeTmpDir('orch-run-stage-content-');
     CLEANUP_DIRS.push(tmpDir);
-    const runDir = path.join(tmpDir, 'run-1');
+    const runDir = path.join(tmpDir, 'artifacts', 'runs', 'run-1');
 
     const res = await handleToolCall('orch_run_stage_content', {
       run_id: 'run-1',

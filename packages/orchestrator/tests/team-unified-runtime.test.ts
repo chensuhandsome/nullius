@@ -931,7 +931,8 @@ describe('team unified runtime control paths', () => {
   it('persists run-gate approval authority, rejects team-local approval, and re-dispatches on resume', async () => {
     const projectRoot = makeTmpDir();
     try {
-      const runDir = ensureRunDir(projectRoot, 'run-approval');
+      // The planning tool works only in the run's own directory.
+      const runDir = ensureRunDir(projectRoot, path.join('artifacts', 'runs', 'run-approval'));
       const sourceHandoffUri = 'provider://records/source-run/artifact/idea_handoff_c2_v1.json';
       // Planning refuses to materialize executable computation without an
       // explicit method, so the staged hints carry one.

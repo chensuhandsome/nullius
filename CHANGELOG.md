@@ -42,13 +42,15 @@ version is the lockstep number below.
   `hep_project_query_evidence` is lexical only.
 - Oversized hep-mcp tool results are truncated by UTF-8 bytes on a character
   boundary.
-- **The computation bridge tools work only inside the admitted project root.**
+- **The computation bridge tools work only in the run's own directory.**
   `orch_run_stage_idea`, `orch_run_stage_content`, `orch_run_plan_computation`,
   `orch_run_execute_manifest` and `orch_run_progress_followups` admit
-  `project_root` as every other front door does and require `run_dir` to lie
-  inside it, by the rule `nullius run --run-dir` applies (an alias above the root
-  is accepted, a symbolic link below it is refused); the two staging tools take a
-  required `project_root`. Workspace paths in manifests and method specs are
+  `project_root` as every other front door does and require `run_dir` to be
+  `<project_root>/artifacts/runs/<run_id>`, where the run's approval packets,
+  proposals and team state are kept, so a run's records are never split; it may
+  be spelled through an alias above the root, while a symbolic link below the
+  root, or at an entry of the run directory these tools use, is refused. The two
+  staging tools take a required `project_root`. Workspace paths in manifests and method specs are
   refused for a `..` segment rather than for any two dots, so names such as
   `..data.csv` are accepted, and a method's files are never written through a
   symbolic link in the run directory.

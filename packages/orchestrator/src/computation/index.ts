@@ -48,11 +48,13 @@ export async function executeComputationManifest(
   // run into two identities (a stamp for one name, results under another),
   // so the mismatch is refused before anything happens — dry-run included,
   // validation being exactly what dry-run is for. OUTSIDE the run roots
-  // (a run directory elsewhere inside the project root) no launch stamp is
-  // taken and that directory is not scanned by name, so the names may
-  // differ. Approval packets, proposals and team state for the run id still
-  // live under <project>/artifacts/runs/<run_id>/, so a run directory
-  // elsewhere splits a run's records between the two places.
+  // (a run directory elsewhere inside the project root, which
+  // `nullius run --run-dir` accepts; the MCP bridge tools accept only the
+  // run's own directory) no launch stamp is taken and that directory is not
+  // scanned by name, so the names may differ. Approval packets, proposals
+  // and team state for the run id still live under
+  // <project>/artifacts/runs/<run_id>/, so a run directory elsewhere splits a
+  // run's records between the two places.
   // Root membership uses the SAME symlink-resolved predicate as the stamp
   // containment — two resolution semantics would let an aliased project
   // root stamp a directory this check called outside.

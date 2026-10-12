@@ -95,7 +95,8 @@ afterEach(() => {
 describe('orch_run_plan_computation tool', () => {
   it('compiles staged idea artifacts from a run directory inside the project', async () => {
     const projectRoot = makeTmpDir('orch-plan-project-');
-    const runDir = fs.mkdtempSync(path.join(projectRoot, 'orch-plan-run-'));
+    const runDir = path.join(projectRoot, 'artifacts', 'runs', 'run-001');
+    fs.mkdirSync(runDir, { recursive: true });
     CLEANUP_DIRS.push(projectRoot, runDir);
 
     stageIdeaArtifactsIntoRun({
@@ -124,7 +125,8 @@ describe('orch_run_plan_computation tool', () => {
 
   it('keeps the supplied provider-backed operation on the public orch_* path', async () => {
     const projectRoot = makeTmpDir('orch-plan-project-');
-    const runDir = fs.mkdtempSync(path.join(projectRoot, 'orch-plan-run-'));
+    const runDir = path.join(projectRoot, 'artifacts', 'runs', 'run-provider-001');
+    fs.mkdirSync(runDir, { recursive: true });
     CLEANUP_DIRS.push(projectRoot, runDir);
 
     stageIdeaArtifactsIntoRun({
@@ -180,7 +182,8 @@ describe('orch_run_plan_computation tool', () => {
 
   it('keeps an A3 approval valid when planning is repeated later from unchanged inputs, and re-gates changed inputs', async () => {
     const projectRoot = makeTmpDir('orch-plan-project-');
-    const runDir = fs.mkdtempSync(path.join(projectRoot, 'orch-plan-run-'));
+    const runDir = path.join(projectRoot, 'artifacts', 'runs', 'run-provider-replan');
+    fs.mkdirSync(runDir, { recursive: true });
     CLEANUP_DIRS.push(projectRoot, runDir);
     // This method passes the execution plan to its script, so the plan file is
     // an approved input alongside the manifest.
@@ -233,7 +236,8 @@ describe('orch_run_plan_computation tool', () => {
 
   it('returns a ready-to-execute planned result (no approval) when A3 (compute_runs) is opt-out by default', async () => {
     const projectRoot = makeTmpDir('orch-plan-project-');
-    const runDir = fs.mkdtempSync(path.join(projectRoot, 'orch-plan-run-'));
+    const runDir = path.join(projectRoot, 'artifacts', 'runs', 'run-provider-a3off');
+    fs.mkdirSync(runDir, { recursive: true });
     CLEANUP_DIRS.push(projectRoot, runDir);
 
     stageIdeaArtifactsIntoRun({

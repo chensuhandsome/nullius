@@ -31,6 +31,7 @@ import type {
 import { assertNoSymlinkComponents, resolveProjectContainedPath, resolveUnderRoot } from '../computation/path-safety.js';
 import { utcNowIso } from '../util.js';
 import { resolveProjectRoot } from './common.js';
+import { runDirFor } from '../run-paths.js';
 
 function resolvePathWithinParent(parentDir: string, candidatePath: string, field: string): string {
   const resolvedParent = path.resolve(parentDir);
@@ -43,15 +44,6 @@ function resolvePathWithinParent(parentDir: string, candidatePath: string, field
   });
 }
 
-/**
- * The project root and run directory a bridge tool works in. The root is
- * admitted like every other front door's (tilde expansion, canonical form,
- * outside any nullius checkout); the run directory must lie within it, by the
- * rule `nullius run --run-dir` applies: an alias above the root is accepted,
- * a symbolic link below it is refused, and so is one at an entry of the run
- * directory these tools use. Everything the tool writes, reads or executes
- * then derives from the admitted run directory.
- */
 // The entries of a run directory these tools read and write. None may be a
 // symbolic link, nor may any entry directly inside artifacts/ or attempts/: a
 // link there would carry a staged artifact, a computation result or an attempt
@@ -82,7 +74,18 @@ function assertRunDirectoryEntriesAreReal(runDir: string): void {
   }
 }
 
-function admitProjectRun(params: { project_root: string; run_dir: string }): { projectRoot: string; runDir: string } {
+/**
+ * The project root and run directory a bridge tool works in. The root is
+ * admitted like every other front door's (tilde expansion, canonical form,
+ * outside any nullius checkout). The run directory must be the run's own,
+ * <project_root>/artifacts/runs/<run_id>, where its approval packets,
+ * proposals and team state are kept by run id, so a run's records are never
+ * split between two directories; it may be spelled through an alias above
+ * the root, while a symbolic link below the root is refused, and so is one at
+ * an entry of the run directory these tools use. Everything the tool writes,
+ * reads or executes then derives from the admitted run directory.
+ */
+function admitProjectRun(params: { project_root: string; run_id: string; run_dir: string }): { projectRoot: string; runDir: string } {
   const projectRoot = resolveProjectRoot(params.project_root);
   if (!path.isAbsolute(params.run_dir)) {
     throw invalidParams('run_dir must be an absolute path inside project_root', {
@@ -94,6 +97,15 @@ function admitProjectRun(params: { project_root: string; run_dir: string }): { p
     throw invalidParams('project_root must name an existing directory', { project_root: projectRoot });
   }
   const runDir = resolveProjectContainedPath(projectRoot, params.run_dir, 'run_dir');
+  const ownRunDir = runDirFor(projectRoot, params.run_id);
+  if (runDir !== ownRunDir) {
+    throw invalidParams('run_dir must be the run\'s own directory, <project_root>/artifacts/runs/<run_id>', {
+      project_root: projectRoot,
+      run_id: params.run_id,
+      run_dir: params.run_dir,
+      expected_run_dir: ownRunDir,
+    });
+  }
   assertRunDirectoryEntriesAreReal(runDir);
   return { projectRoot, runDir };
 }

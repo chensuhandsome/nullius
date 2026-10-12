@@ -34,10 +34,10 @@ function fixture(fail: boolean | 'missing-output' = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'idea-computation-'));
   roots.push(root);
   const projectRoot = path.join(root, 'project');
-  // An explicit run directory inside the project, outside its run root.
-  const runDir = path.join(projectRoot, 'provider-data', 'session');
-  fs.mkdirSync(projectRoot);
   const runId = 'explicit-domain-operation';
+  // The run's own directory.
+  const runDir = path.join(projectRoot, 'artifacts', 'runs', runId);
+  fs.mkdirSync(projectRoot);
   const handoffPath = path.join(root, 'handoff.json');
   const handoffUri = pathToFileURL(handoffPath).href;
   const handoff = {
@@ -85,7 +85,7 @@ describe('idea computation at the generic owner', () => {
     }
   });
 
-  it('stages an explicit run directory inside the project and preserves outline, hints and file-URI provenance', async () => {
+  it('stages into the run\'s own directory and preserves outline, hints and file-URI provenance', async () => {
     const f = fixture();
     const staged = await stage(f);
     expect(staged.status).toBe('staged');

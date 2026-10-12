@@ -43,7 +43,7 @@ function extractPayload(res: unknown): Record<string, unknown> {
 }
 
 function createFeedbackBridgeRun(runId: string, projectRoot: string) {
-  const runDir = path.join(projectRoot, runId);
+  const runDir = path.join(projectRoot, 'artifacts', 'runs', runId);
   fs.mkdirSync(runDir, { recursive: true });
   const executionPlan = compileExecutionPlan(runId, {
     outline_seed_path: 'artifacts/outline_seed_v1.json',
@@ -191,7 +191,8 @@ describe('orch_run_progress_followups', () => {
     const runId = 'run-progress-writing-review';
     registerCleanup(projectRoot);
 
-    const { runDir, manifestPath } = createWritingBridgeRun(runId, projectRoot);
+    // The progress tool works only in the run's own directory.
+    const { runDir, manifestPath } = createWritingBridgeRun(runId, projectRoot, path.join(projectRoot, 'artifacts', 'runs', runId));
     stageContextArtifact(runDir, 'section_output', 'draft-seed');
     stageContextArtifact(runDir, 'reviewer_report', 'review-seed');
     const manager = initRunState(projectRoot, runId);

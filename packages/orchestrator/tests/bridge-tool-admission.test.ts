@@ -151,6 +151,17 @@ describe('the computation bridge tools work only in a run directory inside the a
     expect(fs.existsSync(path.join(parent, 'elsewhere'))).toBe(false);
   });
 
+  it.each(TOOLS)('%s refuses a run directory inside the project that is not the run\'s own, and writes nothing there', async (tool) => {
+    const { root, alias, handoffPath } = projectWithHandoff();
+    for (const elsewhere of [path.join('work', 'r1'), path.join('artifacts', 'runs', 'other')]) {
+      const result = await call(tool, argsFor(tool, alias, path.join(alias, elsewhere), handoffPath));
+      expect(result.isError, elsewhere).toBe(true);
+      expect(result.payload.error.message, elsewhere).toBe('run_dir must be the run\'s own directory, <project_root>/artifacts/runs/<run_id>');
+      expect(result.payload.error.data, elsewhere).toMatchObject({ expected_run_dir: path.join(root, 'artifacts', 'runs', 'r1') });
+      expect(fs.existsSync(path.join(root, elsewhere)), elsewhere).toBe(false);
+    }
+  });
+
   it.each(TOOLS)('%s refuses a run directory reached through a symbolic link below the project root', async (tool) => {
     const { parent, root, alias, handoffPath } = projectWithHandoff();
     const outside = path.join(parent, 'outside');

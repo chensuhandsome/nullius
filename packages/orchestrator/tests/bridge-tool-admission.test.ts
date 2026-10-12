@@ -217,7 +217,9 @@ describe('the computation bridge tools work only in a run directory inside the a
     fs.mkdirSync(path.join(root, 'team', 'runs', 'r1'), { recursive: true });
     for (const tool of TOOLS) {
       const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
-      expect(result.payload.error, tool).toMatchObject({ code: 'INVALID_PARAMS', message: expect.stringMatching(/^HISTORICAL_RUN_READ_ONLY/) });
+      expect(result.payload.error, tool).toMatchObject({
+        code: 'INVALID_PARAMS', message: expect.stringMatching(/^HISTORICAL_RUN_READ_ONLY/), data: { run_id: 'r1' },
+      });
     }
     expect(fs.existsSync(path.join(root, 'artifacts'))).toBe(false);
   });

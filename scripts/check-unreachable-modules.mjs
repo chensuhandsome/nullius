@@ -28,7 +28,8 @@
 // declaration files (`.d.ts`), test files (`*.test.*`, `*.spec.*`) and anything under a
 // `__tests__`, `__mocks__` or `__fixtures__` directory are never reported, and when one
 // is reached its own imports are not followed, so it cannot make another module look
-// used. A declared entry or allowlisted file is always followed, whatever its name.
+// used. A declared entry or allowlisted file is always followed, whatever its name, and
+// so is a reached file without an extension (such as a launcher wrapper).
 //
 // A module that is started some other way is invisible to an import walk: a file a
 // shell script or a test suite runs, or one started as a separate process or worker
@@ -107,6 +108,15 @@ function isCandidateModule(relPath) {
   if (base.endsWith('.d.ts') || base.endsWith('.d.mts') || base.endsWith('.d.cts')) return false;
   if (/\.(test|spec)\.[cm]?[jt]sx?$/.test(base)) return false;
   return SOURCE_EXTENSIONS.includes(path.posix.extname(base));
+}
+
+function isCarrier(relPath) {
+  // A reached file whose imports are followed: a candidate module, or a file without an
+  // extension (such as a launcher wrapper) that is not in an excluded directory.
+  if (isCandidateModule(relPath)) return true;
+  const segments = relPath.split('/');
+  if (segments.slice(0, -1).some(segment => EXCLUDED_DIRECTORIES.has(segment))) return false;
+  return path.posix.extname(segments[segments.length - 1]) === '';
 }
 
 function listSourceModules(sourceRoot) {
@@ -258,7 +268,7 @@ export function scanPackage(packageDir, { allow = [], ts } = {}) {
   if (declaredRootCount === 0) problems.push('package.json declares no entry that resolves to a source file');
 
   // A declared entry or allowlisted file always carries its imports, whatever its name
-  // (e.g. an extensionless `bin` launcher); any other file only if it is a candidate.
+  // (e.g. an extensionless `bin` launcher); any other reached file only if it is a carrier.
   const rootSet = new Set(roots);
   const reached = new Set();
   const queue = [...roots];
@@ -267,7 +277,7 @@ export function scanPackage(packageDir, { allow = [], ts } = {}) {
     const file = queue.pop();
     if (reached.has(file)) continue;
     reached.add(file);
-    if (!rootSet.has(file) && !isCandidateModule(rel(file))) continue;
+    if (!rootSet.has(file) && !isCarrier(rel(file))) continue;
     const { specifiers, unfollowed } = collectSpecifiers(typescript, file);
     for (const { line, what } of unfollowed) unfollowedSites.push(`${rel(file)}:${line} has ${what}`);
     for (const spec of specifiers) {

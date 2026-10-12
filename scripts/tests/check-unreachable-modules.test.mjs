@@ -91,6 +91,16 @@ test('an extensionless declared launcher carries its imports', t => {
   assert.deepEqual(result.unreachable, ['src/cli.ts', 'src/commented.ts', 'src/orphan.ts', 'src/quoted.ts']);
 });
 
+test('an extensionless wrapper reached from a launcher carries its imports too', t => {
+  const { packageDir, write } = packageFixture(t);
+  write('pkg/package.json', JSON.stringify({ name: 'fixture', bin: { fixture: './bin/launcher' } }));
+  write('pkg/bin/launcher', "#!/usr/bin/env node\nimport './bootstrap';\n");
+  write('pkg/bin/bootstrap', "import '../dist/index.js';\n");
+  const result = scanPackage(packageDir);
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual(result.unreachable, ['src/cli.ts', 'src/commented.ts', 'src/orphan.ts', 'src/quoted.ts']);
+});
+
 test('a package that cannot be scanned is reported, not a crash', t => {
   const ws = workspace(t);
   ws.write('packages/broken/package.json', '{ not json');

@@ -932,7 +932,7 @@ describe('team unified runtime control paths', () => {
     const projectRoot = makeTmpDir();
     try {
       const runDir = ensureRunDir(projectRoot, 'run-approval');
-      const sourceHandoffUri = 'hep://runs/source-run/artifact/idea_handoff_c2_v1.json';
+      const sourceHandoffUri = 'provider://records/source-run/artifact/idea_handoff_c2_v1.json';
       // Planning refuses to materialize executable computation without an
       // explicit method, so the staged hints carry one.
       const surface = withExplicitSurfaceMethod({

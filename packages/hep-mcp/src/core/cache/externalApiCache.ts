@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
 import { pathToFileURL } from 'url';
-import { invalidParams, McpError, upstreamError, writeBytesAtomicDurable } from '@nullius/shared';
+import { invalidParams, McpError, unsafeFs, upstreamError, writeBytesAtomicDurable } from '@nullius/shared';
 
 import { ensureDir, getCacheDir } from '../../data/dataDir.js';
 import { assertSafePathSegment } from '../paths.js';
@@ -20,6 +20,25 @@ type ExternalApiCacheEntryV1 = {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/**
+ * A provider answer that cannot be used: not in the provider's own format,
+ * or contradicting itself. It is a provider failure (UPSTREAM_ERROR), not the
+ * caller's, but it aborts the whole call instead of being recorded against
+ * one item, since data that cannot be read cannot be attributed. Callers that
+ * report provider failures per item recognize it by the
+ * `invalid_provider_answer` field of its data (`isInvalidProviderAnswer`).
+ */
+export function invalidProviderAnswer(message: string, data: Record<string, unknown>): McpError {
+  return upstreamError(message, { ...data, invalid_provider_answer: true });
+}
+
+export function isInvalidProviderAnswer(error: unknown): boolean {
+  return error instanceof McpError
+    && error.code === 'UPSTREAM_ERROR'
+    && isRecord(error.data)
+    && error.data.invalid_provider_answer === true;
 }
 
 function stableStringify(value: unknown): string {
@@ -191,7 +210,7 @@ async function performCachedCall<T>(
     try {
       return externalApiCacheEntryPath({ namespace, operation, request_hash: requestHash });
     } catch (err) {
-      throw invalidParams('Failed to resolve external API cache path (fail-fast)', {
+      throw unsafeFs('Failed to resolve external API cache path (fail-fast)', {
         output_dir: output.relative,
         namespace,
         operation,
@@ -204,7 +223,9 @@ async function performCachedCall<T>(
     }
   })();
   const cachedResponseUri = pathToFileURL(cachePath).toString();
-  const corrupted = (message: string, error?: unknown): McpError => invalidParams(message, {
+  // The local cache is in a state this call cannot use: an environment
+  // failure, not the caller's.
+  const corrupted = (message: string, error?: unknown): McpError => unsafeFs(message, {
     output_dir: output.relative,
     namespace,
     operation,
@@ -291,7 +312,7 @@ async function performCachedCall<T>(
     try {
       await atomicWriteFile({ file_path: cachePath, bytes: Buffer.from(JSON.stringify(entry, null, 2), 'utf-8') });
     } catch (err) {
-      throw invalidParams('External API cache write failed (fail-fast)', {
+      throw unsafeFs('External API cache write failed (fail-fast)', {
         output_dir: output.relative,
         namespace,
         operation,

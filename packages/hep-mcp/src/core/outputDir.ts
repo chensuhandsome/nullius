@@ -51,7 +51,12 @@ function lstatOrNull(entry: string): fs.Stats | null {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') return null;
-    throw error;
+    // Any other failure is the environment's (a name too long for the file
+    // system, a directory that cannot be searched), not the caller's.
+    throw unsafeFs(`looking up ${entry} failed: ${error instanceof Error ? error.message : String(error)}`, {
+      path: entry,
+      ...(typeof code === 'string' ? { errno: code } : {}),
+    });
   }
 }
 
@@ -79,7 +84,14 @@ function realDirectoryChain(
       try {
         fs.mkdirSync(cursor);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        const errno = (error as NodeJS.ErrnoException).code;
+        if (errno !== 'EEXIST') {
+          throw unsafeFs(`${label} could not be created: ${error instanceof Error ? error.message : String(error)}`, {
+            project_root: projectRoot,
+            path: cursor,
+            ...(typeof errno === 'string' ? { errno } : {}),
+          });
+        }
       }
       stat = lstatOrNull(cursor);
     }
@@ -299,6 +311,22 @@ function unidentifiedStagingError(out: OutputDir, temp: string, error: unknown):
   });
 }
 
+/**
+ * A file-system failure while writing this call's outputs (a full or
+ * read-only disk, a name too long for the file system): the environment's,
+ * not the caller's, so UNSAFE_FS, naming the step and the file. An error that
+ * already carries a code passes through unchanged.
+ */
+function writeFailure(out: OutputDir, step: string, file: string, error: unknown): unknown {
+  if (error instanceof McpError) return error;
+  const errno = (error as NodeJS.ErrnoException | null)?.code;
+  return unsafeFs(`${step} failed: ${error instanceof Error ? error.message : String(error)}`, {
+    project_root: out.projectRoot,
+    path: projectRelative(out, file),
+    ...(typeof errno === 'string' ? { errno } : {}),
+  });
+}
+
 function existingOutputError(out: OutputDir, name: string): Error {
   return invalidParams(
     `output file '${name}' already exists in output_dir; a call never replaces earlier outputs: choose another output_dir or artifact name, or remove the earlier file`,
@@ -439,7 +467,12 @@ export class OutputBatch {
   private stageBytes(name: string, bytes: string): void {
     const target = this.claim(name);
     const temp = stagingPath(target);
-    const fd = fs.openSync(temp, 'wx');
+    let fd: number;
+    try {
+      fd = fs.openSync(temp, 'wx');
+    } catch (error) {
+      throw writeFailure(this.out, 'creating a staging file', temp, error);
+    }
     let identity: FileIdentity | null = null;
     let failure: unknown = null;
     try {
@@ -461,7 +494,7 @@ export class OutputBatch {
     if (failure !== null) {
       // If this removal fails the file stays tracked, and discard reports it.
       this.removeStaging(temp);
-      throw failure;
+      throw writeFailure(this.out, 'writing a staging file', temp, failure);
     }
     this.staged.push({ name, temp, target, identity });
   }
@@ -478,7 +511,12 @@ export class OutputBatch {
   openFile(name: string, mimeType: string): { write: (text: string) => void; finish: () => OutputArtifactRef } {
     const target = this.claim(name);
     const temp = stagingPath(target);
-    const fd = fs.openSync(temp, 'wx');
+    let fd: number;
+    try {
+      fd = fs.openSync(temp, 'wx');
+    } catch (error) {
+      throw writeFailure(this.out, 'creating a staging file', temp, error);
+    }
     let identity: FileIdentity;
     try {
       identity = identityOfDescriptor(fd);
@@ -514,7 +552,7 @@ export class OutputBatch {
         while (offset < buffer.length) offset += fs.writeSync(fd, buffer, offset, buffer.length - offset);
       } catch (error) {
         abort();
-        throw error;
+        throw writeFailure(this.out, 'writing a staging file', temp, error);
       }
     };
     const finish = (): OutputArtifactRef => {
@@ -531,7 +569,7 @@ export class OutputBatch {
       this.unfinished.delete(abort);
       if (failure !== null) {
         this.removeStaging(temp);
-        throw failure;
+        throw writeFailure(this.out, 'finishing a staging file', temp, failure);
       }
       this.staged.push({ name, temp, target, identity });
       return outputArtifactRef(this.out, name, mimeType);
@@ -572,7 +610,7 @@ export class OutputBatch {
               error: (error as Error).message,
             });
           }
-          throw error;
+          throw writeFailure(this.out, 'publishing an output file', file.target, error);
         }
         published.push(file);
       }
@@ -595,7 +633,13 @@ export class OutputBatch {
           if (dir === this.out.projectRoot || !isPathInside(this.out.projectRoot, dir)) break;
         }
       }
-      for (const dir of directories) fsyncParentDirectoryDurable(path.join(dir, '.flush'));
+      for (const dir of directories) {
+        try {
+          fsyncParentDirectoryDurable(path.join(dir, '.flush'));
+        } catch (error) {
+          throw writeFailure(this.out, 'flushing a directory', dir, error);
+        }
+      }
     } catch (error) {
       for (const file of published) {
         if (!this.removeFile(file.name, file.target, file.identity)) {

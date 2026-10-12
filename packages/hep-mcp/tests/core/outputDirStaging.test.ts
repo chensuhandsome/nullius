@@ -228,9 +228,11 @@ describe('output staging files are created exclusively', () => {
       unlinkFault.failNext = 2;
       let thrown: unknown;
       try { batch.json('data.json', { x: 1 }); } catch (error) { thrown = error; }
-      expect((thrown as Error).message).toBe('simulated close failure');
-      const reported = batch.discard(thrown) as Error & { data?: { staging_left?: string[] } };
-      expect(reported.message).toMatch(/^simulated close failure; staging files could not be removed/);
+      // A failure of the file system is the environment's: UNSAFE_FS, naming the step.
+      expect(thrown).toMatchObject({ code: 'UNSAFE_FS', message: 'writing a staging file failed: simulated close failure', data: { errno: 'EIO' } });
+      const reported = batch.discard(thrown) as Error & { code?: string; data?: { staging_left?: string[] } };
+      expect(reported.code).toBe('UNSAFE_FS');
+      expect(reported.message).toMatch(/^writing a staging file failed: simulated close failure; staging files could not be removed/);
       expect(reported.data?.staging_left).toHaveLength(1);
     });
   });
@@ -258,8 +260,10 @@ describe('output staging files are created exclusively', () => {
       // The rollback's first attempt to remove the published a.json fails once.
       linkFault.before = () => { unlinkFault.failNext = 1; };
       const error = await batch.publish().then(() => null, (e: unknown) => e as Error & { data?: Record<string, unknown> });
-      expect(error?.message).toBe('simulated link failure');
-      expect(error?.data).toBeUndefined();
+      expect(error).toMatchObject({ code: 'UNSAFE_FS', message: 'publishing an output file failed: simulated link failure' });
+      expect(error?.data).toMatchObject({ path: 'publish-retried/b.json', errno: 'EIO' });
+      // The last cleanup attempt removed a.json, so nothing is reported left.
+      expect(error?.data).not.toHaveProperty('files_left');
       expect(batch.discard(error)).toBe(error);
       expect(fs.readdirSync(out.dir)).toEqual([]);
     });
@@ -291,9 +295,10 @@ describe('output staging files are created exclusively', () => {
         writeFault.armed = true;
         let thrown: unknown;
         try { file.write('{"a":1}\n'); } catch (error) { thrown = error; }
-        expect((thrown as Error).message).toBe('simulated write failure');
-        const reported = batch.discard(thrown) as Error & { data?: { staging_left?: string[] } };
-        expect(reported.message).toMatch(/^simulated write failure; staging files could not be removed/);
+        expect(thrown).toMatchObject({ code: 'UNSAFE_FS', message: 'writing a staging file failed: simulated write failure' });
+        const reported = batch.discard(thrown) as Error & { code?: string; data?: { staging_left?: string[] } };
+        expect(reported.code).toBe('UNSAFE_FS');
+        expect(reported.message).toMatch(/^writing a staging file failed: simulated write failure; staging files could not be removed/);
         expect(reported.data?.staging_left).toHaveLength(1);
       } finally {
         unlinkFault.failNext = 0;

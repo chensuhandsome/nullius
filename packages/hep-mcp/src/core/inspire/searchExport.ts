@@ -1,11 +1,11 @@
 import { createHash } from 'crypto';
 
-import { invalidParams, PaperSummarySchema } from '@nullius/shared';
+import { PaperSummarySchema } from '@nullius/shared';
 
 import * as api from '../../api/client.js';
 import type { SearchResult } from '../../api/client.js';
 import { BudgetTrackerV1, writeOutputDiagnosticsArtifact } from '../diagnostics.js';
-import { cachedExternalApiJsonCall } from '../cache/externalApiCache.js';
+import { cachedExternalApiJsonCall, invalidProviderAnswer } from '../cache/externalApiCache.js';
 import {
   OutputBatch,
   outputArtifactRef,
@@ -69,7 +69,7 @@ function preprocessQuery(query: string): string {
  */
 function searchPage(response: unknown, operation: string): SearchResult {
   const malformed = (detail: string): never => {
-    throw invalidParams(`INSPIRE ${operation} returned a malformed search page (fail-fast): ${detail}`, { operation });
+    throw invalidProviderAnswer(`INSPIRE ${operation} returned a malformed search page (fail-fast): ${detail}`, { operation });
   };
   const page = response as Record<string, unknown> | null;
   if (!page || typeof page !== 'object' || Array.isArray(page)) malformed('not an object');
@@ -192,7 +192,7 @@ export async function hepInspireSearchExport(params: {
   const externalApiCalls: ExternalApiCallIndexItemV1[] = [];
   const visitedUrls = new Set<string>();
   const paginationContradiction = (detail: string): never => {
-    throw invalidParams(`INSPIRE search pagination is inconsistent (fail-fast): ${detail}`, { query, pages_fetched: pagesFetched });
+    throw invalidProviderAnswer(`INSPIRE search pagination is inconsistent (fail-fast): ${detail}`, { query, pages_fetched: pagesFetched });
   };
 
   const externalApiCallsName = `external_api_calls_inspire_search_export_${exportKeyHash}.json`;
@@ -300,14 +300,14 @@ export async function hepInspireSearchExport(params: {
     // page boundary; after cutting inside a page it would skip the rest of
     // that page, so none is given.
     const resumeUrl = hasMore && !truncatedMidPage ? nextUrl : undefined;
-    if (hasMore && resumeUrl === undefined) {
-      const msg = 'More records exist than were exported and no continuation URL is given (the export stopped inside a page, or INSPIRE offered no next page); rerun with a larger max_results.';
-      warnings.push(msg);
-      budget.warn({ severity: 'warning', code: 'no_continuation_url', message: msg });
-    }
-
-    if (total > exported) {
-      const msg = `INSPIRE search export truncated at max_results=${maxResults} (total=${total}, exported=${exported}).`;
+    // One warning for the cause of the records not exported. Either
+    // max_results ended the export while INSPIRE had more to give (it was cut
+    // inside a page, or the last page offered a next one), or INSPIRE's pages
+    // ended before the total it reported, which no rerun can reach.
+    if (hasMore && (truncatedMidPage || (exported >= maxResults && pageRes.has_more))) {
+      const msg = truncatedMidPage
+        ? `INSPIRE search export stopped at max_results=${maxResults} inside a page (total=${total}, exported=${exported}), so no continuation URL is given; rerun with a larger max_results to get the rest.`
+        : `INSPIRE search export stopped at max_results=${maxResults} (total=${total}, exported=${exported}); next_url continues it.`;
       warnings.push(msg);
       budget.recordHit({
         key: 'inspire.search_export.max_results',
@@ -319,12 +319,10 @@ export async function hepInspireSearchExport(params: {
         message: msg,
         data: { total, exported, truncated_mid_page: truncatedMidPage },
       });
-    }
-
-    if (truncatedMidPage) {
-      const msg = 'Export stopped mid-page due to max_results; rerun with a higher max_results to avoid partial pagination.';
+    } else if (hasMore) {
+      const msg = `INSPIRE reported total=${total}, but its pages ended after ${exported} records (its last page said no more follow); rerunning the export will not reach the rest.`;
       warnings.push(msg);
-      budget.warn({ severity: 'warning', code: 'pagination_mid_page_truncation', message: msg });
+      budget.warn({ severity: 'warning', code: 'provider_pages_ended_early', message: msg, data: { total, exported } });
     }
 
     artifacts.push(exportRef);

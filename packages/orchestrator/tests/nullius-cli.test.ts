@@ -1472,7 +1472,7 @@ describe('nullius CLI', () => {
         step_id: 'topic_scan',
         tool: 'inspire_topic_analysis',
         runtime_status: 'completed',
-        artifact_uri: 'hep://runs/M-OUT-1/artifact/topic_analysis.json',
+        artifact_uri: 'provider://records/M-OUT-1/artifact/topic_analysis.json',
         additional_artifact_uris: [],
         summary_text: 'Topic timeline completed successfully.',
         reason_code: null,
@@ -1503,7 +1503,7 @@ describe('nullius CLI', () => {
       current_run_workflow_outputs: {
         topic_analysis: {
           status: 'completed',
-          artifact_uri: 'hep://runs/M-OUT-1/artifact/topic_analysis.json',
+          artifact_uri: 'provider://records/M-OUT-1/artifact/topic_analysis.json',
           summary: 'Topic timeline completed successfully.',
         },
         connection_scan: {
@@ -2130,7 +2130,7 @@ describe('nullius CLI', () => {
       topic_analysis: {
         step_id: 'topic_scan',
         tool: 'inspire_topic_analysis',
-        artifact_uri: 'hep://runs/M-BAD-1/artifact/topic_analysis.json',
+        artifact_uri: 'provider://records/M-BAD-1/artifact/topic_analysis.json',
         summary_text: 'missing runtime status',
       },
     } as any;

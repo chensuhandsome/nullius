@@ -1619,6 +1619,8 @@ def _worktree(repo: Path, tmp_path: Path, name: str, *extra) -> Path:
 
 def _verdicts(capsys) -> dict:
     doc = json.loads(capsys.readouterr().out)
+    names = [Path(r["worktree"]).name for r in doc["worktrees"]]
+    assert len(names) == len(set(names)), "test worktrees must have distinct names"
     return {Path(r["worktree"]).name: r for r in doc["worktrees"]}
 
 
@@ -1693,7 +1695,7 @@ def test_worktree_check_verdicts(tmp_path, monkeypatch, capsys):
     assert v["stowed"]["remove_command"] == f"git worktree remove {shlex.quote(str(stowed.resolve()))}"
 
     entry = rs.store_path(store_of(repo), rs.sha256_file(run / "big.bin"))
-    sh(*v["stowed"]["remove_command"].split(), cwd=repo)
+    sh(*shlex.split(v["stowed"]["remove_command"]), cwd=repo)
     assert not stowed.exists() and entry.exists(), "the stowed output survives in the shared store"
     assert (unique / "result.out").exists() and clean.exists(), "the check itself removes nothing"
 
@@ -1726,6 +1728,21 @@ def test_worktree_check_refuses_a_store_configured_inside_a_worktree(tmp_path, m
     capsys.readouterr()
     assert run_main(["worktree-check", str(wt), "--json"], repo, monkeypatch) == rs.EXIT_ERROR
     assert "lies inside" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("written_in", ["checked_worktree_only", "main_checkout_only"])
+def test_worktree_check_reads_the_policy_of_the_worktree_it_checks(tmp_path, monkeypatch, capsys, written_in):
+    repo = make_repo(tmp_path)
+    wt = _worktree(repo, tmp_path, "lane")
+    policy = {"schema": rs.POLICY_SCHEMA, "bulk_threshold_bytes": THRESHOLD, "store_root": str(wt / "store")}
+    (repo if written_in == "main_checkout_only" else wt).joinpath(".nullius", "storage_policy.json").write_text(
+        json.dumps(policy))
+    capsys.readouterr()
+    rc = run_main(["worktree-check", str(wt), "--json"], repo, monkeypatch)
+    if written_in == "checked_worktree_only":
+        assert rc == rs.EXIT_ERROR and "lies inside" in json.loads(capsys.readouterr().out)["error"]
+    else:  # the worktree's own (default) policy applies; the main checkout's copy is not read for it
+        assert rc == rs.EXIT_OK and _verdicts(capsys)["lane"]["verdict"] == "safe_to_remove"
 
 
 def test_worktree_check_keeps_hidden_mode_and_type_changes_and_submodules(tmp_path, monkeypatch, capsys):
@@ -1990,7 +2007,9 @@ def test_worktree_check_all_without_linked_worktrees_checks_nothing(tmp_path, mo
     assert run_main(["worktree-check", "--all", "--json"], repo, monkeypatch) == rs.EXIT_OK
     assert json.loads(capsys.readouterr().out)["worktrees"] == []
     assert run_main(["worktree-check", str(repo), "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
-    assert _verdicts(capsys)[repo.name]["verdict"] == "keep", "the main checkout itself is never removable"
+    main_verdict = _verdicts(capsys)[repo.name]
+    assert main_verdict["verdict"] == "keep", "the main checkout itself is never removable"
+    assert main_verdict["reasons"][0].startswith("not a linked worktree: a main checkout")
 
 
 def test_worktree_check_needs_exactly_one_of_a_path_or_all(tmp_path, monkeypatch, capsys):
@@ -2148,6 +2167,49 @@ def test_worktree_check_credits_only_byte_identical_rewritten_patches(tmp_path, 
     assert run_main(["worktree-check", str(wt), "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
     v = _verdicts(capsys)["lane"]
     assert v["verdict"] == "keep" and lane_commit in v["reflog_only_commits"]
+
+
+def test_worktree_check_does_not_credit_a_patch_match_older_than_the_merge_base(tmp_path, monkeypatch, capsys):
+    # The base once had this exact patch and reverted it before the lane began: the lane's re-application
+    # exists nowhere on the base now.
+    repo = make_repo(tmp_path)
+    (repo / "f.txt").write_text("a change the base later reverted\n")
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "change", cwd=repo)
+    sh("git", "revert", "--no-edit", "HEAD", cwd=repo)
+    wt = tmp_path / "lane"
+    sh("git", "worktree", "add", "-q", "--detach", str(wt), "main", cwd=repo)
+    (wt / "f.txt").write_text("a change the base later reverted\n")
+    sh("git", "add", "-A", cwd=wt)
+    sh("git", "commit", "-q", "-m", "change again", cwd=wt)
+    again = sh("git", "rev-parse", "HEAD", cwd=wt).stdout.strip()
+    sh("git", "reset", "-q", "--hard", "main", cwd=wt)
+    capsys.readouterr()
+    assert run_main(["worktree-check", str(wt), "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    v = _verdicts(capsys)["lane"]
+    assert v["verdict"] == "keep" and again in v["reflog_only_commits"]
+
+
+def test_worktree_check_keeps_a_private_ref_naming_an_annotated_tag(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    wt = _worktree(repo, tmp_path, "lane")
+    head = sh("git", "rev-parse", "HEAD", cwd=wt).stdout.strip()
+    tag = subprocess.run(["git", "mktag"], cwd=wt, check=True, capture_output=True, text=True, input=(
+        f"object {head}\ntype commit\ntag lane-only\ntagger T <t@example.org> 0 +0000\n\n"
+        "kept only by a per-worktree ref\n")).stdout.strip()
+    sh("git", "update-ref", "refs/worktree/note", tag, cwd=wt)
+    capsys.readouterr()
+    assert run_main(["worktree-check", str(wt), "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    v = _verdicts(capsys)["lane"]
+    assert v["verdict"] == "keep" and v["worktree_private_refs"] == ["refs/worktree/note"]
+
+
+def test_an_unexpected_ls_files_record_is_an_error_not_a_skipped_file(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    real = rs.git_z
+    monkeypatch.setattr(rs, "git_z", lambda args, cwd: ["hREADME.md"] if args[:2] == ["ls-files", "-v"] else real(args, cwd))
+    with pytest.raises(rs.StorageError, match="unexpected `git ls-files -v` record"):
+        rs.hidden_tracked_changes(repo)
 
 
 def test_worktree_check_does_not_credit_a_merge_between_rewritten_copies(tmp_path, monkeypatch, capsys):
@@ -2369,6 +2431,79 @@ def test_report_does_not_credit_copies_whose_objects_a_partial_clone_reference_o
     assert [b["contained_in_reference"] for b in doc["bundles"]] == [True]
 
 
+def test_report_does_not_assess_a_copy_with_submodule_stores(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    copy = scratch / "copy"
+    sh("git", "clone", "-q", str(repo), str(copy), cwd=tmp_path)
+    module = copy / ".git" / "modules" / "sub"  # a submodule's own store, with commits nobody else has
+    sh("git", "init", "-q", "--bare", str(module), cwd=tmp_path)
+    capsys.readouterr()
+    assert run_main(["report", str(scratch), "--repo", str(repo), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
+    stores = {Path(g["path"]).parent.name: g["contained_in_reference"]
+              for g in json.loads(capsys.readouterr().out)["git_object_stores"]}
+    assert stores == {"copy": None}
+
+
+def test_report_does_not_count_hard_linked_bundles_or_duplicates_as_reclaimable(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    (scratch / "a").mkdir(parents=True)
+    sh("git", "bundle", "create", str(scratch / "a" / "h.bundle"), "main", cwd=repo)
+    os.link(scratch / "a" / "h.bundle", tmp_path / "elsewhere.bundle")  # another link outside the scan
+    data = blob(2 * 1024 * 1024, 152)
+    (scratch / "a" / "d1.bin").write_bytes(data)
+    (scratch / "a" / "d2.bin").write_bytes(data)
+    os.link(scratch / "a" / "d2.bin", tmp_path / "d2-elsewhere.bin")
+    (scratch / "a" / "d3.bin").write_bytes(data)
+    os.link(scratch / "a" / "d3.bin", tmp_path / "d3-elsewhere.bin")
+    capsys.readouterr()
+    assert run_main(["report", str(scratch), "--repo", str(repo), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    assert [(b["contained_in_reference"], b["reclaimable_bytes"]) for b in doc["bundles"]] == [(True, 0)]
+    assert doc["summary_bytes"]["bundles_contained_in_reference"] == 0
+    assert [(d["copies"], d["reclaimable"]) for d in doc["duplicates"]] == [(3, len(data))], \
+        "two copies have other hard links (removing them frees nothing): only the single-linked copy can go"
+
+
+def test_report_counts_a_bundle_against_a_partial_clone_as_not_assessed_even_with_a_missing_tip(tmp_path, monkeypatch,
+                                                                                               capsys):
+    repo = make_repo(tmp_path)
+    sh("git", "config", "uploadpack.allowFilter", "true", cwd=repo)
+    partial = tmp_path / "partial"
+    sh("git", "clone", "-q", "--no-local", "--filter=blob:none", "--no-checkout", f"file://{repo}", str(partial),
+       cwd=tmp_path)
+    (repo / "later.txt").write_text("committed after the partial clone\n")
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "later", cwd=repo)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    sh("git", "bundle", "create", str(scratch / "newer.bundle"), "main", cwd=repo)  # its tip is not in the clone
+    capsys.readouterr()
+    assert run_main(["report", str(scratch), "--repo", str(partial), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
+    assert [b["contained_in_reference"] for b in json.loads(capsys.readouterr().out)["bundles"]] == [None]
+
+
+def test_report_skips_a_stale_candidate_that_disappears_while_it_runs(tmp_path, monkeypatch, capsys):
+    temp = tmp_path / "temp"
+    (temp / "lane-run-1").mkdir(parents=True)
+    (tmp_path / "empty").mkdir()
+    real_lstat = Path.lstat
+
+    def vanishing(self):
+        if self.name == "lane-run-1":
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        return real_lstat(self)
+
+    monkeypatch.setattr(Path, "lstat", vanishing)
+    capsys.readouterr()
+    assert run_main(["report", str(tmp_path / "empty"), "--stale-dir", str(temp), "--json"], tmp_path,
+                    monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["stale"] == [] and str(temp / "lane-run-1") in doc["unreadable"]
+
+
 def test_report_does_not_count_hard_linked_objects_as_reclaimable(tmp_path, monkeypatch, capsys):
     repo = make_repo(tmp_path)
     incompressible = b"".join(hashlib.sha256(i.to_bytes(4, "big")).digest() for i in range(7000))
@@ -2383,6 +2518,9 @@ def test_report_does_not_count_hard_linked_objects_as_reclaimable(tmp_path, monk
     assert run_main(["report", str(scratch), "--repo", str(repo), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
     doc = json.loads(capsys.readouterr().out)
     stores = {Path(g["path"]).name: g for g in doc["git_object_stores"]}
+    packs = list((scratch / "linked.git" / "objects").rglob("*"))
+    if not any(p.is_file() and p.stat().st_nlink > 1 for p in packs):
+        pytest.skip("this file system made git copy instead of hard-linking the local clone")
     assert stores["linked.git"]["contained_in_reference"] and stores["copied.git"]["contained_in_reference"]
     assert stores["copied.git"]["reclaimable_bytes"] == stores["copied.git"]["bytes"]
     assert stores["linked.git"]["bytes"] > 200_000 and stores["linked.git"]["reclaimable_bytes"] < 100_000
@@ -2472,6 +2610,28 @@ def test_many_paths_are_passed_to_git_in_batches(tmp_path, monkeypatch, capsys):
         {k: [r["path"] for r in whole[k]] for k in ("tracked", "pending")}
     paths_per_call = [len(a) - a.index("--") - 1 for a in calls if "--" in a and a[0] in ("ls-files", "ls-tree", "diff")]
     assert paths_per_call and max(paths_per_call) <= 2, "no git call carries more than one batch of paths"
+
+
+def test_long_path_names_are_also_batched_by_size(monkeypatch):
+    monkeypatch.setattr(rs, "PATH_BYTES_PER_CALL", 100)
+    names = [f"d/{'x' * 40}{i}" for i in range(5)]
+    groups = rs.batches(names)
+    assert [n for g in groups for n in g] == names
+    assert all(sum(len(n) + 1 for n in g) <= 100 or len(g) == 1 for g in groups) and len(groups) >= 3
+    assert rs.batches([]) == [[]]
+
+
+def test_a_subprocess_error_is_reported_as_an_error(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+
+    def broken(*a, **kw):
+        raise subprocess.SubprocessError("git could not be run")
+
+    capsys.readouterr()
+    monkeypatch.setattr(rs.subprocess, "run", broken)
+    assert run_main(["check", "--json"], repo, monkeypatch) == rs.EXIT_ERROR
+    out = capsys.readouterr()
+    assert json.loads(out.out)["error"] == "git could not be run" and "Traceback" not in out.err
 
 
 def test_quiet_prints_nothing_when_nothing_needs_attention(tmp_path, monkeypatch, capsys):
@@ -2635,6 +2795,19 @@ def test_a_refusal_after_the_record_was_written_still_reports_what_was_stored(tm
     assert doc["refused"] == ["reincluded_by_negation"] and doc["record_written"] is True
     assert [e["path"] for e in doc["stowed"]] == ["sub/a.bin"] and doc["manifest"] == str(run / rs.MANIFEST_NAME)
     assert "stowed" in out.err and "sub/a.bin" in out.err
+
+
+def test_a_refusal_after_the_record_was_written_reports_what_success_would(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    (run / "sub").mkdir(parents=True)
+    (run / "sub" / ".gitignore").write_text("!a.bin\n")
+    (run / "sub" / "a.bin").write_bytes(blob(THRESHOLD, 153))
+    capsys.readouterr()
+    assert run_main(["stow", str(run), "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    doc = json.loads(capsys.readouterr().out)
+    assert {"stowed", "already_tracked", "symlinks_not_followed", "store", "manifest", "commit_needed"} <= set(doc)
+    assert doc["commit_needed"] is True
 
 
 def test_a_case_probe_that_cannot_be_created_counts_as_case_sensitive(tmp_path, capsys):

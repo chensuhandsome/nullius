@@ -250,11 +250,26 @@ def git_z(args: "list[str]", cwd: Path) -> "list[str]":
 
 
 PATHS_PER_CALL = 500
+PATH_BYTES_PER_CALL = 64 * 1024  # far below any POSIX command-line limit, whatever the name lengths
 
 
 def batches(paths: "list[str]") -> "list[list[str]]":
-    """Path names in groups small enough for one command line each."""
-    return [paths[i:i + PATHS_PER_CALL] for i in range(0, len(paths), PATHS_PER_CALL)] or [[]]
+    """Path names in groups small enough for one command line each: at most
+    PATHS_PER_CALL names and PATH_BYTES_PER_CALL bytes per group (a single
+    longer name gets a group of its own)."""
+    groups: "list[list[str]]" = []
+    current: "list[str]" = []
+    size = 0
+    for path in paths:
+        n = len(os.fsencode(path)) + 1
+        if current and (len(current) >= PATHS_PER_CALL or size + n > PATH_BYTES_PER_CALL):
+            groups.append(current)
+            current, size = [], 0
+        current.append(path)
+        size += n
+    if current:
+        groups.append(current)
+    return groups or [[]]
 
 
 def git_z_paths(args: "list[str]", paths: "list[str]", cwd: Path) -> "list[str]":
@@ -1280,7 +1295,9 @@ def cmd_stow(args) -> int:
                         "elsewhere re-includes them. Fix the ignore rules before committing.")
     if kinds:  # the files are stored and recorded; what stays to fix is the ignore rules or the index
         return refuse(args, kinds, messages, EXIT_FINDINGS, record_written=True,
-                      done={"stowed": stowed, "store": str(store), "manifest": str(run_dir / MANIFEST_NAME)},
+                      done={"stowed": stowed, "already_tracked": legacy, "symlinks_not_followed": sorted(links),
+                            "store": str(store), "manifest": str(run_dir / MANIFEST_NAME),
+                            "commit_needed": record_needs_commit(repo, run_dir)},
                       done_lines=lines)
     # Judged on the files as they now are: a rewrite that restores the committed bytes needs no commit.
     commit_needed = record_needs_commit(repo, run_dir)
@@ -1474,7 +1491,9 @@ def hidden_tracked_changes(path: Path) -> "list[str]":
     absent from disk is not counted (its content stays in git)."""
     flagged = []
     for item in git_z(["ls-files", "-v", "-z"], path):
-        tag, rel = item[:1], item[2:]
+        tag, sep, rel = item.partition(" ")
+        if len(tag) != 1 or not sep:
+            raise StorageError(f"unexpected `git ls-files -v` record {item!r} in {path}")
         if tag.islower() or tag == "S":
             flagged.append(rel)
     if not flagged:
@@ -1697,6 +1716,9 @@ def worktree_private_refs(path: Path, base: str) -> "list[str]":
     held = []
     for line in out.stdout.decode().splitlines():
         name, _, sha = line.partition(" ")
+        if git(["cat-file", "-t", sha], path, check=False).stdout.decode().strip() != "commit":
+            held.append(name)  # e.g. an annotated tag object: the tag itself would be lost
+            continue
         peeled = git(["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"], path, check=False)
         commit = peeled.stdout.decode().strip() if peeled.returncode == 0 else None
         if commit is None or git(["merge-base", "--is-ancestor", commit, base], path, check=False).returncode != 0:
@@ -1975,17 +1997,16 @@ class DurableObjects:
         """True when every object reachable from ``revs`` (computed inside
         the reference) is durably reachable there; None when the reference is
         a partial clone, where that traversal skips objects it only promises."""
-        if not revs or missing_objects(self.reference, revs):
-            return False
         if self.partial:
             return None
+        if not revs or missing_objects(self.reference, revs):
+            return False
         out = git(["rev-list", "--objects", "--missing=allow-promisor", "--stdin"], self.reference, check=False,
                   input_bytes=("\n".join(revs) + "\n").encode())
         if out.returncode != 0:
             return False
         closure = {line.split()[0] for line in out.stdout.decode().splitlines() if line.strip()}
-        # Reachable is not enough when the reference is a partial clone: its bytes must be held here.
-        return closure <= self.ids() and not missing_objects(self.reference, sorted(closure))
+        return closure <= self.ids()
 
 
 def store_contained(durable: DurableObjects, git_dir: Path) -> "bool | None":
@@ -1993,10 +2014,12 @@ def store_contained(durable: DurableObjects, git_dir: Path) -> "bool | None":
     refs, annotated tags, reflogs, and index entries) is durably reachable in
     the reference repository; None when the store cannot be assessed. Objects a
     partial clone never held are not fetched (and are not the copy's to lose)."""
-    linked = git_dir / "worktrees"
+    linked, modules = git_dir / "worktrees", git_dir / "modules"
     try:
         if linked.is_dir() and any(linked.iterdir()):
             return None  # linked worktrees keep their own indexes, refs and logs: not assessed
+        if modules.is_dir() and any(modules.iterdir()):
+            return None  # submodules keep their own object stores, refs and logs: not assessed
         # Pseudo-refs (FETCH_HEAD, ORIG_HEAD, MERGE_HEAD, ...) and in-progress operations can be
         # the only reference to objects; rev-list --all does not follow them.
         if any((entry.name.endswith("_HEAD") or entry.name in ("AUTO_MERGE", "sequencer", "rebase-merge",
@@ -2015,7 +2038,17 @@ def store_contained(durable: DurableObjects, git_dir: Path) -> "bool | None":
     if not reachable:
         return False
     # Reachable is not enough when the reference is a partial clone: its bytes must be held there.
-    return reachable <= durable.ids() and not missing_objects(durable.reference, sorted(reachable))
+    # (In a complete repository every reachable object is held; that traversal fails otherwise.)
+    return reachable <= durable.ids() and (not durable.partial or not missing_objects(durable.reference,
+                                                                                    sorted(reachable)))
+
+
+def link_count(path: Path) -> int:
+    """Hard links of a file; 0 when it cannot be examined (counted as not freeable)."""
+    try:
+        return path.lstat().st_nlink
+    except OSError:
+        return 0
 
 
 def sample_ratio(path: Path, sample_bytes: int = 4 * CHUNK) -> float:
@@ -2081,7 +2114,8 @@ def cmd_report(args) -> int:
                 if not stat.S_ISREG(st.st_mode):
                     continue
                 if name.endswith(".bundle"):
-                    record = {"path": str(full), "bytes": st.st_size}
+                    record = {"path": str(full), "bytes": st.st_size,
+                              "reclaimable_bytes": st.st_size if st.st_nlink == 1 else 0}
                     if reference is not None:
                         heads = git(["bundle", "list-heads", str(full)], reference, check=False)
                         shas = [line.split()[0] for line in heads.stdout.decode().splitlines() if line.strip()]
@@ -2116,8 +2150,12 @@ def cmd_report(args) -> int:
             for sha, same in by_full.items():
                 unique_large.append((same[0], size))
                 if len(same) > 1:
+                    # Removing a copy that has other hard links frees nothing: keep one copy, count the rest
+                    # that are single-linked.
+                    single = sum(1 for p in same if link_count(p) == 1)
+                    freeable = min(single, len(same) - 1)
                     duplicates.append({"sha256": sha, "size": size, "copies": len(same),
-                                       "reclaimable": size * (len(same) - 1), "paths": [str(p) for p in same]})
+                                       "reclaimable": size * freeable, "paths": [str(p) for p in same]})
     duplicates.sort(key=lambda d: -d["reclaimable"])
     unique_large.sort(key=lambda item: -item[1])
     candidates = [(p, s) for p, s in unique_large if p.suffix.lower() not in ALREADY_COMPRESSED_SUFFIXES]
@@ -2134,16 +2172,26 @@ def cmd_report(args) -> int:
         base = Path(d).expanduser().resolve()
         if not base.is_dir():
             continue
-        for child in sorted(base.iterdir()):
+        try:
+            children = sorted(base.iterdir())
+        except OSError:
+            unreadable.append(str(base))
+            continue
+        for child in children:
             if args.stale_prefix and not any(child.name.startswith(p) for p in args.stale_prefix):
                 continue
-            if child.is_symlink():
+            try:
+                st = child.lstat()
+            except OSError:  # removed meanwhile, or unreadable: its age is unknown
+                unreadable.append(str(child))
                 continue
-            if child.is_dir():
+            if stat.S_ISLNK(st.st_mode):
+                continue
+            if stat.S_ISDIR(st.st_mode):
                 size, count, newest, complete, linked = dir_size(child, unreadable)
             else:
-                st = child.lstat()
-                size, count, newest, complete, linked = st.st_size, 1, st.st_mtime, True, 0
+                size, count, newest, complete = st.st_size, 1, st.st_mtime, True
+                linked = st.st_size if st.st_nlink > 1 else 0
             # Age is known only when every part of the root could be examined.
             if complete and newest < cutoff:
                 stale.append({"path": str(child), "bytes": size, "files": count, "reclaimable_bytes": size - linked,
@@ -2154,7 +2202,7 @@ def cmd_report(args) -> int:
         "duplicate_content": sum(d["reclaimable"] for d in duplicates),
         "regenerable_directories": sum(r["reclaimable_bytes"] for r in regenerable),
         "history_copies_contained_in_reference": sum(g["reclaimable_bytes"] for g in redundant_stores),
-        "bundles_contained_in_reference": sum(b["bytes"] for b in redundant_bundles),
+        "bundles_contained_in_reference": sum(b["reclaimable_bytes"] for b in redundant_bundles),
         "stale_temporary_roots": sum(s["reclaimable_bytes"] for s in stale),
         "compression_estimate": int(compress_saving),
     }

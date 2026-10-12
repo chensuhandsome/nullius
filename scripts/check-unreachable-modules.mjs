@@ -24,9 +24,11 @@
 // spellings resolve to their `.ts`/`.mts`/`.cts` sources (or a hand-written
 // declaration file).
 //
-// Modules that are not part of the source graph are not candidates: declaration
-// files (`.d.ts`), test files (`*.test.*`, `*.spec.*`) and anything under a
-// `__tests__`, `__mocks__` or `__fixtures__` directory.
+// Files that are not part of the source graph are neither candidates nor carriers:
+// declaration files (`.d.ts`), test files (`*.test.*`, `*.spec.*`) and anything under a
+// `__tests__`, `__mocks__` or `__fixtures__` directory are never reported, and when one
+// is reached its own imports are not followed, so it cannot make another module look
+// used.
 //
 // A module that is started some other way is invisible to an import walk: a file a
 // shell script or a test suite runs, or one started as a separate process or worker
@@ -99,7 +101,9 @@ function loadTypeScript(repoRoot) {
 }
 
 function isCandidateModule(relPath) {
-  const base = path.posix.basename(relPath);
+  const segments = relPath.split('/');
+  if (segments.slice(0, -1).some(segment => EXCLUDED_DIRECTORIES.has(segment))) return false;
+  const base = segments[segments.length - 1];
   if (base.endsWith('.d.ts') || base.endsWith('.d.mts') || base.endsWith('.d.cts')) return false;
   if (/\.(test|spec)\.[cm]?[jt]sx?$/.test(base)) return false;
   return SOURCE_EXTENSIONS.includes(path.posix.extname(base));
@@ -112,7 +116,7 @@ function listSourceModules(sourceRoot) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (!EXCLUDED_DIRECTORIES.has(entry.name)) walk(full);
-      } else if (entry.isFile() && isCandidateModule(toPosix(full))) {
+      } else if (entry.isFile() && isCandidateModule(toPosix(path.relative(sourceRoot, full)))) {
         out.push(full);
       }
     }
@@ -260,7 +264,7 @@ export function scanPackage(packageDir, { allow = [], ts } = {}) {
     const file = queue.pop();
     if (reached.has(file)) continue;
     reached.add(file);
-    if (!SOURCE_EXTENSIONS.includes(path.extname(file))) continue;
+    if (!isCandidateModule(rel(file))) continue;
     const { specifiers, unfollowed } = collectSpecifiers(typescript, file);
     for (const { line, what } of unfollowed) unfollowedSites.push(`${rel(file)}:${line} has ${what}`);
     for (const spec of specifiers) {
@@ -274,6 +278,16 @@ export function scanPackage(packageDir, { allow = [], ts } = {}) {
 
   const unreachable = modules.filter(m => !reached.has(m)).map(rel);
   return { modules: modules.length, reached: modules.filter(m => reached.has(m)).length, unreachable, problems };
+}
+
+function scanOrReport(packageDir, options) {
+  // A package that cannot be scanned (e.g. an unparsable package.json) is a problem to
+  // report, not a crash that hides the other packages' results.
+  try {
+    return scanPackage(packageDir, options);
+  } catch (error) {
+    return { modules: 0, reached: 0, unreachable: [], problems: [`cannot be scanned: ${error.message}`] };
+  }
 }
 
 function listWorkspacePackages(repoRoot) {
@@ -295,7 +309,7 @@ export function runCheck({ repoRoot = scriptRepoRoot, enforced = ENFORCED_PACKAG
       lines.push(`FAIL ${pkg}: enforced package has no package.json`);
       continue;
     }
-    const result = scanPackage(packageDir, { allow: config.allow, ts });
+    const result = scanOrReport(packageDir, { allow: config.allow, ts });
     if (result.unreachable.length === 0 && result.problems.length === 0) {
       lines.push(`ok ${pkg}: all ${result.modules} source modules reached from declared entries or allowlisted roots`);
       continue;
@@ -314,7 +328,7 @@ export function runCheck({ repoRoot = scriptRepoRoot, enforced = ENFORCED_PACKAG
     for (const pkg of listWorkspacePackages(repoRoot)) {
       if (Object.hasOwn(enforced, pkg)) continue;
       const packageDir = path.join(repoRoot, pkg);
-      const result = scanPackage(packageDir, { ts });
+      const result = scanOrReport(packageDir, { ts });
       const notes = result.problems.length > 0 ? `; ${result.problems.length} note(s)` : '';
       lines.push(`report ${pkg}: ${result.unreachable.length} of ${result.modules} source modules unreached${notes}`);
       if (verbose) {

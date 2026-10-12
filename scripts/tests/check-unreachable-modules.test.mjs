@@ -38,7 +38,15 @@ function packageFixture(t) {
     '',
   ].join('\n'));
   ws.write('pkg/src/a.ts', "export const a = async () => (await import('./b.js')).b;\n");
-  ws.write('pkg/src/b.ts', "export type { C } from './nested/c.js';\nexport const b = 1;\n");
+  ws.write('pkg/src/b.ts', [
+    "export type { C } from './nested/c.js';",
+    "import eq = require('./eq.js');",
+    "export type U = import('./typed.js').U;",
+    'export const b = eq;',
+    '',
+  ].join('\n'));
+  ws.write('pkg/src/eq.ts', 'export = 1;\n');
+  ws.write('pkg/src/typed.ts', 'export type U = string;\n');
   ws.write('pkg/src/nested/c.ts', 'export type C = number;\n');
   ws.write('pkg/src/commented.ts', 'export const x = 1;\n');
   ws.write('pkg/src/quoted.ts', 'export const y = 1;\n');
@@ -54,7 +62,34 @@ test('follows static, dynamic, type-only and launcher imports; comments, strings
   const result = scanPackage(packageDir);
   assert.deepEqual(result.problems, []);
   assert.deepEqual(result.unreachable, ['src/commented.ts', 'src/orphan.ts', 'src/quoted.ts']);
-  assert.equal(result.modules, 8);
+  assert.equal(result.modules, 10);
+});
+
+test('declaration, test and __tests__ files carry no reachability, even when reached', t => {
+  const { packageDir, write } = packageFixture(t);
+  write('pkg/src/cli.ts', [
+    "import type { D } from './mask.js';",
+    "import './cli.test.js';",
+    "import './__tests__/helper.js';",
+    'export const cli: D = 1;',
+    '',
+  ].join('\n'));
+  write('pkg/src/mask.d.ts', "import './orphan.js';\nexport type D = number;\n");
+  write('pkg/src/cli.test.ts', "import './commented.js';\n");
+  write('pkg/src/__tests__/helper.ts', "import '../quoted.js';\n");
+  const result = scanPackage(packageDir);
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual(result.unreachable, ['src/commented.ts', 'src/orphan.ts', 'src/quoted.ts']);
+});
+
+test('a package that cannot be scanned is reported, not a crash', t => {
+  const ws = workspace(t);
+  ws.write('packages/broken/package.json', '{ not json');
+  const enforced = { 'packages/broken': { allow: [] } };
+  const result = runCheck({ repoRoot: ws.base, enforced });
+  assert.equal(result.failed, true);
+  assert.equal(result.lines[0], 'FAIL packages/broken:');
+  assert.ok(result.lines[1].startsWith('  cannot be scanned: '), result.lines.join('\n'));
 });
 
 test('allowlist entries are single-file roots; a directory or a missing file names no module', t => {

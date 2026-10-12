@@ -76,7 +76,8 @@ export function ensurePrivateParent(parent) {
   const stat = fs.lstatSync(parent);
   const uid = typeof process.getuid === 'function' ? process.getuid() : null;
   if (!stat.isDirectory() || stat.isSymbolicLink() || (uid !== null && stat.uid !== uid)) {
-    throw new Error(`[test-temp-root] ${parent} is not a directory owned by this user; refusing to use it`);
+    throw new Error(`[test-temp-root] ${parent} is not a directory owned by this user; refusing to use it. `
+      + 'Remove it (or hand it to this user with chown), then run the tests again.');
   }
   if ((stat.mode & 0o777) !== 0o700) fs.chmodSync(parent, 0o700);
   return parent;
@@ -184,7 +185,20 @@ export function sweepStaleRoots(parent, { now = Date.now(), retentionDays = RETE
     if (isAlive(Number(match[1]))) continue;
     const full = path.join(parent, entry.name);
     if (!hasRootMarker(full, match[1])) continue;  // not positively ours: never deleted
-    if (now - newestMtime(full) > retentionDays * DAY_MS && removeTree(full)) removed.push(full);
+    const newest = newestMtime(full);
+    if (now - newest <= retentionDays * DAY_MS) continue;
+    if (removeTree(full)) {
+      removed.push(full);
+    } else if (fs.existsSync(full) && !hasRootMarker(full, match[1])) {
+      // A half-finished removal may have taken the marker: put it back, so the
+      // root is tried again once it has been unchanged for the retention window,
+      // instead of being skipped forever as unmarked.
+      try {
+        fs.writeFileSync(path.join(full, ROOT_MARKER), rootMarkerText(match[1]), { flag: 'wx', mode: 0o600 });
+      } catch (error) {
+        warn(`could not restore the marker of ${full}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   }
   return removed;
 }

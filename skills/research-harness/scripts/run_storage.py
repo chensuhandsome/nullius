@@ -45,21 +45,32 @@ Subcommands
   materialize       recreate missing manifest entries in place from the
                     store (e.g. in another worktree; in a clone, even on the
                     same machine, pass ``--store`` with the original store).
+  worktree-check    read-only: can a linked worktree be removed without
+                    losing anything? Lists what exists only there
+                    (``git worktree remove`` deletes ignored files silently).
+  report            read-only estimate of reclaimable bytes under any trees:
+                    duplicate content, regenerable directories, separate
+                    history copies and bundles already contained in a
+                    reference repository, stale temporary roots, and a
+                    rough compression estimate.
 
 ``--store PATH`` overrides the policy's store for ``stow``, ``verify``,
-``materialize``, and ``check`` without ``--staged``.
+``materialize``, ``worktree-check``, and ``check`` without ``--staged``.
 
 Exit codes: 0 clean; 1 findings (strict-check violations, verification or
-restore problems, a stow refused because recorded outputs changed or are
-unavailable, because bulk files are staged or changed but not committed, or
-because git ignores the manifest or ignore file, an ignore rule that
-re-includes a stowed file); 2 usage or
+restore problems, a worktree that must be kept, a stow refused because
+recorded outputs changed or are unavailable, because bulk files are staged or
+changed but not committed, because git ignores the manifest or ignore file,
+because the ignore block does not cover a recorded file renamed only in
+letter case, or because an ignore rule re-includes a stowed file or git
+tracks it anyway); 2 usage or
 environment errors and inputs refused before any change (unrecordable file
 names, damaged ignore-block markers, a run directory inside or around another
 stowed run, a malformed manifest or policy, a store inside a checkout).
 POSIX (macOS/Linux) only.
 Nothing here deletes data: a damaged store object is renamed aside, never
-removed, and run files are never replaced (stow only makes them read-only).
+removed, and run files are never replaced (stow only makes them read-only);
+``worktree-check`` and ``report`` only read.
 
 Operating assumptions: one user's own files (not an adversarial setting),
 and nothing still writing into a run directory that is being stowed. Hashes
@@ -75,12 +86,15 @@ import json
 import os
 import posixpath
 import secrets
+import shlex
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -213,8 +227,10 @@ def git(args: "list[str]", cwd: Path, check: bool = True, input_bytes: "bytes | 
     # (network, credentials, and new packs written into a copy being read).
     # File names are passed as literal pathspecs (a name like ":(exclude)x" is just a name).
     env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", LC_ALL="C", GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0")
-    if literal_pathspecs:  # check-ignore dies in this mode (it takes plain path names anyway)
+    if literal_pathspecs:
         env["GIT_LITERAL_PATHSPECS"] = "1"
+    else:  # check-ignore dies in this mode (it takes plain path names anyway), even when inherited
+        env.pop("GIT_LITERAL_PATHSPECS", None)
     proc = subprocess.run(
         ["git", "-c", "core.quotepath=off", "-c", "core.fsmonitor=false", "-c", "protocol.allow=never", *args],
         cwd=str(cwd), input=input_bytes, capture_output=True, env=env,
@@ -231,6 +247,23 @@ def git_text(args: "list[str]", cwd: Path) -> str:
 def git_z(args: "list[str]", cwd: Path) -> "list[str]":
     out = git(args, cwd).stdout.decode("utf-8", errors="surrogateescape")
     return [item for item in out.split("\0") if item]
+
+
+PATHS_PER_CALL = 500
+
+
+def batches(paths: "list[str]") -> "list[list[str]]":
+    """Path names in groups small enough for one command line each."""
+    return [paths[i:i + PATHS_PER_CALL] for i in range(0, len(paths), PATHS_PER_CALL)] or [[]]
+
+
+def git_z_paths(args: "list[str]", paths: "list[str]", cwd: Path) -> "list[str]":
+    """`git <args> -- <paths>` run once per batch of paths; the outputs joined."""
+    out: "list[str]" = []
+    for group in batches(paths):
+        if group:
+            out += git_z([*args, "--", *group], cwd)
+    return out
 
 
 def same_file(a: Path, b: Path) -> bool:
@@ -260,6 +293,9 @@ def case_insensitive(directory: Path) -> bool:
             os.unlink(probe)
         except FileNotFoundError:
             pass
+        except OSError as exc:
+            print(f"run-storage: could not remove the probe file {probe} ({exc.strerror or exc}); "
+                  "delete it by hand", file=sys.stderr)
 
 
 class Repo:
@@ -284,6 +320,9 @@ class Repo:
         # files in composed (NFC) form whatever form the file system returns.
         self.precompose = git(["config", "--bool", "core.precomposeunicode"], self.toplevel,
                               check=False).stdout.decode().strip() == "true"
+        # git itself folds letter case (core.ignorecase=true) only for ASCII letters.
+        self.ignorecase_configured = git(["config", "--bool", "core.ignorecase"], self.toplevel,
+                                         check=False).stdout.decode().strip() == "true"
         self._ignorecase: "bool | None" = None
         self.policy = load_policy(self.toplevel)
 
@@ -294,9 +333,10 @@ class Repo:
         true (unset, or carried over from another file system) the checkout is
         measured directly, once."""
         if self._ignorecase is None:
-            configured = git(["config", "--bool", "core.ignorecase"], self.toplevel,
-                             check=False).stdout.decode().strip() == "true"
-            self._ignorecase = configured or case_insensitive(self.toplevel)
+            # Measured where bulk outputs live: the first existing run root, else the checkout.
+            where = next((self.toplevel / r for r in self.run_roots
+                          if (self.toplevel / r).is_dir() and not (self.toplevel / r).is_symlink()), self.toplevel)
+            self._ignorecase = self.ignorecase_configured or case_insensitive(where)
         return self._ignorecase
 
     def symlinked_run_roots(self) -> "list[str]":
@@ -351,6 +391,8 @@ class Repo:
         existing = real
         while not existing.exists() and existing != existing.parent:
             existing = existing.parent
+        if not existing.is_dir():
+            raise StorageError(f"content store {store} passes through {existing}, which is not a directory")
         probe = git(["rev-parse", "--show-toplevel"], existing, check=False)
         other = probe.stdout.decode("utf-8", errors="surrogateescape").strip() if probe.returncode == 0 else ""
         if other:
@@ -373,7 +415,7 @@ class Repo:
         return self.git_form(rel)
 
     def tracked(self, pathspecs: "list[str]") -> "set[str]":
-        return set(git_z(["ls-files", "-z", "--", *pathspecs], self.toplevel)) if pathspecs else set()
+        return set(git_z_paths(["ls-files", "-z"], pathspecs, self.toplevel)) if pathspecs else set()
 
     def untracked(self, pathspecs: "list[str]") -> "set[str]":
         return set(git_z(["ls-files", "-z", "--others", "--exclude-standard", "--", *pathspecs], self.toplevel))
@@ -744,11 +786,11 @@ def is_storage_record(rel: str) -> bool:
     return posixpath.basename(rel) in (MANIFEST_NAME, ".gitignore")
 
 
-def blob_ids(repo: Repo, args: "list[str]") -> "dict[str, tuple[str, str]]":
+def blob_ids(repo: Repo, args: "list[str]", paths: "list[str]") -> "dict[str, tuple[str, str]]":
     """Map path -> (file mode, object id) from ls-tree or ls-files --stage."""
-    out = git(args, repo.toplevel)  # a failure is an error, never "nothing committed"
     found = {}
-    for item in out.stdout.decode("utf-8", errors="surrogateescape").split("\0"):
+    # A failure is an error, never "nothing committed".
+    for item in git_z_paths(args, paths, repo.toplevel):
         meta, _, path = item.partition("\t")
         parts = meta.split()
         if path and len(parts) >= 3:
@@ -783,12 +825,12 @@ def committed_and_pending(repo: Repo, pathspecs: "list[str]") -> "tuple[set[str]
         return set(), set()
     # Before the first commit HEAD names no commit and nothing is committed.
     born = git(["rev-parse", "--verify", "-q", "HEAD^{commit}"], repo.toplevel, check=False).returncode == 0
-    head = blob_ids(repo, ["ls-tree", "-r", "-z", "HEAD", "--", *pathspecs]) if born else {}
-    index = blob_ids(repo, ["ls-files", "--stage", "-z", "--", *pathspecs])
-    modified = set(git_z(["diff", "--name-only", "-z", "--", *pathspecs], repo.toplevel))
+    head = blob_ids(repo, ["ls-tree", "-r", "-z", "HEAD"], pathspecs) if born else {}
+    index = blob_ids(repo, ["ls-files", "--stage", "-z"], pathspecs)
+    modified = set(git_z_paths(["diff", "--name-only", "-z"], pathspecs, repo.toplevel))
     # `ls-files -v` tags a plain entry "H"; assume-unchanged entries get a
     # lowercase tag and skip-worktree entries "S". Only plain entries are trusted.
-    flagged = {item[2:] for item in git_z(["ls-files", "-v", "-z", "--", *pathspecs], repo.toplevel)
+    flagged = {item[2:] for item in git_z_paths(["ls-files", "-v", "-z"], pathspecs, repo.toplevel)
                if not item.startswith("H ")}
     committed = {p for p in tracked
                  if p in head and head[p] == index.get(p) and p not in modified and p not in flagged}
@@ -815,7 +857,7 @@ def staged_bulk(repo: Repo, threshold: int) -> "list[dict]":
                     repo.toplevel)
     if not changed:
         return []
-    stage = git_z(["ls-files", "--stage", "-z", "--", *changed], repo.toplevel)
+    stage = git_z_paths(["ls-files", "--stage", "-z"], changed, repo.toplevel)
     shas: "dict[str, str]" = {}
     for item in stage:
         meta, _, path = item.partition("\t")
@@ -852,11 +894,11 @@ def working_tree_bulk(repo: Repo, threshold: int, store: Path) -> "dict[str, lis
     # Recorded files by case-folded path. A file whose name folds to a recorded one is that file only
     # when it is the same file on disk; with core.ignorecase carried onto a case-sensitive file system
     # it can be a different file, which must be classified (and so reported), never skipped.
-    stowed_folded: "dict[str, list[Path]]" = {}
+    stowed_folded: "dict[str, list[tuple[Path, dict]]]" = {}
     if repo.ignorecase:
         for rel, records in stowed.items():
             for run_dir, entry in records:
-                stowed_folded.setdefault(rel.casefold(), []).append(run_dir / entry["path"])
+                stowed_folded.setdefault(rel.casefold(), []).append((run_dir, entry))
     # Every recorded entry is checked by full hash, whatever its current size:
     # a stowed output that changed, shrank, vanished, lost its store copy, or
     # is recorded twice is not "stowed" any more.
@@ -907,8 +949,9 @@ def working_tree_bulk(repo: Repo, threshold: int, store: Path) -> "dict[str, lis
                     classes["pending"].append(record)
                 elif rel in untracked:
                     classes["untracked"].append(record)
-                elif rel in stowed or any(same_file(full, p) for p in stowed_folded.get(rel.casefold(), ())):
-                    continue  # classified above by hash
+                elif rel in stowed or any(same_file(full, run_dir / entry["path"]) or renamed_copy(full, run_dir, entry)
+                                          for run_dir, entry in stowed_folded.get(rel.casefold(), ())):
+                    continue  # the recorded output itself (or it, renamed only in letter case): classified above
                 else:
                     classes["ignored_unstowed"].append(record)
     for records in classes.values():
@@ -972,9 +1015,10 @@ def cmd_check(args) -> int:
             lines.append(f"        {human(r['size']):>12}  {r['path']}")
         if len(records) > args.limit:
             lines.append(f"        ... {len(records) - args.limit} more")
-    emit(result, args.json, lines)
     violations = (classes["untracked"] or classes["ignored_unstowed"] or classes["stowed_damaged"]
                   or classes["pending"] or classes["symlinked_run_roots"] or classes["uncommitted_records"])
+    notices = classes["nested_repositories"] or classes["symlinks_not_followed"]
+    emit(result, args.json, lines if (violations or notices or not args.quiet) else [])
     return EXIT_FINDINGS if (violations and args.strict) else EXIT_OK
 
 
@@ -1027,6 +1071,19 @@ def resolve_run_dir(repo: Repo, run_dir: str) -> Path:
     return path
 
 
+def renamed_copy(full: Path, run_dir: Path, entry: dict) -> bool:
+    """On a case-sensitive file system a recorded file renamed only in letter
+    case is a new name for the same bytes: the recorded spelling is gone from
+    the run directory and this file holds exactly the recorded size and hash."""
+    if (run_dir / entry["path"]).exists() or (run_dir / entry["path"]).is_symlink():
+        return False
+    try:
+        st = full.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode) and st.st_size == entry["size"] and sha256_file(full) == entry["sha256"]
+
+
 def expressible_problem(rel: str) -> "str | None":
     """Why a path cannot be recorded in the manifest and ignore block, if so."""
     try:
@@ -1038,6 +1095,21 @@ def expressible_problem(rel: str) -> "str | None":
     except StorageError:
         return "contains a line break"
     return None
+
+
+def refuse(args, kinds: "dict[str, list[dict]]", messages: "list[str]", code: int, record_written: bool = False) -> int:
+    """Report a refusal: the explanation (with one line per path) on stderr and,
+    with --json, a result object on stdout naming each kind of refusal and the
+    paths it concerns."""
+    for message in messages:
+        print(message.encode("utf-8", "backslashreplace").decode("utf-8"), file=sys.stderr)
+    if getattr(args, "json", False):
+        emit({"refused": sorted(kinds), "items": kinds, "record_written": record_written}, True, [])
+    return code
+
+
+def path_list(items: "list[str]") -> str:
+    return ", ".join(items)
 
 
 def make_read_only(path: Path) -> None:
@@ -1063,11 +1135,11 @@ def cmd_stow(args) -> int:
     # The manifest and ignore file are the record: if git ignores them, nothing could be committed.
     hidden = [name for name in RECORD_NAMES if is_ignored(repo, run_dir / name)]
     if hidden:
-        print(f"run-storage: git's ignore rules exclude {', '.join(repo.rel(run_dir / n) for n in hidden)}, so the "
-              "stow record could not be committed (nothing was changed). Make them committable (see "
-              "`git check-ignore -v <path>` for the rule; a rule that ignores a whole run root cannot be undone "
-              "below it), then stow again.", file=sys.stderr)
-        return EXIT_FINDINGS
+        rels = [repo.rel(run_dir / n) for n in hidden]
+        return refuse(args, {"records_ignored": [{"path": r} for r in rels]}, [
+            f"run-storage: git's ignore rules exclude {path_list(rels)}, so the stow record could not be committed "
+            "(nothing was changed). Make them committable (see `git check-ignore -v <path>` for the rule; a rule "
+            "that ignores a whole run root cannot be undone below it), then stow again."], EXIT_FINDINGS)
 
     # 1. Every entry already recorded must still hold its recorded bytes,
     #    whatever its current size: a recorded result is never re-recorded.
@@ -1092,7 +1164,9 @@ def cmd_stow(args) -> int:
                 continue
             # A recorded file renamed only in letter case is the same file on disk; a different file whose
             # name merely folds to a recorded one is a new candidate like any other.
-            if any(same_file(full, run_dir / k) for k in folded.get(rel_run.casefold(), ())):
+            twins = folded.get(rel_run.casefold(), ())
+            if any(same_file(full, run_dir / k) for k in twins) or any(renamed_copy(full, run_dir, entries[k])
+                                                                         for k in twins):
                 respelled.append(rel_run)
                 continue
             st = full.lstat()
@@ -1110,30 +1184,24 @@ def cmd_stow(args) -> int:
                 continue
             candidates.append((rel_run, full))
     if conflicts:
-        print("run-storage: recorded outputs are changed or unavailable (nothing was changed). A changed "
-              "result belongs in a new run. `missing` and `store_mismatch` entries have no valid copy here "
-              "(neither in place nor in the store, so `materialize` cannot help): put the recorded bytes back in "
-              "place from another copy (another store, a backup) and stow again, or record the result in a new "
-              "run:", file=sys.stderr)
-        for rel_run, status in conflicts:
-            print(f"  {status:>14}  {rel_run}", file=sys.stderr)
-        return EXIT_FINDINGS
+        return refuse(args, {"recorded_outputs_unavailable": [{"path": r, "status": st} for r, st in conflicts]}, [
+            "run-storage: recorded outputs are changed or unavailable (nothing was changed). A changed result "
+            "belongs in a new run. `missing` and `store_mismatch` entries have no valid copy here (neither in "
+            "place nor in the store, so `materialize` cannot help): put the recorded bytes back in place from "
+            "another copy (another store, a backup) and stow again, or record the result in a new run:",
+            *[f"  {st:>14}  {r}" for r, st in conflicts]], EXIT_FINDINGS)
     if uncommitted:
-        print("run-storage: these bulk files are staged or changed but not committed, so the next commit would "
-              "put them into history (nothing was changed). For a new file, `git rm --cached <path>` unstages it "
-              "(the file stays on disk), then stow again; a committed file that was changed is a changed result "
-              "and belongs in a new run. A path marked assume-unchanged or skip-worktree counts as changed (git "
-              "hides its working-tree state); clear the mark with `git update-index --no-assume-unchanged` or "
-              "`--no-skip-worktree <path>` to have it judged:", file=sys.stderr)
-        for rel_run in uncommitted:
-            print(f"  {rel_run}", file=sys.stderr)
-        return EXIT_FINDINGS
+        return refuse(args, {"uncommitted_bulk": [{"path": r} for r in uncommitted]}, [
+            "run-storage: these bulk files are staged or changed but not committed, so the next commit would put "
+            "them into history (nothing was changed). For a new file, `git rm --cached <path>` unstages it (the "
+            "file stays on disk), then stow again; a committed file that was changed is a changed result and "
+            "belongs in a new run. A path marked assume-unchanged or skip-worktree counts as changed (git hides "
+            "its working-tree state); clear the mark with `git update-index --no-assume-unchanged` or "
+            "`--no-skip-worktree <path>` to have it judged:", *[f"  {r}" for r in uncommitted]], EXIT_FINDINGS)
     if unexpressible:
-        print("run-storage: these file names cannot be recorded in a manifest or ignore rule; rename them "
-              "and stow again (nothing was changed):", file=sys.stderr)
-        for rel_run, problem in unexpressible:
-            print(f"  {problem}: {rel_run!r}", file=sys.stderr)
-        return EXIT_ERROR
+        return refuse(args, {"unrecordable_names": [{"path": r, "problem": pr} for r, pr in unexpressible]}, [
+            "run-storage: these file names cannot be recorded in a manifest or ignore rule; rename them and stow "
+            "again (nothing was changed):", *[f"  {pr}: {r!r}" for r, pr in unexpressible]], EXIT_ERROR)
     plan = [(rel_run, run_dir / rel_run) for rel_run in restore] + candidates
     sizes = {rel_run: full.lstat().st_size for rel_run, full in plan}
     lines = [f"run-storage: {len(plan)} bulk file(s), {human(sum(sizes.values()))}, from {repo.rel(run_dir)} "
@@ -1151,11 +1219,16 @@ def cmd_stow(args) -> int:
         return EXIT_OK
     if args.dry_run:
         lines += [f"  would stow {human(sizes[r]):>12}  {r}" for r, _ in plan]
+        # Under the current ignore rules: the real stow would refuse these (the managed block only lists
+        # the recorded spelling).
+        uncovered_now = [rel for rel in respelled if not is_ignored(repo, run_dir / rel)]
+        lines += [f"  would refuse: {rel} is a recorded file renamed only in letter case that the ignore rules do "
+                  "not cover" for rel in uncovered_now]
         # A dry run writes nothing, so it does not predict the record's state: null, never a guess.
         emit({"dry_run": True, "planned": [{"path": r, "size": sizes[r]} for r, _ in plan],
               "already_tracked": legacy, "symlinks_not_followed": sorted(links), "store": str(store),
-              "commit_needed": None}, args.json, lines)
-        return EXIT_OK
+              "commit_needed": None, "case_respelled_uncovered": uncovered_now}, args.json, lines)
+        return EXIT_FINDINGS if uncovered_now else EXIT_OK
 
     # 3. Store, then record. The manifest is written after every store step
     #    succeeded, so a failure leaves no entry without a stored copy.
@@ -1179,26 +1252,31 @@ def cmd_stow(args) -> int:
     not_ignored = [e["path"] for e in manifest["entries"] if not is_ignored(repo, run_dir / e["path"])]
     # The spelling on disk is what git will see; unless git treats case as equal it is not covered.
     case_uncovered = [rel for rel in respelled if not is_ignored(repo, run_dir / rel)]
+    # git never applies ignore rules to a tracked path (e.g. one added with `git add -f`).
+    in_index = repo.tracked([repo.rel(run_dir / rel) for rel in not_ignored]) if not_ignored else set()
+    forced = [rel for rel in not_ignored if repo.rel(run_dir / rel) in in_index]
+    reincluded = [rel for rel in not_ignored if rel not in forced]
+    kinds: "dict[str, list[dict]]" = {}
+    messages: "list[str]" = []
     if case_uncovered:
-        print(f"run-storage: {case_uncovered} are recorded files renamed only in letter case, and git here does "
-              "not treat letter case as equal (core.ignorecase is not true), so the ignore block does not cover "
-              "them and a plain `git add` would commit them: rename them back to the recorded spelling (or set "
-              "core.ignorecase=true).", file=sys.stderr)
-        if not not_ignored:
-            return EXIT_FINDINGS
-    if not_ignored:
-        # git never applies ignore rules to a tracked path (e.g. one added with `git add -f`).
-        in_index = repo.tracked([repo.rel(run_dir / rel) for rel in not_ignored])
-        forced = [rel for rel in not_ignored if repo.rel(run_dir / rel) in in_index]
-        reincluded = [rel for rel in not_ignored if rel not in forced]
-        if forced:
-            print(f"run-storage: {forced} are stowed but tracked by git (added with `git add -f`?), so the ignore "
-                  "block cannot keep them out of history: `git rm --cached <path>` (the file stays on disk).",
-                  file=sys.stderr)
-        if reincluded:
-            print(f"run-storage: the ignore block does not cover {reincluded}; a negation rule elsewhere "
-                  "re-includes them. Fix the ignore rules before committing.", file=sys.stderr)
-        return EXIT_FINDINGS
+        kinds["case_respelled_uncovered"] = [{"path": r} for r in case_uncovered]
+        messages.append(f"run-storage: {path_list(case_uncovered)}: recorded file(s) renamed only in letter case "
+                        "that the ignore block does not cover (git folds letter case only with "
+                        "core.ignorecase=true, and then only for ASCII letters), so a plain `git add` would commit "
+                        "them: rename them back to the recorded spelling."
+                        + ("" if repo.ignorecase_configured else " On a case-insensitive file system, setting "
+                           "core.ignorecase=true also works when the spellings differ only in ASCII letters."))
+    if forced:
+        kinds["stowed_but_tracked"] = [{"path": r} for r in forced]
+        messages.append(f"run-storage: {path_list(forced)}: stowed but tracked by git (added with `git add -f`?), "
+                        "so the ignore block cannot keep them out of history: `git rm --cached <path>` (the file "
+                        "stays on disk).")
+    if reincluded:
+        kinds["reincluded_by_negation"] = [{"path": r} for r in reincluded]
+        messages.append(f"run-storage: the ignore block does not cover {path_list(reincluded)}; a negation rule "
+                        "elsewhere re-includes them. Fix the ignore rules before committing.")
+    if kinds:
+        return refuse(args, kinds, messages, EXIT_FINDINGS, record_written=True)
     # Judged on the files as they now are: a rewrite that restores the committed bytes needs no commit.
     commit_needed = record_needs_commit(repo, run_dir)
     if commit_needed:
@@ -1335,6 +1413,692 @@ def materialize_entry(run_dir: Path, store: Path, entry: dict, dry_run: bool, do
     done.append({"path": entry["path"], "method": place_from_store(dest, target, entry["sha256"])})
 
 
+# ----------------------------------------------------------- worktree-check
+
+# Directories and files rebuilt by a tool from recorded inputs.
+REGENERABLE_DIR_NAMES = frozenset({
+    "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".ipynb_checkpoints",
+})
+REGENERABLE_FILE_SUFFIXES = (".pyc", ".pyo")
+REGENERABLE_FILE_NAMES = frozenset({".DS_Store"})
+# Machine-local bookkeeping the project template keeps out of git (rewritten by
+# the tool itself; never research content).
+MACHINE_BOOKKEEPING = (".nullius/HARNESS_INVOCATION", ".nullius/ledger.jsonl", ".nullius/backups/")
+
+
+def is_regenerable(rel_posix: str) -> bool:
+    parts = rel_posix.split("/")
+    if any(part in REGENERABLE_DIR_NAMES for part in parts[:-1]):
+        return True
+    name = parts[-1]
+    return name in REGENERABLE_FILE_NAMES or name.endswith(REGENERABLE_FILE_SUFFIXES) or name in REGENERABLE_DIR_NAMES
+
+
+def is_machine_bookkeeping(rel_posix: str) -> bool:
+    return any(rel_posix == p or (p.endswith("/") and rel_posix.startswith(p)) for p in MACHINE_BOOKKEEPING)
+
+
+def list_worktrees(repo: Repo) -> "list[dict]":
+    out = git_text(["worktree", "list", "--porcelain"], repo.toplevel)
+    trees, current = [], {}
+    for line in out.splitlines() + [""]:
+        if not line:
+            if current:
+                trees.append(current)
+            current = {}
+            continue
+        key, _, value = line.partition(" ")
+        current[key] = value or True
+    return trees
+
+
+def default_base(repo: Repo) -> str:
+    for candidate in ("main", "master"):
+        if git(["rev-parse", "--verify", "--quiet", f"refs/heads/{candidate}"], repo.toplevel, check=False).returncode == 0:
+            return candidate
+    raise StorageError("no main/master branch found; pass --base <ref>")
+
+
+def hidden_tracked_changes(path: Path) -> "list[str]":
+    """Tracked files flagged assume-unchanged (lowercase tag in `ls-files -v`)
+    or skip-worktree (tag S) whose type, executable bit, or bytes on disk
+    differ from the index — edits `git status` does not show. A flagged file
+    absent from disk is not counted (its content stays in git)."""
+    flagged = []
+    for item in git_z(["ls-files", "-v", "-z"], path):
+        tag, rel = item[:1], item[2:]
+        if tag.islower() or tag == "S":
+            flagged.append(rel)
+    if not flagged:
+        return []
+    filemode = git(["config", "--bool", "core.filemode"], path, check=False).stdout.decode().strip() != "false"
+    index = {}
+    for item in git_z_paths(["ls-files", "-s", "-z"], flagged, path):
+        meta, _, rel = item.partition("\t")
+        parts = meta.split()
+        index[rel] = (parts[0], parts[1])
+    changed, regular = [], []
+    for rel in flagged:
+        try:
+            st = (path / rel).lstat()
+        except FileNotFoundError:
+            continue
+        mode, blob = index.get(rel, (None, None))
+        if mode is None or mode == "160000":
+            continue
+        if mode == "120000":
+            if not stat.S_ISLNK(st.st_mode):
+                changed.append(rel)
+                continue
+            link_blob = git(["hash-object", "--stdin"], path,
+                            input_bytes=os.fsencode(os.readlink(path / rel))).stdout.decode().strip()
+            if link_blob != blob:
+                changed.append(rel)
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            changed.append(rel)
+            continue
+        if filemode and bool(st.st_mode & stat.S_IXUSR) != (mode == "100755"):
+            changed.append(rel)
+            continue
+        regular.append(rel)
+    batch = [rel for rel in regular if "\n" not in rel and "\r" not in rel]
+    if batch:
+        hashed = git(["hash-object", "--stdin-paths"], path,
+                     input_bytes=("\n".join(batch) + "\n").encode("utf-8", "surrogateescape")).stdout.decode().split()
+        if len(hashed) != len(batch):
+            raise StorageError(f"could not hash the flagged files in {path}")
+        changed += [rel for rel, sha in zip(batch, hashed) if index[rel][1] != sha]
+    for rel in regular:
+        if rel not in batch:  # a line break would split the --stdin-paths list
+            sha = git(["hash-object", "--", rel], path).stdout.decode().strip()
+            if index[rel][1] != sha:
+                changed.append(rel)
+    return sorted(changed)
+
+
+# The only per-worktree git state whose meaning worktree-check fully assesses.
+# Anything else in the worktree's private git directory (its own refs or ref
+# logs, an in-progress merge/rebase/bisect, a lock, private ignore rules,
+# submodule stores, ...) makes the verdict `keep`: unknown state is kept,
+# never guessed at.
+KNOWN_PRIVATE_GIT_FILES = frozenset({
+    "HEAD", "ORIG_HEAD", "FETCH_HEAD", "COMMIT_EDITMSG", "commondir", "gitdir", "index", "config.worktree",
+    "logs/HEAD", "info/sparse-checkout",
+})
+KNOWN_PRIVATE_GIT_DIRS = frozenset({"logs", "info"})
+BOOLEAN_WORKTREE_SETTINGS = frozenset({"core.sparsecheckout", "core.sparsecheckoutcone", "index.sparse", "core.longpaths"})
+
+
+def benign_worktree_setting(key: str, value: str, common_dir: Path) -> bool:
+    """Per-worktree settings that hold no data: sparse-checkout switches and
+    long-path support, and a hooks path naming the repository's own hooks
+    directory (what agent desktop apps write when they create a worktree)."""
+    key = key.lower()
+    if key in BOOLEAN_WORKTREE_SETTINGS:
+        return value.lower() in ("true", "false")
+    if key == "core.hookspath":
+        return Path(os.path.realpath(os.path.expanduser(value))) == Path(os.path.realpath(common_dir / "hooks"))
+    return False
+
+
+def unassessed_private_git_state(git_dir: Path, common_dir: Path) -> "list[str]":
+    unknown = []
+    try:
+        for dirpath, dirnames, filenames in os.walk(git_dir, followlinks=False, onerror=walk_error):
+            here = Path(dirpath)
+            for name in dirnames:
+                rel = (here / name).relative_to(git_dir).as_posix()
+                if rel not in KNOWN_PRIVATE_GIT_DIRS or (here / name).is_symlink():
+                    unknown.append(rel + "/")
+            dirnames[:] = [d for d in dirnames if (here / d).relative_to(git_dir).as_posix() in KNOWN_PRIVATE_GIT_DIRS
+                           and not (here / d).is_symlink()]
+            for name in filenames:
+                rel = (here / name).relative_to(git_dir).as_posix()
+                if rel not in KNOWN_PRIVATE_GIT_FILES or (here / name).is_symlink():
+                    unknown.append(rel)
+    except OSError as exc:
+        raise StorageError(f"cannot read the worktree's private git directory ({exc})")
+    config = git_dir / "config.worktree"
+    if config.is_file() and not config.is_symlink():
+        listing = git(["config", "--file", str(config), "--null", "--list"], git_dir, check=False)
+        pairs = [item.split("\n", 1) for item in listing.stdout.decode("utf-8", "replace").split("\0") if item]
+        if listing.returncode != 0 or any(len(pair) != 2 or not benign_worktree_setting(pair[0], pair[1], common_dir)
+                                          for pair in pairs):
+            unknown.append("config.worktree (settings beyond sparse checkout, long paths, and the repository's "
+                           "own hooks path)")
+    # info/sparse-checkout holds which tracked files are checked out: configuration
+    # only, every tracked byte stays in git, so it never blocks removal.
+    return sorted(unknown)
+
+
+def _shas_in(text: str, source: str, log_format: bool) -> "set[str]":
+    found: "set[str]" = set()
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split(" ", 2) if log_format else [line.split()[0]]
+        if log_format and len(fields) < 3:
+            raise StorageError(f"this worktree's {source} is not readable; its commits cannot be assessed")
+        for sha in fields[:2]:
+            if not (len(sha) in (40, 64) and set(sha) <= HEX):
+                raise StorageError(f"this worktree's {source} is not readable; its commits cannot be assessed")
+            if set(sha) != {"0"}:
+                found.add(sha)
+    return found
+
+
+def reflog_only_commits(path: Path) -> "list[str]":
+    """Objects remembered only by this worktree's private records (its HEAD
+    reflog, ORIG_HEAD, FETCH_HEAD) that no shared ref reaches. Those records
+    live in the worktree's private git directory, so removing the worktree
+    leaves such commits unreferenced (collectable)."""
+    git_dir = Path(git_text(["rev-parse", "--git-dir"], path))
+    git_dir = git_dir if git_dir.is_absolute() else path / git_dir
+    remembered: "set[str]" = set()
+    # Read the files themselves: `git reflog` falls back to printing HEAD alone,
+    # with success, when the log is missing, corrupt, or unreadable.
+    for rel, log_format in (("logs/HEAD", True), ("ORIG_HEAD", False), ("FETCH_HEAD", False)):
+        record = git_dir / rel
+        if not (record.exists() or record.is_symlink()):
+            continue
+        try:
+            data = record.read_bytes()
+        except OSError as exc:
+            raise StorageError(f"cannot read this worktree's {rel} ({exc}); its commits cannot be assessed")
+        remembered |= _shas_in(data.decode("utf-8", "replace"), rel, log_format)
+    if remembered:
+        listing = git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], path,
+                      input_bytes=("\n".join(sorted(remembered)) + "\n").encode()).stdout.decode().splitlines()
+        # Any object type (a fetched annotated tag names a tag object); an object
+        # that is not in this repository any more has nothing left to lose.
+        remembered = {line.split()[0] for line in listing if not line.endswith(" missing")}
+    if not remembered:
+        return []
+    # --exclude applies to the next ref selector only, so the exclusions sit
+    # directly before the one --glob that covers every shared ref; --objects
+    # covers tag, tree and blob objects as well as commits.
+    shared = git(["rev-list", "--objects", "--exclude=refs/worktree/*", "--exclude=refs/bisect/*",
+                  "--exclude=refs/rewritten/*", "--glob=refs/*"], path, check=False)
+    if shared.returncode != 0:
+        return sorted(remembered)  # cannot tell: count every remembered object as at risk
+    reachable = {line.split()[0] for line in shared.stdout.decode().splitlines() if line.strip()}
+    return sorted(remembered - reachable)
+
+
+def rewritten_copy_on_base(path: Path, base: str, obj: str) -> bool:
+    """A commit only this worktree remembers whose changes are all on the base
+    branch: no merge lies between the merge base and it, and `git cherry`
+    marks every commit of that stretch "-" (an equal patch exists on base).
+    This is what an amended or rebased commit leaves in a reflog; its content
+    is reconstructible from base, so removing the worktree loses nothing."""
+    if git(["cat-file", "-t", obj], path, check=False).stdout.decode().strip() != "commit":
+        return False  # e.g. an annotated tag object: assessed as at risk
+    if git(["merge-base", base, obj], path, check=False).returncode != 0:
+        return False  # unrelated history
+    merges = git(["rev-list", "--merges", f"{base}..{obj}"], path, check=False)
+    if merges.returncode != 0 or merges.stdout.strip():
+        return False
+    cherry = git(["cherry", base, obj], path, check=False)
+    lines = [line for line in cherry.stdout.decode().splitlines() if line.strip()]
+    return cherry.returncode == 0 and bool(lines) and all(line.startswith("- ") for line in lines)
+
+
+def worktree_private_refs(path: Path, base: str) -> "list[str]":
+    """Per-worktree refs (refs/worktree/*, refs/bisect/*, refs/rewritten/*)
+    pointing at commits the base branch does not contain."""
+    out = git(["for-each-ref", "--format=%(refname) %(objectname)", "refs/worktree/", "refs/bisect/",
+               "refs/rewritten/"], path)  # a failure is an error (keep), never "no refs"
+    if out.stderr.strip():  # e.g. "ignoring broken ref": the enumeration is incomplete
+        raise StorageError(f"the worktree-private refs could not all be read ({out.stderr.decode(errors='replace').strip()})")
+    held = []
+    for line in out.stdout.decode().splitlines():
+        name, _, sha = line.partition(" ")
+        peeled = git(["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"], path, check=False)
+        commit = peeled.stdout.decode().strip() if peeled.returncode == 0 else None
+        if commit is None or git(["merge-base", "--is-ancestor", commit, base], path, check=False).returncode != 0:
+            held.append(name)
+    return held
+
+
+def check_one_worktree(path: Path, base: str, main_root: "Path | None", store: Path) -> dict:
+    report: dict = {"worktree": str(path), "reasons": []}
+    if not path.is_dir():
+        report.update(verdict="keep", reasons=["path does not exist (prune stale metadata with `git worktree prune`)"])
+        return report
+    wt = Repo(path)
+    path = wt.toplevel
+    report["worktree"] = str(path)
+    if not wt.is_linked_worktree:
+        report.update(verdict="keep", reasons=["this is the main checkout, not a linked worktree"])
+        return report
+    store_usable = not is_under(store, path)
+    if not store_usable:
+        report["reasons"].append(f"the content store {store} lies inside this worktree; removing the worktree "
+                                 "would delete it")
+    head_proc = git(["rev-parse", "--verify", "--quiet", "HEAD"], path, check=False)
+    head = head_proc.stdout.decode().strip() if head_proc.returncode == 0 else None
+    branch = git(["symbolic-ref", "-q", "--short", "HEAD"], path, check=False).stdout.decode().strip() or None
+    merged = head is not None and git(["merge-base", "--is-ancestor", head, base], path,
+                                      check=False).returncode == 0
+    report.update(head=head, branch=branch, base=base, merged=merged)
+    if head is None:
+        report["reasons"].append("HEAD has no commit")
+    elif not merged:
+        report["reasons"].append(f"HEAD {head[:12]} is not contained in {base}")
+    status = git_z(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"], path)
+    changed, untracked = [], []
+    skip_next = False
+    for item in status:
+        if skip_next:
+            skip_next = False
+            continue
+        code, rel = item[:2], item[3:]
+        if code[0] in "RC":
+            skip_next = True
+        (untracked if code == "??" else changed).append(rel)
+    # `git status` hides edits to files flagged assume-unchanged or
+    # skip-worktree; `git worktree remove` would discard them silently.
+    hidden = hidden_tracked_changes(path)
+    changed += [rel for rel in hidden if rel not in changed]
+    report["tracked_changes"] = changed
+    report["untracked"] = untracked
+    gitlinks = [item for item in git_z(["ls-files", "-z", "--stage"], path) if item.startswith("160000 ")]
+    if (path / ".gitmodules").exists() or gitlinks:
+        report["reasons"].append("contains submodules; their own commits and changes are not assessed here")
+    unknown_state = unassessed_private_git_state(wt.git_dir, wt.common_dir)
+    report["unassessed_git_state"] = unknown_state
+    if unknown_state:
+        report["reasons"].append("per-worktree git state that this check does not assess: "
+                                 + ", ".join(unknown_state[:5]) + (" ..." if len(unknown_state) > 5 else ""))
+    remembered_only = reflog_only_commits(path)
+    rewritten = [c for c in remembered_only if rewritten_copy_on_base(path, base, c)]
+    report["reflog_only_commits"] = [c for c in remembered_only if c not in rewritten]
+    report["rewritten_copies_on_base"] = rewritten
+    if report["reflog_only_commits"]:
+        report["reasons"].append(f"{len(report['reflog_only_commits'])} commit(s) are remembered only by this "
+                                 "worktree's own records (HEAD reflog, ORIG_HEAD, FETCH_HEAD; unreferenced once it "
+                                 f"is removed) and their changes are not all on {base}")
+    private_refs = worktree_private_refs(path, base)
+    report["worktree_private_refs"] = private_refs
+    if private_refs:
+        report["reasons"].append(f"{len(private_refs)} worktree-private ref(s) hold commits not in {base} "
+                                 "(lost with the worktree)")
+    if changed:
+        report["reasons"].append(f"{len(changed)} tracked change(s) not committed")
+    if untracked:
+        report["reasons"].append(f"{len(untracked)} untracked file(s)")
+    ignored = sorted(git_z(["ls-files", "-z", "--others", "--ignored", "--exclude-standard"], path))
+    classes: "dict[str, list[dict]]" = {"regenerable": [], "machine_bookkeeping": [], "in_store": [],
+                                        "same_in_main_checkout": [], "unique": []}
+    for rel in ignored:
+        full = path / rel
+        try:
+            st = full.lstat()
+        except OSError:
+            continue
+        record = {"path": rel, "size": st.st_size}
+        if is_regenerable(rel):
+            classes["regenerable"].append(record)
+            continue
+        if is_machine_bookkeeping(rel):
+            classes["machine_bookkeeping"].append(record)
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            target = Path(os.path.realpath(full))
+            if (store_usable and is_under(target, store) and target.parent.parent.name == "sha256"
+                    and verify_store_object(target, target.name)):
+                classes["in_store"].append(record)
+                continue
+            classes["unique"].append({**record, "symlink_target": os.readlink(full)})
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            classes["unique"].append(record)
+            continue
+        sha = sha256_file(full)
+        if store_usable and verify_store_object(store_path(store, sha), sha, st.st_size):
+            classes["in_store"].append(record)
+            continue
+        twin = main_root / rel if main_root else None
+        if twin is not None:
+            try:
+                tst = twin.lstat()
+            except OSError:
+                tst = None
+            # Only a regular file that lives outside this worktree survives its removal.
+            if (tst is not None and stat.S_ISREG(tst.st_mode) and tst.st_size == st.st_size
+                    and not is_under(twin, path) and sha256_file(twin) == sha):
+                classes["same_in_main_checkout"].append(record)
+                continue
+        classes["unique"].append(record)
+    report["ignored"] = classes
+    if classes["unique"]:
+        report["reasons"].append(f"{len(classes['unique'])} ignored file(s) exist only in this worktree "
+                                 "(`git worktree remove` would delete them)")
+    on_disk = 0
+    for dirpath, dirnames, filenames in os.walk(path, followlinks=False):
+        for name in filenames:
+            try:
+                on_disk += (Path(dirpath) / name).lstat().st_size
+            except OSError:
+                pass
+    report["bytes_on_disk"] = on_disk
+    report["verdict"] = "safe_to_remove" if not report["reasons"] else "keep"
+    if report["verdict"] == "safe_to_remove":
+        report["remove_command"] = f"git worktree remove {shlex.quote(str(path))}"
+    return report
+
+
+def cmd_worktree_check(args) -> int:
+    repo = Repo(args.project_root or (args.worktree if args.worktree else "."))
+    base = args.base or default_base(repo)
+    store = repo.store(args.store)
+    trees = list_worktrees(repo)
+    main_root = Path(trees[0]["worktree"]).resolve() if trees and "bare" not in trees[0] else None
+    if args.all:
+        targets = [Path(t["worktree"]) for t in trees[1:] if "bare" not in t]
+    elif args.worktree:
+        targets = [Path(args.worktree).resolve()]
+    else:
+        raise StorageError("name a worktree path or pass --all")
+    reports = []
+    for t in targets:
+        try:
+            reports.append(check_one_worktree(t, base, main_root, store))
+        except (StorageError, OSError) as exc:
+            reports.append({"worktree": str(t), "verdict": "keep", "reasons": [f"could not be checked: {exc}"]})
+    lines = []
+    for r in reports:
+        lines.append(f"{r['verdict']:>14}  {r['worktree']}  ({human(r.get('bytes_on_disk', 0))} on disk)")
+        for reason in r["reasons"]:
+            lines.append(f"                  - {reason}")
+        for rec in r.get("ignored", {}).get("unique", [])[: args.limit]:
+            lines.append(f"                    only here: {rec['path']} ({human(rec['size'])})")
+        if r.get("remove_command"):
+            lines.append(f"                  remove with: {r['remove_command']}")
+    safe = [r for r in reports if r["verdict"] == "safe_to_remove"]
+    lines.append(f"{len(safe)} of {len(reports)} worktree(s) safe to remove, "
+                 f"{human(sum(r.get('bytes_on_disk', 0) for r in safe))} on disk. Nothing was removed.")
+    emit({"base": base, "store": str(store), "worktrees": reports}, args.json, lines)
+    return EXIT_OK if len(safe) == len(reports) else EXIT_FINDINGS
+
+
+# ------------------------------------------------------------------ report
+
+ALREADY_COMPRESSED_SUFFIXES = frozenset({
+    ".gz", ".tgz", ".zst", ".xz", ".bz2", ".zip", ".7z", ".lz4",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".mp4", ".mov", ".npz",
+})
+
+
+def dir_size(path: Path, unreadable: "list[str]") -> "tuple[int, int, float]":
+    total, count, newest = 0, 0, 0.0
+    for dirpath, dirnames, filenames in os.walk(path, followlinks=False,
+                                                onerror=lambda e: unreadable.append(str(e.filename))):
+        for name in filenames:
+            try:
+                st = (Path(dirpath) / name).lstat()
+            except OSError:
+                continue
+            total += st.st_size
+            count += 1
+            newest = max(newest, st.st_mtime)
+    try:
+        newest = max(newest, path.lstat().st_mtime)
+    except OSError:
+        pass
+    return total, count, newest
+
+
+def is_git_store(path: Path) -> bool:
+    return (path / "objects").is_dir() and (path / "refs").is_dir() and (path / "HEAD").is_file()
+
+
+def missing_objects(reference: Path, shas: "list[str]") -> "set[str]":
+    if not shas:
+        return set()
+    out = git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], reference,
+              input_bytes=("\n".join(shas) + "\n").encode()).stdout.decode().splitlines()
+    return {line.split()[0] for line in out if line.endswith(" missing")}
+
+
+class DurableObjects:
+    """Objects reachable from the refs of a reference repository (computed
+    once per report). Objects that merely exist there, or that only a reflog
+    keeps, can be removed by its garbage collection and never count."""
+
+    def __init__(self, reference: Path):
+        self.reference = reference
+        self._ids: "set[str] | None" = None
+
+    def ids(self) -> "set[str]":
+        if self._ids is None:
+            out = git(["rev-list", "--objects", "--all", "--missing=allow-promisor"], self.reference).stdout.decode()
+            self._ids = {line.split()[0] for line in out.splitlines() if line.strip()}
+        return self._ids
+
+    def covers_closure_of(self, revs: "list[str]") -> bool:
+        """True when every object reachable from ``revs`` (computed inside
+        the reference) is durably reachable there."""
+        if not revs or missing_objects(self.reference, revs):
+            return False
+        out = git(["rev-list", "--objects", "--missing=allow-promisor", "--stdin"], self.reference, check=False,
+                  input_bytes=("\n".join(revs) + "\n").encode())
+        if out.returncode != 0:
+            return False
+        closure = {line.split()[0] for line in out.stdout.decode().splitlines() if line.strip()}
+        return closure <= self.ids()
+
+
+def store_contained(durable: DurableObjects, git_dir: Path) -> "bool | None":
+    """True when every object reachable in the separate object store (all
+    refs, annotated tags, reflogs, and index entries) is durably reachable in
+    the reference repository; None when the store cannot be assessed. Objects a
+    partial clone never held are not fetched (and are not the copy's to lose)."""
+    linked = git_dir / "worktrees"
+    try:
+        if linked.is_dir() and any(linked.iterdir()):
+            return None  # linked worktrees keep their own indexes, refs and logs: not assessed
+        # Pseudo-refs (FETCH_HEAD, ORIG_HEAD, MERGE_HEAD, ...) and in-progress operations can be
+        # the only reference to objects; rev-list --all does not follow them.
+        if any((entry.name.endswith("_HEAD") or entry.name in ("AUTO_MERGE", "sequencer", "rebase-merge",
+                                                                  "rebase-apply", "BISECT_LOG"))
+               for entry in git_dir.iterdir()):
+            return None
+    except OSError:
+        return None
+    objects = git(["--git-dir", str(git_dir), "rev-list", "--objects", "--all", "--reflog", "--indexed-objects",
+                   "--missing=allow-promisor"], durable.reference, check=False)
+    refs = git(["--git-dir", str(git_dir), "for-each-ref", "--format=%(objectname)"], durable.reference, check=False)
+    if objects.returncode != 0 or refs.returncode != 0 or objects.stderr.strip() or refs.stderr.strip():
+        return None
+    reachable = {line.split()[0] for line in objects.stdout.decode().splitlines() if line.strip()}
+    reachable |= set(refs.stdout.decode().split())
+    if not reachable:
+        return False
+    return reachable <= durable.ids()
+
+
+def sample_ratio(path: Path, sample_bytes: int = 4 * CHUNK) -> float:
+    with open(path, "rb") as fh:
+        data = fh.read(sample_bytes)
+    if not data:
+        return 1.0
+    return len(zlib.compress(data, 6)) / len(data)
+
+
+def hash_prefix(path: Path, n: int = CHUNK) -> str:
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read(n)).hexdigest()
+
+
+def cmd_report(args) -> int:
+    roots = sorted({Path(r).expanduser().resolve() for r in args.roots})
+    for r in roots:
+        if not r.exists():
+            raise StorageError(f"no such path: {r}")
+    roots = [r for r in roots if not any(r != q and is_under(r, q) for q in roots)]  # overlapping roots once
+    seen_dirs: set = set()
+    unreadable: "list[str]" = []
+    reference = Path(args.repo).expanduser().resolve() if args.repo else None
+    durable = DurableObjects(reference) if reference is not None else None
+    regenerable, git_stores, bundles = [], [], []
+    files: "dict[int, list[tuple[Path, int, int]]]" = {}
+    seen_inodes: set = set()
+    for root in roots:
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False,
+                                                    onerror=lambda e: unreadable.append(str(e.filename))):
+            here = Path(dirpath)
+            for name in list(dirnames):
+                full = here / name
+                try:
+                    dst = full.lstat()
+                except OSError:
+                    continue
+                if (dst.st_dev, dst.st_ino) in seen_dirs:
+                    dirnames.remove(name)
+                    continue
+                seen_dirs.add((dst.st_dev, dst.st_ino))
+                if name in REGENERABLE_DIR_NAMES:
+                    size, count, _ = dir_size(full, unreadable)
+                    regenerable.append({"path": str(full), "bytes": size, "files": count})
+                    dirnames.remove(name)
+                elif (name == ".git" or name.endswith(".git")) and is_git_store(full):
+                    size, count, _ = dir_size(full, unreadable)
+                    record = {"path": str(full), "bytes": size, "kind": "git object store"}
+                    if reference is not None and full.resolve() != (reference / ".git").resolve() \
+                            and full.resolve() != reference:
+                        record["contained_in_reference"] = store_contained(durable, full)
+                    git_stores.append(record)
+                    dirnames.remove(name)
+            for name in filenames:
+                full = here / name
+                try:
+                    st = full.lstat()
+                except OSError:
+                    continue
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+                if name.endswith(".bundle"):
+                    record = {"path": str(full), "bytes": st.st_size}
+                    if reference is not None:
+                        heads = git(["bundle", "list-heads", str(full)], reference, check=False)
+                        shas = [line.split()[0] for line in heads.stdout.decode().splitlines() if line.strip()]
+                        record["contained_in_reference"] = heads.returncode == 0 and durable.covers_closure_of(shas)
+                    bundles.append(record)
+                if st.st_size >= args.min_size and (st.st_dev, st.st_ino) not in seen_inodes:
+                    seen_inodes.add((st.st_dev, st.st_ino))
+                    files.setdefault(st.st_size, []).append((full, st.st_dev, st.st_ino))
+    duplicates = []
+    unique_large: "list[tuple[Path, int]]" = []
+    for size, group in files.items():
+        if len(group) < 2:
+            unique_large.append((group[0][0], size))
+            continue
+        by_prefix: "dict[str, list[Path]]" = {}
+        for path, _, _ in group:
+            try:
+                by_prefix.setdefault(hash_prefix(path), []).append(path)
+            except OSError:
+                unreadable.append(str(path))
+        for paths in by_prefix.values():
+            by_full: "dict[str, list[Path]]" = {}
+            if len(paths) < 2:
+                unique_large.append((paths[0], size))
+                continue
+            for path in paths:
+                try:
+                    by_full.setdefault(sha256_file(path), []).append(path)
+                except OSError:
+                    unreadable.append(str(path))
+            for sha, same in by_full.items():
+                unique_large.append((same[0], size))
+                if len(same) > 1:
+                    duplicates.append({"sha256": sha, "size": size, "copies": len(same),
+                                       "reclaimable": size * (len(same) - 1), "paths": [str(p) for p in same]})
+    duplicates.sort(key=lambda d: -d["reclaimable"])
+    unique_large.sort(key=lambda item: -item[1])
+    candidates = [(p, s) for p, s in unique_large if p.suffix.lower() not in ALREADY_COMPRESSED_SUFFIXES]
+    sampled = candidates[: args.compress_sample]
+    compress_saving = 0.0
+    for path, size in sampled:
+        try:
+            compress_saving += size * max(0.0, 1.0 - sample_ratio(path))
+        except OSError:
+            continue
+    stale = []
+    cutoff = time.time() - args.older_than_days * 86400
+    for d in args.stale_dir:
+        base = Path(d).expanduser().resolve()
+        if not base.is_dir():
+            continue
+        for child in sorted(base.iterdir()):
+            if args.stale_prefix and not any(child.name.startswith(p) for p in args.stale_prefix):
+                continue
+            if child.is_symlink():
+                continue
+            size, count, newest = (dir_size(child, unreadable) if child.is_dir()
+                                   else (child.lstat().st_size, 1, child.lstat().st_mtime))
+            if newest < cutoff:
+                stale.append({"path": str(child), "bytes": size, "files": count,
+                              "age_days": round((time.time() - newest) / 86400, 1)})
+    redundant_bundles = [b for b in bundles if b.get("contained_in_reference")]
+    redundant_stores = [g for g in git_stores if g.get("contained_in_reference")]
+    summary = {
+        "duplicate_content": sum(d["reclaimable"] for d in duplicates),
+        "regenerable_directories": sum(r["bytes"] for r in regenerable),
+        "history_copies_contained_in_reference": sum(g["bytes"] for g in redundant_stores),
+        "bundles_contained_in_reference": sum(b["bytes"] for b in redundant_bundles),
+        "stale_temporary_roots": sum(s["bytes"] for s in stale),
+        "compression_estimate": int(compress_saving),
+    }
+    result = {
+        "roots": [str(r) for r in roots], "reference_repo": str(reference) if reference else None,
+        "min_size": args.min_size, "summary_bytes": summary,
+        "duplicates": duplicates, "regenerable": sorted(regenerable, key=lambda r: -r["bytes"]),
+        "git_object_stores": git_stores, "bundles": bundles, "stale": stale,
+        "compression": {"sampled_files": len(sampled), "candidate_files": len(candidates)},
+        "unreadable": sorted(set(unreadable)),
+        "notes": [
+            "Read-only: nothing was changed.",
+            "Duplicate bytes are an upper bound: copy-on-write clones share blocks but look like separate files.",
+            "Categories can overlap (a stale root may contain duplicates or regenerable directories).",
+            "Stale temporary roots are judged by age alone; check that nothing still uses them before removing.",
+            "The compression figure extrapolates a zlib ratio measured on the first 4 MiB of each sampled file.",
+            "Unreadable paths are skipped and listed; the figures do not include them.",
+        ],
+    }
+    lines = ["run-storage report (read-only; nothing was changed)"]
+    labels = {
+        "duplicate_content": "identical content stored more than once",
+        "regenerable_directories": "regenerable directories (dependency trees, caches)",
+        "history_copies_contained_in_reference": "separate git object stores already contained in --repo",
+        "bundles_contained_in_reference": "git bundles already contained in --repo",
+        "stale_temporary_roots": f"temporary roots unchanged for {args.older_than_days} days "
+                                 "(age only: whether a process still uses them is not checked)",
+        "compression_estimate": "rough saving from compressing large files",
+    }
+    for key, label in labels.items():
+        lines.append(f"  {human(summary[key]):>12}  {label}")
+    lines.append("  Categories can overlap; duplicate bytes are an upper bound (see --json notes).")
+    if unreadable:
+        lines.append(f"  {len(set(unreadable))} unreadable path(s) were skipped and are not counted (see --json)")
+    for d in duplicates[: args.limit]:
+        lines.append(f"    dup x{d['copies']} {human(d['size']):>10}  {d['paths'][0]}")
+    for r in sorted(regenerable, key=lambda r: -r["bytes"])[: args.limit]:
+        lines.append(f"    regen {human(r['bytes']):>10}  {r['path']}")
+    for g in git_stores[: args.limit]:
+        flag = {True: "contained", False: "NOT contained"}.get(g.get("contained_in_reference"), "unchecked")
+        lines.append(f"    git   {human(g['bytes']):>10}  {g['path']} ({flag})")
+    for b in bundles[: args.limit]:
+        flag = {True: "contained", False: "NOT contained"}.get(b.get("contained_in_reference"), "unchecked")
+        lines.append(f"    bundle {human(b['bytes']):>9}  {b['path']} ({flag})")
+    for s in stale[: args.limit]:
+        lines.append(f"    stale {human(s['bytes']):>10}  {s['path']} ({s['age_days']} days)")
+    emit(result, args.json, lines)
+    return EXIT_OK
+
+
 # ------------------------------------------------------------------- main
 
 def non_negative_int(text: str) -> int:
@@ -1368,7 +2132,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "commit; otherwise bulk that is damaged, pending, untracked, or ignored but unstowed, "
                         "and stow records (manifest, ignore file) not committed as they are; "
                         "in both modes, a run root that passes through a symbolic link")
-    p.add_argument("--quiet", action="store_true", help="print nothing when there is nothing to report")
+    p.add_argument("--quiet", action="store_true",
+                   help="print nothing when nothing needs attention (no bulk file at risk and no notice)")
     p.add_argument("--store", default=None, help=STORE_HELP)
     p.set_defaults(func=cmd_check)
 
@@ -1386,6 +2151,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--store", default=None, help=STORE_HELP)
     p.set_defaults(func=cmd_verify)
 
+    p = sub.add_parser("worktree-check", help="read-only: can linked worktrees be removed without losing anything?")
+    common(p)
+    p.add_argument("worktree", nargs="?", default=None)
+    p.add_argument("--all", action="store_true", help="check every linked worktree of the repository")
+    p.add_argument("--base", default=None, help="branch a removable worktree must be merged into (default main/master)")
+    p.add_argument("--store", default=None, help=STORE_HELP)
+    p.set_defaults(func=cmd_worktree_check)
+
+    p = sub.add_parser("report", help="read-only estimate of reclaimable bytes under any trees")
+    common(p, project=False)
+    p.add_argument("roots", nargs="+")
+    p.add_argument("--repo", default=None, help="reference repository for bundle / history-copy containment")
+    p.add_argument("--min-size", type=non_negative_int, default=CHUNK,
+                   help="smallest file considered (bytes, default 1 MiB)")
+    p.add_argument("--stale-dir", action="append", default=[], help="temporary location whose old children are listed")
+    p.add_argument("--stale-prefix", action="append", default=[], help="only children with this name prefix")
+    p.add_argument("--older-than-days", type=float, default=7.0)
+    p.add_argument("--compress-sample", type=non_negative_int, default=500,
+                   help="largest files sampled for the compression estimate")
+    p.set_defaults(func=cmd_report)
+
     p = sub.add_parser("materialize", help="recreate missing manifest entries from the store")
     common(p, limit=False)
     p.add_argument("run_dir")
@@ -1396,7 +2182,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-SUBCOMMANDS = ("check", "stow", "verify", "materialize")
+SUBCOMMANDS = ("check", "stow", "verify", "materialize", "worktree-check", "report")
 
 
 def main(argv: "list[str] | None" = None) -> int:

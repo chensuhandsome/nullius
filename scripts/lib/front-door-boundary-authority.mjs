@@ -34,6 +34,7 @@ export const FRONT_DOOR_SNIPPETS = [
       '`hep_project_build_evidence`',
       '`hep_project_query_evidence`',
       '`hep_project_playback_evidence`',
+      '`hep_admin_',
     ],
   },
   {

@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
@@ -13,6 +14,15 @@ function collectFiles(dirPath: string, keep: (filePath: string) => boolean): str
     else if (entry.isFile() && keep(fullPath)) out.push(fullPath);
   }
   return out.sort((a, b) => a.localeCompare(b));
+}
+
+// Every file under src/ and scripts/, whatever its extension: a module may be
+// written as .ts, .tsx, .mts, .cts or plain JavaScript, and scripts may be shell.
+function scannedFiles(pkgRoot: string): string[] {
+  return [
+    ...collectFiles(path.join(pkgRoot, 'src'), () => true),
+    ...collectFiles(path.join(pkgRoot, 'scripts'), () => true),
+  ];
 }
 
 // hep-mcp keeps no paper/evidence projects, evidence catalogs or user-global
@@ -35,9 +45,11 @@ const REMOVED_TOOLS = [
 
 const FORBIDDEN = [
   { label: 'hep_project_uri', re: /hep:\/\/projects/i },
-  { label: 'project_or_admin_tool', re: /\bhep_(?:project|admin)_[a-z_]+/i },
+  // Not preceded by a letter, so names inside snake_case or upper-case
+  // identifiers (HEP_PAPERS_CACHE_DIR_ENV) are caught as well.
+  { label: 'project_or_admin_tool', re: /(?<![A-Za-z])hep_(?:project|admin)_[a-z_]+/i },
   { label: 'evidence_catalog_file', re: /catalog\.jsonl/i },
-  { label: 'papers_cache', re: /\bpapers_?cache/i },
+  { label: 'papers_cache', re: /(?<![A-Za-z])papers_?cache/i },
   { label: 'projects_path_segment', re: /[/'"`]projects[/'"`]/i },
   // The removed admin command-line entry points and the wrappers that ran them.
   { label: 'admin_module_path', re: /[/'"`.]admin\//i },
@@ -57,16 +69,32 @@ describe('hep-mcp keeps no paper/evidence projects, evidence catalogs or papers 
 
   it('no hep-mcp source or script builds project URIs, project directories, catalogs, the papers cache or the admin CLIs', () => {
     const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-    const files = [
-      ...collectFiles(path.join(pkgRoot, 'src'), filePath => filePath.endsWith('.ts')),
-      ...collectFiles(path.join(pkgRoot, 'scripts'), () => true),
-    ];
+    const files = scannedFiles(pkgRoot);
     expect(files.some(filePath => filePath.includes(`${path.sep}scripts${path.sep}`))).toBe(true);
     const offenders = files.flatMap(filePath => offendersIn(
       fs.readFileSync(filePath, 'utf-8').split('\n'),
       index => `${path.relative(pkgRoot, filePath)}:L${index + 1}`,
     ));
     expect(offenders).toEqual([]);
+  });
+
+  it('scans source and script files of every extension', () => {
+    const pkgRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hep-removal-lock-'));
+    try {
+      const planted = ['src/a.mts', 'src/sub/b.cts', 'src/c.tsx', 'src/d.js', 'src/e.ts', 'scripts/f.sh'];
+      for (const rel of planted) {
+        fs.mkdirSync(path.dirname(path.join(pkgRoot, rel)), { recursive: true });
+        fs.writeFileSync(path.join(pkgRoot, rel), "const uri = 'hep://projects/p1';\n");
+      }
+      const scanned = scannedFiles(pkgRoot).map(filePath => path.relative(pkgRoot, filePath).split(path.sep).join('/'));
+      const byName = (a: string, b: string) => a.localeCompare(b);
+      expect([...scanned].sort(byName)).toEqual([...planted].sort(byName));
+      for (const filePath of scannedFiles(pkgRoot)) {
+        expect(offendersIn(fs.readFileSync(filePath, 'utf-8').split('\n'), () => 'planted')).not.toEqual([]);
+      }
+    } finally {
+      fs.rmSync(pkgRoot, { recursive: true, force: true });
+    }
   });
 
   it('catches the ways the removed substrate would be rebuilt (negative controls)', () => {
@@ -79,6 +107,9 @@ describe('hep-mcp keeps no paper/evidence projects, evidence catalogs or papers 
       "import { ensureInCache } from '../data/papersCache.js';",
       "const dir = path.join(getDataDir(), 'projects', projectId);",
       'const dir = `${dataDir}/projects/${id}`;',
+      "const root = process.env.HEP_PAPERS_CACHE_DIR_ENV;",
+      "const default_papers_cache_root = path.join(dataDir, 'cache');",
+      'const SOME_HEP_PROJECT_TOOLS = [];',
       'CLI_JS="${PKG_DIR}/dist/admin/cli-prune-paper-cache.js"',
       'exec node "${CLI_JS}" "$@"  # packages/hep-mcp/scripts/import-paper.sh',
       "import { linkKbNotes } from '../../admin/linkKbNotes.js';",

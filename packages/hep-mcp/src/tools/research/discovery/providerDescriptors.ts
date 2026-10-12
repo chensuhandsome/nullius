@@ -17,7 +17,7 @@ export const INSPIRE_DISCOVERY_DESCRIPTOR: DiscoveryProviderDescriptor = Discove
     supports_open_access_content: true,
   },
   supported_intents: ['known_item', 'keyword_search', 'citation_expansion', 'fulltext_search'],
-  notes: 'Shared discovery descriptor for NEW-DISC-01. Canonical identity, dedup, query-plan, and search-log artifacts are closed out in the shared broker substrate.',
+  notes: 'Capability descriptor for the INSPIRE-HEP provider tools. Multi-hop discovery, same-work deduplication and ranking across providers are done by the agent with these tools, following the literature-workflows recipes.',
 });
 
 export const DISCOVERY_PROVIDER_DESCRIPTORS: DiscoveryProviderDescriptor[] = [

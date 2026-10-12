@@ -266,5 +266,5 @@ export const OPENALEX_DISCOVERY_DESCRIPTOR: DiscoveryProviderDescriptor = Discov
     supports_open_access_content: true,
   },
   supported_intents: ['known_item', 'keyword_search', 'semantic_search', 'citation_expansion', 'fulltext_search'],
-  notes: 'Kickoff descriptor for NEW-DISC-01; canonicalization and broker eval land in Batch 13–14.',
+  notes: 'Capability descriptor for the OpenAlex provider tools. Discovery across providers is done by the agent following the literature-workflows recipes.',
 });

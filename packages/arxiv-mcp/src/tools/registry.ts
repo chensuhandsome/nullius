@@ -179,5 +179,5 @@ export const ARXIV_DISCOVERY_DESCRIPTOR: DiscoveryProviderDescriptor = Discovery
     supports_open_access_content: true,
   },
   supported_intents: ['known_item', 'keyword_search', 'fulltext_search'],
-  notes: 'Kickoff descriptor for NEW-DISC-01; source download is supported, canonical broker artifacts come later.',
+  notes: 'Capability descriptor for the arXiv provider tools; LaTeX source download is supported. Discovery across providers is done by the agent following the literature-workflows recipes.',
 });

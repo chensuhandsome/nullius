@@ -19,9 +19,11 @@ from __future__ import annotations
 import errno
 import os
 import signal
-import subprocess
 import sys
 import time
+
+# subprocess is imported lazily: the sitecustomize hook below must be able to
+# replace time.monotonic before subprocess binds it at import.
 
 LINUX = sys.platform.startswith("linux")
 
@@ -40,6 +42,7 @@ def is_zombie(pid: int) -> bool:
     if LINUX:
         stat = _linux_stat(pid)
         return stat is not None and stat[0] == "Z"
+    import subprocess
     state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
                            capture_output=True, text=True).stdout.strip()
     return state.startswith("Z")
@@ -123,6 +126,7 @@ def term_self_after_spawn(marker: str, pid_file: str) -> None:
     """After spawning a command that mentions marker, record its pid and send
     SIGTERM to this process, so the signal arrives between Popen() and
     whatever the caller does next with the new process."""
+    import subprocess
     real_init = subprocess.Popen.__init__
 
     def __init__(self, args, *rest, **options):
@@ -137,14 +141,14 @@ def term_self_after_spawn(marker: str, pid_file: str) -> None:
 
 def advance_clock_after(marker: str, seconds: float) -> None:
     """Once marker exists, time.monotonic() in this process reads seconds later:
-    a deadline falls due exactly after the event that creates the marker."""
-    import time as clock
-    real = clock.monotonic
+    a deadline falls due exactly after the event that creates the marker.
+    Installed before subprocess is imported, so Popen's timeouts see it too."""
+    real = time.monotonic
 
     def monotonic() -> float:
         return real() + (seconds if os.path.exists(marker) else 0.0)
 
-    clock.monotonic = monotonic
+    time.monotonic = monotonic
 
 
 SITECUSTOMIZE = '''\

@@ -950,25 +950,38 @@ def _signal_group(proc: subprocess.Popen, signum: int) -> bool:
         return True
 
 
+# Runner supervisors own separate CLI groups. Their TERM handlers get this
+# long to stop those before SIGKILL; it ends early once nothing is left.
+_STOP_GRACE_SECS = 2.0
+
+
+def _stop_groups(processes: tuple[subprocess.Popen, ...]) -> None:
+    """SIGTERM the runners' groups, wait until nothing in them is left to
+    signal or _STOP_GRACE_SECS, then SIGKILL. On Linux an unreaped leader
+    still counts, so there the whole grace is spent."""
+    for proc in processes:
+        _signal_group(proc, signal.SIGTERM)
+    deadline = time.monotonic() + _STOP_GRACE_SECS
+    while any(_signal_group(proc, 0) for proc in processes) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    for proc in processes:
+        _signal_group(proc, signal.SIGKILL)
+
+
 def _stop_runners(signum: int) -> None:
     """Stop every registered runner's group, then exit with 128 + signum."""
     _STOP_REQUESTED.set()
     # Hold the lock throughout: workers leave the registry under it before
     # reaping, so no process signalled here can be reaped meanwhile.
     with _PROCESS_LOCK:
-        processes = tuple(_ACTIVE_PROCESSES)
-        for proc in processes:
-            _signal_group(proc, signal.SIGTERM)
-        grace_deadline = time.monotonic() + 2
-        for proc in processes:
-            _child_exited(proc.pid, max(0.0, grace_deadline - time.monotonic()))
-        for proc in processes:
-            _signal_group(proc, signal.SIGKILL)
+        _stop_groups(tuple(_ACTIVE_PROCESSES))
     raise SystemExit(128 + signum)
 
 
 def _reap(proc: subprocess.Popen) -> None:
-    # Leave the registry first: from then on nothing signals this group.
+    # Stop the group (descendants may outlive the runner), then leave the
+    # registry: from then on nothing signals this group. Then reap.
+    _stop_groups((proc,))
     with _PROCESS_LOCK:
         _ACTIVE_PROCESSES.discard(proc)
     proc.wait()
@@ -1010,15 +1023,7 @@ class _PipeReader:
 
 
 def _stop_and_collect(proc: subprocess.Popen, reader: Optional[_PipeReader]) -> tuple[str, str]:
-    # Runner supervisors own separate CLI groups. Give their TERM handlers a
-    # bounded cleanup allowance before escalating, so descendants are stopped.
-    if _signal_group(proc, signal.SIGTERM):
-        deadline = time.monotonic() + 2
-        _child_exited(proc.pid, 2)
-        if reader is not None:
-            reader.join(max(0.0, deadline - time.monotonic()))
-        _signal_group(proc, signal.SIGKILL)
-    _reap(proc)
+    _reap(proc)  # stops the group first
     if reader is None:  # the reader threads could not start; nothing was read
         return "", ""
     reader.join(None)

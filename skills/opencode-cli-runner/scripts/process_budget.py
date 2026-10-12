@@ -189,9 +189,9 @@ def main() -> int:
             try:
                 while not cancelled:
                     left = remaining(state)
-                    if child_exited(proc.pid, 0.05 if left is None else min(0.05, left)):
+                    if child_exited(proc.pid, 0.05 if left is None else max(0, min(0.05, left))):
                         break
-                    if left == 0:
+                    if left is not None and left <= 0:
                         timed_out = True
                         break
             finally:

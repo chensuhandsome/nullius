@@ -102,6 +102,7 @@ import math
 import os
 import platform
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -564,8 +565,37 @@ def sanitize_child_env(environ: dict, forbidden_roots: "list[Path]",
     return child_env, dropped
 
 
-# On a timeout the entry's process group gets SIGTERM, then SIGKILL after this.
+# The entry's process group gets SIGTERM, then SIGKILL after at most this.
 ENTRY_STOP_GRACE_SECONDS = 2.0
+
+
+def _child_exited(pid: int, timeout: float) -> bool:
+    """Whether the child exited within timeout seconds; never reaps it.
+
+    An exited, unreaped child stays a zombie that keeps its pid, and with it
+    the number of the process group it leads.
+    """
+    if hasattr(select, "kqueue"):  # macOS CPython has no os.waitid
+        queue = select.kqueue()
+        try:
+            try:
+                queue.control([select.kevent(pid, select.KQ_FILTER_PROC,
+                                             select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                             select.KQ_NOTE_EXIT)], 0, 0)
+            except ProcessLookupError:
+                return True  # the kernel refuses to watch a zombie
+            return bool(queue.control(None, 1, timeout))
+        finally:
+            queue.close()
+    deadline = time.monotonic() + timeout
+    delay = 0.001
+    while os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return False
+        time.sleep(min(delay, left))
+        delay = min(2 * delay, 0.05)
+    return True
 
 
 def _signal_group(pgid: int, signum: int) -> bool:
@@ -576,28 +606,28 @@ def _signal_group(pgid: int, signum: int) -> bool:
     return True
 
 
+def _stop_group(pgid: int) -> None:
+    if _signal_group(pgid, signal.SIGTERM):
+        deadline = time.monotonic() + ENTRY_STOP_GRACE_SECONDS
+        while _signal_group(pgid, 0) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        _signal_group(pgid, signal.SIGKILL)
+
+
 def run_entry(entry_command: str, run_root: Path, timeout_seconds: float,
               stdout_path: Path, stderr_path: Path, env: "dict | None" = None) -> dict:
     started = time.time()
     with stdout_path.open("wb") as out, stderr_path.open("wb") as err:
         proc = subprocess.Popen(["/bin/sh", "-c", entry_command], cwd=str(run_root),
                                 stdout=out, stderr=err, start_new_session=True, env=env)
-        try:
-            exit_code = proc.wait(timeout=timeout_seconds)
-            timed_out = False
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            exit_code = None
-            # Unreaped, so the pid (start_new_session: also the group number)
-            # still names the shell's group, even when the shell has exited and
-            # only descendants remain (getpgid would fail for that zombie on
-            # macOS). Signal the group before the reap.
-            if _signal_group(proc.pid, signal.SIGTERM):
-                deadline = time.monotonic() + ENTRY_STOP_GRACE_SECONDS
-                while _signal_group(proc.pid, 0) and time.monotonic() < deadline:
-                    time.sleep(0.05)
-                _signal_group(proc.pid, signal.SIGKILL)
-            proc.wait()
+        timed_out = not _child_exited(proc.pid, timeout_seconds)
+        # The pid (start_new_session: also the group number) names the shell's
+        # group only until the shell is reaped, so its group, including any
+        # descendants that outlive the shell, is stopped first (getpgid would
+        # fail for the zombie shell on macOS).
+        _stop_group(proc.pid)
+        returncode = proc.wait()
+        exit_code = None if timed_out else returncode
     return {
         "command": entry_command,
         "exit_code": exit_code,

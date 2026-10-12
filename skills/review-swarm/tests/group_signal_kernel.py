@@ -82,7 +82,12 @@ def _linux_has_live_member(pgid: int) -> bool:
 
 
 def emulated_killpg(real_killpg, standin_pgid: int | None = None, log_path: str | None = None):
-    """killpg with the two kernel answers above; see the module docstring."""
+    """killpg with the two kernel answers above; see the module docstring.
+
+    "Leader reaped" is read from the kernel as kill(pid, 0) == ESRCH. Should the
+    kernel reissue the pid within a test (a whole pid-space cycle), a late
+    signal would go out for real and pass unnoticed; it can never fake one.
+    """
     def killpg(pgid: int, signum: int) -> None:
         try:
             os.kill(pgid, 0)
@@ -130,6 +135,18 @@ def term_self_after_spawn(marker: str, pid_file: str) -> None:
     subprocess.Popen.__init__ = __init__
 
 
+def advance_clock_after(marker: str, seconds: float) -> None:
+    """Once marker exists, time.monotonic() in this process reads seconds later:
+    a deadline falls due exactly after the event that creates the marker."""
+    import time as clock
+    real = clock.monotonic
+
+    def monotonic() -> float:
+        return real() + (seconds if os.path.exists(marker) else 0.0)
+
+    clock.monotonic = monotonic
+
+
 SITECUSTOMIZE = '''\
 import importlib.util, os
 _spec = importlib.util.spec_from_file_location("group_signal_kernel", {path!r})
@@ -137,6 +154,8 @@ _module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_module)
 os.killpg = _module.emulated_killpg(os.killpg, int(os.environ["GROUP_SIGNAL_STANDIN"]),
                                     os.environ["GROUP_SIGNAL_LOG"])
+if os.environ.get("GROUP_SIGNAL_CLOCK_ADVANCE_AFTER"):
+    _module.advance_clock_after(os.environ["GROUP_SIGNAL_CLOCK_ADVANCE_AFTER"], 3600.0)
 if os.environ.get("GROUP_SIGNAL_TERM_AFTER_SPAWN"):
     _module.term_self_after_spawn(os.environ["GROUP_SIGNAL_TERM_AFTER_SPAWN"],
                                   os.environ["GROUP_SIGNAL_SPAWN_PIDS"])

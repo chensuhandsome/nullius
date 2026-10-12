@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import contextlib
-import errno
 import importlib.util
 import json
 import os
@@ -310,50 +309,58 @@ while True:
 """
 
 
-def test_timeout_after_the_shell_exited_still_stops_its_descendants(tmp_path, monkeypatch):
-    # The deadline falls due after the entry shell exited (an unreaped zombie)
-    # while a background descendant, which ignores SIGTERM after recording it,
-    # still runs in the shell's group: it must get SIGTERM, then SIGKILL.
-    monkeypatch.setattr(irc, "ENTRY_STOP_GRACE_SECONDS", 0.5, raising=False)
-    pidfile = tmp_path / "descendant.pid"
+def _straggler_entry(tmp_path, then: str = ""):
     script = tmp_path / "descendant.py"
     script.write_text(DESCENDANT)
-    log = tmp_path / "descendant.log"
-    real_wait = subprocess.Popen.wait
-
-    def wait(self, timeout=None):
-        if timeout is None:
-            return real_wait(self)
-        deadline = time.monotonic() + 10
-        while not _is_zombie(self.pid):
-            assert time.monotonic() < deadline, "entry shell did not exit"
-            time.sleep(0.01)
-        raise subprocess.TimeoutExpired(self.args, timeout)
-
-    monkeypatch.setattr(subprocess.Popen, "wait", wait)
-    if sys.platform.startswith("linux"):
-        # macOS answers ESRCH to getpgid for a zombie; reproduce that answer.
-        real_getpgid = os.getpgid
-
-        def getpgid(pid):
-            if _is_zombie(pid):
-                raise ProcessLookupError(errno.ESRCH, os.strerror(errno.ESRCH))
-            return real_getpgid(pid)
-
-        monkeypatch.setattr(os, "getpgid", getpgid)
+    log, pidfile = tmp_path / "descendant.log", tmp_path / "descendant.pid"
     q = shlex.quote
     entry = (f"{q(sys.executable)} {q(str(script))} {q(str(log))} & "
-             f"while ! grep -q ready {q(str(log))} 2>/dev/null; do sleep 0.01; done; "
-             f"echo $! > {q(str(pidfile))}")
-    result = irc.run_entry(entry, tmp_path, 60, tmp_path / "entry.out", tmp_path / "entry.err")
+             f"echo $! > {q(str(pidfile))}; "
+             f"while ! grep -q ready {q(str(log))} 2>/dev/null; do sleep 0.01; done{then}")
+    return entry, log, pidfile
+
+
+def _assert_stopped_with_sigterm_first(log, pidfile):
     descendant = int(pidfile.read_text())
     try:
-        assert result["timed_out"] is True
-        assert _wait_gone(descendant), "the entry's descendant survived the timeout"
+        assert _wait_gone(descendant), "the entry's descendant survived"
         assert "TERM" in log.read_text(), "the descendant got no SIGTERM before SIGKILL"
     finally:
         with contextlib.suppress(ProcessLookupError):
             os.kill(descendant, signal.SIGKILL)
+
+
+def test_entry_that_exits_leaving_a_descendant_gets_its_group_stopped(tmp_path, monkeypatch):
+    # The shell exits normally while a background descendant, which records
+    # SIGTERM and ignores it, still runs in its group.
+    monkeypatch.setattr(irc, "ENTRY_STOP_GRACE_SECONDS", 0.5, raising=False)
+    entry, log, pidfile = _straggler_entry(tmp_path)
+    result = irc.run_entry(entry, tmp_path, 60, tmp_path / "entry.out", tmp_path / "entry.err")
+    assert result["timed_out"] is False
+    assert result["exit_code"] == 0
+    _assert_stopped_with_sigterm_first(log, pidfile)
+
+
+def test_timeout_stops_the_entry_group_with_sigterm_first(tmp_path, monkeypatch):
+    monkeypatch.setattr(irc, "ENTRY_STOP_GRACE_SECONDS", 0.5, raising=False)
+    entry, log, pidfile = _straggler_entry(tmp_path, then="; sleep 60")
+    real_child_exited = getattr(irc, "_child_exited", None)
+
+    def child_exited(pid, timeout):
+        # The deadline falls due once the descendant is ready; the shell is
+        # still running then, as it would be at any real deadline.
+        deadline = time.monotonic() + 10
+        while not (log.exists() and "ready" in log.read_text()):
+            assert time.monotonic() < deadline, "descendant did not start"
+            time.sleep(0.01)
+        assert not real_child_exited(pid, 0)
+        return False
+
+    monkeypatch.setattr(irc, "_child_exited", child_exited, raising=False)
+    result = irc.run_entry(entry, tmp_path, 10, tmp_path / "entry.out", tmp_path / "entry.err")
+    assert result["timed_out"] is True
+    assert result["exit_code"] is None
+    _assert_stopped_with_sigterm_first(log, pidfile)
 
 
 def test_manifest_validation_failure_is_environment_failed(tmp_path):

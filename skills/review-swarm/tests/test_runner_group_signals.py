@@ -46,7 +46,6 @@ kernel = _load("group_signal_kernel", Path(__file__).with_name("group_signal_ker
 FAKE_CLI = r'''
 import os, signal, subprocess, sys, time
 mode, workdir = sys.argv[1], sys.argv[2]
-open(os.path.join(workdir, "cli.started"), "w").close()
 DESCENDANT = """
 import os, signal, sys, time
 log, behaviour = sys.argv[1], sys.argv[2]
@@ -70,6 +69,7 @@ if mode in ("descendants", "sleeps"):
     while not (ready("exits") and ready("ignores")):
         time.sleep(0.01)
     open(os.path.join(workdir, "descendants.ready"), "w").close()
+open(os.path.join(workdir, "cli.started"), "w").close()
 if mode.startswith("sleeps"):
     time.sleep(60)
 '''
@@ -138,7 +138,8 @@ def _wait_file(path: Path, timeout: float = 20) -> None:
 # --- process_budget.py (claude, kimi, opencode copies) -----------------------
 
 def _budget_run(tmp_path: Path, provider: str, mode: str, standin: Standin, *,
-                timeout_secs: float = 0, cancel: bool = False) -> tuple[int, str, Path]:
+                timeout_secs: float = 0, cancel: bool = False,
+                deadline_when_cli_started: bool = False) -> tuple[int, str, Path]:
     script = PROCESS_BUDGETS[provider]
     workdir = tmp_path / "work"
     workdir.mkdir()
@@ -146,6 +147,9 @@ def _budget_run(tmp_path: Path, provider: str, mode: str, standin: Standin, *,
     fake.write_text(FAKE_CLI)
     state = tmp_path / "budget.json"
     env, log = _child_env(tmp_path, standin)
+    if deadline_when_cli_started:
+        # The supervisor's clock jumps an hour ahead once the CLI has started.
+        env["GROUP_SIGNAL_CLOCK_ADVANCE_AFTER"] = str(workdir / "cli.started")
     subprocess.run([sys.executable, str(script), "init", "--state", str(state),
                     "--timeout-secs", str(timeout_secs)], env=env, check=True, timeout=30)
     cmd = [sys.executable, str(script), "run", "--state", str(state),
@@ -187,12 +191,12 @@ def test_budget_cancel_stops_group_before_reaping(tmp_path, standin, provider):
 
 @pytest.mark.parametrize("provider", sorted(PROCESS_BUDGETS))
 def test_budget_deadline_stops_group_before_reaping(tmp_path, standin, provider):
-    # No descendants here, so only the CLI's own start must beat the deadline.
-    code, stderr, log = _budget_run(tmp_path, provider, "sleeps-alone", standin, timeout_secs=5)
-    assert (tmp_path / "work/cli.started").exists(), "deadline passed before the CLI started: " + stderr
+    code, stderr, log = _budget_run(tmp_path, provider, "sleeps", standin, timeout_secs=600,
+                                    deadline_when_cli_started=True)
     assert log.read_text() == "", "a group was signalled after its leader was reaped"
     assert standin.alive()
     assert code == 124, stderr
+    _assert_descendants_stopped(tmp_path / "work")
 
 
 @pytest.mark.parametrize("provider", sorted(PROCESS_BUDGETS))
@@ -318,6 +322,64 @@ def test_multi_task_stop_signals_only_unreaped_runners(tmp_path, standin, parall
         for pid in runners:
             if not kernel.gone(pid):
                 os.kill(pid, signal.SIGKILL)
+
+
+STRAGGLER = """
+import signal, sys, time
+log = sys.argv[1]
+def on_term(signum, frame):
+    with open(log, "a") as stream:
+        stream.write("TERM\\n")
+signal.signal(signal.SIGTERM, on_term)
+with open(log, "a") as stream:
+    stream.write("ready\\n")
+while True:
+    time.sleep(0.05)
+"""
+
+STRAGGLING_RUNNER = """#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+python3 "$STRAGGLER" "$STRAGGLER_LOG" </dev/null >/dev/null 2>&1 &
+echo "$!" > "$STRAGGLER_PID"
+while ! grep -q ready "$STRAGGLER_LOG" 2>/dev/null; do sleep 0.01; done
+printf 'VERDICT: READY\\n' > "$out"
+"""
+
+
+def test_multi_task_completed_runner_group_is_stopped_before_reaping(tmp_path, standin):
+    # A runner that completes normally may leave a same-group descendant with
+    # its output redirected: it still gets SIGTERM, then SIGKILL.
+    runner = tmp_path / "run_opencode.sh"
+    runner.write_text(STRAGGLING_RUNNER)
+    runner.chmod(0o755)
+    straggler = tmp_path / "straggler.py"
+    straggler.write_text(STRAGGLER)
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("synthetic test\n")
+    straggler_log, straggler_pid = tmp_path / "straggler.log", tmp_path / "straggler.pid"
+    env, log = _child_env(tmp_path, standin)
+    env.update(REVIEW_SWARM_NO_AUTO_CONFIG="1", STRAGGLER=str(straggler),
+               STRAGGLER_LOG=str(straggler_log), STRAGGLER_PID=str(straggler_pid))
+    proc = subprocess.run([sys.executable, str(RUN_MULTI_TASK), "--out-dir", str(tmp_path / "out"),
+                           "--opencode-runner", str(runner), "--system", str(prompt), "--prompt", str(prompt),
+                           "--models", "some-provider/model-a", "--timeout-secs", "120"],
+                          env=env, capture_output=True, text=True, timeout=60)
+    pid = int(straggler_pid.read_text())
+    try:
+        assert log.read_text() == "", "a group was signalled after its leader was reaped"
+        assert standin.alive()
+        assert proc.returncode == 0, proc.stderr
+        assert kernel.wait_gone(pid), "the completed runner's straggler survived"
+        assert "TERM" in straggler_log.read_text(), "the straggler got no SIGTERM before SIGKILL"
+    finally:
+        if not kernel.gone(pid):
+            os.kill(pid, signal.SIGKILL)
 
 
 def test_multi_task_stop_between_spawn_and_registration(tmp_path, standin):

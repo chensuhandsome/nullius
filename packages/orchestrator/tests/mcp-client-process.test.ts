@@ -391,11 +391,19 @@ describe('McpClient subprocess containment', () => {
       configEnv: { COUNT_PATH: countPath },
       cwd: tmpDir,
     });
-    const deadline = Date.now() + 2_000;
+    // A wait for three starts, not a speed requirement: under heavy machine
+    // load each restart (anchor plus server) can take well over a second.
+    const deadline = Date.now() + 15_000;
     while ((!fs.existsSync(countPath) || fs.readFileSync(countPath, 'utf8') !== '3') && Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 20));
     }
     expect(fs.readFileSync(countPath, 'utf8')).toBe('3');
+    // The third server exits right after counting; wait until that exit is
+    // handled, then check that no fourth start follows.
+    while (client.isConnected && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    expect(client.isConnected).toBe(false);
     await new Promise(resolve => setTimeout(resolve, 250));
     expect(fs.readFileSync(countPath, 'utf8')).toBe('3');
     expect(client.isConnected).toBe(false);

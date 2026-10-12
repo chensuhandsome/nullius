@@ -3,7 +3,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 
-import { zodToPortableJsonSchema } from '../../src/core/contracts/jsonSchema.js';
+import { zodToPortableJsonSchema } from '../support/portableJsonSchema.js';
 import { z } from 'zod';
 
 const __filename = fileURLToPath(import.meta.url);

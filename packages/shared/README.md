@@ -14,7 +14,7 @@ Shared contracts layer (cross-cutting). Sits between the control plane (`@nulliu
 | `@nullius/shared/types` | Hand-written domain-neutral TypeScript types |
 | `@nullius/shared/utils` | Helpers (path/sha256/clock/etc.) used by control plane and domain packs |
 | `@nullius/shared/graph-viz` | Memory-graph visualization helpers |
-| `@nullius/shared/discovery` | Discovery-pipeline contracts (capabilities, ranking, dedup) |
+| `@nullius/shared/discovery` | Provider capability descriptors and evidence localization/multimodal artifact contracts |
 
 ## Generated contracts
 

@@ -617,12 +617,9 @@ pnpm --filter @nullius/orchestrator test -- tests/nullius-cli.test.ts
 
 **规则**: 解压/解析不可信内容 (archive, PDF, LaTeX) 必须强制：Zip Slip 防护、最大解压字节数 (500MB)、最大文件数 (10000)、单任务超时。
 
-**CI 验证**:
-```bash
-pnpm --filter @nullius/hep-mcp test -- tests/core/sandbox.test.ts
-```
+**CI 验证**: 目前没有自动检验。此前列出的 `tests/core/sandbox.test.ts` 检验的是一个从未接入任何摄入路径的 ZIP 解压器，已随该模块一并删除（2026-10-12）。当前在用的归档摄入路径是 arXiv 源码包解压（`packages/arxiv-mcp/src/source/tarExtractor.ts`）：拒绝越出目标目录的条目，只接收普通文件与目录；最大解压字节数与最大文件数尚未强制，越界拒绝也没有专门测试，两者仍待补充。
 
-**违规行为**: **fail-closed** — 未沙箱化的摄入路径阻断 CI
+**违规行为**: **fail-closed** — 未沙箱化的摄入路径阻断 CI（在上述检验补上之前，没有机制执行这一点）
 
 ### SEC-03: 工具风险分级与破坏性调用确认
 
@@ -896,7 +893,7 @@ if (internal.length) { console.error('PLUG-01:', internal); process.exit(1); }
 | | ART-04 载荷大小限制 | fail-closed | 集成测试 |
 | | ART-05 完整性验证 | fail-closed | 契约测试 |
 | **SEC** | SEC-01 执行适配器隔离 | fail-closed | 沙箱测试 |
-| | SEC-02 不可信内容摄入沙箱 | fail-closed | 解压/解析测试 |
+| | SEC-02 不可信内容摄入沙箱 | fail-closed | 解压/解析测试（待补） |
 | | SEC-03 工具风险分级 | staged fail-closed | risk_level 声明检查 |
 | **NET** | NET-01 出口域名白名单 | fail-closed | 白名单 lint |
 | **RES** | RES-01 重试/退避/取消契约 | fail-closed | 重试策略测试 |

@@ -488,6 +488,7 @@ export class OutputBatch {
       const buffer = Buffer.from(bytes, 'utf-8');
       let offset = 0;
       while (offset < buffer.length) offset += fs.writeSync(fd, buffer, offset, buffer.length - offset);
+      failedStep = 'flushing a staging file';
       fs.fsyncSync(fd);
     } catch (error) {
       failure = error;

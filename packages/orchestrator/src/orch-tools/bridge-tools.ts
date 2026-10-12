@@ -28,7 +28,7 @@ import type { DelegatedComputationFollowupTask } from '../computation/delegated-
 import type {
   FeedbackFollowupLaunchOutcome,
 } from '../computation/feedback-followup-progression.js';
-import { assertNoSymlinkComponents, resolveProjectContainedPath, resolveUnderRoot } from '../computation/path-safety.js';
+import { resolveProjectContainedPath, resolveUnderRoot } from '../computation/path-safety.js';
 import { utcNowIso } from '../util.js';
 import { resolveProjectRoot } from './common.js';
 import { runDirFor } from '../run-paths.js';
@@ -44,15 +44,20 @@ function resolvePathWithinParent(parentDir: string, candidatePath: string, field
   });
 }
 
-// The entries of a run directory these tools read and write. None may be a
-// symbolic link, nor may any entry directly inside artifacts/ or attempts/: a
-// link there would carry a staged artifact, a computation result or an attempt
-// archive outside the run directory. Each one present must also be what the
-// tools expect (a directory, or a file for run_origin.json), so a misplaced
-// file is refused here rather than failing a later write. (The computation workspace's own paths
-// are checked when its manifest is materialized and prepared.)
-const RUN_DIRECTORY_ENTRIES = ['artifacts', 'attempts', 'computation', 'run_origin.json'];
-const RUN_DIRECTORY_LISTED = ['artifacts', 'attempts'];
+// What the run directory must look like before a bridge tool works in it.
+// No symbolic link may stand anywhere in it, so nothing these tools or the
+// computation code behind them read or write there (staged artifacts,
+// approval packets, attempt archives, team state, launch stamps, execution
+// logs and status) can lie outside it. The one exception is the method's own
+// workspace below computation/ (its scripts, data and outputs, which may be
+// large): the paths a manifest names there are checked when it is
+// materialized and prepared. Entries the tools create must also be of the
+// kind they create (directories, and a file for run_origin.json), so a
+// misplaced file is refused here rather than failing a later write.
+const RUN_DIRECTORY_DIRECTORIES = ['artifacts', 'attempts', 'approvals', 'computation'];
+const RUN_DIRECTORY_FILES = ['run_origin.json'];
+// Below computation/, the entries the computation code manages itself.
+const COMPUTATION_MANAGED_DIRECTORIES = ['logs'];
 
 function lstatIfPresent(entry: string, runDir: string): fs.Stats | null {
   try {
@@ -68,36 +73,69 @@ function lstatIfPresent(entry: string, runDir: string): fs.Stats | null {
   }
 }
 
-function assertRunDirectoryEntriesAreReal(runDir: string): void {
+function listDirectory(dir: string, runDir: string): string[] {
+  try {
+    return fs.readdirSync(dir);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    throw unsafeFs(`cannot list ${dir}: ${error instanceof Error ? error.message : String(error)}`, {
+      run_dir: runDir,
+      path: dir,
+      ...(typeof code === 'string' ? { errno: code } : {}),
+    });
+  }
+}
+
+function refuseLink(entry: string, runDir: string): never {
+  throw unsafeFs(`run_dir/${path.relative(runDir, entry).split(path.sep).join('/')} must not be a symbolic link`, {
+    run_dir: runDir,
+    symlink_path: entry,
+  });
+}
+
+/** Refuse any symbolic link at or below `dir`. */
+function assertNoLinksBelow(dir: string, runDir: string): void {
+  for (const name of listDirectory(dir, runDir)) {
+    const entry = path.join(dir, name);
+    const stat = lstatIfPresent(entry, runDir);
+    if (stat === null) continue;
+    if (stat.isSymbolicLink()) refuseLink(entry, runDir);
+    if (stat.isDirectory()) assertNoLinksBelow(entry, runDir);
+  }
+}
+
+function assertRunDirectoryIsReal(runDir: string): void {
   const run = lstatIfPresent(runDir, runDir);
-  if (run !== null && !run.isDirectory()) {
+  if (run === null) return;
+  if (!run.isDirectory()) {
     throw unsafeFs('run_dir must name a directory', { run_dir: runDir });
   }
-  for (const entry of RUN_DIRECTORY_ENTRIES) {
-    assertNoSymlinkComponents(runDir, path.join(runDir, entry), `run_dir/${entry}`, { allowMissingLeaf: true });
-    const stat = lstatIfPresent(path.join(runDir, entry), runDir);
-    const wantsDirectory = entry !== 'run_origin.json';
-    if (stat !== null && stat.isDirectory() !== wantsDirectory) {
-      throw unsafeFs(`run_dir/${entry} must be a ${wantsDirectory ? 'directory' : 'file'}`, { run_dir: runDir, path: path.join(runDir, entry) });
+  for (const name of RUN_DIRECTORY_DIRECTORIES.concat(RUN_DIRECTORY_FILES)) {
+    const stat = lstatIfPresent(path.join(runDir, name), runDir);
+    if (stat === null || stat.isSymbolicLink()) continue;
+    const wantsDirectory = RUN_DIRECTORY_DIRECTORIES.includes(name);
+    if (stat.isDirectory() !== wantsDirectory) {
+      throw unsafeFs(`run_dir/${name} must be a ${wantsDirectory ? 'directory' : 'file'}`, { run_dir: runDir, path: path.join(runDir, name) });
     }
   }
-  for (const dir of RUN_DIRECTORY_LISTED) {
-    if (lstatIfPresent(path.join(runDir, dir), runDir) === null) continue;
-    let names: string[];
-    try {
-      names = fs.readdirSync(path.join(runDir, dir));
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      throw unsafeFs(`cannot list run_dir/${dir}: ${error instanceof Error ? error.message : String(error)}`, {
-        run_dir: runDir,
-        ...(typeof code === 'string' ? { errno: code } : {}),
-      });
+  for (const name of listDirectory(runDir, runDir)) {
+    const entry = path.join(runDir, name);
+    const stat = lstatIfPresent(entry, runDir);
+    if (stat === null) continue;
+    if (stat.isSymbolicLink()) refuseLink(entry, runDir);
+    if (!stat.isDirectory()) continue;
+    if (name !== 'computation') {
+      assertNoLinksBelow(entry, runDir);
+      continue;
     }
-    for (const name of names) {
-      const entry = path.join(runDir, dir, name);
-      if (lstatIfPresent(entry, runDir)?.isSymbolicLink()) {
-        throw unsafeFs(`run_dir/${dir}/${name} must not be a symbolic link`, { run_dir: runDir, symlink_path: entry });
-      }
+    // The computation directory: its own entries, and the subtrees the
+    // computation code manages, but not the method's workspace files.
+    for (const inner of listDirectory(entry, runDir)) {
+      const innerEntry = path.join(entry, inner);
+      const innerStat = lstatIfPresent(innerEntry, runDir);
+      if (innerStat === null) continue;
+      if (innerStat.isSymbolicLink()) refuseLink(innerEntry, runDir);
+      if (innerStat.isDirectory() && COMPUTATION_MANAGED_DIRECTORIES.includes(inner)) assertNoLinksBelow(innerEntry, runDir);
     }
   }
 }
@@ -109,9 +147,10 @@ function assertRunDirectoryEntriesAreReal(runDir: string): void {
  * <project_root>/artifacts/runs/<run_id>, where its approval packets,
  * proposals and team state are kept by run id, so a run's records are never
  * split between two directories; it may be spelled through an alias above
- * the root, while a symbolic link below the root is refused, and so is one at
- * an entry of the run directory these tools use. Everything the tool writes,
- * reads or executes then derives from the admitted run directory.
+ * the root, while a symbolic link below the root is refused, and so is one
+ * anywhere in the run directory outside the method's own workspace files
+ * (assertRunDirectoryIsReal). Everything the tool writes, reads or executes
+ * then derives from the admitted run directory.
  */
 function admitProjectRun(params: { project_root: string; run_id: string; run_dir: string }): { projectRoot: string; runDir: string } {
   const projectRoot = resolveProjectRoot(params.project_root);
@@ -141,7 +180,7 @@ function admitProjectRun(params: { project_root: string; run_id: string; run_dir
       expected_run_dir: ownRunDir,
     });
   }
-  assertRunDirectoryEntriesAreReal(runDir);
+  assertRunDirectoryIsReal(runDir);
   return { projectRoot, runDir };
 }
 
@@ -153,6 +192,10 @@ export async function handleOrchRunStageIdea(params: {
   handoff_uri?: string;
 }) {
   const { runDir } = admitProjectRun(params);
+  // A relative path would be read against the server's working directory.
+  if (!path.isAbsolute(params.handoff_path)) {
+    throw invalidParams('handoff_path must be an absolute path', { handoff_path: params.handoff_path });
+  }
   const staged = stageIdeaArtifactsIntoRunFromPath({
     handoffPath: params.handoff_path,
     handoffUri: params.handoff_uri,

@@ -363,6 +363,18 @@ describe('output staging files are created exclusively', () => {
     });
   });
 
+  it('names a failed flush of a staged file as such, and removes the staging file', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('flush-failed');
+      const batch = new OutputBatch(out);
+      fsyncFault.armed = true;
+      expect(() => batch.json('data.json', { x: 1 })).toThrow(expect.objectContaining({
+        code: 'UNSAFE_FS', message: 'flushing a staging file failed: simulated fsync failure', data: expect.objectContaining({ errno: 'EIO' }),
+      }));
+      expect(fs.readdirSync(out.dir)).toEqual([]);
+    });
+  });
+
   it('closes the file when flushing it fails, and refuses to write or finish it afterwards', async () => {
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('fsync-failed');

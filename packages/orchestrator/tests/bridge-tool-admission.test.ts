@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildFollowupRuntimePrompt } from '../src/computation/followup-runtime.js';
+import { planComputationFromRunDir } from '../src/computation/index.js';
 import { sanitizeRelativePath } from '../src/computation/path-safety.js';
 import { handleToolCall } from '../src/tooling.js';
 
@@ -185,10 +186,39 @@ describe('the computation bridge tools work only in a run directory inside the a
       fs.symlinkSync(outside, path.join(runDir, entry), 'dir');
       const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
       expect(result.isError).toBe(true);
-      expect(result.payload.error.message).toBe(`run_dir/${entry} must not traverse a symbolic link`);
+      expect(result.payload.error.message).toBe(`run_dir/${entry} must not be a symbolic link`);
       expect(fs.readdirSync(outside)).toEqual([]);
     },
   );
+
+  it.each([
+    ['approvals', 'dir'], ['approvals/A3-0001', 'dir'], ['computation/logs', 'dir'], ['computation/logs/task_001', 'dir'],
+    ['computation/execution_status.json', 'file'], ['artifacts/nested/deep.json', 'file'], ['team-execution-state.json', 'file'],
+  ])('refuses a run directory with a symbolic link at %s, for every tool, before any work', async (rel, kind) => {
+    const { parent, root, alias, handoffPath } = projectWithHandoff();
+    const runDir = path.join(root, 'artifacts', 'runs', 'r1');
+    const outsideDir = path.join(parent, 'outside');
+    const outsideFile = path.join(parent, 'outside.json');
+    fs.mkdirSync(outsideDir);
+    fs.writeFileSync(outsideFile, '{}\n');
+    fs.mkdirSync(path.dirname(path.join(runDir, rel)), { recursive: true });
+    fs.symlinkSync(kind === 'dir' ? outsideDir : outsideFile, path.join(runDir, rel), kind === 'dir' ? 'dir' : 'file');
+    for (const tool of TOOLS) {
+      const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
+      expect(result.payload.error, tool).toMatchObject({ code: 'UNSAFE_FS', message: `run_dir/${rel} must not be a symbolic link` });
+    }
+    expect(fs.readdirSync(outsideDir)).toEqual([]);
+    expect(fs.readFileSync(outsideFile, 'utf-8')).toBe('{}\n');
+  });
+
+  it('admits a run directory whose method outputs contain a symbolic link, which the manifest checks govern', async () => {
+    const { parent, root, alias, handoffPath } = projectWithHandoff();
+    const outputs = path.join(root, 'artifacts', 'runs', 'r1', 'computation', 'outputs');
+    fs.mkdirSync(outputs, { recursive: true });
+    fs.symlinkSync(path.join(parent, 'elsewhere'), path.join(outputs, 'latest'), 'dir');
+    const staged = await call('orch_run_stage_content', argsFor('orch_run_stage_content', alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
+    expect(staged.isError, JSON.stringify(staged.payload)).toBe(false);
+  });
 
   it.each([
     ['the run directory itself is a file', '', 'run_dir must name a directory'],
@@ -227,7 +257,7 @@ describe('the computation bridge tools work only in a run directory inside the a
   it.each([
     ['a file in artifacts/', 'artifacts/computation_result_v1.json', /run_dir\/artifacts\/computation_result_v1\.json must not be a symbolic link/],
     ['an attempt archive', 'attempts/attempt-1', /run_dir\/attempts\/attempt-1 must not be a symbolic link/],
-    ['the launch stamp mirror', 'run_origin.json', /run_dir\/run_origin\.json must not traverse a symbolic link/],
+    ['the launch stamp mirror', 'run_origin.json', /run_dir\/run_origin\.json must not be a symbolic link/],
   ])('refuses a run directory where %s is a symbolic link', async (_label, entry, message) => {
     const { parent, root, alias, handoffPath } = projectWithHandoff();
     const outsideFile = path.join(parent, 'outside.json');
@@ -251,6 +281,15 @@ describe('the computation bridge tools work only in a run directory inside the a
     const missing = await call('orch_run_stage_idea', argsFor('orch_run_stage_idea', missingRoot, path.join(missingRoot, 'r1'), handoffPath));
     expect(missing.payload.error.message).toMatch(/project_root must name an existing directory/);
     expect(fs.existsSync(path.join(parent, 'real', 'missing'))).toBe(false);
+  });
+
+  it('refuses a relative handoff path before staging anything', async () => {
+    const { root, alias } = projectWithHandoff();
+    const result = await call('orch_run_stage_idea', {
+      project_root: alias, run_id: 'r1', run_dir: path.join(alias, 'artifacts', 'runs', 'r1'), handoff_path: 'handoff.json',
+    });
+    expect(result.payload.error).toMatchObject({ code: 'INVALID_PARAMS', message: 'handoff_path must be an absolute path' });
+    expect(fs.existsSync(path.join(root, 'artifacts', 'runs', 'r1', 'artifacts'))).toBe(false);
   });
 
   it('refuses a run directory that passes through a file, naming it', async () => {
@@ -364,7 +403,17 @@ describe('workspace paths are refused by segment, not by substring', () => {
 });
 
 describe('a method is written only into the run directory', () => {
-  it('refuses a method file whose directory in the run is a symbolic link, writing nothing through it', async () => {
+  /** Planning called directly, as the command line does, past the bridge tools' admission. */
+  async function planDirectly(project: { root: string }, runId: string): Promise<string> {
+    try {
+      await planComputationFromRunDir({ projectRoot: project.root, runId, runDir: path.join(project.root, 'artifacts', 'runs', runId), dryRun: true });
+      return 'planned';
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  it('refuses a method directory in the run that is a symbolic link, at admission and when planning directly', async () => {
     const project = aliasedProject();
     const runDir = await stagedRun(project, 'r-link', handoff([{ path: 'scripts/run.py', content: WRITE_VALUE }], 'scripts/run.py', ['outputs/value.txt']));
     const outside = path.join(project.parent, 'outside');
@@ -372,8 +421,8 @@ describe('a method is written only into the run directory', () => {
     fs.mkdirSync(path.join(runDir, 'computation'));
     fs.symlinkSync(outside, path.join(runDir, 'computation', 'scripts'), 'dir');
     const planned = await call('orch_run_plan_computation', { project_root: project.alias, run_id: 'r-link', run_dir: runDir, dry_run: true });
-    expect(planned.isError).toBe(true);
-    expect(planned.payload.error.message).toMatch(/must not traverse a symbolic link/);
+    expect(planned.payload.error.message).toBe('run_dir/computation/scripts must not be a symbolic link');
+    expect(await planDirectly(project, 'r-link')).toBe('method_spec.files[0].path must not traverse a symbolic link');
     expect(fs.readdirSync(outside)).toEqual([]);
     expect(fs.readdirSync(path.join(runDir, 'computation'))).toEqual(['scripts']);
   });
@@ -385,13 +434,13 @@ describe('a method is written only into the run directory', () => {
     fs.writeFileSync(outsideFile, 'original\n');
     fs.mkdirSync(path.join(runDir, 'computation', 'scripts'), { recursive: true });
     fs.symlinkSync(outsideFile, path.join(runDir, 'computation', 'scripts', 'run.py'));
+    // The method's workspace files are checked when the manifest is materialized.
     const planned = await call('orch_run_plan_computation', { project_root: project.alias, run_id: 'r-leaf', run_dir: runDir, dry_run: true });
-    expect(planned.isError).toBe(true);
-    expect(planned.payload.error.message).toMatch(/must not traverse a symbolic link/);
+    expect(planned.payload.error.message).toBe('method_spec.files[0].path must not traverse a symbolic link');
     expect(fs.readFileSync(outsideFile, 'utf-8')).toBe('original\n');
   });
 
-  it.each(['manifest.json', 'execution_plan_v1.json'])('refuses a planning output whose own target %s is a symbolic link, leaving its target untouched', async (name) => {
+  it.each(['manifest.json', 'execution_plan_v1.json'])('refuses a planning output whose own target %s is a symbolic link, at admission and when planning directly', async (name) => {
     const project = aliasedProject();
     const runDir = await stagedRun(project, 'r-out', handoff([{ path: 'scripts/run.py', content: WRITE_VALUE }], 'scripts/run.py', ['outputs/value.txt']));
     const outsideFile = path.join(project.parent, 'outside.json');
@@ -399,21 +448,23 @@ describe('a method is written only into the run directory', () => {
     fs.mkdirSync(path.join(runDir, 'computation'), { recursive: true });
     fs.symlinkSync(outsideFile, path.join(runDir, 'computation', name));
     const planned = await call('orch_run_plan_computation', { project_root: project.alias, run_id: 'r-out', run_dir: runDir, dry_run: true });
-    expect(planned.isError).toBe(true);
-    expect(planned.payload.error.message).toBe(`computation/${name} must not traverse a symbolic link`);
+    expect(planned.payload.error.message).toBe(`run_dir/computation/${name} must not be a symbolic link`);
+    expect(await planDirectly(project, 'r-out')).toBe(`computation/${name} must not traverse a symbolic link`);
     expect(fs.readFileSync(outsideFile, 'utf-8')).toBe('{}\n');
     expect(fs.readdirSync(path.join(runDir, 'computation'))).toEqual([name]);
   });
 
-  it('refuses a computation directory that is a symbolic link even when the method has no files', async () => {
+  it('refuses a computation directory that is a symbolic link, also when planning directly a method with no files', async () => {
     const project = aliasedProject();
     const runDir = await stagedRun(project, 'r-dir', handoff([], 'scripts/run.py', ['outputs/value.txt']));
     const outside = path.join(project.parent, 'outside');
     fs.mkdirSync(outside);
     fs.symlinkSync(outside, path.join(runDir, 'computation'), 'dir');
     const planned = await call('orch_run_plan_computation', { project_root: project.alias, run_id: 'r-dir', run_dir: runDir, dry_run: true });
-    expect(planned.isError).toBe(true);
-    expect(planned.payload.error.message).toMatch(/must not traverse a symbolic link/);
+    expect(planned.payload.error.message).toBe('run_dir/computation must not be a symbolic link');
+    // Planning checks the plan file's path, through computation/, before writing anything.
+    expect(await planDirectly(project, 'r-dir')).toBe('computation/execution_plan_v1.json must not traverse a symbolic link');
     expect(fs.readdirSync(outside)).toEqual([]);
   });
 });
+

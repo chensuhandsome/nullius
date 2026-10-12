@@ -109,7 +109,7 @@ Fleet tools operate on queue items and worker ids rather than on artifact ids or
 3. Approval resolution lives on `orch_run_status`, `orch_run_approvals_list`, `orch_run_approve`, and `orch_run_reject`; domain tools may trigger the need for a gate but do not own the gate state.
 4. Fleet semantics live on the orchestrator fleet-tool family; they are not hidden behind domain packs or legacy Python shells.
 5. `nullius` remains the generic front door for lifecycle / workflow-plan / bounded computation; `orch_*` is the MCP/operator counterpart of that control plane rather than a competing product identity.
-6. The computation bridge tools (`orch_run_stage_idea`, `orch_run_stage_content`, `orch_run_plan_computation`, `orch_run_execute_manifest`, `orch_run_progress_followups`) admit `project_root` as every other front door does (canonical form, outside any nullius checkout) and require `run_dir` to be the run's own directory, `<project_root>/artifacts/runs/<run_id>`, where its approval packets, proposals and team state are kept by run id, so a run's records are never split between two directories. It may be spelled through an alias above the project root; a symbolic link below the project root, or at an entry of the run directory these tools use, is refused.
+6. The computation bridge tools (`orch_run_stage_idea`, `orch_run_stage_content`, `orch_run_plan_computation`, `orch_run_execute_manifest`, `orch_run_progress_followups`) admit `project_root` as every other front door does (canonical form, outside any nullius checkout) and require `run_dir` to be the run's own directory, `<project_root>/artifacts/runs/<run_id>`, where its approval packets, proposals and team state are kept by run id, so a run's records are never split between two directories. It may be spelled through an alias above the project root; a symbolic link below the project root is refused, and so is one anywhere in the run directory except among the method's own workspace files below `computation/`, whose declared paths are checked when the manifest is materialized and prepared. `handoff_path` must be absolute.
 
 ### 2.3 Interaction Sketch
 
@@ -126,7 +126,7 @@ Agent / operator
   ├──► orch_run_record_verification(...)                → record adjacent snapshots plus checker self-reported matching observations
   ├──► orch_run_request_final_conclusions(...)          → return A5 unavailable while dependency closure is incomplete
   ├──► orch_run_status(project_root)                    → lifecycle snapshot
-  ├──► hep_project_* / hep_inspire_* / inspire_* ...   → strategy/domain work (file outputs into an output_dir inside the run directory)
+  ├──► hep_project_* / hep_inspire_* / inspire_* ...   → strategy/domain work (file outputs into a caller-chosen output_dir inside the project root)
   ├──► orch_run_approvals_list(project_root, run_id)    → inspect pending gates
   ├──► orch_run_approve(...) or orch_run_reject(...)    → resolve approval
   ├──► orch_run_execute_agent(...)                      → bounded orchestrator runtime

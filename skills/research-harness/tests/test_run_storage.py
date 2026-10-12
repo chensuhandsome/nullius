@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import errno
 import importlib.util
+import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -1634,6 +1636,12 @@ def test_worktree_check_verdicts(tmp_path, monkeypatch, capsys):
     unique = _worktree(repo, tmp_path, "unique")
     (unique / "result.out").write_text("only here\n")
 
+    outdir = _worktree(repo, tmp_path, "outdir")  # an ignored directory whose name says nothing
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "exclude").write_text("outputs/\n")
+    (outdir / "outputs").mkdir()
+    (outdir / "outputs" / "table.txt").write_text("computed only here\n")
+
     stowed = _worktree(repo, tmp_path, "stowed")
     run = stowed / "artifacts" / "runs" / "r1"
     run.mkdir()
@@ -1678,6 +1686,11 @@ def test_worktree_check_verdicts(tmp_path, monkeypatch, capsys):
     assert v["private"]["verdict"] == "keep" and v["private"]["worktree_private_refs"] == ["refs/worktree/saved"]
     assert v["twin"]["verdict"] == "keep" and [r["path"] for r in v["twin"]["ignored"]["unique"]] == ["result.out"]
     assert all("remove_command" not in r for r in v.values() if r["verdict"] == "keep")
+    assert v["outdir"]["verdict"] == "keep"
+    assert [r["path"] for r in v["outdir"]["ignored"]["unique"]] == ["outputs/table.txt"]
+    assert set(v) == {"clean", "unique", "outdir", "stowed", "unmerged", "dirty", "hidden", "private", "twin"}, \
+        "linked worktrees only, never the main checkout"
+    assert v["stowed"]["remove_command"] == f"git worktree remove {shlex.quote(str(stowed.resolve()))}"
 
     entry = rs.store_path(store_of(repo), rs.sha256_file(run / "big.bin"))
     sh(*v["stowed"]["remove_command"].split(), cwd=repo)
@@ -1971,6 +1984,33 @@ def test_worktree_check_all_survives_a_broken_worktree(tmp_path, monkeypatch, ca
     assert v["broken"]["verdict"] == "keep" and good.exists() and broken.exists()
 
 
+def test_worktree_check_all_without_linked_worktrees_checks_nothing(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    capsys.readouterr()
+    assert run_main(["worktree-check", "--all", "--json"], repo, monkeypatch) == rs.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["worktrees"] == []
+    assert run_main(["worktree-check", str(repo), "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert _verdicts(capsys)[repo.name]["verdict"] == "keep", "the main checkout itself is never removable"
+
+
+def test_worktree_check_needs_exactly_one_of_a_path_or_all(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    wt = _worktree(repo, tmp_path, "lane")
+    capsys.readouterr()
+    assert run_main(["worktree-check", "--json"], repo, monkeypatch) == rs.EXIT_ERROR
+    assert "pass --all" in json.loads(capsys.readouterr().out)["error"]
+    assert run_main(["worktree-check", str(wt), "--all", "--json"], repo, monkeypatch) == rs.EXIT_ERROR
+    assert "not both" in json.loads(capsys.readouterr().out)["error"]
+
+
+def test_report_refuses_a_negative_or_infinite_age(tmp_path, monkeypatch, capsys):
+    for bad in ("-1", "inf", "nan"):
+        with pytest.raises(SystemExit) as exit_info:
+            run_main(["report", str(tmp_path), "--older-than-days", bad], tmp_path, monkeypatch)
+        assert exit_info.value.code == 2
+    assert "must be a finite number" in capsys.readouterr().err
+
+
 def test_worktree_check_accepts_settings_that_hold_no_data(tmp_path, monkeypatch, capsys):
     repo = make_repo(tmp_path)
     sh("git", "config", "extensions.worktreeConfig", "true", cwd=repo)
@@ -1979,6 +2019,7 @@ def test_worktree_check_accepts_settings_that_hold_no_data(tmp_path, monkeypatch
     common = common if common.is_absolute() else repo / common
     sh("git", "config", "--worktree", "core.longpaths", "true", cwd=app)
     sh("git", "config", "--worktree", "core.hooksPath", str(common.resolve() / "hooks"), cwd=app)
+    sh("git", "config", "--worktree", "core.bare", "false", cwd=app)  # what a bare repository's worktrees carry
     sparse = _worktree(repo, tmp_path, "sparse")  # which tracked files are checked out: configuration only
     subprocess.run(["git", "sparse-checkout", "set", "--no-cone", "--stdin"], cwd=sparse, check=True,
                    input=b"/*\n!/README.md\n")
@@ -2080,6 +2121,33 @@ def test_worktree_check_compares_ignored_files_with_the_main_checkout_by_content
     assert v["same"]["verdict"] == "safe_to_remove"
     assert [r["path"] for r in v["same"]["ignored"]["same_in_main_checkout"]] == ["result.out"]
     assert v["other"]["verdict"] == "keep" and [r["path"] for r in v["other"]["ignored"]["unique"]] == ["result.out"]
+
+
+@pytest.mark.parametrize("difference", ["whitespace", "file_mode", "binary_content"])
+def test_worktree_check_credits_only_byte_identical_rewritten_patches(tmp_path, monkeypatch, capsys, difference):
+    # git cherry's default patch ids ignore whitespace: a reflog-only commit whose patch differs from the
+    # base's only in a space, a file mode, or binary bytes is not reconstructible from the base.
+    repo = make_repo(tmp_path)
+    wt = tmp_path / "lane"
+    sh("git", "worktree", "add", "-q", "--detach", str(wt), "main", cwd=repo)
+    if difference == "binary_content":
+        (wt / "data.bin").write_bytes(b"\0\1lane bytes")
+        (repo / "data.bin").write_bytes(b"\0\1base bytes")
+    else:
+        (wt / "f.txt").write_text("new value\n")
+        (repo / "f.txt").write_text("new value\n" if difference == "file_mode" else "newvalue\n")
+        if difference == "file_mode":
+            os.chmod(wt / "f.txt", 0o755)
+    sh("git", "add", "-A", cwd=wt)
+    sh("git", "commit", "-q", "-m", "lane version", cwd=wt)
+    lane_commit = sh("git", "rev-parse", "HEAD", cwd=wt).stdout.strip()
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "base version", cwd=repo)
+    sh("git", "reset", "-q", "--hard", "main", cwd=wt)  # the lane version survives only in the reflog
+    capsys.readouterr()
+    assert run_main(["worktree-check", str(wt), "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    v = _verdicts(capsys)["lane"]
+    assert v["verdict"] == "keep" and lane_commit in v["reflog_only_commits"]
 
 
 def test_worktree_check_does_not_credit_a_merge_between_rewritten_copies(tmp_path, monkeypatch, capsys):
@@ -2219,7 +2287,7 @@ def test_report_counts_reclaimable_bytes(tmp_path, monkeypatch, capsys):
     assert stores == {"copy-of-history.git": False, "same-history.git": True, "tag-only-history.git": False,
                       "dangling-history.git": False, "dropped-tag-history.git": False,
                       "with-linked-worktree": None, "fetch-head-only": None, "staged-only": False}
-    assert 0 <= doc["summary_bytes"]["compression_estimate"] and doc["compression"]["sampled_files"] >= 0
+    assert doc["summary_bytes"]["compression_estimate"] > 0 and doc["compression"]["sampled_files"] > 0
     assert [Path(s["path"]).name for s in doc["stale"]] == ["lane-run-1"]
     assert (scratch / "b" / "copy.bin").exists(), "report never deletes"
 
@@ -2268,6 +2336,98 @@ def test_json_output_reports_an_error_that_stops_a_command(tmp_path, monkeypatch
                     monkeypatch) == rs.EXIT_ERROR
     out = capsys.readouterr()
     assert "not a directory" in json.loads(out.out)["error"] and "not a directory" in out.err
+
+
+def test_report_does_not_credit_copies_whose_objects_a_partial_clone_reference_only_promises(tmp_path, monkeypatch,
+                                                                                              capsys):
+    repo = make_repo(tmp_path)
+    (repo / "data.txt").write_text("held only by the full copies\n")
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "data", cwd=repo)
+    sh("git", "config", "uploadpack.allowFilter", "true", cwd=repo)
+    partial = tmp_path / "partial"
+    sh("git", "clone", "-q", "--no-local", "--filter=blob:none", "--no-checkout", f"file://{repo}", str(partial),
+       cwd=tmp_path)
+    blob_id = sh("git", "rev-parse", "HEAD:data.txt", cwd=repo).stdout.strip()
+    probe = subprocess.run(["git", "cat-file", "-e", blob_id], cwd=partial, capture_output=True,
+                           env=dict(os.environ, GIT_NO_LAZY_FETCH="1"))
+    assert probe.returncode != 0, "the reference reaches the blob but does not hold it"
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    sh("git", "clone", "-q", "--bare", "--no-hardlinks", str(repo), str(scratch / "full.git"), cwd=tmp_path)
+    sh("git", "bundle", "create", str(scratch / "full.bundle"), "main", cwd=repo)
+    capsys.readouterr()
+    assert run_main(["report", str(scratch), "--repo", str(partial), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    assert [g["contained_in_reference"] for g in doc["git_object_stores"]] == [False]
+    assert [b["contained_in_reference"] for b in doc["bundles"]] == [None]  # its contents cannot be listed here
+    assert doc["summary_bytes"]["history_copies_contained_in_reference"] == 0
+    assert doc["summary_bytes"]["bundles_contained_in_reference"] == 0
+    assert run_main(["report", str(scratch), "--repo", str(repo), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    assert [g["contained_in_reference"] for g in doc["git_object_stores"]] == [True], "control: a full reference"
+    assert [b["contained_in_reference"] for b in doc["bundles"]] == [True]
+
+
+def test_report_does_not_count_hard_linked_objects_as_reclaimable(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    incompressible = b"".join(hashlib.sha256(i.to_bytes(4, "big")).digest() for i in range(7000))
+    (repo / "data.bin").write_bytes(incompressible)  # about 220 kB, and its git object stays that large
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "data", cwd=repo)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    sh("git", "clone", "-q", "--bare", str(repo), str(scratch / "linked.git"), cwd=tmp_path)  # local: hard links
+    sh("git", "clone", "-q", "--bare", "--no-hardlinks", str(repo), str(scratch / "copied.git"), cwd=tmp_path)
+    capsys.readouterr()
+    assert run_main(["report", str(scratch), "--repo", str(repo), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    stores = {Path(g["path"]).name: g for g in doc["git_object_stores"]}
+    assert stores["linked.git"]["contained_in_reference"] and stores["copied.git"]["contained_in_reference"]
+    assert stores["copied.git"]["reclaimable_bytes"] == stores["copied.git"]["bytes"]
+    assert stores["linked.git"]["bytes"] > 200_000 and stores["linked.git"]["reclaimable_bytes"] < 100_000
+    assert doc["summary_bytes"]["history_copies_contained_in_reference"] == sum(
+        g["reclaimable_bytes"] for g in stores.values())
+
+
+@pytest.mark.parametrize("why", ["recent_change_in_a_subdirectory", "unreadable_part"])
+def test_report_lists_a_root_as_stale_only_when_its_whole_age_is_known(tmp_path, monkeypatch, capsys, why):
+    if why == "unreadable_part" and os.geteuid() == 0:
+        pytest.skip("root reads unreadable directories")
+    temp, empty = tmp_path / "temp", tmp_path / "empty"
+    root = temp / "lane-run-1"
+    (root / "sub" / "deeper").mkdir(parents=True)
+    empty.mkdir()
+    (root / "sub" / "kept").write_bytes(b"k" * 10)
+    (root / "sub" / "gone").write_bytes(b"g" * 10)
+    past = time.time() - 30 * 86400
+
+    def age_everything():
+        for p in [root / "sub" / "kept", root / "sub" / "deeper", root / "sub", root]:
+            os.utime(p, (past, past))
+
+    def stale_names():
+        capsys.readouterr()
+        assert run_main(["report", str(empty), "--stale-dir", str(temp), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
+        return [Path(s["path"]).name for s in json.loads(capsys.readouterr().out)["stale"]]
+
+    (root / "sub" / "gone").unlink()
+    age_everything()
+    assert stale_names() == ["lane-run-1"], "positive control: every part unchanged for 30 days"
+    if why == "recent_change_in_a_subdirectory":
+        (root / "sub" / "kept").unlink()
+        os.utime(root / "sub" / "deeper", (past, past))
+        (root / "sub" / "kept").write_bytes(b"k" * 10)
+        os.utime(root / "sub" / "kept", (past, past))  # only sub/'s own time is recent now
+        os.utime(root, (past, past))
+        assert stale_names() == []
+    else:
+        os.chmod(root / "sub" / "deeper", 0)
+        try:
+            age_everything()
+            assert stale_names() == []
+        finally:
+            os.chmod(root / "sub" / "deeper", 0o755)
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads unreadable directories")
@@ -2462,6 +2622,34 @@ def test_a_case_probe_that_cannot_be_removed_is_reported(tmp_path, monkeypatch, 
     assert "could not remove the probe file" in err and "delete it by hand" in err
 
 
+def test_a_refusal_after_the_record_was_written_still_reports_what_was_stored(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts" / "runs" / "r1"
+    (run / "sub").mkdir(parents=True)
+    (run / "sub" / ".gitignore").write_text("!a.bin\n")  # a deeper rule re-includes it
+    (run / "sub" / "a.bin").write_bytes(blob(THRESHOLD, 151))
+    capsys.readouterr()
+    assert run_main(["stow", str(run), "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    out = capsys.readouterr()
+    doc = json.loads(out.out)
+    assert doc["refused"] == ["reincluded_by_negation"] and doc["record_written"] is True
+    assert [e["path"] for e in doc["stowed"]] == ["sub/a.bin"] and doc["manifest"] == str(run / rs.MANIFEST_NAME)
+    assert "stowed" in out.err and "sub/a.bin" in out.err
+
+
+def test_a_case_probe_that_cannot_be_created_counts_as_case_sensitive(tmp_path, capsys):
+    if os.geteuid() == 0:
+        pytest.skip("root writes into read-only directories")
+    sealed = tmp_path / "sealed"
+    sealed.mkdir()
+    os.chmod(sealed, 0o555)
+    try:
+        assert rs.case_insensitive(sealed) is False
+        assert list(sealed.iterdir()) == [] and capsys.readouterr().err == ""
+    finally:
+        os.chmod(sealed, 0o755)
+
+
 def test_case_sensitivity_is_measured_where_the_run_outputs_live(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     seen = []
@@ -2491,6 +2679,28 @@ def test_a_case_only_rename_on_a_case_sensitive_file_system_is_the_same_output(t
     overwrite_in_place(run / "OUT.bin", blob(THRESHOLD, 146))  # now different bytes under the new name
     assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
     assert [r["path"] for r in json.loads(capsys.readouterr().out)["ignored_unstowed"]] == ["artifacts/runs/r1/OUT.bin"]
+
+
+def test_without_case_folding_a_case_only_rename_is_an_ordinary_rename(tmp_path, monkeypatch, capsys):
+    if not case_sensitive_file_system(tmp_path):
+        pytest.skip("needs a case-sensitive file system (as on Linux)")
+    repo = make_repo(tmp_path)
+    sh("git", "config", "core.ignorecase", "false", cwd=repo)  # the default on a case-sensitive file system
+    run = repo / "artifacts" / "runs" / "r1"
+    run.mkdir()
+    (run / "out.bin").write_bytes(blob(THRESHOLD, 150))
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    commit_records(repo)
+    os.rename(run / "out.bin", run / "OUT.bin")
+    capsys.readouterr()
+    assert run_main(["check", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    doc = json.loads(capsys.readouterr().out)
+    assert [r["path"] for r in doc["untracked"]] == ["artifacts/runs/r1/OUT.bin"]
+    assert [(r["path"], r["status"]) for r in doc["stowed"]] == [("artifacts/runs/r1/out.bin", "in_store_only")]
+    assert run_main(["stow", str(run)], repo, monkeypatch) == rs.EXIT_OK  # like a rename to any other name
+    assert [e["path"] for e in json.loads((run / rs.MANIFEST_NAME).read_text())["entries"]] == ["OUT.bin", "out.bin"]
+    commit_records(repo)
+    assert run_main(["check", "--strict"], repo, monkeypatch) == rs.EXIT_OK
 
 
 def test_a_different_file_differing_only_in_case_with_the_same_bytes_is_a_new_output(tmp_path, monkeypatch, capsys):

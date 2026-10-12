@@ -1097,14 +1097,16 @@ def expressible_problem(rel: str) -> "str | None":
     return None
 
 
-def refuse(args, kinds: "dict[str, list[dict]]", messages: "list[str]", code: int, record_written: bool = False) -> int:
+def refuse(args, kinds: "dict[str, list[dict]]", messages: "list[str]", code: int, record_written: bool = False,
+           done: "dict | None" = None, done_lines: "list[str] | None" = None) -> int:
     """Report a refusal: the explanation (with one line per path) on stderr and,
     with --json, a result object on stdout naming each kind of refusal and the
-    paths it concerns."""
-    for message in messages:
+    paths it concerns. A refusal after the record was written also reports
+    what was done (`done`, `done_lines`)."""
+    for message in [*(done_lines or []), *messages]:
         print(message.encode("utf-8", "backslashreplace").decode("utf-8"), file=sys.stderr)
     if getattr(args, "json", False):
-        emit({"refused": sorted(kinds), "items": kinds, "record_written": record_written}, True, [])
+        emit({"refused": sorted(kinds), "items": kinds, "record_written": record_written, **(done or {})}, True, [])
     return code
 
 
@@ -1276,8 +1278,10 @@ def cmd_stow(args) -> int:
         kinds["reincluded_by_negation"] = [{"path": r} for r in reincluded]
         messages.append(f"run-storage: the ignore block does not cover {path_list(reincluded)}; a negation rule "
                         "elsewhere re-includes them. Fix the ignore rules before committing.")
-    if kinds:
-        return refuse(args, kinds, messages, EXIT_FINDINGS, record_written=True)
+    if kinds:  # the files are stored and recorded; what stays to fix is the ignore rules or the index
+        return refuse(args, kinds, messages, EXIT_FINDINGS, record_written=True,
+                      done={"stowed": stowed, "store": str(store), "manifest": str(run_dir / MANIFEST_NAME)},
+                      done_lines=lines)
     # Judged on the files as they now are: a rewrite that restores the committed bytes needs no commit.
     commit_needed = record_needs_commit(repo, run_dir)
     if commit_needed:
@@ -1541,6 +1545,8 @@ def benign_worktree_setting(key: str, value: str, common_dir: Path) -> bool:
     key = key.lower()
     if key in BOOLEAN_WORKTREE_SETTINGS:
         return value.lower() in ("true", "false")
+    if key == "core.bare":  # written for worktrees of a bare repository
+        return value.lower() == "false"
     if key == "core.hookspath":
         return Path(os.path.realpath(os.path.expanduser(value))) == Path(os.path.realpath(common_dir / "hooks"))
     return False
@@ -1640,12 +1646,29 @@ def reflog_only_commits(path: Path) -> "list[str]":
     return sorted(remembered - reachable)
 
 
+def exact_patch_ids(path: Path, revs: "list[str]") -> "dict[str, str] | None":
+    """Commit -> patch id for the non-merge commits `git log revs` lists, with
+    the id taken over the patch byte for byte (`git patch-id --verbatim` over
+    full binary diffs: whitespace, file modes and binary content all count;
+    `git cherry`'s default ids ignore whitespace). A commit whose patch is
+    empty gets no id. None when git fails."""
+    log = git(["log", "--no-merges", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "-p",
+               "--binary", "--full-index", "--format=commit %H", *revs, "--"], path, check=False)
+    if log.returncode != 0:
+        return None
+    ids = git(["patch-id", "--verbatim"], path, check=False, input_bytes=log.stdout)
+    if ids.returncode != 0:
+        return None
+    return {commit: pid for pid, commit in (line.split() for line in ids.stdout.decode().splitlines() if line.strip())}
+
+
 def rewritten_copy_on_base(path: Path, base: str, obj: str) -> bool:
     """A commit only this worktree remembers whose changes are all on the base
-    branch: no merge lies between the merge base and it, and `git cherry`
-    marks every commit of that stretch "-" (an equal patch exists on base).
-    This is what an amended or rebased commit leaves in a reflog; its content
-    is reconstructible from base, so removing the worktree loses nothing."""
+    branch: no merge lies between the merge base and it, and every commit of
+    that stretch has a byte-identical patch among the base's own commits since
+    the merge base. This is what an amended or rebased commit leaves in a
+    reflog; its content is reconstructible from base, so removing the worktree
+    loses nothing."""
     if git(["cat-file", "-t", obj], path, check=False).stdout.decode().strip() != "commit":
         return False  # e.g. an annotated tag object: assessed as at risk
     if git(["merge-base", base, obj], path, check=False).returncode != 0:
@@ -1653,9 +1676,15 @@ def rewritten_copy_on_base(path: Path, base: str, obj: str) -> bool:
     merges = git(["rev-list", "--merges", f"{base}..{obj}"], path, check=False)
     if merges.returncode != 0 or merges.stdout.strip():
         return False
-    cherry = git(["cherry", base, obj], path, check=False)
-    lines = [line for line in cherry.stdout.decode().splitlines() if line.strip()]
-    return cherry.returncode == 0 and bool(lines) and all(line.startswith("- ") for line in lines)
+    stretch = git(["rev-list", "--no-merges", f"{base}..{obj}"], path, check=False)
+    commits = stretch.stdout.decode().split()
+    mine = exact_patch_ids(path, [f"{base}..{obj}"])
+    theirs = exact_patch_ids(path, [f"{obj}..{base}"])
+    if stretch.returncode != 0 or not commits or mine is None or theirs is None:
+        return False
+    on_base = set(theirs.values())
+    # A commit with an empty patch (no id) is not shown to be on base: kept.
+    return all(c in mine and mine[c] in on_base for c in commits)
 
 
 def worktree_private_refs(path: Path, base: str) -> "list[str]":
@@ -1698,7 +1727,8 @@ def check_one_worktree(path: Path, base: str, main_root: "Path | None", store: P
     path = wt.toplevel
     report["worktree"] = str(path)
     if not wt.is_linked_worktree:
-        report.update(verdict="keep", reasons=["this is the main checkout, not a linked worktree"])
+        report.update(verdict="keep", reasons=["not a linked worktree: a main checkout (of this repository or of "
+                                               "a separate one)"])
         return report
     # A linked worktree's record (its private git directory) names the checkout it belongs to. A copied
     # checkout, or one whose record a newer worktree has reused, shares that other tree's HEAD and index:
@@ -1834,6 +1864,8 @@ def cmd_worktree_check(args) -> int:
     store = repo.store(args.store)
     trees = list_worktrees(repo)
     main_root = Path(trees[0]["worktree"]).resolve() if trees and "bare" not in trees[0] else None
+    if args.all and args.worktree:
+        raise StorageError("name one worktree path or pass --all, not both")
     if args.all:
         targets = [Path(t["worktree"]) for t in trees[1:] if "bare" not in t]
     elif args.worktree:
@@ -1870,23 +1902,36 @@ ALREADY_COMPRESSED_SUFFIXES = frozenset({
 })
 
 
-def dir_size(path: Path, unreadable: "list[str]") -> "tuple[int, int, float]":
-    total, count, newest = 0, 0, 0.0
-    for dirpath, dirnames, filenames in os.walk(path, followlinks=False,
-                                                onerror=lambda e: unreadable.append(str(e.filename))):
-        for name in filenames:
+def dir_size(path: Path, unreadable: "list[str]") -> "tuple[int, int, float, bool, int]":
+    """Bytes and files under `path`; the newest modification time of any file
+    or directory in it (removing a file changes only its directory's time);
+    whether every directory and file could be read; and the bytes held in
+    files with more than one hard link (a local clone's objects, a pnpm
+    store's packages), which removing this tree may not free at all."""
+    total, count, newest, linked = 0, 0, 0.0, 0
+    complete = True
+
+    def failed(error: OSError) -> None:
+        nonlocal complete
+        complete = False
+        unreadable.append(str(error.filename))
+
+    for dirpath, dirnames, filenames in os.walk(path, followlinks=False, onerror=failed):
+        for entry in [dirpath, *(os.path.join(dirpath, name) for name in dirnames + filenames)]:
             try:
-                st = (Path(dirpath) / name).lstat()
+                st = os.lstat(entry)
             except OSError:
+                complete = False
+                unreadable.append(entry)
+                continue
+            newest = max(newest, st.st_mtime)
+            if entry == dirpath or not stat.S_ISREG(st.st_mode) and not stat.S_ISLNK(st.st_mode):
                 continue
             total += st.st_size
             count += 1
-            newest = max(newest, st.st_mtime)
-    try:
-        newest = max(newest, path.lstat().st_mtime)
-    except OSError:
-        pass
-    return total, count, newest
+            if st.st_nlink > 1:
+                linked += st.st_size
+    return total, count, newest, complete, linked
 
 
 def is_git_store(path: Path) -> bool:
@@ -1894,10 +1939,16 @@ def is_git_store(path: Path) -> bool:
 
 
 def missing_objects(reference: Path, shas: "list[str]") -> "set[str]":
+    """The objects among `shas` the reference does not hold locally (an object
+    a partial clone only promises counts as missing: nothing is fetched). When
+    git cannot answer, every one counts as missing."""
     if not shas:
         return set()
-    out = git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], reference,
-              input_bytes=("\n".join(shas) + "\n").encode()).stdout.decode().splitlines()
+    proc = git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], reference, check=False,
+               input_bytes=("\n".join(shas) + "\n").encode())
+    if proc.returncode != 0:
+        return set(shas)
+    out = proc.stdout.decode().splitlines()
     return {line.split()[0] for line in out if line.endswith(" missing")}
 
 
@@ -1909,6 +1960,10 @@ class DurableObjects:
     def __init__(self, reference: Path):
         self.reference = reference
         self._ids: "set[str] | None" = None
+        # A partial clone only promises some objects; a traversal inside it skips them silently.
+        promisor = git(["config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$"], reference,
+                       check=False).stdout.decode().split("\n")
+        self.partial = any(line.split(" ", 1)[-1].strip().lower() not in ("", "false") for line in promisor if line)
 
     def ids(self) -> "set[str]":
         if self._ids is None:
@@ -1916,17 +1971,21 @@ class DurableObjects:
             self._ids = {line.split()[0] for line in out.splitlines() if line.strip()}
         return self._ids
 
-    def covers_closure_of(self, revs: "list[str]") -> bool:
+    def covers_closure_of(self, revs: "list[str]") -> "bool | None":
         """True when every object reachable from ``revs`` (computed inside
-        the reference) is durably reachable there."""
+        the reference) is durably reachable there; None when the reference is
+        a partial clone, where that traversal skips objects it only promises."""
         if not revs or missing_objects(self.reference, revs):
             return False
+        if self.partial:
+            return None
         out = git(["rev-list", "--objects", "--missing=allow-promisor", "--stdin"], self.reference, check=False,
                   input_bytes=("\n".join(revs) + "\n").encode())
         if out.returncode != 0:
             return False
         closure = {line.split()[0] for line in out.stdout.decode().splitlines() if line.strip()}
-        return closure <= self.ids()
+        # Reachable is not enough when the reference is a partial clone: its bytes must be held here.
+        return closure <= self.ids() and not missing_objects(self.reference, sorted(closure))
 
 
 def store_contained(durable: DurableObjects, git_dir: Path) -> "bool | None":
@@ -1955,7 +2014,8 @@ def store_contained(durable: DurableObjects, git_dir: Path) -> "bool | None":
     reachable |= set(refs.stdout.decode().split())
     if not reachable:
         return False
-    return reachable <= durable.ids()
+    # Reachable is not enough when the reference is a partial clone: its bytes must be held there.
+    return reachable <= durable.ids() and not missing_objects(durable.reference, sorted(reachable))
 
 
 def sample_ratio(path: Path, sample_bytes: int = 4 * CHUNK) -> float:
@@ -1999,12 +2059,14 @@ def cmd_report(args) -> int:
                     continue
                 seen_dirs.add((dst.st_dev, dst.st_ino))
                 if name in REGENERABLE_DIR_NAMES:
-                    size, count, _ = dir_size(full, unreadable)
-                    regenerable.append({"path": str(full), "bytes": size, "files": count})
+                    size, count, _, _, linked = dir_size(full, unreadable)
+                    regenerable.append({"path": str(full), "bytes": size, "files": count,
+                                        "reclaimable_bytes": size - linked})
                     dirnames.remove(name)
                 elif (name == ".git" or name.endswith(".git")) and is_git_store(full):
-                    size, count, _ = dir_size(full, unreadable)
-                    record = {"path": str(full), "bytes": size, "kind": "git object store"}
+                    size, count, _, _, linked = dir_size(full, unreadable)
+                    record = {"path": str(full), "bytes": size, "reclaimable_bytes": size - linked,
+                              "kind": "git object store"}
                     if reference is not None and full.resolve() != (reference / ".git").resolve() \
                             and full.resolve() != reference:
                         record["contained_in_reference"] = store_contained(durable, full)
@@ -2023,7 +2085,8 @@ def cmd_report(args) -> int:
                     if reference is not None:
                         heads = git(["bundle", "list-heads", str(full)], reference, check=False)
                         shas = [line.split()[0] for line in heads.stdout.decode().splitlines() if line.strip()]
-                        record["contained_in_reference"] = heads.returncode == 0 and durable.covers_closure_of(shas)
+                        record["contained_in_reference"] = durable.covers_closure_of(shas) if heads.returncode == 0 \
+                            else False
                     bundles.append(record)
                 if st.st_size >= args.min_size and (st.st_dev, st.st_ino) not in seen_inodes:
                     seen_inodes.add((st.st_dev, st.st_ino))
@@ -2076,19 +2139,23 @@ def cmd_report(args) -> int:
                 continue
             if child.is_symlink():
                 continue
-            size, count, newest = (dir_size(child, unreadable) if child.is_dir()
-                                   else (child.lstat().st_size, 1, child.lstat().st_mtime))
-            if newest < cutoff:
-                stale.append({"path": str(child), "bytes": size, "files": count,
+            if child.is_dir():
+                size, count, newest, complete, linked = dir_size(child, unreadable)
+            else:
+                st = child.lstat()
+                size, count, newest, complete, linked = st.st_size, 1, st.st_mtime, True, 0
+            # Age is known only when every part of the root could be examined.
+            if complete and newest < cutoff:
+                stale.append({"path": str(child), "bytes": size, "files": count, "reclaimable_bytes": size - linked,
                               "age_days": round((time.time() - newest) / 86400, 1)})
     redundant_bundles = [b for b in bundles if b.get("contained_in_reference")]
     redundant_stores = [g for g in git_stores if g.get("contained_in_reference")]
     summary = {
         "duplicate_content": sum(d["reclaimable"] for d in duplicates),
-        "regenerable_directories": sum(r["bytes"] for r in regenerable),
-        "history_copies_contained_in_reference": sum(g["bytes"] for g in redundant_stores),
+        "regenerable_directories": sum(r["reclaimable_bytes"] for r in regenerable),
+        "history_copies_contained_in_reference": sum(g["reclaimable_bytes"] for g in redundant_stores),
         "bundles_contained_in_reference": sum(b["bytes"] for b in redundant_bundles),
-        "stale_temporary_roots": sum(s["bytes"] for s in stale),
+        "stale_temporary_roots": sum(s["reclaimable_bytes"] for s in stale),
         "compression_estimate": int(compress_saving),
     }
     result = {
@@ -2102,7 +2169,10 @@ def cmd_report(args) -> int:
             "Read-only: nothing was changed.",
             "Duplicate bytes are an upper bound: copy-on-write clones share blocks but look like separate files.",
             "Categories can overlap (a stale root may contain duplicates or regenerable directories).",
-            "Stale temporary roots are judged by age alone; check that nothing still uses them before removing.",
+            "Stale temporary roots are judged by age alone (the newest file or directory time; a root with any "
+            "unreadable part is not listed); check that nothing still uses them before removing.",
+            "Reclaimable totals leave out files with more than one hard link (local clones, pnpm stores): removing "
+            "one link may free nothing. Copy-on-write clones cannot be told apart, so totals stay upper bounds.",
             "The compression figure extrapolates a zlib ratio measured on the first 4 MiB of each sampled file.",
             "Unreadable paths are skipped and listed; the figures do not include them.",
         ],
@@ -2115,7 +2185,7 @@ def cmd_report(args) -> int:
         "bundles_contained_in_reference": "git bundles already contained in --repo",
         "stale_temporary_roots": f"temporary roots unchanged for {args.older_than_days} days "
                                  "(age only: whether a process still uses them is not checked)",
-        "compression_estimate": "rough saving from compressing large files",
+        "compression_estimate": "rough saving from compressing the sampled large files (see --compress-sample)",
     }
     for key, label in labels.items():
         lines.append(f"  {human(summary[key]):>12}  {label}")
@@ -2144,6 +2214,13 @@ def non_negative_int(text: str) -> int:
     value = int(text)
     if value < 0:
         raise argparse.ArgumentTypeError("must be 0 or more")
+    return value
+
+
+def non_negative_float(text: str) -> float:
+    value = float(text)
+    if not value >= 0 or value == float("inf"):  # also refuses nan
+        raise argparse.ArgumentTypeError("must be a finite number, 0 or more")
     return value
 
 
@@ -2206,7 +2283,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="smallest file considered (bytes, default 1 MiB)")
     p.add_argument("--stale-dir", action="append", default=[], help="temporary location whose old children are listed")
     p.add_argument("--stale-prefix", action="append", default=[], help="only children with this name prefix")
-    p.add_argument("--older-than-days", type=float, default=7.0)
+    p.add_argument("--older-than-days", type=non_negative_float, default=7.0)
     p.add_argument("--compress-sample", type=non_negative_int, default=500,
                    help="largest files sampled for the compression estimate")
     p.set_defaults(func=cmd_report)
@@ -2231,7 +2308,7 @@ def main(argv: "list[str] | None" = None) -> int:
         args.project_root = "."
     try:
         return args.func(args)
-    except (StorageError, OSError) as exc:
+    except (StorageError, OSError, subprocess.SubprocessError) as exc:
         return stop_on_error(args, str(exc))
     except (ValueError, RuntimeError, UnicodeError) as exc:  # unusual input: an error, never "findings"
         return stop_on_error(args, f"cannot process this input ({type(exc).__name__}: {exc})")

@@ -108,9 +108,9 @@ describe('Tool registry contracts (M2)', () => {
     expect((tool?.inputSchema as any).properties.identifier.description).toContain('size is tolerated and ignored');
   });
 
-  // The tools that write output files, and the lexical evidence query, refuse
-  // a limit that is not a whole number in range instead of replacing it by
-  // the default; a digit string is still read as its number.
+  // The tools that write output files refuse a limit that is not a whole
+  // number in range instead of replacing it by the default; a digit string is
+  // still read as its number.
   it('inspire_search refuses invalid max_results and page values instead of using defaults', () => {
     expect(InspireSearchToolSchema.safeParse({ query: 'qcd', max_results: -100 }).success).toBe(false);
     expect(InspireSearchToolSchema.safeParse({ query: 'qcd', page: '\r\t-5' }).success).toBe(false);

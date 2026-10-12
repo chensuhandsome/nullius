@@ -25,7 +25,7 @@ The [`project-mcp`](../packages/project-mcp/README.md) leaf adapter binds one
 external project through `NULLIUS_PROJECT_ROOT` and reuses canonical
 `handleToolCall` / `runCli`. Its 16 selected `orch_*` operations plus five transport
 tools expose 21 tools. The [personal plugin](../packages/skills-market/docs/PERSONAL_PLUGIN.md)
-combines project 21, default HEP 62, and idea 6: 89 unique tool names; the live
+combines project 21, default HEP 52, and idea 6: 79 unique tool names; the live
 plugin check compares them against the real local stdio servers. Runtime configuration is host-private; generated
 plugin manifests and ordinary copy-install metadata do not record source-machine
 paths. Copied skill helpers discover the current runtime through an explicit

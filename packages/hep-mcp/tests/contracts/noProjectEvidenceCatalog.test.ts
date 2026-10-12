@@ -5,12 +5,12 @@ import { describe, expect, it } from 'vitest';
 
 import { getTools } from '../../src/tools/index.js';
 
-function collectSourceFiles(dirPath: string): string[] {
+function collectFiles(dirPath: string, keep: (filePath: string) => boolean): string[] {
   const out: string[] = [];
   for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
     const fullPath = path.join(dirPath, entry.name);
-    if (entry.isDirectory()) out.push(...collectSourceFiles(fullPath));
-    else if (entry.isFile() && fullPath.endsWith('.ts')) out.push(fullPath);
+    if (entry.isDirectory()) out.push(...collectFiles(fullPath, keep));
+    else if (entry.isFile() && keep(fullPath)) out.push(fullPath);
   }
   return out.sort((a, b) => a.localeCompare(b));
 }
@@ -39,6 +39,9 @@ const FORBIDDEN = [
   { label: 'evidence_catalog_file', re: /catalog\.jsonl/i },
   { label: 'papers_cache', re: /\bpapers_?cache/i },
   { label: 'projects_path_segment', re: /[/'"`]projects[/'"`]/i },
+  // The removed admin command-line entry points and the wrappers that ran them.
+  { label: 'admin_module_path', re: /[/'"`.]admin\//i },
+  { label: 'admin_cli_name', re: /\b(?:import-paper|link-kb-notes|migrate-papers-cache|prune-paper-cache)\b/i },
 ];
 
 function offendersIn(lines: string[], where: (index: number) => string): string[] {
@@ -52,11 +55,16 @@ describe('hep-mcp keeps no paper/evidence projects, evidence catalogs or papers 
     expect(REMOVED_TOOLS.filter(name => names.has(name))).toEqual([]);
   });
 
-  it('no hep-mcp source file builds project URIs, project directories, catalogs or the papers cache', () => {
-    const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'src');
-    const offenders = collectSourceFiles(srcRoot).flatMap(filePath => offendersIn(
+  it('no hep-mcp source or script builds project URIs, project directories, catalogs, the papers cache or the admin CLIs', () => {
+    const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+    const files = [
+      ...collectFiles(path.join(pkgRoot, 'src'), filePath => filePath.endsWith('.ts')),
+      ...collectFiles(path.join(pkgRoot, 'scripts'), () => true),
+    ];
+    expect(files.some(filePath => filePath.includes(`${path.sep}scripts${path.sep}`))).toBe(true);
+    const offenders = files.flatMap(filePath => offendersIn(
       fs.readFileSync(filePath, 'utf-8').split('\n'),
-      index => `${path.relative(srcRoot, filePath)}:L${index + 1}`,
+      index => `${path.relative(pkgRoot, filePath)}:L${index + 1}`,
     ));
     expect(offenders).toEqual([]);
   });
@@ -71,6 +79,10 @@ describe('hep-mcp keeps no paper/evidence projects, evidence catalogs or papers 
       "import { ensureInCache } from '../data/papersCache.js';",
       "const dir = path.join(getDataDir(), 'projects', projectId);",
       'const dir = `${dataDir}/projects/${id}`;',
+      'CLI_JS="${PKG_DIR}/dist/admin/cli-prune-paper-cache.js"',
+      'exec node "${CLI_JS}" "$@"  # packages/hep-mcp/scripts/import-paper.sh',
+      "import { linkKbNotes } from '../../admin/linkKbNotes.js';",
+      '#   packages/hep-mcp/scripts/migrate-papers-cache.sh --project-root /abs/path',
     ];
     for (const line of rebuilt) {
       expect(offendersIn([line], () => 'fixture'), line).not.toEqual([]);
@@ -80,6 +92,8 @@ describe('hep-mcp keeps no paper/evidence projects, evidence catalogs or papers 
       'const projectRoot = admitProjectRoot(raw);',
       "const dir = path.join(projectRoot, 'artifacts', 'hep-mcp');",
       'let classifyPapersCache = null;',
+      "const tool = 'hep_import_from_zotero';",
+      'const label = `administrator`;',
     ], () => 'fixture')).toEqual([]);
   });
 });

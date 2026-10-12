@@ -91,7 +91,8 @@ Earlier hep-mcp versions also kept paper/evidence projects (with an evidence cat
 | `hep://projects/<project_id>/artifact/<name>` | `<HEP data root>/projects/<project_id>/artifacts/<name>` |
 | `hep://projects/<project_id>/papers/<paper_id>` | `<HEP data root>/projects/<project_id>/papers/<paper_id>/paper.json` |
 | `hep://projects/<project_id>/papers/<paper_id>/evidence/catalog` | `<HEP data root>/projects/<project_id>/papers/<paper_id>/evidence/catalog.jsonl` |
-| `hep://projects`, `hep://projects/<project_id>/papers` | No file: they named listings produced on read; read the directories `<HEP data root>/projects/` and `<HEP data root>/projects/<project_id>/papers/` instead |
+| `hep://projects` | No single file: a listing produced on read from every `<HEP data root>/projects/<project_id>/project.json` (project id and `name`), most recently updated (`updated_at`) first; directories without a readable `project.json` were skipped |
+| `hep://projects/<project_id>/papers` | No single file: a listing produced on read from every `<HEP data root>/projects/<project_id>/papers/<paper_id>/paper.json` (paper id and the catalog URI in `artifacts.evidence_catalog.uri`), most recently updated (`updated_at`) first; directories without a readable `paper.json` were skipped |
 
 `<HEP data root>` follows the same rule as for historical runs above. `<project_id>`, `<paper_id>` and `<name>` are the percent-decoded URI path segments.
 

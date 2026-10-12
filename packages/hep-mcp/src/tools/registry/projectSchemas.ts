@@ -60,9 +60,9 @@ export const OutputDirSchema = z
       + 'The reserved areas are compared ignoring letter case.'
   );
 
-// The tools that write into output_dir, and the lexical evidence query, use
-// strict schemas: an undeclared argument (a misspelled output_dir, a removed
-// parameter) is refused instead of being silently dropped.
+// The tools that write into output_dir use strict schemas: an undeclared
+// argument (a misspelled output_dir, a removed parameter) is refused instead
+// of being silently dropped.
 export const HepImportFromZoteroToolSchema = z.object({
   // Declared here because the refinement below keeps the registry from
   // adding its generic project_root field to this schema.

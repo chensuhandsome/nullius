@@ -135,6 +135,12 @@ jobs:
         if: ${{ matrix.node-version == 22 }}
         run: node scripts/check-post-correction-recomputation-anti-drift.mjs
 
+      - name: Check unreachable source modules (every module reached from a declared package entry)
+        if: ${{ matrix.node-version == 22 }}
+        run: |
+          node --test scripts/tests/check-unreachable-modules.test.mjs
+          node scripts/check-unreachable-modules.mjs
+
       - name: Check codegen drift (meta/schemas ↔ generated)
         if: ${{ matrix.node-version == 22 }}
         run: pnpm codegen:check

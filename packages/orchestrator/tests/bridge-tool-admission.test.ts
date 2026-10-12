@@ -91,6 +91,8 @@ describe('computation bridge tools admit project_root like every other front doo
   }
 
   it.each([
+    ['orch_run_stage_idea', { handoff_path: '/nonexistent/handoff.json' }],
+    ['orch_run_stage_content', { content_type: 'section_output', content: '{"title":"Draft"}' }],
     ['orch_run_plan_computation', { dry_run: true }],
     ['orch_run_execute_manifest', { _confirm: true, manifest_path: 'computation/manifest.json', dry_run: true }],
     ['orch_run_progress_followups', { _confirm: true }],
@@ -161,6 +163,38 @@ describe('the computation bridge tools work only in a run directory inside the a
     expect(fs.readdirSync(outside)).toEqual([]);
   });
 
+  it.each(TOOLS)('%s refuses a run directory whose artifacts/ is a symbolic link, and writes nothing through it', async (tool) => {
+    const { parent, root, alias, handoffPath } = projectWithHandoff();
+    const outside = path.join(parent, 'outside');
+    fs.mkdirSync(outside);
+    const runDir = path.join(root, 'artifacts', 'runs', 'r1');
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.symlinkSync(outside, path.join(runDir, 'artifacts'), 'dir');
+    const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
+    expect(result.isError).toBe(true);
+    expect(result.payload.error.message).toMatch(/run_dir\/artifacts must not traverse a symbolic link/);
+    expect(fs.readdirSync(outside)).toEqual([]);
+  });
+
+  it.each([
+    ['a file in artifacts/', 'artifacts/computation_result_v1.json', /run_dir\/artifacts\/computation_result_v1\.json must not be a symbolic link/],
+    ['an attempt archive', 'attempts/attempt-1', /run_dir\/attempts\/attempt-1 must not be a symbolic link/],
+    ['the launch stamp mirror', 'run_origin.json', /run_dir\/run_origin\.json must not traverse a symbolic link/],
+  ])('refuses a run directory where %s is a symbolic link', async (_label, entry, message) => {
+    const { parent, root, alias, handoffPath } = projectWithHandoff();
+    const outsideFile = path.join(parent, 'outside.json');
+    fs.writeFileSync(outsideFile, '{}\n');
+    const runDir = path.join(root, 'artifacts', 'runs', 'r1');
+    fs.mkdirSync(path.dirname(path.join(runDir, entry)), { recursive: true });
+    fs.symlinkSync(outsideFile, path.join(runDir, entry));
+    for (const tool of TOOLS) {
+      const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
+      expect(result.isError, tool).toBe(true);
+      expect(result.payload.error.message, tool).toMatch(message);
+    }
+    expect(fs.readFileSync(outsideFile, 'utf-8')).toBe('{}\n');
+  });
+
   it('refuses a relative run directory, and a project root that does not exist', async () => {
     const { parent, alias, handoffPath } = projectWithHandoff();
     const relative = await call('orch_run_stage_idea', argsFor('orch_run_stage_idea', alias, path.join('artifacts', 'runs', 'r1'), handoffPath));
@@ -171,6 +205,23 @@ describe('the computation bridge tools work only in a run directory inside the a
     expect(fs.existsSync(path.join(parent, 'real', 'missing'))).toBe(false);
   });
 
+  it('refuses a run directory that passes through a file, naming it', async () => {
+    const { root, alias, handoffPath } = projectWithHandoff();
+    fs.writeFileSync(path.join(root, 'notes.txt'), 'x\n');
+    const result = await call('orch_run_stage_idea', argsFor('orch_run_stage_idea', alias, path.join(alias, 'notes.txt', 'r1'), handoffPath));
+    expect(result.payload.error).toMatchObject({ code: 'UNSAFE_FS', message: 'run_dir passes through something that is not a directory' });
+  });
+
+  it('reports a run without a computation result to progress as such, not as a bare system error', async () => {
+    const { alias, handoffPath } = projectWithHandoff();
+    const runDir = path.join(alias, 'artifacts', 'runs', 'r1');
+    fs.mkdirSync(runDir, { recursive: true });
+    const ctx = { createMessage: async () => { throw new Error('not called'); }, callTool: async () => { throw new Error('not called'); } };
+    const result = await handleToolCall('orch_run_progress_followups', argsFor('orch_run_progress_followups', alias, runDir, handoffPath), 'full', ctx as any);
+    const payload = JSON.parse(result.content[0]!.text) as { error: { code: string; message: string } };
+    expect(payload.error).toMatchObject({ code: 'INVALID_PARAMS', message: 'Failed to load computation_result_v1 from run_dir' });
+  });
+
   it('names the project root and run directory to a delegated follow-up, which must pass them when staging', () => {
     const prompt = buildFollowupRuntimePrompt({
       projectRoot: '/projects/p', runId: 'r1', runDir: '/projects/p/artifacts/runs/r1', taskId: 't1', taskKind: 'draft_update',
@@ -178,6 +229,27 @@ describe('the computation bridge tools work only in a run directory inside the a
     }).split('\n');
     expect(prompt).toContain('project_root: /projects/p');
     expect(prompt).toContain('run_dir: /projects/p/artifacts/runs/r1');
+  });
+});
+
+describe('a computation run through an alias of the project root', () => {
+  it('stages, plans and executes in the canonical run directory, where its result and launch stamp land', async () => {
+    const project = aliasedProject();
+    expect((await call('orch_run_create', { project_root: project.alias, run_id: 'r-full', workflow_id: 'computation' })).isError).toBe(false);
+    writeJson(path.join(project.root, '.nullius', 'approval_policy.json'), { require_approval_for: { compute_runs: false } });
+    const runDir = await stagedRun(project, 'r-full', handoff([{ path: 'scripts/run.py', content: WRITE_VALUE }], 'scripts/run.py', ['outputs/value.txt']));
+    const planned = await call('orch_run_plan_computation', { project_root: project.alias, run_id: 'r-full', run_dir: runDir });
+    expect(planned.payload.status, JSON.stringify(planned.payload)).toBe('planned');
+    const executed = await call('orch_run_execute_manifest', {
+      _confirm: true, project_root: project.alias, run_id: 'r-full', run_dir: runDir, manifest_path: String(planned.payload.manifest_path),
+    });
+    expect(executed.isError, JSON.stringify(executed.payload)).toBe(false);
+    const canonicalRun = path.join(project.root, 'artifacts', 'runs', 'r-full');
+    expect(fs.readFileSync(path.join(canonicalRun, 'computation', 'outputs', 'value.txt'), 'utf-8')).toBe('5\n');
+    expect(fs.existsSync(path.join(canonicalRun, 'artifacts', 'computation_result_v1.json'))).toBe(true);
+    expect(fs.existsSync(path.join(canonicalRun, 'run_origin.json'))).toBe(true);
+    // Nothing was written next to the alias.
+    expect(fs.readdirSync(project.parent).sort()).toEqual(['alias', 'r-full-handoff.json', 'real']);
   });
 });
 
@@ -234,6 +306,19 @@ describe('a method is written only into the run directory', () => {
     expect(planned.payload.error.message).toMatch(/must not traverse a symbolic link/);
     expect(fs.readdirSync(outside)).toEqual([]);
     expect(fs.readdirSync(path.join(runDir, 'computation'))).toEqual(['scripts']);
+  });
+
+  it('refuses a method file whose own target is a symbolic link, leaving its target untouched', async () => {
+    const project = aliasedProject();
+    const runDir = await stagedRun(project, 'r-leaf', handoff([{ path: 'scripts/run.py', content: WRITE_VALUE }], 'scripts/run.py', ['outputs/value.txt']));
+    const outsideFile = path.join(project.parent, 'outside.py');
+    fs.writeFileSync(outsideFile, 'original\n');
+    fs.mkdirSync(path.join(runDir, 'computation', 'scripts'), { recursive: true });
+    fs.symlinkSync(outsideFile, path.join(runDir, 'computation', 'scripts', 'run.py'));
+    const planned = await call('orch_run_plan_computation', { project_root: project.alias, run_id: 'r-leaf', run_dir: runDir, dry_run: true });
+    expect(planned.isError).toBe(true);
+    expect(planned.payload.error.message).toMatch(/must not traverse a symbolic link/);
+    expect(fs.readFileSync(outsideFile, 'utf-8')).toBe('original\n');
   });
 
   it('refuses a computation directory that is a symbolic link even when the method has no files', async () => {

@@ -295,16 +295,19 @@ export async function hepInspireSearchExport(params: {
 
     const exportRef = exportFile.finish();
     const total = largestTotal;
-    const hasMore = total > exported;
+    // max_results ended the export while INSPIRE had more to give: it cut a
+    // page, or stopped where INSPIRE's last page offered a next one (whatever
+    // the reported total, which can lag behind the pages).
+    const stoppedAtMaxResults = truncatedMidPage || (exported >= maxResults && pageRes.has_more);
+    const hasMore = stoppedAtMaxResults || total > exported;
     // A next-page URL continues the export only if this export ended on a
     // page boundary; after cutting inside a page it would skip the rest of
     // that page, so none is given.
     const resumeUrl = hasMore && !truncatedMidPage ? nextUrl : undefined;
-    // One warning for the cause of the records not exported. Either
-    // max_results ended the export while INSPIRE had more to give (it was cut
-    // inside a page, or the last page offered a next one), or INSPIRE's pages
-    // ended before the total it reported, which no rerun can reach.
-    if (hasMore && (truncatedMidPage || (exported >= maxResults && pageRes.has_more))) {
+    // One warning for the cause of the records not exported: max_results,
+    // or INSPIRE's pages ending before the total it reported, which no rerun
+    // can reach.
+    if (stoppedAtMaxResults) {
       const msg = truncatedMidPage
         ? `INSPIRE search export stopped at max_results=${maxResults} inside a page (total=${total}, exported=${exported}), so no continuation URL is given; rerun with a larger max_results to get the rest.`
         : `INSPIRE search export stopped at max_results=${maxResults} (total=${total}, exported=${exported}); next_url continues it.`;

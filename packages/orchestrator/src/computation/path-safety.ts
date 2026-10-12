@@ -185,7 +185,9 @@ export function resolveProjectContainedPath(rootPath: string, targetPath: string
     try {
       if (fs.lstatSync(cursor).isSymbolicLink()) throw unsafeFs(`${label} must not traverse a symbolic link`, { label, symlink_path: cursor });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOTDIR') throw unsafeFs(`${label} passes through something that is not a directory`, { label, path: cursor });
+      if (code !== 'ENOENT') throw error;
     }
   }
   return path.join(root, relative);

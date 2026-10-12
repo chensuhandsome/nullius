@@ -137,6 +137,12 @@ export function describeExternalApiRequest(params: { namespace: string; operatio
   };
 }
 
+/** The system error code of a file-system failure, as its own field. */
+function errnoOf(error: unknown): { errno?: string } {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return typeof code === 'string' ? { errno: code } : {};
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -210,12 +216,15 @@ async function performCachedCall<T>(
     try {
       return externalApiCacheEntryPath({ namespace, operation, request_hash: requestHash });
     } catch (err) {
+      // A refusal keeps its own code; a file-system failure is the environment's.
+      if (err instanceof McpError) throw err;
       throw unsafeFs('Failed to resolve external API cache path (fail-fast)', {
         output_dir: output.relative,
         namespace,
         operation,
         request_hash: requestHash,
         error: err instanceof Error ? err.message : String(err),
+        ...errnoOf(err),
         next_actions: [
           ...(params.tool ? [{ tool: params.tool.name, args: params.tool.args, reason: 'Retry after fixing cache directory permissions/disk space (fail-fast).' }] : []),
         ],
@@ -232,7 +241,7 @@ async function performCachedCall<T>(
     request_hash: requestHash,
     cached_response_uri: cachedResponseUri,
     cache_path: cachePath,
-    ...(error === undefined ? {} : { error: error instanceof Error ? error.message : String(error) }),
+    ...(error === undefined ? {} : { error: error instanceof Error ? error.message : String(error), ...errnoOf(error) }),
     next_actions: retryAfterRemoving,
   });
 
@@ -320,6 +329,7 @@ async function performCachedCall<T>(
         cached_response_uri: cachedResponseUri,
         cache_path: cachePath,
         error: err instanceof Error ? err.message : String(err),
+        ...errnoOf(err),
         next_actions: [
           ...(params.tool ? [{ tool: params.tool.name, args: params.tool.args, reason: 'Retry after resolving cache directory IO failures (fail-fast).' }] : []),
         ],

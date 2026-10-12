@@ -24,6 +24,8 @@ const closeCount = vi.hoisted(() => ({ calls: 0 }));
 const inodeFake = vi.hoisted(() => ({ armed: false }));
 // Make the first lstatSync after a successful unlink fail.
 const lstatAfterUnlink = vi.hoisted(() => ({ armed: false, pending: false }));
+// Make the next lstatSync of a staging path fail.
+const lstatStagingFault = vi.hoisted(() => ({ armed: false }));
 vi.mock('fs', async importOriginal => {
   const actual = await importOriginal<typeof import('fs')>();
   const closeSync = (fd: number): void => {
@@ -48,6 +50,10 @@ vi.mock('fs', async importOriginal => {
     if (lstatAfterUnlink.pending) {
       lstatAfterUnlink.pending = false;
       throw Object.assign(new Error('simulated lstat failure'), { code: 'EIO' });
+    }
+    if (lstatStagingFault.armed && String(target).endsWith('.tmp')) {
+      lstatStagingFault.armed = false;
+      throw Object.assign(new Error('simulated staging lookup failure'), { code: 'EIO' });
     }
     const stat = actual.lstatSync(target, options);
     return inodeFake.armed && String(target).endsWith('.tmp') ? withInode(stat, 2n ** 53n + 1n, Boolean(options?.bigint)) : stat;
@@ -109,6 +115,7 @@ describe('output staging files are created exclusively', () => {
     inodeFake.armed = false;
     lstatAfterUnlink.armed = false;
     lstatAfterUnlink.pending = false;
+    lstatStagingFault.armed = false;
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-staging-')));
     const projectRoot = makeProjectRoot(tmpDir);
     alias = path.join(tmpDir, 'alias');
@@ -321,6 +328,20 @@ describe('output staging files are created exclusively', () => {
       const named = [...(error?.data?.files_left ?? []), ...(error?.data?.staging_left ?? [])];
       expect(named.length).toBeGreaterThan(0);
       for (const rel of named) expect(fs.existsSync(path.join(out.projectRoot, rel)), rel).toBe(true);
+    });
+  });
+
+  it('reports a failed check of a staged file before publishing as an environment failure, and removes it', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('check-failed');
+      const batch = new OutputBatch(out);
+      batch.json('a.json', { x: 1 });
+      lstatStagingFault.armed = true;
+      const error = await batch.publish().then(() => null, (e: unknown) => e as Error & { code?: string; data?: Record<string, unknown> });
+      expect(error).toMatchObject({ code: 'UNSAFE_FS', message: 'checking a staging file failed: simulated staging lookup failure' });
+      expect(error?.data).toMatchObject({ errno: 'EIO' });
+      expect(error?.data).not.toHaveProperty('staging_left');
+      expect(fs.readdirSync(out.dir)).toEqual([]);
     });
   });
 

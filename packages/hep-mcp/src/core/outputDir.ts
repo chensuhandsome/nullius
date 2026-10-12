@@ -322,7 +322,7 @@ function writeFailure(out: OutputDir, step: string, file: string, error: unknown
   const errno = (error as NodeJS.ErrnoException | null)?.code;
   return unsafeFs(`${step} failed: ${error instanceof Error ? error.message : String(error)}`, {
     project_root: out.projectRoot,
-    path: projectRelative(out, file),
+    path: projectRelative(out, file) || '.',
     ...(typeof errno === 'string' ? { errno } : {}),
   });
 }
@@ -592,7 +592,13 @@ export class OutputBatch {
       for (const file of this.staged) {
         outputFilePath(this.out, file.name);
         if (lstatOrNull(file.target) !== null) throw existingOutputError(this.out, file.name);
-        if (!isSameFile(file.temp, file.identity)) {
+        let stillStaged: boolean;
+        try {
+          stillStaged = isSameFile(file.temp, file.identity);
+        } catch (error) {
+          throw writeFailure(this.out, 'checking a staging file', file.temp, error);
+        }
+        if (!stillStaged) {
           throw unsafeFs('staged output file was replaced; refusing to publish it', {
             project_root: this.out.projectRoot,
             path: file.temp,

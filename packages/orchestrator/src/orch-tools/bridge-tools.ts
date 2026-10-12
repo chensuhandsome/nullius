@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { invalidParams } from '@nullius/shared';
+import { invalidParams, McpError, unsafeFs } from '@nullius/shared';
 import {
   executeComputationManifest,
   planComputationFromRunDir,
@@ -28,7 +28,7 @@ import type { DelegatedComputationFollowupTask } from '../computation/delegated-
 import type {
   FeedbackFollowupLaunchOutcome,
 } from '../computation/feedback-followup-progression.js';
-import { resolveProjectContainedPath, resolveUnderRoot } from '../computation/path-safety.js';
+import { assertNoSymlinkComponents, resolveProjectContainedPath, resolveUnderRoot } from '../computation/path-safety.js';
 import { utcNowIso } from '../util.js';
 import { resolveProjectRoot } from './common.js';
 
@@ -48,9 +48,40 @@ function resolvePathWithinParent(parentDir: string, candidatePath: string, field
  * admitted like every other front door's (tilde expansion, canonical form,
  * outside any nullius checkout); the run directory must lie within it, by the
  * rule `nullius run --run-dir` applies: an alias above the root is accepted,
- * a symbolic link below it is refused. Everything the tool writes, reads or
- * executes then derives from the admitted run directory.
+ * a symbolic link below it is refused, and so is one at an entry of the run
+ * directory these tools use. Everything the tool writes, reads or executes
+ * then derives from the admitted run directory.
  */
+// The entries of a run directory these tools read and write. None may be a
+// symbolic link, nor may any entry directly inside artifacts/ or attempts/: a
+// link there would carry a staged artifact, a computation result or an attempt
+// archive outside the run directory. (The computation workspace's own paths
+// are checked when its manifest is materialized and prepared.)
+const RUN_DIRECTORY_ENTRIES = ['artifacts', 'attempts', 'computation', 'run_origin.json'];
+const RUN_DIRECTORY_LISTED = ['artifacts', 'attempts'];
+
+function assertRunDirectoryEntriesAreReal(runDir: string): void {
+  for (const entry of RUN_DIRECTORY_ENTRIES) {
+    assertNoSymlinkComponents(runDir, path.join(runDir, entry), `run_dir/${entry}`, { allowMissingLeaf: true });
+  }
+  for (const dir of RUN_DIRECTORY_LISTED) {
+    let names: string[];
+    try {
+      names = fs.readdirSync(path.join(runDir, dir));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
+      throw error;
+    }
+    for (const name of names) {
+      const entry = path.join(runDir, dir, name);
+      if (fs.lstatSync(entry).isSymbolicLink()) {
+        throw unsafeFs(`run_dir/${dir}/${name} must not be a symbolic link`, { run_dir: runDir, symlink_path: entry });
+      }
+    }
+  }
+}
+
 function admitProjectRun(params: { project_root: string; run_dir: string }): { projectRoot: string; runDir: string } {
   const projectRoot = resolveProjectRoot(params.project_root);
   if (!path.isAbsolute(params.run_dir)) {
@@ -62,7 +93,9 @@ function admitProjectRun(params: { project_root: string; run_dir: string }): { p
   if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) {
     throw invalidParams('project_root must name an existing directory', { project_root: projectRoot });
   }
-  return { projectRoot, runDir: resolveProjectContainedPath(projectRoot, params.run_dir, 'run_dir') };
+  const runDir = resolveProjectContainedPath(projectRoot, params.run_dir, 'run_dir');
+  assertRunDirectoryEntriesAreReal(runDir);
+  return { projectRoot, runDir };
 }
 
 export async function handleOrchRunStageIdea(params: {
@@ -165,7 +198,9 @@ function loadComputationResultFromRunDir(params: {
     }
     return computationResult;
   } catch (error) {
-    if (error instanceof Error && 'code' in (error as unknown as Record<string, unknown>)) {
+    // A refusal keeps its own code; a read or parse failure (a missing or
+    // unreadable file is a system error with a code too) is reported here.
+    if (error instanceof McpError) {
       throw error;
     }
     throw invalidParams('Failed to load computation_result_v1 from run_dir', {

@@ -456,7 +456,8 @@ describe('output files are checked again at write time and streamed outputs fail
         restore();
       }
       expect(error).toMatchObject({ code: 'UNSAFE_FS', message: 'flushing a directory failed: simulated directory flush failure' });
-      expect(error?.data).toMatchObject({ path: '' });
+      // The failing flush is the project root's, named '.'.
+      expect(error?.data).toMatchObject({ path: '.' });
       expect(fs.readdirSync(out.dir)).toEqual([]);
       // Flushed once by publication and once more after the rollback removed a.json.
       expect(fsyncs.filter(dir => dir === out.dir)).toHaveLength(2);
@@ -785,6 +786,7 @@ describe('identifier resolution does not turn a refused write into a per-identif
       const error = errorOf(await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids2', identifiers: ['123'] }));
       expect(error.code).toBe('UNSAFE_FS');
       expect(error.message).toMatch(/External API cache write failed/);
+      expect(error.data).toMatchObject({ errno: 'EACCES' });
     } finally {
       fs.chmodSync(shardDir, 0o755);
     }
@@ -1016,7 +1018,9 @@ describe('round-5 argument, name and response checks', () => {
   it('a search export refuses more records than the reported total', async () => {
     vi.mocked(api.search).mockResolvedValueOnce({ total: 1, papers: [VALID_PAPER, { ...VALID_PAPER, recid: '2' }], has_more: false } as any);
     const result = await handleToolCall('hep_inspire_search_export', { project_root: alias, output_dir: 'over', query: 't:x' });
-    expect(errorOf(result).message).toMatch(/returned 2 records but reported a total of 1/);
+    const error = errorOf(result);
+    expect(error).toMatchObject({ code: 'UPSTREAM_ERROR', data: { invalid_provider_answer: true } });
+    expect(error.message).toMatch(/returned 2 records but reported a total of 1/);
   });
 
   it('inspire_search refuses a file export of more than 10000 records before any provider call', async () => {
@@ -1113,8 +1117,9 @@ describe('round-5 argument, name and response checks', () => {
 
   it('a search export cut inside the last page still reports that more records exist', async () => {
     vi.mocked(api.search).mockResolvedValueOnce({ total: 3, papers: [P('1'), P('2'), P('3')], has_more: false } as any);
-    const { summary, meta } = await exportResult({ output_dir: 'cut-last', max_results: 2 });
+    const { summary, meta, diagnostics } = await exportResult({ output_dir: 'cut-last', max_results: 2 });
     expect(summary).toMatchObject({ total: 3, exported: 2, has_more: true });
+    expect(diagnostics.hits.map(hit => hit.key)).toEqual(['inspire.search_export.max_results']);
     expect(meta.next_url).toBeUndefined();
     expect(summary.warnings).toHaveLength(1);
     expect(summary.warnings[0]).toMatch(/stopped at max_results=2 inside a page/);
@@ -1122,11 +1127,22 @@ describe('round-5 argument, name and response checks', () => {
 
   it('a search export that stops on a page boundary gives the next page as its continuation', async () => {
     vi.mocked(api.search).mockResolvedValueOnce({ total: 4, papers: [P('1'), P('2')], has_more: true, next_url: NEXT } as any);
-    const { summary, meta } = await exportResult({ output_dir: 'edge', max_results: 2 });
+    const { summary, meta, diagnostics } = await exportResult({ output_dir: 'edge', max_results: 2 });
     expect(summary).toMatchObject({ total: 4, exported: 2, has_more: true });
+    expect(diagnostics.hits.map(hit => hit.key)).toEqual(['inspire.search_export.max_results']);
     expect(meta.next_url).toBe(NEXT);
     expect(summary.warnings).toHaveLength(1);
     expect(summary.warnings[0]).toMatch(/stopped at max_results=2 \(total=4, exported=2\); next_url continues it/);
+  });
+
+  it('a search export stopped by max_results where INSPIRE still offers a next page continues it, even if the total says no more', async () => {
+    vi.mocked(api.search).mockResolvedValueOnce({ total: 2, papers: [P('1'), P('2')], has_more: true, next_url: NEXT } as any);
+    const { summary, meta, diagnostics } = await exportResult({ output_dir: 'edge-total', max_results: 2 });
+    expect(summary).toMatchObject({ total: 2, exported: 2, has_more: true });
+    expect(meta.next_url).toBe(NEXT);
+    expect(summary.warnings).toHaveLength(1);
+    expect(summary.warnings[0]).toMatch(/stopped at max_results=2 \(total=2, exported=2\); next_url continues it/);
+    expect(diagnostics.hits.map(hit => hit.key)).toEqual(['inspire.search_export.max_results']);
   });
 
   it('a search export whose pages end before INSPIRE\'s total says so once, and does not advise a rerun', async () => {
@@ -1140,6 +1156,23 @@ describe('round-5 argument, name and response checks', () => {
     expect(summary.warnings).toEqual([
       'INSPIRE reported total=5, but its pages ended after 2 records (its last page said no more follow); rerunning the export will not reach the rest.',
     ]);
+  });
+
+  it('a search export whose total grew while its pages ended early names the largest total', async () => {
+    vi.mocked(api.search).mockResolvedValueOnce({ total: 3, papers: [P('1')], has_more: true, next_url: NEXT } as any);
+    vi.mocked(api.searchByUrl).mockResolvedValueOnce({ total: 5, papers: [P('2')], has_more: false } as any);
+    const { summary } = await exportResult({ output_dir: 'grow-short' });
+    expect(summary).toMatchObject({ total: 5, exported: 2, has_more: true });
+    expect(summary.warnings).toEqual([
+      'INSPIRE reported total=5, but its pages ended after 2 records (its last page said no more follow); rerunning the export will not reach the rest.',
+    ]);
+  });
+
+  it('a search export cut inside a page names max_results as the cause, even if the pages would end before the total', async () => {
+    vi.mocked(api.search).mockResolvedValueOnce({ total: 5, papers: [P('1'), P('2'), P('3')], has_more: false } as any);
+    const { summary } = await exportResult({ output_dir: 'cut-short', max_results: 2 });
+    expect(summary.warnings).toHaveLength(1);
+    expect(summary.warnings[0]).toMatch(/stopped at max_results=2 inside a page/);
   });
 
   it('a search export that reaches max_results exactly where INSPIRE\'s pages end blames the pages, not max_results', async () => {
@@ -1170,7 +1203,9 @@ describe('round-5 argument, name and response checks', () => {
   it('a search export counts records before max_results cuts a page', async () => {
     vi.mocked(api.search).mockResolvedValueOnce({ total: 1, papers: [P('1'), P('2')], has_more: false } as any);
     const result = await handleToolCall('hep_inspire_search_export', { project_root: alias, output_dir: 'hidden', query: 't:x', max_results: 1 });
-    expect(errorOf(result).message).toMatch(/returned 2 records but reported a total of 1/);
+    const error = errorOf(result);
+    expect(error).toMatchObject({ code: 'UPSTREAM_ERROR', data: { invalid_provider_answer: true } });
+    expect(error.message).toMatch(/returned 2 records but reported a total of 1/);
   });
 
   it('the response record keeps INSPIRE\'s raw response, also when it carries no recid', async () => {

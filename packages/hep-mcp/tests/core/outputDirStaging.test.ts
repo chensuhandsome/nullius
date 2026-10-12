@@ -14,7 +14,7 @@ vi.mock('crypto', async importOriginal => {
 // before a given linkSync call fails.
 const closeFault = vi.hoisted(() => ({ armed: false }));
 const fstatFault = vi.hoisted(() => ({ armed: false }));
-const linkFault = vi.hoisted(() => ({ failOnCall: 0, calls: 0, before: (() => {}) as () => void }));
+const linkFault = vi.hoisted(() => ({ failOnCall: 0, calls: 0, code: 'EIO', before: (() => {}) as () => void }));
 const unlinkFault = vi.hoisted(() => ({ failNext: 0 }));
 const writeFault = vi.hoisted(() => ({ armed: false }));
 const fsyncFault = vi.hoisted(() => ({ armed: false }));
@@ -69,7 +69,7 @@ vi.mock('fs', async importOriginal => {
     linkFault.calls += 1;
     if (linkFault.calls === linkFault.failOnCall) {
       linkFault.before();
-      throw Object.assign(new Error('simulated link failure'), { code: 'EIO' });
+      throw Object.assign(new Error('simulated link failure'), { code: linkFault.code });
     }
     actual.linkSync(existing, target);
   };
@@ -108,6 +108,7 @@ describe('output staging files are created exclusively', () => {
     fstatFault.armed = false;
     linkFault.failOnCall = 0;
     linkFault.calls = 0;
+    linkFault.code = 'EIO';
     linkFault.before = () => {};
     unlinkFault.failNext = 0;
     writeFault.armed = false;
@@ -150,6 +151,20 @@ describe('output staging files are created exclusively', () => {
     });
   });
 
+  it('refuses an output directory on a file system without hard links, naming the file and the system code', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('no-links');
+      const batch = new OutputBatch(out);
+      batch.json('a.json', { x: 1 });
+      linkFault.failOnCall = 1;
+      linkFault.code = 'ENOTSUP';
+      const error = await batch.publish().then(() => null, (e: unknown) => e as Error & { code?: string; data?: Record<string, unknown> });
+      expect(error).toMatchObject({ code: 'UNSAFE_FS', message: expect.stringMatching(/without hard links/) });
+      expect(error?.data).toMatchObject({ path: 'no-links/a.json', errno: 'ENOTSUP' });
+      expect(fs.readdirSync(out.dir)).toEqual([]);
+    });
+  });
+
   it('names a staging file that was created but could not be identified', async () => {
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('unidentified');
@@ -159,6 +174,7 @@ describe('output staging files are created exclusively', () => {
       expect(thrown?.message).toMatch(/could not be identified and was left in place/);
       expect(thrown?.code).toBe('UNSAFE_FS');
       expect(thrown?.data?.staging_path).toBe(`unidentified/.data.json.${process.pid}.00000000-0000-4000-8000-000000000000.tmp`);
+      expect(thrown?.data).toMatchObject({ errno: 'EIO' });
       expect(fs.readdirSync(out.dir).filter(name => name.endsWith('.tmp'))).toHaveLength(1);
     });
   });

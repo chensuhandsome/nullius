@@ -57,9 +57,11 @@ version is the lockstep number below.
 - **hep-mcp reports failures that are not the caller's under their own codes.**
   A file-system failure while writing outputs or using the INSPIRE response
   cache (a full or read-only disk, a name too long, an unusable cache entry) is
-  `UNSAFE_FS`; an INSPIRE answer that cannot be used (a malformed page or record,
-  inconsistent pagination) is `UPSTREAM_ERROR`, marked `invalid_provider_answer`,
-  and still ends the whole call instead of being recorded for one identifier. A
+  `UNSAFE_FS`; an INSPIRE answer that fails the checks of the search export or
+  identifier resolution (a malformed page or record as the INSPIRE client returns
+  it, a malformed recid, inconsistent pagination) is `UPSTREAM_ERROR`, marked
+  `invalid_provider_answer`, and still ends the whole call instead of being
+  recorded for one identifier. A
   search export that does not export every reported record gives one warning for
   the cause: `max_results` stopped it, or INSPIRE's pages ended before its total.
 

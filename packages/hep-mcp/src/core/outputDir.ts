@@ -308,6 +308,7 @@ function unidentifiedStagingError(out: OutputDir, temp: string, error: unknown):
     project_root: out.projectRoot,
     staging_path: projectRelative(out, temp),
     error: error instanceof Error ? error.message : String(error),
+    ...errnoOf(error),
   });
 }
 
@@ -319,12 +320,17 @@ function unidentifiedStagingError(out: OutputDir, temp: string, error: unknown):
  */
 function writeFailure(out: OutputDir, step: string, file: string, error: unknown): unknown {
   if (error instanceof McpError) return error;
-  const errno = (error as NodeJS.ErrnoException | null)?.code;
   return unsafeFs(`${step} failed: ${error instanceof Error ? error.message : String(error)}`, {
     project_root: out.projectRoot,
     path: projectRelative(out, file) || '.',
-    ...(typeof errno === 'string' ? { errno } : {}),
+    ...errnoOf(error),
   });
+}
+
+/** The system error code of a file-system failure, as its own field. */
+function errnoOf(error: unknown): { errno?: string } {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return typeof code === 'string' ? { errno: code } : {};
 }
 
 function existingOutputError(out: OutputDir, name: string): Error {
@@ -613,7 +619,9 @@ export class OutputBatch {
             throw unsafeFs('output_dir is on a file system without hard links, which publishing outputs without replacing files needs', {
               project_root: this.out.projectRoot,
               output_dir: this.out.relative,
+              path: projectRelative(this.out, file.target),
               error: (error as Error).message,
+              ...errnoOf(error),
             });
           }
           throw writeFailure(this.out, 'publishing an output file', file.target, error);

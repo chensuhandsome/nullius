@@ -23,8 +23,8 @@ function nowIso(): string {
 }
 
 /**
- * A provider answer that cannot be used: not in the provider's own format,
- * or contradicting itself. It is a provider failure (UPSTREAM_ERROR), not the
+ * A provider answer, as its client returns it, that cannot be used: not in
+ * the expected form, or contradicting itself. It is a provider failure (UPSTREAM_ERROR), not the
  * caller's, but it aborts the whole call instead of being recorded against
  * one item, since data that cannot be read cannot be attributed. Callers that
  * report provider failures per item recognize it by the

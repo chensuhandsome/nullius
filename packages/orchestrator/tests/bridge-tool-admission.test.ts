@@ -505,4 +505,3 @@ describe('a method is written only into the run directory', () => {
     expect(fs.readdirSync(outside)).toEqual([]);
   });
 });
-

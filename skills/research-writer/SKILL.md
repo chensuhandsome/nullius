@@ -21,7 +21,7 @@ Default paper style:
 
 - **Scaffold a new paper** from a research-team project → `research_writer_scaffold.sh` (Quick start below).
 - **Draft/revise section prose** (writer → auditor, evidence-gated) → `research_writer_draft_sections.sh` (opt-in).
-- **Ground every claim in ingested sources** (when hep-mcp is available) → the evidence lookup workflow.
+- **Ground every claim in the cited sources** (read through hep-mcp when available) → the evidence lookup workflow.
 - **Publish an externally produced `paper/`** (validate + hygiene + optional compile) → `research_writer_consume_paper_manifest.sh`.
 - **Check a draft before delivery** → the deterministic hygiene tools (math, cross-refs/citations, evidence gate, result-traceability, arXiv packaging).
 - **Tracked-change revision / response-to-referee** on a finished LaTeX manuscript → the sibling `paper-reviser` skill (this skill scaffolds + checks; it does not own the revise/resubmit cycle).

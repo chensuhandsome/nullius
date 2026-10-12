@@ -124,7 +124,7 @@ Agent / operator
   ├──► orch_run_record_verification(...)                → record adjacent snapshots plus checker self-reported matching observations
   ├──► orch_run_request_final_conclusions(...)          → return A5 unavailable while dependency closure is incomplete
   ├──► orch_run_status(project_root)                    → lifecycle snapshot
-  ├──► hep_project_* / hep_inspire_* / inspire_* ...   → strategy/domain work (file outputs into an output_dir inside the run directory)
+  ├──► hep_inspire_* / inspire_* / arxiv_* ...         → strategy/domain work (file outputs into an output_dir inside the run directory)
   ├──► orch_run_approvals_list(project_root, run_id)    → inspect pending gates
   ├──► orch_run_approve(...) or orch_run_reject(...)    → resolve approval
   ├──► orch_run_execute_agent(...)                      → bounded orchestrator runtime

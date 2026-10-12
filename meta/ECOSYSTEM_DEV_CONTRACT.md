@@ -146,7 +146,7 @@ pnpm --filter @nullius/orchestrator test -- tests/nullius-cli.test.ts
 ```json
 {
   "uri": "rep://runs/{run_id}/artifact/{artifact_path}",
-  "kind": "evidence_catalog | section_draft | token_budget | ...",
+  "kind": "section_draft | token_budget | ...",
   "schema_version": 1,
   "sha256": "hex string",
   "size_bytes": 12345,

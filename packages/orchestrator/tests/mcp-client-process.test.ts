@@ -49,7 +49,9 @@ function processAlive(pid: number): boolean {
 // process that led the group has been reaped, and only descendants, which the
 // client cannot observe, could still keep the number from being reissued. Each
 // late signal is recorded and delivered to `standIn`, an unrelated group
-// leader, as it would be if that leader had been given the number.
+// leader, as it would be if that leader had been given the number. A reissued
+// pid could hide a late signal, but reissuing takes the kernel a full cycle of
+// its pid space, far longer than these tests run.
 function redirectSignalsAfterReap(groupNumber: number, standIn: ChildProcess): string[] {
   const late: string[] = [];
   vi.spyOn(process, 'kill').mockImplementation((target, signal) => {
@@ -418,6 +420,23 @@ describe('McpClient subprocess containment', () => {
     await expect(client.close()).resolves.toBeUndefined();
   });
 
+  it('rejects start instead of failing the host when the anchor dies before reading its environment', async () => {
+    if (process.platform === 'win32') return;
+    const tmpDir = makeTmpDir();
+    tmpDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, 'server.mjs');
+    writeServer(scriptPath, INITIALIZE_REPLY);
+    const client = new McpClient({ shutdownGraceMs: 20, killGraceMs: 20 });
+    // Larger than a pipe buffer, so most of the line is still queued when the
+    // anchor dies and the rest of the write fails with EPIPE.
+    const starting = client.start(process.execPath, [scriptPath], {
+      configEnv: { LARGE_SETTING: 'x'.repeat(1 << 20) },
+      cwd: tmpDir,
+    });
+    realKill(serverProcess(client).pid!, 'SIGKILL');
+    await expect(starting).rejects.toThrow('MCP process exited');
+  });
+
   it('closes cleanly when the server has exited but nothing is reaped yet as its grace period ends', async () => {
     if (process.platform === 'win32') return;
     const tmpDir = makeTmpDir();
@@ -658,7 +677,8 @@ describe('McpClient subprocess containment', () => {
       }
       if (msg.method === 'test/exit') process.exit(0);
     `);
-    const client = new McpClient({ shutdownGraceMs: 20, killGraceMs: 50, maxReconnects: 0 });
+    // A wide grace gives the descendant time to record the SIGTERM before the SIGKILL.
+    const client = new McpClient({ shutdownGraceMs: 20, killGraceMs: 1_000, maxReconnects: 0 });
     let descendantPid: number | undefined;
     try {
       await client.start(process.execPath, [scriptPath], {

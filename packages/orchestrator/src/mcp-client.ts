@@ -270,9 +270,12 @@ function watchServerExit(proc: ChildProcess, anchored: boolean): Promise<ServerE
     proc.once('exit', (code, signal) => resolve({ code, signal }));
     const status = proc.stdio[3];
     if (anchored && status) {
-      readline.createInterface({ input: status as NodeJS.ReadableStream }).once('line', line => {
-        resolve(parseServerExit(line));
-      });
+      // A broken control channel (EPIPE when the anchor dies before reading
+      // the environment) carries nothing beyond the anchor's own exit.
+      status.on('error', () => {});
+      readline.createInterface({ input: status as NodeJS.ReadableStream })
+        .on('error', () => {})
+        .once('line', line => resolve(parseServerExit(line)));
     }
   });
 }
@@ -563,9 +566,10 @@ export class McpClient {
   // while the anchor is unreaped. Node sets exitCode/signalCode in the exit
   // callback that libuv runs for each child it reaped, but libuv reaps every
   // exited child before running any of their callbacks, so inside that pass a
-  // reaped child can still show unset fields. Callers signal only from a fresh
-  // timer or immediate callback, where every reaped child has had its
-  // callback, so unset fields mean the anchor is unreaped. A member running
+  // reaped child can still show unset fields. libuv runs the whole pass within
+  // its poll phase, so callers signal only from a fresh timer or immediate
+  // callback, where every reaped child has had its callback and unset fields
+  // mean the anchor is unreaped. A member running
   // under credentials this process may not signal is out of reach and cannot
   // be detected either: kill(2) succeeds for a group when any member accepts.
   private signalProcessTree(proc: ChildProcess, signal: NodeJS.Signals): boolean {

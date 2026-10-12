@@ -564,6 +564,18 @@ def sanitize_child_env(environ: dict, forbidden_roots: "list[Path]",
     return child_env, dropped
 
 
+# On a timeout the entry's process group gets SIGTERM, then SIGKILL after this.
+ENTRY_STOP_GRACE_SECONDS = 2.0
+
+
+def _signal_group(pgid: int, signum: int) -> bool:
+    try:
+        os.killpg(pgid, signum)
+    except (ProcessLookupError, PermissionError):
+        return False  # macOS: EPERM when only the zombie leader is left
+    return True
+
+
 def run_entry(entry_command: str, run_root: Path, timeout_seconds: float,
               stdout_path: Path, stderr_path: Path, env: "dict | None" = None) -> dict:
     started = time.time()
@@ -578,12 +590,13 @@ def run_entry(entry_command: str, run_root: Path, timeout_seconds: float,
             exit_code = None
             # Unreaped, so the pid (start_new_session: also the group number)
             # still names the shell's group, even when the shell has exited and
-            # only descendants remain. getpgid would fail for that zombie on
-            # macOS; killpg answers EPERM there when nothing live is left.
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
+            # only descendants remain (getpgid would fail for that zombie on
+            # macOS). Signal the group before the reap.
+            if _signal_group(proc.pid, signal.SIGTERM):
+                deadline = time.monotonic() + ENTRY_STOP_GRACE_SECONDS
+                while _signal_group(proc.pid, 0) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                _signal_group(proc.pid, signal.SIGKILL)
             proc.wait()
     return {
         "command": entry_command,

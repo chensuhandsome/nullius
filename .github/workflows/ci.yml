@@ -207,7 +207,7 @@ jobs:
         run: |
           python -m pytest \
             skills/review-swarm/tests/test_runner_group_signals.py \
-            skills/research-harness/tests/test_independent_reproduction_check.py::test_timeout_after_the_shell_exited_still_kills_its_descendants \
+            skills/research-harness/tests/test_independent_reproduction_check.py::test_timeout_after_the_shell_exited_still_stops_its_descendants \
             -q
 
       - name: Python tests (ported gate and fixer characterization locks)

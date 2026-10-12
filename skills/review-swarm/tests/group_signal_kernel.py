@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import errno
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -113,6 +114,22 @@ def emulated_getpgid(real_getpgid):
     return getpgid
 
 
+def term_self_after_spawn(marker: str, pid_file: str) -> None:
+    """After spawning a command that mentions marker, record its pid and send
+    SIGTERM to this process, so the signal arrives between Popen() and
+    whatever the caller does next with the new process."""
+    real_init = subprocess.Popen.__init__
+
+    def __init__(self, args, *rest, **options):
+        real_init(self, args, *rest, **options)
+        if marker in " ".join(map(str, args if isinstance(args, (list, tuple)) else [args])):
+            with open(pid_file, "a") as stream:
+                stream.write(f"{self.pid}\n")
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    subprocess.Popen.__init__ = __init__
+
+
 SITECUSTOMIZE = '''\
 import importlib.util, os
 _spec = importlib.util.spec_from_file_location("group_signal_kernel", {path!r})
@@ -120,6 +137,9 @@ _module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_module)
 os.killpg = _module.emulated_killpg(os.killpg, int(os.environ["GROUP_SIGNAL_STANDIN"]),
                                     os.environ["GROUP_SIGNAL_LOG"])
+if os.environ.get("GROUP_SIGNAL_TERM_AFTER_SPAWN"):
+    _module.term_self_after_spawn(os.environ["GROUP_SIGNAL_TERM_AFTER_SPAWN"],
+                                  os.environ["GROUP_SIGNAL_SPAWN_PIDS"])
 '''
 
 

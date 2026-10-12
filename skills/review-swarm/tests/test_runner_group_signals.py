@@ -46,6 +46,7 @@ kernel = _load("group_signal_kernel", Path(__file__).with_name("group_signal_ker
 FAKE_CLI = r'''
 import os, signal, subprocess, sys, time
 mode, workdir = sys.argv[1], sys.argv[2]
+open(os.path.join(workdir, "cli.started"), "w").close()
 DESCENDANT = """
 import os, signal, sys, time
 log, behaviour = sys.argv[1], sys.argv[2]
@@ -160,7 +161,8 @@ def _budget_run(tmp_path: Path, provider: str, mode: str, standin: Standin, *,
         if proc.poll() is None:
             proc.kill()
             proc.wait()
-    return proc.returncode, stderr + (tmp_path / "cli.err").read_text(), log
+    cli_err = tmp_path / "cli.err"
+    return proc.returncode, stderr + (cli_err.read_text() if cli_err.exists() else ""), log
 
 
 @pytest.mark.parametrize("provider", sorted(PROCESS_BUDGETS))
@@ -185,8 +187,9 @@ def test_budget_cancel_stops_group_before_reaping(tmp_path, standin, provider):
 
 @pytest.mark.parametrize("provider", sorted(PROCESS_BUDGETS))
 def test_budget_deadline_stops_group_before_reaping(tmp_path, standin, provider):
-    # No descendants here, so nothing depends on how fast the fixture starts.
-    code, stderr, log = _budget_run(tmp_path, provider, "sleeps-alone", standin, timeout_secs=2)
+    # No descendants here, so only the CLI's own start must beat the deadline.
+    code, stderr, log = _budget_run(tmp_path, provider, "sleeps-alone", standin, timeout_secs=5)
+    assert (tmp_path / "work/cli.started").exists(), "deadline passed before the CLI started: " + stderr
     assert log.read_text() == "", "a group was signalled after its leader was reaped"
     assert standin.alive()
     assert code == 124, stderr
@@ -233,14 +236,36 @@ def test_gemini_supervisor_kills_group_before_reaping(tmp_path, standin, mode):
     assert standin.alive()
     assert proc.returncode == 0, (tmp_path / "supervisor.err").read_text()
     if mode == "descendants":
-        pids = _descendant_pids(workdir)
-        try:
-            for behaviour, pid in pids.items():
-                assert kernel.wait_gone(pid), f"descendant that {behaviour} on SIGTERM survived"
-        finally:
-            for pid in pids.values():
-                if not kernel.gone(pid):
-                    os.kill(pid, signal.SIGKILL)
+        _assert_descendants_stopped(workdir)
+
+
+def test_gemini_supervisor_cleanup_survives_repeated_signals(tmp_path, standin):
+    # In production the supervisor can get SIGTERM twice: from the runner
+    # group's stop and from the shell's cleanup. Later signals must not cut
+    # the group's stop short.
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    fake = tmp_path / "fake_cli.py"
+    fake.write_text(FAKE_CLI)
+    env, log = _child_env(tmp_path, standin)
+    with (tmp_path / "supervisor.out").open("wb") as out, (tmp_path / "supervisor.err").open("wb") as err:
+        proc = subprocess.Popen([sys.executable, "-c", _gemini_supervisor_source(),
+                                 sys.executable, str(fake), "sleeps", str(workdir)],
+                                env=env, stdout=out, stderr=err)
+    try:
+        _wait_file(workdir / "descendants.ready")
+        for _ in range(60):
+            proc.send_signal(signal.SIGTERM)
+            time.sleep(0.01)
+        proc.wait(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    assert log.read_text() == "", "a group was signalled after its leader was reaped"
+    assert standin.alive()
+    assert proc.returncode == 128 + signal.SIGTERM, (tmp_path / "supervisor.err").read_text()
+    _assert_descendants_stopped(workdir)
 
 
 # --- run_multi_task.py --------------------------------------------------------
@@ -295,6 +320,37 @@ def test_multi_task_stop_signals_only_unreaped_runners(tmp_path, standin, parall
                 os.kill(pid, signal.SIGKILL)
 
 
+def test_multi_task_stop_between_spawn_and_registration(tmp_path, standin):
+    # Sequential mode spawns on the main thread, where the stop handler runs:
+    # a stop arriving right after Popen() must still reach the new runner.
+    runner = tmp_path / "run_opencode.sh"
+    runner.write_text(STUB_RUNNER)
+    runner.chmod(0o755)
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("synthetic test\n")
+    ready = tmp_path / "ready"
+    ready.mkdir()
+    spawned = tmp_path / "spawned.pids"
+    env, log = _child_env(tmp_path, standin)
+    env.update(REVIEW_SWARM_NO_AUTO_CONFIG="1", STUB_READY_DIR=str(ready),
+               GROUP_SIGNAL_TERM_AFTER_SPAWN=str(runner), GROUP_SIGNAL_SPAWN_PIDS=str(spawned))
+    proc = subprocess.run([sys.executable, str(RUN_MULTI_TASK), "--out-dir", str(tmp_path / "out"),
+                           "--opencode-runner", str(runner), "--system", str(prompt), "--prompt", str(prompt),
+                           "--models", "some-provider/model-a", "--no-parallel", "--timeout-secs", "120"],
+                          env=env, capture_output=True, text=True, timeout=60)
+    runners = [int(line) for line in spawned.read_text().split()]
+    try:
+        assert len(runners) == 1
+        assert log.read_text() == "", "a group was signalled after its leader was reaped"
+        assert standin.alive()
+        assert proc.returncode == 128 + signal.SIGTERM, proc.stderr
+        assert kernel.wait_gone(runners[0]), "the runner spawned just before the stop survived"
+    finally:
+        for pid in runners:
+            if not kernel.gone(pid):
+                os.kill(pid, signal.SIGKILL)
+
+
 def test_multi_task_signal_group_treats_eperm_as_nothing_left(monkeypatch):
     monkeypatch.syspath_prepend(str(RUN_MULTI_TASK.parent))
     module = _load("run_multi_task_group_signals", RUN_MULTI_TASK)
@@ -329,3 +385,32 @@ def test_smoke_timeout_kill_treats_eperm_as_nothing_left(monkeypatch):
     monkeypatch.setattr(subprocess.Popen, "communicate", communicate)
     result = module._run_with_timeout([sys.executable, "-c", "pass"], 60)
     assert result.timed_out is True
+
+
+def test_smoke_timeout_sends_sigterm_before_sigkill(tmp_path, standin, monkeypatch):
+    module = _load("smoke_run_multi_task_real_group_stop", SMOKE)
+    monkeypatch.setattr(module, "_STOP_GRACE_SECS", 0.5, raising=False)
+    log = tmp_path / "late-signals.log"
+    log.touch()
+    monkeypatch.setattr(os, "killpg", kernel.emulated_killpg(os.killpg, standin.proc.pid, str(log)))
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    fake = tmp_path / "fake_cli.py"
+    fake.write_text(FAKE_CLI)
+    real_communicate = subprocess.Popen.communicate
+    first = []
+
+    def communicate(self, input=None, timeout=None):
+        # The deadline falls due once the CLI and its descendants are running.
+        if timeout is not None and not first:
+            first.append(True)
+            _wait_file(workdir / "descendants.ready")
+            raise subprocess.TimeoutExpired(self.args, timeout)
+        return real_communicate(self, input, timeout)
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", communicate)
+    result = module._run_with_timeout([sys.executable, str(fake), "sleeps", str(workdir)], 60)
+    assert log.read_text() == "", "a group was signalled after its leader was reaped"
+    assert standin.alive()
+    assert result.timed_out is True
+    _assert_descendants_stopped(workdir)

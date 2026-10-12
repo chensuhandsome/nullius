@@ -8,7 +8,6 @@ with per-backend timeout and structured summary output.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
 import shutil
@@ -20,6 +19,27 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
+
+
+# After a timeout the child (run_multi_task) needs up to 2 s to stop its
+# runners' own process groups on SIGTERM; SIGKILL follows only after this.
+_STOP_GRACE_SECS = 5.0
+
+
+def _signal_group(pgid: int, signum: int) -> bool:
+    try:
+        os.killpg(pgid, signum)
+    except (ProcessLookupError, PermissionError):
+        return False  # macOS: EPERM when only the zombie leader is left
+    return True
+
+
+def _stop_group(pgid: int) -> None:
+    if _signal_group(pgid, signal.SIGTERM):
+        deadline = time.monotonic() + _STOP_GRACE_SECS
+        while _signal_group(pgid, 0) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        _signal_group(pgid, signal.SIGKILL)
 
 
 @dataclass
@@ -50,10 +70,8 @@ def _run_with_timeout(cmd: list[str], timeout_sec: int) -> CmdResult:
             elapsed_sec=time.monotonic() - start,
         )
     except subprocess.TimeoutExpired:
-        # Unreaped, so the pid still names the CLI's group. macOS answers EPERM
-        # when only the zombie CLI is left in it.
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(proc.pid, signal.SIGKILL)
+        # Unreaped, so the pid still names the CLI's group; reap only after.
+        _stop_group(proc.pid)
         stdout, stderr = proc.communicate()
         return CmdResult(
             timed_out=True,

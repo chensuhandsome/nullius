@@ -46,6 +46,10 @@ _TRACE_LOCK = threading.Lock()
 _PROCESS_LOCK = threading.RLock()
 _ACTIVE_PROCESSES: set[subprocess.Popen] = set()
 _STOP_REQUESTED = threading.Event()
+# The main thread is between Popen() and registering the new runner; a stop
+# signal arriving there is deferred until the runner is registered.
+_MAIN_SPAWNING = False
+_DEFERRED_STOP: list[int] = []
 _RE_MODEL_SLUG = re.compile(r"[^A-Za-z0-9._-]+")
 _EXIT_NEEDS_USER_DECISION = 4
 _DEFAULT_TIMEOUT_SECS = 0
@@ -946,6 +950,23 @@ def _signal_group(proc: subprocess.Popen, signum: int) -> bool:
         return True
 
 
+def _stop_runners(signum: int) -> None:
+    """Stop every registered runner's group, then exit with 128 + signum."""
+    _STOP_REQUESTED.set()
+    # Hold the lock throughout: workers leave the registry under it before
+    # reaping, so no process signalled here can be reaped meanwhile.
+    with _PROCESS_LOCK:
+        processes = tuple(_ACTIVE_PROCESSES)
+        for proc in processes:
+            _signal_group(proc, signal.SIGTERM)
+        grace_deadline = time.monotonic() + 2
+        for proc in processes:
+            _child_exited(proc.pid, max(0.0, grace_deadline - time.monotonic()))
+        for proc in processes:
+            _signal_group(proc, signal.SIGKILL)
+    raise SystemExit(128 + signum)
+
+
 def _reap(proc: subprocess.Popen) -> None:
     # Leave the registry first: from then on nothing signals this group.
     with _PROCESS_LOCK:
@@ -998,23 +1019,32 @@ def _stop_and_collect(proc: subprocess.Popen, reader: Optional[_PipeReader]) -> 
             reader.join(max(0.0, deadline - time.monotonic()))
         _signal_group(proc, signal.SIGKILL)
     _reap(proc)
-    if reader is None:
-        return proc.communicate()
+    if reader is None:  # the reader threads could not start; nothing was read
+        return "", ""
     reader.join(None)
     return reader.result()
 
 
 def _run_with_timeout(cmd: list[str], *, timeout_secs: float, context_tokens: Optional[int] = None) -> dict[str, Any]:
+    global _MAIN_SPAWNING
     observation = runtime_capture_observation._prepare(cmd, context_tokens=context_tokens)
+    on_main_thread = threading.current_thread() is threading.main_thread()
     with _PROCESS_LOCK:
         if _STOP_REQUESTED.is_set():
             raise RuntimeError("Review execution interrupted")
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, start_new_session=True,
-        )
-        runtime_capture_observation._bind(observation, proc)
-        _ACTIVE_PROCESSES.add(proc)
+        # Worker threads need no deferral: the handler waits for this lock.
+        _MAIN_SPAWNING = on_main_thread
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, start_new_session=True,
+            )
+            runtime_capture_observation._bind(observation, proc)
+            _ACTIVE_PROCESSES.add(proc)
+        finally:
+            _MAIN_SPAWNING = False
+            if on_main_thread and _DEFERRED_STOP:
+                _stop_runners(_DEFERRED_STOP[0])
     reader = None
     try:
         reader = _PipeReader(proc)
@@ -2569,21 +2599,14 @@ def main() -> int:
     """Own temporary authentication until every worker has stopped."""
     old_handlers: dict[int, Any] = {}
     _STOP_REQUESTED.clear()
+    _DEFERRED_STOP.clear()
 
     def stop(signum: int, _frame: Any) -> None:
-        _STOP_REQUESTED.set()
-        # Hold the lock throughout: workers leave the registry under it before
-        # reaping, so no process signalled here can be reaped meanwhile.
-        with _PROCESS_LOCK:
-            processes = tuple(_ACTIVE_PROCESSES)
-            for proc in processes:
-                _signal_group(proc, signal.SIGTERM)
-            grace_deadline = time.monotonic() + 2
-            for proc in processes:
-                _child_exited(proc.pid, max(0.0, grace_deadline - time.monotonic()))
-            for proc in processes:
-                _signal_group(proc, signal.SIGKILL)
-        raise SystemExit(128 + signum)
+        if _MAIN_SPAWNING:
+            _STOP_REQUESTED.set()
+            _DEFERRED_STOP.append(signum)
+            return
+        _stop_runners(signum)
 
     try:
         if threading.current_thread() is threading.main_thread():

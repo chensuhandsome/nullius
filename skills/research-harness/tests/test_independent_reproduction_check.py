@@ -296,10 +296,29 @@ def _wait_gone(pid: int, timeout: float = 10) -> bool:
     return False
 
 
-def test_timeout_after_the_shell_exited_still_kills_its_descendants(tmp_path, monkeypatch):
+DESCENDANT = """\
+import os, signal, sys, time
+log = sys.argv[1]
+def on_term(signum, frame):
+    with open(log, "a") as stream:
+        stream.write("TERM\\n")
+signal.signal(signal.SIGTERM, on_term)
+with open(log, "a") as stream:
+    stream.write("ready\\n")
+while True:
+    time.sleep(0.05)
+"""
+
+
+def test_timeout_after_the_shell_exited_still_stops_its_descendants(tmp_path, monkeypatch):
     # The deadline falls due after the entry shell exited (an unreaped zombie)
-    # while a background descendant still runs in the shell's group.
+    # while a background descendant, which ignores SIGTERM after recording it,
+    # still runs in the shell's group: it must get SIGTERM, then SIGKILL.
+    monkeypatch.setattr(irc, "ENTRY_STOP_GRACE_SECONDS", 0.5, raising=False)
     pidfile = tmp_path / "descendant.pid"
+    script = tmp_path / "descendant.py"
+    script.write_text(DESCENDANT)
+    log = tmp_path / "descendant.log"
     real_wait = subprocess.Popen.wait
 
     def wait(self, timeout=None):
@@ -322,12 +341,16 @@ def test_timeout_after_the_shell_exited_still_kills_its_descendants(tmp_path, mo
             return real_getpgid(pid)
 
         monkeypatch.setattr(os, "getpgid", getpgid)
-    result = irc.run_entry(f"sleep 30 & echo $! > {shlex.quote(str(pidfile))}", tmp_path, 60,
-                           tmp_path / "entry.out", tmp_path / "entry.err")
+    q = shlex.quote
+    entry = (f"{q(sys.executable)} {q(str(script))} {q(str(log))} & "
+             f"while ! grep -q ready {q(str(log))} 2>/dev/null; do sleep 0.01; done; "
+             f"echo $! > {q(str(pidfile))}")
+    result = irc.run_entry(entry, tmp_path, 60, tmp_path / "entry.out", tmp_path / "entry.err")
     descendant = int(pidfile.read_text())
     try:
         assert result["timed_out"] is True
         assert _wait_gone(descendant), "the entry's descendant survived the timeout"
+        assert "TERM" in log.read_text(), "the descendant got no SIGTERM before SIGKILL"
     finally:
         with contextlib.suppress(ProcessLookupError):
             os.kill(descendant, signal.SIGKILL)

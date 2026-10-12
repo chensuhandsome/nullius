@@ -60,11 +60,6 @@ export const ENFORCED_PACKAGES = {
       // server. Kept as the designated place for semantic-quality evaluation; its other
       // modules must be reached from this entry point.
       { path: 'src/eval/index.ts', reason: 'evaluation substrate run by tests/eval' },
-      // Administrative command-line tools, started by scripts/*.sh from dist/admin/.
-      { path: 'src/admin/cli-import-paper.ts', reason: 'started by scripts/import-paper.sh' },
-      { path: 'src/admin/cli-link-kb-notes.ts', reason: 'started by scripts/link-kb-notes.sh' },
-      { path: 'src/admin/cli-migrate-papers-cache.ts', reason: 'started by scripts/migrate-papers-cache.sh' },
-      { path: 'src/admin/cli-prune-paper-cache.ts', reason: 'started by scripts/prune-paper-cache.sh' },
     ],
   },
 };

@@ -1188,7 +1188,8 @@ def cmd_stow(args) -> int:
             "run-storage: recorded outputs are changed or unavailable (nothing was changed). A changed result "
             "belongs in a new run. `missing` and `store_mismatch` entries have no valid copy here (neither in "
             "place nor in the store, so `materialize` cannot help): put the recorded bytes back in place from "
-            "another copy (another store, a backup) and stow again, or record the result in a new run:",
+            "another copy (another store, a backup) and stow again, or record the result in a new run. A file that "
+            "was only renamed in letter case is restored by renaming it back to the recorded spelling:",
             *[f"  {st:>14}  {r}" for r, st in conflicts]], EXIT_FINDINGS)
     if uncommitted:
         return refuse(args, {"uncommitted_bulk": [{"path": r} for r in uncommitted]}, [
@@ -1421,9 +1422,12 @@ REGENERABLE_DIR_NAMES = frozenset({
 })
 REGENERABLE_FILE_SUFFIXES = (".pyc", ".pyo")
 REGENERABLE_FILE_NAMES = frozenset({".DS_Store"})
-# Machine-local bookkeeping the project template keeps out of git (rewritten by
-# the tool itself; never research content).
-MACHINE_BOOKKEEPING = (".nullius/HARNESS_INVOCATION", ".nullius/ledger.jsonl", ".nullius/backups/")
+# Machine-local bookkeeping that the tool rewrites from scratch (the invocation
+# anchor, on every reconnect). The other ignored `.nullius/` files are not on
+# this list: the event ledger is this checkout's own history, and refresh
+# backups hold the user's customizations of managed files; they are judged like
+# any other ignored file.
+MACHINE_BOOKKEEPING = (".nullius/HARNESS_INVOCATION",)
 
 
 def is_regenerable(rel_posix: str) -> bool:
@@ -1567,8 +1571,18 @@ def unassessed_private_git_state(git_dir: Path, common_dir: Path) -> "list[str]"
                                           for pair in pairs):
             unknown.append("config.worktree (settings beyond sparse checkout, long paths, and the repository's "
                            "own hooks path)")
-    # info/sparse-checkout holds which tracked files are checked out: configuration
-    # only, every tracked byte stays in git, so it never blocks removal.
+    # info/sparse-checkout holds which tracked files are checked out. Only the
+    # documented form (include everything, then exclude named paths) is
+    # understood: it records nothing but files left out of this checkout, all of
+    # them in git. Other patterns (cone mode, the user's own rules) keep the worktree.
+    sparse = git_dir / "info" / "sparse-checkout"
+    if sparse.is_file() and not sparse.is_symlink():
+        try:
+            patterns = sparse.read_bytes().decode("utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            patterns = None
+        if not patterns or patterns[0] != "/*" or not all(line.startswith("!/") for line in patterns[1:]):
+            unknown.append("info/sparse-checkout (patterns other than '/*' followed by '!/' exclusions)")
     return sorted(unknown)
 
 
@@ -1661,6 +1675,20 @@ def worktree_private_refs(path: Path, base: str) -> "list[str]":
     return held
 
 
+def worktree_record_owner(git_dir: Path) -> "Path | None":
+    """The `.git` file a linked worktree's record points back to (its
+    `gitdir` file: an absolute path, or one relative to the record), or None
+    when it cannot be read."""
+    record = git_dir / "gitdir"
+    try:
+        raw = record.read_bytes().decode("utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not raw:
+        return None
+    return Path(os.path.realpath(raw if os.path.isabs(raw) else git_dir / raw))
+
+
 def check_one_worktree(path: Path, base: str, main_root: "Path | None", store: Path) -> dict:
     report: dict = {"worktree": str(path), "reasons": []}
     if not path.is_dir():
@@ -1671,6 +1699,17 @@ def check_one_worktree(path: Path, base: str, main_root: "Path | None", store: P
     report["worktree"] = str(path)
     if not wt.is_linked_worktree:
         report.update(verdict="keep", reasons=["this is the main checkout, not a linked worktree"])
+        return report
+    # A linked worktree's record (its private git directory) names the checkout it belongs to. A copied
+    # checkout, or one whose record a newer worktree has reused, shares that other tree's HEAD and index:
+    # every git answer here would describe the other tree, so nothing further is asked of git.
+    owner = worktree_record_owner(wt.git_dir)
+    if owner != Path(os.path.realpath(path / ".git")):
+        report.update(verdict="keep", record_owner=str(owner) if owner else None, reasons=[
+            f"its .git file names the worktree record {wt.git_dir}, which belongs to "
+            f"{owner.parent if owner else 'no readable checkout'}, not to this one: a copy or an orphan. git commands "
+            "run here read and write that other worktree's HEAD and index; never use `git worktree remove` or "
+            "`git worktree prune` on it"])
         return report
     store_usable = not is_under(store, path)
     if not store_usable:
@@ -2192,15 +2231,18 @@ def main(argv: "list[str] | None" = None) -> int:
         args.project_root = "."
     try:
         return args.func(args)
-    except StorageError as exc:
-        print(f"run-storage: {exc}", file=sys.stderr)
-        return EXIT_ERROR
-    except OSError as exc:
-        print(f"run-storage: {exc}", file=sys.stderr)
-        return EXIT_ERROR
+    except (StorageError, OSError) as exc:
+        return stop_on_error(args, str(exc))
     except (ValueError, RuntimeError, UnicodeError) as exc:  # unusual input: an error, never "findings"
-        print(f"run-storage: cannot process this input ({type(exc).__name__}: {exc})", file=sys.stderr)
-        return EXIT_ERROR
+        return stop_on_error(args, f"cannot process this input ({type(exc).__name__}: {exc})")
+
+
+def stop_on_error(args, message: str) -> int:
+    """An error that stops a command: on stderr and, with --json, as an object."""
+    print(f"run-storage: {message}".encode("utf-8", "backslashreplace").decode("utf-8"), file=sys.stderr)
+    if getattr(args, "json", False):
+        emit({"error": message}, True, [])
+    return EXIT_ERROR
 
 
 if __name__ == "__main__":

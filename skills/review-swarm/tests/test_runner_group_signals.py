@@ -304,7 +304,7 @@ def test_multi_task_signal_group_treats_eperm_as_nothing_left(monkeypatch):
         kernel.wait_zombie(proc.pid)
         with module._PROCESS_LOCK:
             module._ACTIVE_PROCESSES.add(proc)
-        module._signal_group(proc, signal.SIGTERM)
+        assert module._signal_group(proc, signal.SIGTERM) is False
     finally:
         module._ACTIVE_PROCESSES.discard(proc)
         proc.wait()

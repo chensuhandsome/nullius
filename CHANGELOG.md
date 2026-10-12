@@ -9,6 +9,40 @@ version is the lockstep number below.
 
 ## [Unreleased]
 
+### Removed
+- **hep-mcp keeps no runs of its own.** Runs, approvals and lifecycle belong to
+  the orchestrator (`<project_root>/artifacts/runs/<run_id>/`). Removed tools:
+  `hep_run_create`, `hep_run_read_artifact_chunk`, `hep_run_clear_manifest_lock`,
+  `hep_run_stage_content`, `hep_run_build_writing_evidence`,
+  `hep_run_build_measurements`, `hep_run_build_citation_mapping`,
+  `hep_run_ingest_skill_artifacts`, `hep_project_compare_measurements`,
+  `hep_project_query_evidence_semantic`, `hep_render_latex`, `hep_export_project`,
+  `hep_export_paper_scaffold` and `hep_import_paper_bundle`, with the modules only
+  they used, the `hep://runs/...` identifiers, the workflow recipes
+  `derivation_cycle` and `review_cycle`, the `computation_evidence_catalog_item_v1`
+  schema and the `WRITING_PROGRESS_DIR` setting. A `run_id` argument is refused by
+  every hep-mcp tool. Historical hep run directories stay readable in place;
+  `docs/URI_REGISTRY.md` gives the rule for resolving historical `hep://runs/...`
+  references to files.
+
+### Changed
+- **hep-mcp research-output tools take a caller-chosen `output_dir`.**
+  `hep_inspire_search_export`, `hep_inspire_resolve_identifiers`,
+  `hep_import_from_zotero`, `inspire_parse_latex`, `inspire_theoretical_conflicts`
+  and `inspire_search` (export mode, formerly triggered by `run_id`) write into an
+  `output_dir` inside the admitted project root, reached through real directories
+  only and never under `.nullius/`, `team/runs/` or `artifacts/hep-mcp/`, and return
+  project-relative paths. A call never replaces an existing file, and a call that
+  fails removes what it had published; if it cannot, the error names what is left
+  (published files in `files_left` with an "outputs are incomplete" error, staging
+  files in `staging_left` or `staging_path`, unflushed removals in
+  `unflushed_directories`), and only a crash during publication
+  can leave part of a set unreported (later calls naming those files are refused). These tools and the lexical `hep_project_query_evidence` refuse a
+  numeric limit that is not a whole number in range instead of using the default.
+  `hep_project_query_evidence` is lexical only.
+- Oversized hep-mcp tool results are truncated by UTF-8 bytes on a character
+  boundary.
+
 ### Added
 - **Idea-engine: grounding-audit write path and scoped provenance correction**
   (RPC contract 2.1.0). `node.set_grounding_audit` becomes the only sanctioned

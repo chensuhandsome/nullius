@@ -12,6 +12,7 @@ import {
   type RuntimeDiagnosticsSummaryV1,
 } from './operator-read-model-summary.js';
 import { utcNowIso } from './util.js';
+import { escapesBase } from './computation/path-safety.js';
 
 export type {
   RuntimeDiagnosticsActionV1,
@@ -75,8 +76,7 @@ export function writeRuntimeDiagnosticsBridgeArtifact(params: {
   const runtimeDirPath = path.posix.dirname(params.manifestPath);
   const artifactPath = path.posix.join(runtimeDirPath, artifactName);
   const runDir = path.resolve(params.projectRoot, ...runtimeDirPath.split('/'));
-  const relativeRunDir = path.relative(path.resolve(params.projectRoot), runDir);
-  if (relativeRunDir.startsWith('..') || path.isAbsolute(relativeRunDir)) {
+  if (escapesBase(path.relative(path.resolve(params.projectRoot), runDir))) {
     throw new Error('delegated runtime diagnostics path escapes project root');
   }
 

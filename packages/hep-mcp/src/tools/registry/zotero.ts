@@ -30,13 +30,13 @@ const RAW_ZOTERO_TOOL_SPECS: Omit<ToolSpec, 'riskLevel'>[] = ZOTERO_INTEGRATION_
         tier: 'core',
         exposure: 'standard',
         description:
-          'Import Zotero items into a run mapping (Zotero item → identifiers → INSPIRE recid). Requires Zotero Local API; resolves via INSPIRE when needed (network) and writes `zotero_map_v1.json` artifact (Evidence-first).',
+          'Map Zotero items to INSPIRE recids (Zotero item → identifiers → INSPIRE recid), writing `zotero_map_v1.json` + the requests/responses of its INSPIRE lookups into output_dir inside project_root. Requires Zotero Local API; resolves via INSPIRE when needed (network).',
         zodSchema: HepImportFromZoteroToolSchema,
         handler: async (params, ctx) => {
           const raw = ctx.rawArgs ?? {};
           const concurrencyProvided = Object.prototype.hasOwnProperty.call(raw, 'concurrency');
           const result = await hepImportFromZotero({
-            run_id: params.run_id,
+            output_dir: params.output_dir,
             collection_key: params.collection_key,
             item_keys: params.item_keys,
             limit: params.limit,

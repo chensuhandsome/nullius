@@ -206,17 +206,6 @@ describe('Docs tool drift guard', () => {
     }
   });
 
-  it('docs/WRITING_RECIPE_* reference existing tools', async () => {
-    const { getTools } = await import('../../src/tools/index.js');
-    const full = new Set(getTools('full').map(t => t.name));
-
-    for (const p of ['docs/WRITING_RECIPE_DRAFT_PATH.md']) {
-      const md = readText(root, p);
-      const referenced = Array.from(new Set([...extractToolNamesFromHeadings(md), ...extractToolNamesFromToolJsonExamples(md)]));
-      assertAllExist({ referenced, allowed: full, label: p });
-    }
-  });
-
   it('docs/TESTING_GUIDE.md headings/examples reference existing tools', async () => {
     const { getTools } = await import('../../src/tools/index.js');
     const full = new Set(getTools('full').map(t => t.name));
@@ -470,7 +459,7 @@ describe('Docs tool drift guard', () => {
     const root = repoRootFromThisFile();
     const files = [
       'README.md', 'docs/README_zh.md', 'docs/QUICKSTART.md', 'docs/ARCHITECTURE.md',
-      'docs/PROJECT_STATUS.md', 'docs/TESTING_GUIDE.md', 'docs/WRITING_RECIPE_DRAFT_PATH.md',
+      'docs/PROJECT_STATUS.md', 'docs/TESTING_GUIDE.md',
       'packages/hep-mcp/README.md', 'skills/research-writer/SKILL.md', 'skills/research-writer/RUNBOOK.md',
     ];
     for (const file of files) {
@@ -478,11 +467,6 @@ describe('Docs tool drift guard', () => {
         /verifier-enforced rendering|Missing or unauthorized writing citations fail hard at render time|verification_artifact_name.*必填|若引用缺失或未授权，应 fail-fast|verifier 会硬失败|MCP 负责.*硬验证/,
       );
     }
-    const guide = readText(root, 'docs/WRITING_RECIPE_DRAFT_PATH.md');
-    expect(guide).toContain('省略时保持未知');
-    expect(guide).toContain('不证明来源支持正文的论断');
-    expect(guide).toContain('不生成 `rendered_latex_verification.json`');
-    expect(guide).toContain('导出器会拒绝缺失项');
   });
 
 });

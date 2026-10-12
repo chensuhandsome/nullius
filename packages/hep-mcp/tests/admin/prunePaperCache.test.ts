@@ -4,6 +4,8 @@ import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { makeInitializedProjectRoot } from './adminTestSupport.js';
+
 import { prunePaperCache } from '../../src/admin/prunePaperCache.js';
 import {
   HEP_PAPERS_CACHE_DIR_ENV,
@@ -36,8 +38,8 @@ describe('prunePaperCache', () => {
 
   beforeEach(() => {
     originalCacheDir = process.env[HEP_PAPERS_CACHE_DIR_ENV];
-    tmpProjectA = fs.mkdtempSync(path.join(os.tmpdir(), 'prune-proj-a-'));
-    tmpProjectB = fs.mkdtempSync(path.join(os.tmpdir(), 'prune-proj-b-'));
+    tmpProjectA = makeInitializedProjectRoot('prune-proj-a-');
+    tmpProjectB = makeInitializedProjectRoot('prune-proj-b-');
     tmpCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'prune-cache-'));
     process.env[HEP_PAPERS_CACHE_DIR_ENV] = tmpCacheDir;
   });
@@ -58,18 +60,12 @@ describe('prunePaperCache', () => {
     await expect(prunePaperCache({ project_roots: [] })).rejects.toThrow(/at least one absolute path/);
   });
 
-  it('non-empty array of all-whitespace strings: pure function resolves to cwd (DOCUMENTED CONTRACT)', async () => {
-    // The pure function does not validate per-element strings — that's the
-    // handler's job (admin.ts:125). A direct importer passing whitespace
-    // strings gets them path.resolve'd to cwd, which is harmless but worth
-    // documenting via this test so any future tightening is a deliberate
-    // breaking change.
-    const r = await prunePaperCache({ project_roots: ['   '] });
-    // project_roots gets resolved (path.resolve('   ') yields '/cwd/   ' or
-    // similar — implementation-defined). The relevant assertion is that the
-    // call did NOT throw at the pure-function layer.
-    expect(r.dry_run).toBe(true);
-    expect(r.project_roots).toHaveLength(1);
+  it('admits every project_roots entry as a project root: a blank entry is refused', async () => {
+    // Each entry goes through the same admission as any hep-mcp project_root
+    // (absolute, canonical, external, initialized). A blank entry used to be
+    // resolved against cwd; it now names no project and is refused, so it
+    // cannot silently shrink the referenced set.
+    await expect(prunePaperCache({ project_roots: ['   '] })).rejects.toThrow(/project_root must not be empty/);
   });
 
   it('refuses to consider symlinked-to-dir entries inside the cache root', async () => {

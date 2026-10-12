@@ -40,8 +40,6 @@ code-health-check:
 	git diff --name-only origin/main...HEAD | python3 meta/scripts/check_loc.py
 	@echo "--- NEW-R02: as any / swallowed catch gate ---"
 	bash meta/scripts/check_as_any.sh --vs-main
-	@echo "--- M-01: artifact naming convention ---"
-	python3 meta/scripts/lint_artifact_names.py
 
 contract-test:
 	@echo "--- H-16b: cross-component tool subset contract ---"

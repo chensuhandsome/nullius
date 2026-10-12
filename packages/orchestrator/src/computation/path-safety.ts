@@ -11,11 +11,36 @@ const BLOCKED_COMMAND_PATTERNS = [
   { pattern: /(?:^|\s)ncat?(?:\s|$)/i, reason: 'nc/ncat' },
 ];
 
+/**
+ * True when `relative`, as `path.relative` returns it, leaves its base: the
+ * parent itself, a path through the parent, or another root. A name that
+ * merely begins with two dots (`..notes.md`) stays inside.
+ */
+export function escapesBase(relative: string): boolean {
+  return relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+}
+
+/**
+ * `candidatePath` spelled under `rootPath` when it names a location inside
+ * the root, else null. A relative candidate resolves against the root and
+ * must stay inside it as spelled. An absolute candidate may also reach the
+ * root through an alias above it (respellUnderRoot): the root is admitted in
+ * canonical form, while a caller may spell paths through the alias it used
+ * for the root. Components below the root are kept verbatim, so the caller's
+ * symlink check still sees every one of them. A root that does not exist has
+ * no identity to recognize, so only its own spelling is accepted then.
+ */
+export function resolveUnderRoot(rootPath: string, candidatePath: string): string | null {
+  const root = path.resolve(rootPath);
+  const lexical = path.resolve(root, candidatePath);
+  if (!escapesBase(path.relative(root, lexical))) return lexical;
+  return path.isAbsolute(candidatePath) ? respellUnderRoot(root, lexical) : null;
+}
+
 export function resolveWithinRoot(rootPath: string, candidatePath: string, label: string): string {
   const root = path.resolve(rootPath);
-  const resolved = path.resolve(path.isAbsolute(candidatePath) ? candidatePath : path.join(root, candidatePath));
-  const relative = path.relative(root, resolved);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+  const resolved = resolveUnderRoot(root, candidatePath);
+  if (resolved === null) {
     throw unsafeFs(`${label} must stay within ${root}`, { label, root_path: root, candidate_path: candidatePath });
   }
   return resolved;
@@ -34,11 +59,11 @@ export function assertNoSymlinkComponents(
   options: { allowMissingLeaf?: boolean } = {},
 ): void {
   const root = path.resolve(rootPath);
-  const target = path.resolve(targetPath);
-  const relative = path.relative(root, target);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw unsafeFs(`${label} must stay within ${root}`, { label, root_path: root, target_path: target });
+  const target = resolveUnderRoot(root, path.resolve(targetPath));
+  if (target === null) {
+    throw unsafeFs(`${label} must stay within ${root}`, { label, root_path: root, target_path: path.resolve(targetPath) });
   }
+  const relative = path.relative(root, target);
   const segments = relative === '' ? [] : relative.split(path.sep);
   let cursor = root;
   const rootsToCheck = [root, ...segments.map((segment) => {
@@ -46,7 +71,9 @@ export function assertNoSymlinkComponents(
     return cursor;
   })];
   for (const [index, candidate] of rootsToCheck.entries()) {
-    if (!fs.existsSync(candidate)) {
+    // lstat, not existsSync: a dangling symlink is an entry that redirects
+    // whatever is later created through it.
+    if (!entryExists(candidate)) {
       const isLeaf = index === rootsToCheck.length - 1;
       if (isLeaf && options.allowMissingLeaf) return;
       // A missing intermediate directory is safe at this point; later output
@@ -90,6 +117,59 @@ export function respellUnderRoot(rootPath: string, targetPath: string): string |
   const target = path.resolve(targetPath);
   const boundary = rootAliasAncestor(root, target);
   return boundary === null ? null : path.join(root, path.relative(boundary, target));
+}
+
+function entryExists(filePath: string): boolean {
+  try {
+    fs.lstatSync(filePath);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+    throw error;
+  }
+}
+
+/**
+ * Where `targetPath` really is: its deepest existing entry resolved through
+ * every symlink, with the components that do not exist yet appended. A
+ * dangling symlink on the way leaves the location undetermined and throws.
+ */
+export function realLocation(targetPath: string): string {
+  const target = path.resolve(targetPath);
+  let existing = target;
+  while (!entryExists(existing) && path.dirname(existing) !== existing) existing = path.dirname(existing);
+  let real: string;
+  try {
+    real = fs.realpathSync.native(existing);
+  } catch (error) {
+    throw unsafeFs(`cannot determine where ${target} lands: ${existing} does not resolve (a dangling symlink?)`, {
+      target_path: target,
+      unresolved_path: existing,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return path.join(real, path.relative(existing, target));
+}
+
+/**
+ * Whether `targetPath` names `dirPath` or a location inside it under either
+ * reading: as spelled, or where it really is. For guards that must keep a
+ * path OUT of a directory, where a missed overlap is the unsafe direction:
+ * the directory is recognized by identity among the ancestors of the real
+ * location, so no alias above it, symlink below it, or other spelling of it
+ * (letter case on a case-insensitive filesystem included) hides an overlap.
+ * A directory that does not exist yet has no identity, so it is compared by
+ * the spelling of the two real locations instead. Throws when the target's
+ * real location cannot be determined.
+ */
+export function realLocationWithin(dirPath: string, targetPath: string): boolean {
+  const dir = path.resolve(dirPath);
+  const target = path.resolve(targetPath);
+  if (!escapesBase(path.relative(dir, target))) return true;
+  const real = realLocation(target);
+  if (!fs.existsSync(dir)) return !escapesBase(path.relative(realLocation(dir), real));
+  return rootAliasAncestor(dir, real) !== null;
 }
 
 /** Normalize aliases above the admitted project boundary, while refusing symlinks below it. */

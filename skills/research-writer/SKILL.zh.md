@@ -12,7 +12,7 @@ description: （中文说明 / translation）从 `research-team` 项目脚手架
 主要入口：
 - `scripts/bin/research_writer_scaffold.sh`：从 `research-team` 项目脚手架生成 `paper/`（默认确定性；可选网络：`--fetch-bibtex`）。
 - `scripts/bin/research_writer_draft_sections.sh`：可选分节写作（writer → auditor），写 trace + evidence gate（默认不调用模型；仅 `--run-models` 才调用外部 CLI）。
-- `scripts/bin/research_writer_consume_paper_manifest.sh`：对 MCP 导出的 `paper/` 做 fail-fast 校验、Bib 分层卫生处理，并可选 `latexmk` 编译（确定性；无网络/无模型）。
+- `scripts/bin/research_writer_consume_paper_manifest.sh`：对外部产出的 `paper/` 做 fail-fast 校验、Bib 分层卫生处理，并可选 `latexmk` 编译（确定性；无网络/无模型）。
 
 > 备注：`.sh` 是薄封装（wrapper），参数与对应 `.py` CLI 一致；也可以直接用 `.py --help` 查看完整参数面。
 
@@ -72,7 +72,7 @@ bash scripts/bin/research_writer_draft_sections.sh \
 
 输出目录：`paper/drafts/<run-id>/`（包含 `run.json`、`trace.jsonl`、`export_manifest.json`；若 `--run-card` 会拷贝 `run_card*.json`）。
 
-## Consume：对 MCP 导出 paper/ 做发布前校验（确定性）
+## Consume：对外部产出的 paper/ 做发布前校验（确定性）
 
 从项目根目录（默认 manifest 路径为 `paper/paper_manifest.json`）：
 

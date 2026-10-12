@@ -194,6 +194,29 @@ describe('nullius release', () => {
     expect(out.join('')).toContain('team/runs/');
   });
 
+  it('containment cannot be bypassed by another letter case of the project root on a case-insensitive filesystem', () => {
+    setUpProject();
+    fs.writeFileSync(path.join(projectRoot, 'CaseProbe'), '');
+    const caseInsensitive = fs.existsSync(path.join(projectRoot, 'caseprobe'));
+    fs.rmSync(path.join(projectRoot, 'CaseProbe'));
+    if (!caseInsensitive) return;
+    const variant = path.join(path.dirname(projectRoot), path.basename(projectRoot).toUpperCase(), 'pub');
+    expect(() => runReleaseCommand(projectRoot, {
+      targetDir: variant, commit: null, tag: null, actor: null, dryRun: false,
+    }, ioCollector().io)).toThrow(/OUTSIDE the project root/);
+    expect(fs.existsSync(path.join(projectRoot, 'pub'))).toBe(false);
+  });
+
+  it('refuses a target spelled inside the project even when a symlink there leads outside', () => {
+    setUpProject();
+    fs.symlinkSync(outside, path.join(projectRoot, 'to-outside'), 'dir');
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'link']);
+    expect(() => runReleaseCommand(projectRoot, {
+      targetDir: path.join(projectRoot, 'to-outside', 'pub'), commit: null, tag: null, actor: null, dryRun: false,
+    }, ioCollector().io)).toThrow(/OUTSIDE the project root/);
+  });
+
   it('containment cannot be bypassed by a symlinked target or symlinked parent (codex r1#1)', () => {
     setUpProject();
     // Direct symlink: an OUTSIDE path pointing at an empty dir INSIDE the project.

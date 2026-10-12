@@ -1,4 +1,5 @@
 import { resolveEvidencePath } from '../run-directories.js';
+import { resolveUnderRoot } from '../computation/path-safety.js';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -636,10 +637,8 @@ function readFinalConclusionsPointer(state: RunState): string | null {
 }
 
 function resolveFinalConclusionsPath(projectRoot: string, pointer: string): string {
-  const resolvedRoot = path.resolve(projectRoot);
-  const resolved = path.resolve(projectRoot, pointer);
-  const relative = path.relative(resolvedRoot, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+  const resolved = resolveUnderRoot(projectRoot, pointer);
+  if (resolved === null) {
     throw invalidParams('final_conclusions_v1 pointer escapes project root.', {
       project_root: projectRoot,
       pointer,

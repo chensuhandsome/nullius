@@ -2,7 +2,6 @@ import { createHash } from 'crypto';
 import {
   INSPIRE_THEORETICAL_CONFLICTS,
   invalidParams,
-  writeBytesAtomicDurable,
 } from '@nullius/shared';
 import type {
   CreateMessageRequestParamsBase,
@@ -10,10 +9,12 @@ import type {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import * as api from '../../api/client.js';
-import { writeRunJsonArtifact } from '../../core/citations.js';
-import { getRunArtifactPath } from '../../core/paths.js';
-import { getRun, type RunArtifactRef } from '../../core/runs.js';
-import { createHepRunArtifactRef, makeHepRunArtifactUri, makeHepRunManifestUri } from '../../core/runArtifactUri.js';
+import {
+  OutputBatch,
+  outputArtifactRef,
+  resolveOutputDir,
+  type OutputArtifactRef,
+} from '../../core/outputDir.js';
 import { normalizeTextPreserveUnits } from '../../utils/textNormalization.js';
 import { buildToolSamplingMetadata } from '../../core/sampling-metadata.js';
 import {
@@ -35,10 +36,8 @@ type EvidenceStrength = 'strong' | 'moderate' | 'weak';
 type EdgeDecisionStatus = 'adjudicated' | 'abstained';
 
 export interface TheoreticalConflictsResult {
-  run_id: string;
-  project_id: string;
-  manifest_uri: string;
-  artifacts: RunArtifactRef[];
+  output_dir: string;
+  artifacts: OutputArtifactRef[];
   summary: Record<string, unknown>;
 }
 
@@ -145,6 +144,40 @@ interface TheoreticalConflictsContext {
 
 type PaperStub = { recid: string; title?: string; year?: number; abstract?: string | null };
 
+/**
+ * The fields of an INSPIRE record that enter the calculation, checked for
+ * type; a malformed record aborts the call (fail-fast) rather than entering
+ * the claims or failing later inside text processing.
+ */
+function paperStub(recid: string, paper: unknown): PaperStub {
+  const malformed = (field: string): never => {
+    throw invalidParams(`INSPIRE getPaper returned a malformed record for recid ${recid} (fail-fast): ${field}`, { recid });
+  };
+  if (!paper || typeof paper !== 'object' || Array.isArray(paper)) malformed('not an object');
+  const { title, year, abstract } = paper as Record<string, unknown>;
+  if (title !== undefined && title !== null && typeof title !== 'string') malformed('title is not a string');
+  if (year !== undefined && year !== null && !(typeof year === 'number' && Number.isSafeInteger(year))) malformed('year is not an integer');
+  if (abstract !== undefined && abstract !== null && typeof abstract !== 'string') malformed('abstract is not a string');
+  return {
+    recid,
+    title: typeof title === 'string' ? title : undefined,
+    year: typeof year === 'number' ? year : undefined,
+    abstract: typeof abstract === 'string' ? abstract : null,
+  };
+}
+
+const THEORETICAL_OUTPUT_NAMES = {
+  meta: 'theoretical_meta_v1.json',
+  source_status: 'theoretical_source_status_v1.json',
+  claim_candidates: 'theoretical_claim_candidates.jsonl',
+  claims_normalized: 'theoretical_claims_normalized.jsonl',
+  conflict_candidates: 'theoretical_conflict_candidates.jsonl',
+  llm_requests: 'theoretical_llm_requests.jsonl',
+  llm_responses: 'theoretical_llm_responses.jsonl',
+  debate_map: 'theoretical_debate_map_v1.json',
+  conflicts: 'theoretical_conflicts_v1.json',
+} as const;
+
 function extractSamplingText(content: CreateMessageResult['content']): string {
   if (!content) return '';
   if (Array.isArray(content)) {
@@ -216,13 +249,6 @@ function clamp01(n: number): number {
   if (n < 0) return 0;
   if (n > 1) return 1;
   return n;
-}
-
-function writeRunJsonlArtifact(runId: string, artifactName: string, rows: unknown[]): RunArtifactRef {
-  const p = getRunArtifactPath(runId, artifactName);
-  const lines = rows.map(r => JSON.stringify(r));
-  writeBytesAtomicDurable(p, `${lines.join('\n')}\n`);
-  return createHepRunArtifactRef(runId, artifactName, 'application/x-ndjson');
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -603,7 +629,7 @@ function buildLlmRequests(params: {
 async function collectAdjudications(params: {
   requests: LlmRequestV1[];
   ctx: TheoreticalConflictsContext;
-  runId: string;
+  outputDir: string;
 }): Promise<{
   responsesJsonl: Array<Record<string, unknown>>;
   adjudications: Map<string, ParsedAdjudication>;
@@ -613,7 +639,7 @@ async function collectAdjudications(params: {
   }
   if (!params.ctx.createMessage) {
     throw invalidParams('Theoretical conflict adjudication requires MCP client sampling support (createMessage).', {
-      run_id: params.runId,
+      output_dir: params.outputDir,
     });
   }
 
@@ -634,19 +660,19 @@ async function collectAdjudications(params: {
           module: 'sem04_theoretical_conflicts',
           promptVersion: request.prompt_version,
           costClass: 'high',
-          context: { request_id: request.request_id, run_id: params.runId },
+          context: { request_id: request.request_id, output_dir: params.outputDir },
         }),
       });
     } catch (error) {
       if (isSamplingUnavailableError(error)) {
         throw invalidParams('Theoretical conflict adjudication requires MCP client sampling support (createMessage).', {
-          run_id: params.runId,
+          output_dir: params.outputDir,
           request_id: request.request_id,
           sampling_error: errorMessage(error),
         });
       }
       throw invalidParams('Theoretical conflict adjudication failed before returning a valid model response.', {
-        run_id: params.runId,
+        output_dir: params.outputDir,
         request_id: request.request_id,
         sampling_error: errorMessage(error),
       });
@@ -655,7 +681,7 @@ async function collectAdjudications(params: {
     const parsed = parseAdjudication(extractSamplingText(response.content));
     if (!parsed) {
       throw invalidParams('Theoretical conflict adjudication returned an invalid response.', {
-        run_id: params.runId,
+        output_dir: params.outputDir,
         request_id: request.request_id,
       });
     }
@@ -710,8 +736,12 @@ function buildEdges(params: {
   });
 }
 
+/**
+ * Build a theoretical conflict map for a bounded paper set and write every
+ * intermediate record and the final map into the caller's output directory.
+ */
 export async function performTheoreticalConflicts(params: {
-  run_id: string;
+  output_dir: string;
   recids: string[];
   subject_entity?: string;
   inputs?: InputType[];
@@ -722,7 +752,7 @@ export async function performTheoreticalConflicts(params: {
   prompt_version?: string;
   stable_sort?: boolean;
 }, ctx: TheoreticalConflictsContext = {}): Promise<TheoreticalConflictsResult> {
-  const run = getRun(params.run_id);
+  const output = resolveOutputDir(params.output_dir);
   const runStartedAt = nowIso();
   const stableSortEnabled = params.stable_sort ?? true;
   const promptVersionRaw = params.prompt_version ?? 'v2';
@@ -734,10 +764,11 @@ export async function performTheoreticalConflicts(params: {
   }
   const promptVersion = promptVersionRaw as AdjudicateEdgePromptVersion;
 
+  const batch = new OutputBatch(output);
+  batch.reserve(THEORETICAL_OUTPUT_NAMES);
+
   const warnings: string[] = [];
-  const inputsRequested: InputType[] = (params.inputs && params.inputs.length > 0)
-    ? params.inputs
-    : ['title', 'abstract'];
+  const inputsRequested: InputType[] = params.inputs ?? ['title', 'abstract'];
   const inputsEffective = inputsRequested;
 
   const recids = uniqueStrings(params.recids);
@@ -748,18 +779,21 @@ export async function performTheoreticalConflicts(params: {
   const orderedRecids = stableSortEnabled
     ? recids.slice(0, maxPapers).sort((left, right) => left.localeCompare(right))
     : recids.slice(0, maxPapers);
-  const subjectEntity = params.subject_entity?.trim() || 'unknown';
+  const subjectEntity = params.subject_entity ?? 'unknown';
 
   const sourceStatus: Array<{ recid: string; status: 'success' | 'failed'; stage: 'fetch' | 'extract'; error?: string }> = [];
   const papers: PaperStub[] = [];
   for (const recid of orderedRecids) {
+    let paper: unknown;
     try {
-      const paper = await api.getPaper(recid);
-      papers.push({ recid, title: paper.title, year: paper.year, abstract: paper.abstract ?? null });
-      sourceStatus.push({ recid, status: 'success', stage: 'fetch' });
+      paper = await api.getPaper(recid);
     } catch (error) {
+      // A failed INSPIRE request leaves this source out; the source status records it.
       sourceStatus.push({ recid, status: 'failed', stage: 'fetch', error: errorMessage(error) });
+      continue;
     }
+    papers.push(paperStub(recid, paper));
+    sourceStatus.push({ recid, status: 'success', stage: 'fetch' });
   }
 
   const paperMetaByRecid = new Map(papers.map(paper => [paper.recid, paper]));
@@ -819,7 +853,7 @@ export async function performTheoreticalConflicts(params: {
   const { responsesJsonl, adjudications } = await collectAdjudications({
     requests: requestsFinal,
     ctx,
-    runId: params.run_id,
+    outputDir: output.relative,
   });
   const candidatesByEdgeId = new Map(conflictCandidateResult.candidates.map(candidate => [candidate.edge_id, candidate]));
   const edgesFinal = buildEdges({
@@ -842,95 +876,99 @@ export async function performTheoreticalConflicts(params: {
     selection: { top_k_per_bucket: 20 },
   };
 
-  const artifacts: RunArtifactRef[] = [];
-  artifacts.push(writeRunJsonArtifact(params.run_id, 'theoretical_meta_v1.json', {
-    version: 1,
-    generated_at: runStartedAt,
-    run_id: params.run_id,
-    project_id: run.project_id,
-    config_snapshot: configSnapshot,
-    warnings,
-    counts: {
-      papers_input: params.recids.length,
-      papers_used: orderedRecids.length,
-      papers_fetched: papers.length,
-      papers_failed: sourceStatus.filter(status => status.stage === 'fetch' && status.status === 'failed').length,
-      claim_candidates: candidatesFinal.length,
-      claims_normalized: claimsFinal.length,
-      conflict_candidates: conflictCandidateResult.candidates.length,
-      llm_requests: requestsFinal.length,
-      llm_responses: responsesJsonl.length,
-      edges: edgesFinal.length,
-    },
-  }));
+  let artifacts: OutputArtifactRef[];
+  let conflictsPayload;
+  try {
+    artifacts = [];
+    artifacts.push(batch.json(THEORETICAL_OUTPUT_NAMES.meta, {
+      version: 1,
+      generated_at: runStartedAt,
+      output_dir: output.relative,
+      config_snapshot: configSnapshot,
+      warnings,
+      counts: {
+        papers_input: params.recids.length,
+        papers_used: orderedRecids.length,
+        papers_fetched: papers.length,
+        papers_failed: sourceStatus.filter(status => status.stage === 'fetch' && status.status === 'failed').length,
+        claim_candidates: candidatesFinal.length,
+        claims_normalized: claimsFinal.length,
+        conflict_candidates: conflictCandidateResult.candidates.length,
+        llm_requests: requestsFinal.length,
+        llm_responses: responsesJsonl.length,
+        edges: edgesFinal.length,
+      },
+    }));
 
-  artifacts.push(writeRunJsonArtifact(params.run_id, 'theoretical_source_status_v1.json', {
-    version: 1,
-    generated_at: runStartedAt,
-    run_id: params.run_id,
-    config_snapshot: configSnapshot,
-    sources: sourceStatus,
-    summary: {
-      papers_input: params.recids.length,
-      papers_used: orderedRecids.length,
-      papers_fetched: papers.length,
-      papers_failed: sourceStatus.filter(status => status.stage === 'fetch' && status.status === 'failed').length,
-      claim_candidates: candidatesFinal.length,
-      claims_normalized: claimsFinal.length,
-      conflict_candidates: conflictCandidateResult.candidates.length,
-      llm_requests: requestsFinal.length,
-      llm_responses: responsesJsonl.length,
-      edges: edgesFinal.length,
-    },
-    warnings,
-  }));
+    artifacts.push(batch.json(THEORETICAL_OUTPUT_NAMES.source_status, {
+      version: 1,
+      generated_at: runStartedAt,
+      output_dir: output.relative,
+      config_snapshot: configSnapshot,
+      sources: sourceStatus,
+      summary: {
+        papers_input: params.recids.length,
+        papers_used: orderedRecids.length,
+        papers_fetched: papers.length,
+        papers_failed: sourceStatus.filter(status => status.stage === 'fetch' && status.status === 'failed').length,
+        claim_candidates: candidatesFinal.length,
+        claims_normalized: claimsFinal.length,
+        conflict_candidates: conflictCandidateResult.candidates.length,
+        llm_requests: requestsFinal.length,
+        llm_responses: responsesJsonl.length,
+        edges: edgesFinal.length,
+      },
+      warnings,
+    }));
 
-  artifacts.push(writeRunJsonlArtifact(params.run_id, 'theoretical_claim_candidates.jsonl', candidatesFinal));
-  artifacts.push(writeRunJsonlArtifact(params.run_id, 'theoretical_claims_normalized.jsonl', claimsFinal));
-  artifacts.push(writeRunJsonlArtifact(params.run_id, 'theoretical_conflict_candidates.jsonl', conflictCandidateResult.candidates));
-  artifacts.push(writeRunJsonlArtifact(params.run_id, 'theoretical_llm_requests.jsonl', requestsFinal));
-  artifacts.push(writeRunJsonlArtifact(
-    params.run_id,
-    'theoretical_llm_responses.jsonl',
-    stableSortEnabled ? stableSort(responsesJsonl, response => String(response.request_id ?? '')) : responsesJsonl,
-  ));
-  artifacts.push(writeRunJsonArtifact(params.run_id, 'theoretical_debate_map_v1.json', debateNodesFinal));
+    artifacts.push(batch.jsonl(THEORETICAL_OUTPUT_NAMES.claim_candidates, candidatesFinal));
+    artifacts.push(batch.jsonl(THEORETICAL_OUTPUT_NAMES.claims_normalized, claimsFinal));
+    artifacts.push(batch.jsonl(THEORETICAL_OUTPUT_NAMES.conflict_candidates, conflictCandidateResult.candidates));
+    artifacts.push(batch.jsonl(THEORETICAL_OUTPUT_NAMES.llm_requests, requestsFinal));
+    artifacts.push(batch.jsonl(
+      THEORETICAL_OUTPUT_NAMES.llm_responses,
+      stableSortEnabled ? stableSort(responsesJsonl, response => String(response.request_id ?? '')) : responsesJsonl,
+    ));
+    artifacts.push(batch.json(THEORETICAL_OUTPUT_NAMES.debate_map, debateNodesFinal));
 
-  const conflictsPayload = {
-    version: 1,
-    generated_at: runStartedAt,
-    run_id: params.run_id,
-    subject_entity: subjectEntity,
-    prompt_version: promptVersion,
-    config_snapshot: configSnapshot,
-    conflicts: edgesFinal,
-    summary: {
-      claim_candidates: candidatesFinal.length,
-      claims_normalized: claimsFinal.length,
-      candidates_evaluated: conflictCandidateResult.candidates.length,
-      llm_requests: requestsFinal.length,
-      llm_responses_ok: responsesJsonl.filter(response => response.ok === true).length,
-      edges: edgesFinal.length,
-    },
-    artifacts: {
-      meta_uri: makeHepRunArtifactUri(params.run_id, 'theoretical_meta_v1.json'),
-      source_status_artifact_uri: makeHepRunArtifactUri(params.run_id, 'theoretical_source_status_v1.json'),
-      claim_candidates_uri: makeHepRunArtifactUri(params.run_id, 'theoretical_claim_candidates.jsonl'),
-      claims_normalized_uri: makeHepRunArtifactUri(params.run_id, 'theoretical_claims_normalized.jsonl'),
-      conflict_candidates_uri: makeHepRunArtifactUri(params.run_id, 'theoretical_conflict_candidates.jsonl'),
-      llm_requests_uri: makeHepRunArtifactUri(params.run_id, 'theoretical_llm_requests.jsonl'),
-      llm_responses_uri: makeHepRunArtifactUri(params.run_id, 'theoretical_llm_responses.jsonl'),
-      debate_map_uri: makeHepRunArtifactUri(params.run_id, 'theoretical_debate_map_v1.json'),
-      conflicts_uri: makeHepRunArtifactUri(params.run_id, 'theoretical_conflicts_v1.json'),
-    },
-    warnings,
-  };
-  artifacts.push(writeRunJsonArtifact(params.run_id, 'theoretical_conflicts_v1.json', conflictsPayload));
+    conflictsPayload = {
+      version: 1,
+      generated_at: runStartedAt,
+      output_dir: output.relative,
+      subject_entity: subjectEntity,
+      prompt_version: promptVersion,
+      config_snapshot: configSnapshot,
+      conflicts: edgesFinal,
+      summary: {
+        claim_candidates: candidatesFinal.length,
+        claims_normalized: claimsFinal.length,
+        candidates_evaluated: conflictCandidateResult.candidates.length,
+        llm_requests: requestsFinal.length,
+        llm_responses_ok: responsesJsonl.filter(response => response.ok === true).length,
+        edges: edgesFinal.length,
+      },
+      artifacts: {
+        meta_path: outputArtifactRef(output, THEORETICAL_OUTPUT_NAMES.meta, 'application/json').path,
+        source_status_path: outputArtifactRef(output, THEORETICAL_OUTPUT_NAMES.source_status, 'application/json').path,
+        claim_candidates_path: outputArtifactRef(output, THEORETICAL_OUTPUT_NAMES.claim_candidates, 'application/x-ndjson').path,
+        claims_normalized_path: outputArtifactRef(output, THEORETICAL_OUTPUT_NAMES.claims_normalized, 'application/x-ndjson').path,
+        conflict_candidates_path: outputArtifactRef(output, THEORETICAL_OUTPUT_NAMES.conflict_candidates, 'application/x-ndjson').path,
+        llm_requests_path: outputArtifactRef(output, THEORETICAL_OUTPUT_NAMES.llm_requests, 'application/x-ndjson').path,
+        llm_responses_path: outputArtifactRef(output, THEORETICAL_OUTPUT_NAMES.llm_responses, 'application/x-ndjson').path,
+        debate_map_path: outputArtifactRef(output, THEORETICAL_OUTPUT_NAMES.debate_map, 'application/json').path,
+        conflicts_path: outputArtifactRef(output, THEORETICAL_OUTPUT_NAMES.conflicts, 'application/json').path,
+      },
+      warnings,
+    };
+    artifacts.push(batch.json(THEORETICAL_OUTPUT_NAMES.conflicts, conflictsPayload));
+
+    await batch.publish();
+  } catch (error) {
+    throw batch.discard(error);
+  }
 
   return {
-    run_id: params.run_id,
-    project_id: run.project_id,
-    manifest_uri: makeHepRunManifestUri(params.run_id),
+    output_dir: output.relative,
     artifacts,
     summary: conflictsPayload.summary,
   };

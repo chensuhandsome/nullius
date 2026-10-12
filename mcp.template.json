@@ -14,8 +14,7 @@
         "PDG_DB_PATH": "/absolute/path/to/pdg-data/pdgall-2024-v0.0.5.sqlite",
         "PDG_DATA_DIR": "~/.nullius/hep-mcp/pdg",
         "ZOTERO_BASE_URL": "http://127.0.0.1:23119",
-        "ZOTERO_DATA_DIR": "/absolute/path/to/Zotero",
-        "WRITING_PROGRESS_DIR": "~/.nullius/hep-mcp/writing_progress"
+        "ZOTERO_DATA_DIR": "/absolute/path/to/Zotero"
       }
     },
     "zotero-mcp": {

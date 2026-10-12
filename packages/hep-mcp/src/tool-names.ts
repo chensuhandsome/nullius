@@ -5,31 +5,14 @@
  * the non-HEP tool constants it composes from sibling provider packages.
  */
 
-export const HEP_RUN_PREFIX = 'hep_run_' as const;
-
 export const HEP_PROJECT_CREATE = 'hep_project_create' as const;
 export const HEP_PROJECT_GET = 'hep_project_get' as const;
 export const HEP_PROJECT_LIST = 'hep_project_list' as const;
 export const HEP_HEALTH = 'hep_health' as const;
 export const HEP_PROJECT_BUILD_EVIDENCE = 'hep_project_build_evidence' as const;
 export const HEP_PROJECT_QUERY_EVIDENCE = 'hep_project_query_evidence' as const;
-export const HEP_PROJECT_QUERY_EVIDENCE_SEMANTIC = 'hep_project_query_evidence_semantic' as const;
 export const HEP_PROJECT_PLAYBACK_EVIDENCE = 'hep_project_playback_evidence' as const;
-export const HEP_PROJECT_COMPARE_MEASUREMENTS = 'hep_project_compare_measurements' as const;
 
-export const HEP_RUN_CREATE = 'hep_run_create' as const;
-export const HEP_RUN_READ_ARTIFACT_CHUNK = 'hep_run_read_artifact_chunk' as const;
-export const HEP_RUN_CLEAR_MANIFEST_LOCK = 'hep_run_clear_manifest_lock' as const;
-export const HEP_RUN_STAGE_CONTENT = 'hep_run_stage_content' as const;
-export const HEP_RUN_INGEST_SKILL_ARTIFACTS = 'hep_run_ingest_skill_artifacts' as const;
-export const HEP_RUN_BUILD_WRITING_EVIDENCE = 'hep_run_build_writing_evidence' as const;
-export const HEP_RUN_BUILD_MEASUREMENTS = 'hep_run_build_measurements' as const;
-export const HEP_RUN_BUILD_CITATION_MAPPING = 'hep_run_build_citation_mapping' as const;
-
-export const HEP_RENDER_LATEX = 'hep_render_latex' as const;
-export const HEP_EXPORT_PROJECT = 'hep_export_project' as const;
-export const HEP_EXPORT_PAPER_SCAFFOLD = 'hep_export_paper_scaffold' as const;
-export const HEP_IMPORT_PAPER_BUNDLE = 'hep_import_paper_bundle' as const;
 export const HEP_IMPORT_FROM_ZOTERO = 'hep_import_from_zotero' as const;
 export const HEP_INSPIRE_SEARCH_EXPORT = 'hep_inspire_search_export' as const;
 export const HEP_INSPIRE_RESOLVE_IDENTIFIERS = 'hep_inspire_resolve_identifiers' as const;

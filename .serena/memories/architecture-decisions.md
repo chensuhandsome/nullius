@@ -164,6 +164,8 @@
 
 ### [2026-03-08] Canonical discovery and retrieval stay layered and auditable
 
+> **Superseded 2026-10-12**: the federated discovery stack this entry describes (query planning, reformulation, canonicalization, dedup, rerank and their shared contracts) had no caller after 2026-04 and was removed; literature discovery judgment now lives in skills and the agent. See the 2026-10-12 entry below. The provider capability descriptors remain.
+
 **Decision**:
 - Discovery remains library-first/shared-contract-first; provider packages contribute evidence and adapters rather than becoming discovery authority.
 - Canonicalization follows an exact-ID-first fail-closed ladder; insufficient evidence stays unmerged.
@@ -403,6 +405,8 @@
 
 ### [2026-03-26] Verification kernel Batch 2 invariant: computation-result producer, bridge pass-through, writing-metadata consumer
 
+> **Superseded 2026-10-11**: the consumer named here, `buildRunWritingEvidence()` (and `hep_run_build_writing_evidence`), was removed together with hep-mcp's own run substrate. The computation-result producer and the bridge `verification_refs` pass-through remain; there is no hep-mcp consumer of them now.
+
 **Decision**:
 - Batch 2's sole first live producer is `writeComputationResultArtifact()` on the computation-result path; it is not a multi-provider rollout and does not reopen generic runtime authority.
 - Batch 2's first and only consumer is the `buildRunWritingEvidence()` metadata path in `packages/hep-mcp/src/core/writing/evidence.ts`.
@@ -415,6 +419,8 @@
 **Why**: The current repo already exposes one canonical upstream seam and one bounded downstream consumer. Locking that narrow path gives a credible first proof of typed verification flow without inventing fake check-run authority or widening into broader evidence/runtime redesign.
 
 ### [2026-03-26] Verification kernel Batch 3 invariant: delete heuristic residue once typed metadata authority is live
+
+> **Superseded in part 2026-10-11**: the `buildRunWritingEvidence()` end of the "surviving first live verification authority" chain below no longer exists (removed with hep-mcp's run substrate). The deletion of `physicsValidator` stands.
 
 **Decision**:
 - Once the typed verification path is live, `physicsValidator` must be fully deleted rather than retained as fallback, diagnostic residue, wrapper, or renamed helper.
@@ -697,3 +703,14 @@
 - Migration for pre-machine stores is a one-time offline `nodes_latest.json` rewrite (documented in the engine README): map `active`/absent by data (no posterior → `candidate`; current posterior + eligible coverage → `admitted`; else `needs_refresh`), then apply judgment states via RPC.
 
 **Why**: The external idea-campaign testbed had to hand-build exactly this machine in a report script (16 script versions, node states patched by literal node-id matching) because the engine's flat three-state lifecycle could not distinguish "has a posterior number" from "is allocation-ready" from "blocked on named missing evidence". Enforcing the transitions and data preconditions engine-side removes that whole class of report-layer state bookkeeping, catches honest process mistakes (skipping admission, comparing triage scores with formal posteriors), and keeps the store the single authority on where every idea stands.
+
+### [2026-10-12] hep-mcp keeps bounded atomic tools; literature discovery judgment lives in skills and the agent
+
+**Decision**:
+- The code that two earlier commits unwired but left in place (3e2bdbcb moved literature workflow authority to `packages/literature-workflows`; 04cc2eb4 removed the HEP synthesis scaffolding that inflated authority) is deleted, not rewired: the federated discovery stack (provider planning, sampling-based query reformulation and reranking, canonicalization, dedup, search log, and the seminal / related / expansion / survey heuristics), sampling-based same-work matching (`traceToOriginal`), `deepAnalyze`, a second LaTeX preprocessor, the MCP-driven continuation contracts of the removed writing pipeline, a JSON repair helper for sampling output, an image converter, and a ZIP extractor that no ingestion path ever called.
+- The shared discovery contracts whose only consumers were those modules go with them; the provider capability descriptors (`capabilities`, `provider-descriptor`, and the query-intent enum they reference) stay, because `literature-workflows` and the provider packages read them.
+- Multi-hop discovery, saturation measurement and same-work identification are done by the agent with the atomic provider tools, following the `deep-literature-review`, `citation-triangulation` and `literature-workflows` recipes; hep-mcp does not grow a second discovery authority.
+- `scripts/check-unreachable-modules.mjs` fails when a hep-mcp source module is reached by no declared package entry and is not on its commented allowlist (the evaluation substrate and the shell-started admin commands), so unwired code cannot accumulate silently again.
+- The evaluation substrate `packages/hep-mcp/src/eval/*` stays (2026-04-07 decision); only the cases tied to removed modules were dropped.
+
+**Why**: Unwired modules still built, carried tests and read as capabilities while nothing could call them; the reformulation, reranking and matching were LLM sampling calls that the agent now performs directly with better context, and the ranking heuristics were already judged authority-inflating. Keeping them would have kept a second, stale discovery authority beside the skills that actually run.

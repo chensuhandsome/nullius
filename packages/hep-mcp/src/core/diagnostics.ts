@@ -1,7 +1,6 @@
-import { writeJsonAtomicDurable } from '@nullius/shared';
-import type { RunArtifactRef } from './runs.js';
-import { getProjectArtifactPath, getRunArtifactPath } from './paths.js';
-import { makeHepRunArtifactUri } from './runArtifactUri.js';
+import { writeJsonAtomicDurable, type RunArtifactRef } from '@nullius/shared';
+import { getProjectArtifactPath } from './paths.js';
+import type { OutputArtifactRef, OutputBatch } from './outputDir.js';
 
 // hep-mcp legacy JSON convention: no trailing newline; preserve byte-equality.
 const stringifyNoTrailingNewline = (payload: unknown): string =>
@@ -49,20 +48,14 @@ export interface BudgetHitV1 {
   data?: Record<string, unknown>;
 }
 
-export interface RunStepDiagnosticsArtifactV1 {
+export interface OutputDiagnosticsArtifactV1 {
   version: 1;
   generated_at: string;
-  run_id: string;
-  project_id: string;
-  step: string;
-  step_index: number;
+  operation: string;
+  output_dir: string;
   budgets: BudgetEntryV1[];
   hits: BudgetHitV1[];
   warnings: HepWarningV1[];
-  artifacts: {
-    run_diagnostics_uri: string;
-    project_diagnostics_uri: string;
-  };
 }
 
 function nowIso(): string {
@@ -78,10 +71,6 @@ function toFiniteInt(value: unknown): number | null {
     return Number.isFinite(n) ? Math.trunc(n) : null;
   }
   return null;
-}
-
-function pad3(n: number): string {
-  return String(n).padStart(3, '0');
 }
 
 export class BudgetTrackerV1 {
@@ -192,46 +181,25 @@ export class BudgetTrackerV1 {
   }
 }
 
-export function writeRunStepDiagnosticsArtifact(params: {
-  run_id: string;
-  project_id: string;
-  step: string;
-  step_index: number;
+/** Budget and warning record of one tool call, staged in its output batch. */
+export function writeOutputDiagnosticsArtifact(params: {
+  batch: OutputBatch;
+  operation: string;
+  artifact_name: string;
   budgets: BudgetEntryV1[];
   hits: BudgetHitV1[];
   warnings: HepWarningV1[];
-}): { run: RunArtifactRef; project: RunArtifactRef; payload: RunStepDiagnosticsArtifactV1 } {
-  const suffix = `step_${pad3(params.step_index + 1)}_${params.step}_diagnostics.json`;
-  const runArtifactName = suffix;
-  const projectArtifactName = `run_${params.run_id}_${suffix}`;
-
-  const runUri = makeHepRunArtifactUri(params.run_id, runArtifactName);
-  const projectUri = `hep://projects/${encodeURIComponent(params.project_id)}/artifact/${encodeURIComponent(projectArtifactName)}`;
-
-  const payload: RunStepDiagnosticsArtifactV1 = {
+}): { ref: OutputArtifactRef; payload: OutputDiagnosticsArtifactV1 } {
+  const payload: OutputDiagnosticsArtifactV1 = {
     version: 1,
     generated_at: nowIso(),
-    run_id: params.run_id,
-    project_id: params.project_id,
-    step: params.step,
-    step_index: params.step_index,
+    operation: params.operation,
+    output_dir: params.batch.out.relative,
     budgets: params.budgets,
     hits: params.hits,
     warnings: params.warnings,
-    artifacts: {
-      run_diagnostics_uri: runUri,
-      project_diagnostics_uri: projectUri,
-    },
   };
-
-  writeJsonAtomicDurable(getRunArtifactPath(params.run_id, runArtifactName), payload, stringifyNoTrailingNewline);
-  writeJsonAtomicDurable(getProjectArtifactPath(params.project_id, projectArtifactName), payload, stringifyNoTrailingNewline);
-
-  return {
-    run: { name: runArtifactName, uri: runUri, mimeType: 'application/json' },
-    project: { name: projectArtifactName, uri: projectUri, mimeType: 'application/json' },
-    payload,
-  };
+  return { ref: params.batch.json(params.artifact_name, payload), payload };
 }
 
 export interface ProjectDiagnosticsArtifactV1 {

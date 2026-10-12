@@ -192,6 +192,6 @@ class OutcomePayload(BaseModel):
     details_artifact_uri: Annotated[
         AnyUrl | None,
         Field(
-            description="H-18 ArtifactRef URI (e.g., hep://runs/{run_id}/artifact/{name}) pointing to detailed outcome data (violations, validation steps, full blast radius). The full ArtifactRef object (uri, sha256, size_bytes) is resolved via the artifact store. Keeps events lightweight while preserving full traceability."
+            description="H-18 ArtifactRef URI (e.g., rep://runs/{run_id}/artifact/{artifact_path}) pointing to detailed outcome data (violations, validation steps, full blast radius). The full ArtifactRef object (uri, sha256, size_bytes) is resolved via the artifact store. Keeps events lightweight while preserving full traceability."
         ),
     ] = None

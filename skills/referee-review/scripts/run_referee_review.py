@@ -201,7 +201,7 @@ def build_review(packet_text: str, *, profile: str) -> dict[str, Any]:
             {
                 "id": "A1",
                 "action": "Provide artifact pointers for the paper bundle and any referenced artifacts (diff, TeX source, figures, data, logs).",
-                "acceptance_criteria": "Packet includes an `## Artifact pointers` section with resolvable pointers (e.g., hep://... or file:/...).",
+                "acceptance_criteria": "Packet includes an `## Artifact pointers` section with resolvable pointers (e.g., file:/... or absolute project paths).",
                 "blocking": True,
             }
         )

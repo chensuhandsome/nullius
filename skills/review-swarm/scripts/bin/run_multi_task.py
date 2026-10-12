@@ -25,6 +25,7 @@ import itertools
 import json
 import os
 import re
+import select
 import signal
 import shutil
 import subprocess
@@ -893,20 +894,114 @@ def _resolve_gemini_review_profile(
     return str(home_root), profile
 
 
-def _signal_group(proc: subprocess.Popen, signum: int) -> None:
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(proc.pid, signum)
+def _child_exited(pid: int, timeout: float | None) -> bool:
+    """Whether the child has exited, waiting up to timeout seconds (None: no limit).
+
+    Never reaps: an exited, unreaped child stays a zombie that keeps its pid,
+    and with it the number of the process group it leads.
+    """
+    if hasattr(select, "kqueue"):  # macOS CPython has no os.waitid
+        queue = select.kqueue()
+        try:
+            try:
+                queue.control([select.kevent(pid, select.KQ_FILTER_PROC,
+                                             select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                             select.KQ_NOTE_EXIT)], 0, 0)
+            except ProcessLookupError:
+                return True  # the kernel refuses to watch a zombie
+            return bool(queue.control(None, 1, timeout))
+        finally:
+            queue.close()
+    flags = os.WEXITED | os.WNOWAIT
+    if timeout is None:
+        os.waitid(os.P_PID, pid, flags)
+        return True
+    deadline = time.monotonic() + timeout
+    delay = 0.001
+    while os.waitid(os.P_PID, pid, flags | os.WNOHANG) is None:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return False
+        time.sleep(min(delay, left))
+        delay = min(2 * delay, 0.05)
+    return True
 
 
-def _stop_and_collect(proc: subprocess.Popen) -> tuple[str, str]:
+def _signal_group(proc: subprocess.Popen, signum: int) -> bool:
+    """Signal a runner's process group; False when nothing is left to signal.
+
+    The group number is the runner's pid and names its group provably only
+    while the runner is unreaped. A process leaves _ACTIVE_PROCESSES, under
+    _PROCESS_LOCK, before anything reaps it, so a process found registered
+    under that lock is unreaped. macOS answers EPERM for a group whose members
+    have all exited while its leader is an unreaped zombie (Linux answers 0).
+    """
+    with _PROCESS_LOCK:
+        if proc not in _ACTIVE_PROCESSES:
+            return False
+        try:
+            os.killpg(proc.pid, signum)
+        except (ProcessLookupError, PermissionError):
+            return False
+        return True
+
+
+def _reap(proc: subprocess.Popen) -> None:
+    # Leave the registry first: from then on nothing signals this group.
+    with _PROCESS_LOCK:
+        _ACTIVE_PROCESSES.discard(proc)
+    proc.wait()
+
+
+class _PipeReader:
+    """Read a runner's stdout and stderr to end of file on helper threads.
+
+    communicate() would reap the runner as soon as both pipes close, while the
+    stop handler may still signal its group; reading here leaves the reap to
+    _reap().
+    """
+
+    def __init__(self, proc: subprocess.Popen):
+        self._text: dict[str, Any] = {}
+        self._threads = [threading.Thread(target=self._read, args=(name, stream), daemon=True)
+                         for name, stream in (("stdout", proc.stdout), ("stderr", proc.stderr))]
+        for thread in self._threads:
+            thread.start()
+
+    def _read(self, name: str, stream: Any) -> None:
+        with stream:
+            try:
+                self._text[name] = stream.read()
+            except BaseException as exc:
+                self._text[name] = exc
+
+    def join(self, timeout: Optional[float]) -> bool:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        for thread in self._threads:
+            thread.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
+        return not any(thread.is_alive() for thread in self._threads)
+
+    def result(self) -> tuple[str, str]:
+        for value in self._text.values():
+            if isinstance(value, BaseException):
+                raise value
+        return self._text["stdout"], self._text["stderr"]
+
+
+def _stop_and_collect(proc: subprocess.Popen, reader: Optional[_PipeReader]) -> tuple[str, str]:
     # Runner supervisors own separate CLI groups. Give their TERM handlers a
     # bounded cleanup allowance before escalating, so descendants are stopped.
-    _signal_group(proc, signal.SIGTERM)
-    try:
-        return proc.communicate(timeout=2)
-    except subprocess.TimeoutExpired:
+    if _signal_group(proc, signal.SIGTERM):
+        deadline = time.monotonic() + 2
+        _child_exited(proc.pid, 2)
+        if reader is not None:
+            reader.join(max(0.0, deadline - time.monotonic()))
         _signal_group(proc, signal.SIGKILL)
+    _reap(proc)
+    if reader is None:
         return proc.communicate()
+    reader.join(None)
+    return reader.result()
 
 
 def _run_with_timeout(cmd: list[str], *, timeout_secs: float, context_tokens: Optional[int] = None) -> dict[str, Any]:
@@ -920,17 +1015,25 @@ def _run_with_timeout(cmd: list[str], *, timeout_secs: float, context_tokens: Op
         )
         runtime_capture_observation._bind(observation, proc)
         _ACTIVE_PROCESSES.add(proc)
+    reader = None
     try:
-        stdout, stderr = proc.communicate(timeout=timeout_secs if timeout_secs > 0 else None)
-        runtime_capture_observation._finish(observation, proc)
-        return {
-            "timed_out": False,
-            "exit_code": proc.returncode,
-            "stdout": stdout,
-            "stderr": stderr,
-        }
-    except subprocess.TimeoutExpired:
-        stdout, stderr = _stop_and_collect(proc)
+        reader = _PipeReader(proc)
+        deadline = time.monotonic() + timeout_secs if timeout_secs > 0 else None
+
+        def left() -> Optional[float]:
+            return None if deadline is None else max(0.0, deadline - time.monotonic())
+
+        if _child_exited(proc.pid, left()) and reader.join(left()):
+            _reap(proc)
+            stdout, stderr = reader.result()
+            runtime_capture_observation._finish(observation, proc)
+            return {
+                "timed_out": False,
+                "exit_code": proc.returncode,
+                "stdout": stdout,
+                "stderr": stderr,
+            }
+        stdout, stderr = _stop_and_collect(proc, reader)
         return {
             "timed_out": True,
             "exit_code": None,
@@ -938,7 +1041,7 @@ def _run_with_timeout(cmd: list[str], *, timeout_secs: float, context_tokens: Op
             "stderr": stderr,
         }
     except BaseException:
-        _stop_and_collect(proc)
+        _stop_and_collect(proc, reader)
         raise
     finally:
         runtime_capture_observation._discard(observation)
@@ -2469,15 +2572,17 @@ def main() -> int:
 
     def stop(signum: int, _frame: Any) -> None:
         _STOP_REQUESTED.set()
+        # Hold the lock throughout: workers leave the registry under it before
+        # reaping, so no process signalled here can be reaped meanwhile.
         with _PROCESS_LOCK:
             processes = tuple(_ACTIVE_PROCESSES)
-        for proc in processes:
-            _signal_group(proc, signal.SIGTERM)
-        grace_deadline = time.monotonic() + 2
-        while any(proc.poll() is None for proc in processes) and time.monotonic() < grace_deadline:
-            time.sleep(0.02)
-        for proc in processes:
-            _signal_group(proc, signal.SIGKILL)
+            for proc in processes:
+                _signal_group(proc, signal.SIGTERM)
+            grace_deadline = time.monotonic() + 2
+            for proc in processes:
+                _child_exited(proc.pid, max(0.0, grace_deadline - time.monotonic()))
+            for proc in processes:
+                _signal_group(proc, signal.SIGKILL)
         raise SystemExit(128 + signum)
 
     try:

@@ -1,11 +1,16 @@
 """Tests for the opt-in independent reproduction check (fresh-checkout rerun)."""
 from __future__ import annotations
 
+import contextlib
+import errno
 import importlib.util
 import json
 import os
+import shlex
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 _MOD = Path(__file__).resolve().parent.parent / "scripts" / "independent_reproduction_check.py"
@@ -265,6 +270,67 @@ def test_timeout_is_incomplete_and_kills_the_entry(tmp_path):
     assert report["entry"]["timed_out"] is True
     assert report["entry"]["exit_code"] is None
     assert report["entry"]["duration_seconds"] < 10
+
+
+def _is_zombie(pid: int) -> bool:
+    if sys.platform.startswith("linux"):
+        try:
+            text = Path(f"/proc/{pid}/stat").read_text()
+        except FileNotFoundError:
+            return False
+        return text[text.rindex(")") + 2] == "Z"
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
+    return state.strip().startswith("Z")
+
+
+def _wait_gone(pid: int, timeout: float = 10) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        if _is_zombie(pid):
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_timeout_after_the_shell_exited_still_kills_its_descendants(tmp_path, monkeypatch):
+    # The deadline falls due after the entry shell exited (an unreaped zombie)
+    # while a background descendant still runs in the shell's group.
+    pidfile = tmp_path / "descendant.pid"
+    real_wait = subprocess.Popen.wait
+
+    def wait(self, timeout=None):
+        if timeout is None:
+            return real_wait(self)
+        deadline = time.monotonic() + 10
+        while not _is_zombie(self.pid):
+            assert time.monotonic() < deadline, "entry shell did not exit"
+            time.sleep(0.01)
+        raise subprocess.TimeoutExpired(self.args, timeout)
+
+    monkeypatch.setattr(subprocess.Popen, "wait", wait)
+    if sys.platform.startswith("linux"):
+        # macOS answers ESRCH to getpgid for a zombie; reproduce that answer.
+        real_getpgid = os.getpgid
+
+        def getpgid(pid):
+            if _is_zombie(pid):
+                raise ProcessLookupError(errno.ESRCH, os.strerror(errno.ESRCH))
+            return real_getpgid(pid)
+
+        monkeypatch.setattr(os, "getpgid", getpgid)
+    result = irc.run_entry(f"sleep 30 & echo $! > {shlex.quote(str(pidfile))}", tmp_path, 60,
+                           tmp_path / "entry.out", tmp_path / "entry.err")
+    descendant = int(pidfile.read_text())
+    try:
+        assert result["timed_out"] is True
+        assert _wait_gone(descendant), "the entry's descendant survived the timeout"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(descendant, signal.SIGKILL)
 
 
 def test_manifest_validation_failure_is_environment_failed(tmp_path):

@@ -50,7 +50,9 @@ def _run_with_timeout(cmd: list[str], timeout_sec: int) -> CmdResult:
             elapsed_sec=time.monotonic() - start,
         )
     except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError):
+        # Unreaped, so the pid still names the CLI's group. macOS answers EPERM
+        # when only the zombie CLI is left in it.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(proc.pid, signal.SIGKILL)
         stdout, stderr = proc.communicate()
         return CmdResult(

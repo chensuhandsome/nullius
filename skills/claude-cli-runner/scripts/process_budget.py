@@ -8,6 +8,7 @@ import hashlib
 import math
 import os
 from pathlib import Path
+import select
 from datetime import datetime, timezone
 import signal
 import subprocess
@@ -27,16 +28,66 @@ def remaining(state: dict) -> float | None:
     return None if deadline is None else max(0, deadline-time.monotonic())
 
 
-def stop_group(proc: subprocess.Popen) -> None:
-    # The CLI may exit before its descendants; always address its whole group.
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(proc.pid, signal.SIGTERM)
+def child_exited(pid: int, timeout: float | None) -> bool:
+    """Whether the child has exited, waiting up to timeout seconds (None: no limit).
+
+    Never reaps: an exited, unreaped child stays a zombie that keeps its pid,
+    and with it the number of the process group it leads.
+    """
+    if hasattr(select, 'kqueue'):  # macOS CPython has no os.waitid
+        queue = select.kqueue()
+        try:
+            try:
+                queue.control([select.kevent(pid, select.KQ_FILTER_PROC,
+                                             select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                             select.KQ_NOTE_EXIT)], 0, 0)
+            except ProcessLookupError:
+                return True  # the kernel refuses to watch a zombie
+            return bool(queue.control(None, 1, timeout))
+        finally:
+            queue.close()
+    flags = os.WEXITED | os.WNOWAIT
+    if timeout is None:
+        os.waitid(os.P_PID, pid, flags)
+        return True
+    deadline = time.monotonic()+timeout
+    delay = 0.001
+    while os.waitid(os.P_PID, pid, flags | os.WNOHANG) is None:
+        left = deadline-time.monotonic()
+        if left <= 0:
+            return False
+        time.sleep(min(delay, left))
+        delay = min(2*delay, 0.05)
+    return True
+
+
+def signal_group(pgid: int, signum: int) -> bool:
+    """Signal a process group; False when nothing in it is left to signal.
+
+    macOS answers EPERM for a group whose members have all exited while its
+    unreaped leader is a zombie (Linux answers 0), and ESRCH once it is gone.
+    """
     try:
-        proc.wait(timeout=0.3)
-    except subprocess.TimeoutExpired:
-        pass
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(proc.pid, signal.SIGKILL)
+        os.killpg(pgid, signum)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def stop_group(proc: subprocess.Popen) -> None:
+    """Stop the CLI's whole group (SIGTERM, grace, SIGKILL), then reap the CLI.
+
+    The CLI may exit before its descendants. Its pid is the group number, which
+    names this group provably only while the CLI is unreaped, so every signal
+    goes out before the reap and nothing before this function reaps the CLI.
+    The grace ends early only once nothing in the group is left to signal; on
+    Linux the zombie CLI still counts, so the whole grace is given there.
+    """
+    if proc.returncode is None and signal_group(proc.pid, signal.SIGTERM):
+        deadline = time.monotonic()+0.3
+        while signal_group(proc.pid, 0) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        signal_group(proc.pid, signal.SIGKILL)
     proc.wait()
 
 
@@ -224,9 +275,10 @@ def main() -> int:
     proc = None
 
     def cancel(signum, frame):
+        # Only record the request. The supervising code stops the CLI's group
+        # before it reaps; a handler that did so could interrupt a reap.
         nonlocal cancelled
         cancelled = signum
-        if proc is not None: stop_group(proc)
 
     signal.signal(signal.SIGTERM, cancel)
     signal.signal(signal.SIGINT, cancel)
@@ -241,7 +293,7 @@ def main() -> int:
             if cancelled: return 128+cancelled
             proc = subprocess.Popen(command, stdin=stdin, stdout=stdout,
                                     stderr=stderr, start_new_session=True)
-            if cancelled: stop_group(proc)
+            exited = False  # the CLI ended by itself; its status is read after the reap
             if args.capture:
                 capture = Capture(args.stdout, Path(str(args.out)+'.partial'), args.stdout.with_suffix('.progress'))
             progress_path = args.stdout.with_suffix('.progress.json')
@@ -251,7 +303,8 @@ def main() -> int:
             while True:
                 now = time.monotonic()
                 if capture: capture.read()
-                progress.update(elapsed_secs=now-started, process_status='running' if proc.poll() is None else 'exited',
+                ended = child_exited(proc.pid, 0)
+                progress.update(elapsed_secs=now-started, process_status='exited' if ended else 'running',
                                 provider_status='terminal_result_seen' if capture and capture.terminal else 'unknown',
                                 expected_duration_exceeded=bool(args.expected_secs and now-state['started_monotonic'] >= args.expected_secs))
                 last = progress.get('last_advancing_monotonic')
@@ -269,8 +322,8 @@ def main() -> int:
                     code = 128+cancelled
                     termination_reason = 'user_cancelled'
                     break
-                if proc.poll() is not None:
-                    code = proc.returncode
+                if ended:
+                    exited = True
                     break
                 left = remaining(state)
                 if left is not None and left <= 0:
@@ -282,12 +335,14 @@ def main() -> int:
                     termination_reason = 'confirmed_inactivity'
                     code = 69
                     break
-                time.sleep(0.05)
+                child_exited(proc.pid, 0.05)
             # Save evidence before cleanup. Silence on unknown/degraded capture
             # never permits inactivity termination, even with explicit policy.
             progress['termination_reason'] = termination_reason
             save(progress_path, progress)
             stop_group(proc)
+            if exited:
+                code = proc.returncode
             if capture:
                 capture.read(final=True)
                 terminal = capture.terminal

@@ -98,23 +98,43 @@ run_gemini_cmd() {
   if [[ -n "${MANAGED_GEMINI_HOME}" ]]; then
     # Keep a supervisor outside the CLI process group so a caught interruption
     # stops the whole CLI/sandbox tree before deleting its authentication home.
+    # The group number is the CLI pid; it names this group provably only while
+    # the CLI is unreaped, so the supervisor waits without reaping, signals the
+    # group, and reaps last.
     python3 -c '
-import os, signal, subprocess, sys
+import os, select, signal, subprocess, sys
 proc = None
 def stop(signum, frame):
     raise SystemExit(128 + signum)
+def wait_unreaped(pid):
+    if hasattr(select, "kqueue"):  # macOS CPython has no os.waitid
+        queue = select.kqueue()
+        try:
+            queue.control([select.kevent(pid, select.KQ_FILTER_PROC,
+                                         select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                         select.KQ_NOTE_EXIT)], 0, 0)
+            queue.control(None, 1, None)
+        except ProcessLookupError:
+            pass  # the kernel refuses to watch a zombie
+        finally:
+            queue.close()
+    else:
+        os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
 for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
     signal.signal(signum, stop)
 try:
     proc = subprocess.Popen(sys.argv[1:], start_new_session=True)
-    raise SystemExit(proc.wait())
+    wait_unreaped(proc.pid)
 finally:
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, signal.SIG_IGN)
     if proc is not None:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        except (ProcessLookupError, PermissionError):
+            pass  # macOS: EPERM when only the zombie CLI is left in its group
         proc.wait()
+raise SystemExit(proc.returncode)
 ' env "GEMINI_CLI_HOME=${GEMINI_CLI_HOME_OVERRIDE}" gemini "$@" <&0 &
   elif [[ -n "${GEMINI_CLI_HOME_OVERRIDE}" ]]; then
     env "GEMINI_CLI_HOME=${GEMINI_CLI_HOME_OVERRIDE}" gemini "$@" <&0 &

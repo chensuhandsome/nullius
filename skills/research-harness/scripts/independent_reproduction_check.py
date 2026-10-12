@@ -576,13 +576,14 @@ def run_entry(entry_command: str, run_root: Path, timeout_seconds: float,
         except subprocess.TimeoutExpired:
             timed_out = True
             exit_code = None
+            # Unreaped, so the pid (start_new_session: also the group number)
+            # still names the shell's group, even when the shell has exited and
+            # only descendants remain. getpgid would fail for that zombie on
+            # macOS; killpg answers EPERM there when nothing live is left.
             try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
-                try:
-                    proc.kill()  # the process can be reaped in this window
-                except OSError:
-                    pass
+                pass
             proc.wait()
     return {
         "command": entry_command,

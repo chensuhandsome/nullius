@@ -7,6 +7,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import select
 import signal
 import subprocess
 import sys
@@ -24,16 +25,66 @@ def remaining(state: dict) -> float | None:
     return None if deadline is None else max(0, deadline-time.monotonic())
 
 
-def stop_group(proc: subprocess.Popen) -> None:
-    # The CLI may exit before its descendants; always address its whole group.
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(proc.pid, signal.SIGTERM)
+def child_exited(pid: int, timeout: float | None) -> bool:
+    """Whether the child has exited, waiting up to timeout seconds (None: no limit).
+
+    Never reaps: an exited, unreaped child stays a zombie that keeps its pid,
+    and with it the number of the process group it leads.
+    """
+    if hasattr(select, 'kqueue'):  # macOS CPython has no os.waitid
+        queue = select.kqueue()
+        try:
+            try:
+                queue.control([select.kevent(pid, select.KQ_FILTER_PROC,
+                                             select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                             select.KQ_NOTE_EXIT)], 0, 0)
+            except ProcessLookupError:
+                return True  # the kernel refuses to watch a zombie
+            return bool(queue.control(None, 1, timeout))
+        finally:
+            queue.close()
+    flags = os.WEXITED | os.WNOWAIT
+    if timeout is None:
+        os.waitid(os.P_PID, pid, flags)
+        return True
+    deadline = time.monotonic()+timeout
+    delay = 0.001
+    while os.waitid(os.P_PID, pid, flags | os.WNOHANG) is None:
+        left = deadline-time.monotonic()
+        if left <= 0:
+            return False
+        time.sleep(min(delay, left))
+        delay = min(2*delay, 0.05)
+    return True
+
+
+def signal_group(pgid: int, signum: int) -> bool:
+    """Signal a process group; False when nothing in it is left to signal.
+
+    macOS answers EPERM for a group whose members have all exited while its
+    unreaped leader is a zombie (Linux answers 0), and ESRCH once it is gone.
+    """
     try:
-        proc.wait(timeout=0.3)
-    except subprocess.TimeoutExpired:
-        pass
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(proc.pid, signal.SIGKILL)
+        os.killpg(pgid, signum)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def stop_group(proc: subprocess.Popen) -> None:
+    """Stop the CLI's whole group (SIGTERM, grace, SIGKILL), then reap the CLI.
+
+    The CLI may exit before its descendants. Its pid is the group number, which
+    names this group provably only while the CLI is unreaped, so every signal
+    goes out before the reap and nothing before this function reaps the CLI.
+    The grace ends early only once nothing in the group is left to signal; on
+    Linux the zombie CLI still counts, so the whole grace is given there.
+    """
+    if proc.returncode is None and signal_group(proc.pid, signal.SIGTERM):
+        deadline = time.monotonic()+0.3
+        while signal_group(proc.pid, 0) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        signal_group(proc.pid, signal.SIGKILL)
     proc.wait()
 
 
@@ -116,9 +167,10 @@ def main() -> int:
     proc = None
 
     def cancel(signum, frame):
+        # Only record the request. The supervising code stops the CLI's group
+        # before it reaps; a handler that did so could interrupt a reap.
         nonlocal cancelled
         cancelled = signum
-        if proc is not None: stop_group(proc)
 
     signal.signal(signal.SIGTERM, cancel)
     signal.signal(signal.SIGINT, cancel)
@@ -133,15 +185,21 @@ def main() -> int:
             if cancelled: return 128+cancelled
             proc = subprocess.Popen(command, cwd=args.cwd, stdin=stdin, stdout=stdout,
                                     stderr=stderr, start_new_session=True)
-            if cancelled: stop_group(proc)
+            timed_out = False
             try:
-                code = proc.wait(timeout=remaining(state))
-            except subprocess.TimeoutExpired:
-                stop_group(proc)
-                stderr.write(b'Runner subprocess timed out: total deadline exhausted.\n')
-                code = 124
+                while not cancelled:
+                    left = remaining(state)
+                    if child_exited(proc.pid, 0.05 if left is None else min(0.05, left)):
+                        break
+                    if left == 0:
+                        timed_out = True
+                        break
             finally:
                 stop_group(proc)
+            code = proc.returncode
+            if timed_out:
+                stderr.write(b'Runner subprocess timed out: total deadline exhausted.\n')
+                code = 124
             if cancelled: code = 128+cancelled
         except OSError as exc:
             stderr.write((str(exc)+'\n').encode())

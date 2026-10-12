@@ -98,9 +98,13 @@ function externalApiCacheEntryPath(params: { namespace: string; operation: strin
 
   const cacheRoot = getCacheDir();
   ensureDir(cacheRoot);
-  const dir = path.join(cacheRoot, 'external_api_v1', namespace, operation, hash.slice(0, 2).toLowerCase());
+  const dir = externalApiCacheDir(cacheRoot, namespace, operation, hash);
   ensureDir(dir);
   return path.join(dir, `${hash}.json`);
+}
+
+function externalApiCacheDir(cacheRoot: string, namespace: string, operation: string, hash: string): string {
+  return path.join(cacheRoot, 'external_api_v1', namespace, operation, hash.slice(0, 2).toLowerCase());
 }
 
 function defaultArtifactName(prefix: string, params: { namespace: string; operation: string; request_hash: string }): string {
@@ -218,11 +222,19 @@ async function performCachedCall<T>(
     } catch (err) {
       // A refusal keeps its own code; a file-system failure is the environment's.
       if (err instanceof McpError) throw err;
+      const cacheDir = (() => {
+        try {
+          return externalApiCacheDir(getCacheDir(), namespace, operation, requestHash);
+        } catch {
+          return undefined;
+        }
+      })();
       throw unsafeFs('Failed to resolve external API cache path (fail-fast)', {
         output_dir: output.relative,
         namespace,
         operation,
         request_hash: requestHash,
+        ...(cacheDir === undefined ? {} : { cache_dir: cacheDir }),
         error: err instanceof Error ? err.message : String(err),
         ...errnoOf(err),
         next_actions: [
@@ -260,9 +272,15 @@ async function performCachedCall<T>(
   let response: T;
 
   if (fs.existsSync(cachePath)) {
+    let text: string;
+    try {
+      text = await fs.promises.readFile(cachePath, 'utf-8');
+    } catch (err) {
+      throw corrupted('Failed to read external API cache entry (fail-fast)', err);
+    }
     let cached: unknown;
     try {
-      cached = JSON.parse(await fs.promises.readFile(cachePath, 'utf-8'));
+      cached = JSON.parse(text);
     } catch (err) {
       throw corrupted('External API cache entry is not valid JSON (fail-fast)', err);
     }

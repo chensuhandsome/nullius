@@ -253,7 +253,9 @@ describe('output files are checked again at write time and streamed outputs fail
       // file system counts it in bytes or in characters.
       // The final name itself is too long:
       expect(() => new OutputBatch(out).json(`${'a'.repeat(260)}.json`, {}))
-        .toThrow(expect.objectContaining({ code: 'UNSAFE_FS', data: expect.objectContaining({ errno: 'ENAMETOOLONG' }) }));
+        .toThrow(expect.objectContaining({
+          code: 'UNSAFE_FS', message: expect.stringMatching(/^looking up .* failed/), data: expect.objectContaining({ errno: 'ENAMETOOLONG' }),
+        }));
       // The final name fits (225 characters), its staging name does not:
       expect(() => new OutputBatch(out).json(`${'a'.repeat(220)}.json`, {}))
         .toThrow(expect.objectContaining({
@@ -769,10 +771,34 @@ describe('identifier resolution does not turn a refused write into a per-identif
       return { recid: {} };
     }) as any);
     const error = errorOf(await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids', identifiers: ['1', '2'] }));
-    expect(error).toMatchObject({ code: 'UPSTREAM_ERROR', data: { invalid_provider_answer: true } });
+    expect(error).toMatchObject({ code: 'UPSTREAM_ERROR', data: { invalid_provider_answer: true, request: { recid: '2' } } });
     expect(error.message).toMatch(/malformed recid/);
     expect(api.getPaper).toHaveBeenCalledTimes(2);
     expect(filesBelow(path.join(projectRoot, 'ids'))).toEqual([]);
+  });
+
+  it.skipIf(process.getuid?.() === 0)('reports a cache entry that cannot be read as such, and a cache directory that cannot be made with its path', async () => {
+    vi.mocked(api.getPaper).mockResolvedValue({ recid: '123' } as any);
+    expect((await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids', identifiers: ['123'] })).isError).toBeFalsy();
+    const cacheRoot = path.join(projectRoot, 'artifacts', 'hep-mcp', 'cache', 'external_api_v1', 'inspire', 'getPaper');
+    const shardDir = path.join(cacheRoot, fs.readdirSync(cacheRoot)[0]!);
+    const entryPath = path.join(shardDir, fs.readdirSync(shardDir)[0]!);
+    fs.chmodSync(entryPath, 0o000);
+    try {
+      const unread = errorOf(await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids2', identifiers: ['123'] }));
+      expect(unread).toMatchObject({ code: 'UNSAFE_FS', message: 'Failed to read external API cache entry (fail-fast)', data: { errno: 'EACCES' } });
+    } finally {
+      fs.chmodSync(entryPath, 0o644);
+    }
+    vi.mocked(api.getPaper).mockResolvedValue({ recid: '456' } as any);
+    fs.chmodSync(cacheRoot, 0o555);
+    try {
+      const unmade = errorOf(await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids3', identifiers: ['456'] }));
+      expect(unmade).toMatchObject({ code: 'UNSAFE_FS', message: 'Failed to resolve external API cache path (fail-fast)', data: { errno: 'EACCES' } });
+      expect(String(unmade.data?.cache_dir)).toMatch(new RegExp(`^${cacheRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/[0-9a-f]{2}$`));
+    } finally {
+      fs.chmodSync(cacheRoot, 0o755);
+    }
   });
 
   it.skipIf(process.getuid?.() === 0)('reports a cache that cannot be written as an environment failure, and publishes nothing', async () => {
@@ -1170,14 +1196,16 @@ describe('round-5 argument, name and response checks', () => {
 
   it('a search export cut inside a page names max_results as the cause, even if the pages would end before the total', async () => {
     vi.mocked(api.search).mockResolvedValueOnce({ total: 5, papers: [P('1'), P('2'), P('3')], has_more: false } as any);
-    const { summary } = await exportResult({ output_dir: 'cut-short', max_results: 2 });
+    const { summary, diagnostics } = await exportResult({ output_dir: 'cut-short', max_results: 2 });
+    expect(diagnostics.hits.map(hit => hit.key)).toEqual(['inspire.search_export.max_results']);
     expect(summary.warnings).toHaveLength(1);
     expect(summary.warnings[0]).toMatch(/stopped at max_results=2 inside a page/);
   });
 
   it('a search export that reaches max_results exactly where INSPIRE\'s pages end blames the pages, not max_results', async () => {
     vi.mocked(api.search).mockResolvedValueOnce({ total: 5, papers: [P('1'), P('2')], has_more: false } as any);
-    const { summary } = await exportResult({ output_dir: 'short-exact', max_results: 2 });
+    const { summary, diagnostics } = await exportResult({ output_dir: 'short-exact', max_results: 2 });
+    expect(diagnostics.hits).toEqual([]);
     expect(summary.warnings).toHaveLength(1);
     expect(summary.warnings[0]).toMatch(/its pages ended after 2 records/);
   });

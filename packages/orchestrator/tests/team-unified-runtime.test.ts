@@ -383,7 +383,7 @@ describe('team unified runtime control paths', () => {
             return toolUseResponse('tu_task_ref', 'orch_run_stage_content', {
               project_root: projectRoot,
               run_id: 'run-task-ref',
-              run_dir: path.join(projectRoot, 'run-task-ref'),
+              run_dir: path.join(projectRoot, 'artifacts', 'runs', 'run-task-ref'),
               content_type: 'section_output',
               content: '{"title":"draft"}',
               task_id: 'task-task-ref',

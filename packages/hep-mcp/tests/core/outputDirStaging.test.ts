@@ -252,10 +252,10 @@ describe('output staging files are created exclusively', () => {
       let thrown: unknown;
       try { batch.json('data.json', { x: 1 }); } catch (error) { thrown = error; }
       // A failure of the file system is the environment's: UNSAFE_FS, naming the step.
-      expect(thrown).toMatchObject({ code: 'UNSAFE_FS', message: 'writing a staging file failed: simulated close failure', data: { errno: 'EIO' } });
+      expect(thrown).toMatchObject({ code: 'UNSAFE_FS', message: 'closing a staging file failed: simulated close failure', data: { errno: 'EIO' } });
       const reported = batch.discard(thrown) as Error & { code?: string; data?: { staging_left?: string[] } };
       expect(reported.code).toBe('UNSAFE_FS');
-      expect(reported.message).toMatch(/^writing a staging file failed: simulated close failure; staging files could not be removed/);
+      expect(reported.message).toMatch(/^closing a staging file failed: simulated close failure; staging files could not be removed/);
       expect(reported.data?.staging_left).toHaveLength(1);
     });
   });
@@ -299,7 +299,9 @@ describe('output staging files are created exclusively', () => {
       const file = batch.openFile('records.jsonl', 'application/x-ndjson');
       file.write('{"a":1}\n');
       writeFault.armed = true;
-      expect(() => file.write('{"b":2}\n')).toThrow('simulated write failure');
+      expect(() => file.write('{"b":2}\n')).toThrow(expect.objectContaining({
+        code: 'UNSAFE_FS', message: 'writing a staging file failed: simulated write failure', data: expect.objectContaining({ errno: 'ENOSPC' }),
+      }));
       expect(() => file.finish()).toThrow(/already finished or discarded/);
       expect(fs.readdirSync(out.dir)).toEqual([]);
       const cause = new Error('cause');
@@ -318,7 +320,7 @@ describe('output staging files are created exclusively', () => {
         writeFault.armed = true;
         let thrown: unknown;
         try { file.write('{"a":1}\n'); } catch (error) { thrown = error; }
-        expect(thrown).toMatchObject({ code: 'UNSAFE_FS', message: 'writing a staging file failed: simulated write failure' });
+        expect(thrown).toMatchObject({ code: 'UNSAFE_FS', message: 'writing a staging file failed: simulated write failure', data: { errno: 'ENOSPC' } });
         const reported = batch.discard(thrown) as Error & { code?: string; data?: { staging_left?: string[] } };
         expect(reported.code).toBe('UNSAFE_FS');
         expect(reported.message).toMatch(/^writing a staging file failed: simulated write failure; staging files could not be removed/);
@@ -371,7 +373,7 @@ describe('output staging files are created exclusively', () => {
       const before = closeCount.calls;
       expect(() => file.finish()).toThrow(expect.objectContaining({
         code: 'UNSAFE_FS',
-        message: 'finishing a staging file failed: simulated fsync failure',
+        message: 'flushing a staging file failed: simulated fsync failure',
         data: expect.objectContaining({ errno: 'EIO' }),
       }));
       expect(closeCount.calls - before).toBe(1);

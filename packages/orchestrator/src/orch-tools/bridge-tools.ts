@@ -47,27 +47,55 @@ function resolvePathWithinParent(parentDir: string, candidatePath: string, field
 // The entries of a run directory these tools read and write. None may be a
 // symbolic link, nor may any entry directly inside artifacts/ or attempts/: a
 // link there would carry a staged artifact, a computation result or an attempt
-// archive outside the run directory. (The computation workspace's own paths
+// archive outside the run directory. Each one present must also be what the
+// tools expect (a directory, or a file for run_origin.json), so a misplaced
+// file is refused here rather than failing a later write. (The computation workspace's own paths
 // are checked when its manifest is materialized and prepared.)
 const RUN_DIRECTORY_ENTRIES = ['artifacts', 'attempts', 'computation', 'run_origin.json'];
 const RUN_DIRECTORY_LISTED = ['artifacts', 'attempts'];
 
+function lstatIfPresent(entry: string, runDir: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(entry);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return null;
+    throw unsafeFs(`cannot inspect ${entry}: ${error instanceof Error ? error.message : String(error)}`, {
+      run_dir: runDir,
+      path: entry,
+      ...(typeof code === 'string' ? { errno: code } : {}),
+    });
+  }
+}
+
 function assertRunDirectoryEntriesAreReal(runDir: string): void {
+  const run = lstatIfPresent(runDir, runDir);
+  if (run !== null && !run.isDirectory()) {
+    throw unsafeFs('run_dir must name a directory', { run_dir: runDir });
+  }
   for (const entry of RUN_DIRECTORY_ENTRIES) {
     assertNoSymlinkComponents(runDir, path.join(runDir, entry), `run_dir/${entry}`, { allowMissingLeaf: true });
+    const stat = lstatIfPresent(path.join(runDir, entry), runDir);
+    const wantsDirectory = entry !== 'run_origin.json';
+    if (stat !== null && stat.isDirectory() !== wantsDirectory) {
+      throw unsafeFs(`run_dir/${entry} must be a ${wantsDirectory ? 'directory' : 'file'}`, { run_dir: runDir, path: path.join(runDir, entry) });
+    }
   }
   for (const dir of RUN_DIRECTORY_LISTED) {
+    if (lstatIfPresent(path.join(runDir, dir), runDir) === null) continue;
     let names: string[];
     try {
       names = fs.readdirSync(path.join(runDir, dir));
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
-      throw error;
+      throw unsafeFs(`cannot list run_dir/${dir}: ${error instanceof Error ? error.message : String(error)}`, {
+        run_dir: runDir,
+        ...(typeof code === 'string' ? { errno: code } : {}),
+      });
     }
     for (const name of names) {
       const entry = path.join(runDir, dir, name);
-      if (fs.lstatSync(entry).isSymbolicLink()) {
+      if (lstatIfPresent(entry, runDir)?.isSymbolicLink()) {
         throw unsafeFs(`run_dir/${dir}/${name} must not be a symbolic link`, { run_dir: runDir, symlink_path: entry });
       }
     }
@@ -97,7 +125,14 @@ function admitProjectRun(params: { project_root: string; run_id: string; run_dir
     throw invalidParams('project_root must name an existing directory', { project_root: projectRoot });
   }
   const runDir = resolveProjectContainedPath(projectRoot, params.run_dir, 'run_dir');
-  const ownRunDir = runDirFor(projectRoot, params.run_id);
+  let ownRunDir: string;
+  try {
+    ownRunDir = runDirFor(projectRoot, params.run_id);
+  } catch (error) {
+    // An invalid run id, or one a historical run owns: the caller's to change.
+    if (error instanceof McpError) throw error;
+    throw invalidParams(error instanceof Error ? error.message : String(error), { project_root: projectRoot, run_id: params.run_id });
+  }
   if (runDir !== ownRunDir) {
     throw invalidParams('run_dir must be the run\'s own directory, <project_root>/artifacts/runs/<run_id>', {
       project_root: projectRoot,

@@ -117,8 +117,8 @@ function classifyIdentifier(raw: string): { kind: IdentifierType; normalized: st
 }
 
 // Only a failed INSPIRE lookup becomes an item-level status: the cached-call
-// boundary (cachedExternalApiJsonCall) turns every error raised by the remote
-// call into one of these codes. Anything else (a refused or failed write of
+// boundary (cachedExternalApiJsonCall) reports every non-McpError raised by
+// the remote call as UPSTREAM_ERROR, and the client raises these codes itself. Anything else (a refused or failed write of
 // the output files, a corrupted cache entry, an internal fault) aborts the
 // whole call, and so does an answer that cannot be used (invalidProviderAnswer):
 // reporting it per identifier would return success while the recorded
@@ -267,6 +267,10 @@ export async function hepInspireResolveIdentifiers(params: {
       });
       return cached.response;
     } catch (err) {
+      // An unusable answer ends the call; it names the request that got it.
+      if (isInvalidProviderAnswer(err)) {
+        throw invalidProviderAnswer((err as McpError).message, { ...((err as McpError).data as Record<string, unknown>), request });
+      }
       if (!isProviderFailure(err)) throw err;
       const failure = err as McpError;
       indexCall({

@@ -481,6 +481,7 @@ export class OutputBatch {
     }
     let identity: FileIdentity | null = null;
     let failure: unknown = null;
+    let failedStep = 'writing a staging file';
     try {
       identity = identityOfDescriptor(fd);
       this.stagingFiles.set(temp, { name, identity });
@@ -494,13 +495,16 @@ export class OutputBatch {
     try {
       fs.closeSync(fd);
     } catch (error) {
-      failure ??= error;
+      if (failure === null) {
+        failure = error;
+        failedStep = 'closing a staging file';
+      }
     }
     if (identity === null) throw unidentifiedStagingError(this.out, temp, failure);
     if (failure !== null) {
       // If this removal fails the file stays tracked, and discard reports it.
       this.removeStaging(temp);
-      throw writeFailure(this.out, 'writing a staging file', temp, failure);
+      throw writeFailure(this.out, failedStep, temp, failure);
     }
     this.staged.push({ name, temp, target, identity });
   }
@@ -564,6 +568,7 @@ export class OutputBatch {
     const finish = (): OutputArtifactRef => {
       if (!open) throw notOpen();
       let failure: unknown = null;
+      let failedStep = 'flushing a staging file';
       try {
         fs.fsyncSync(fd);
       } catch (error) {
@@ -571,11 +576,14 @@ export class OutputBatch {
       }
       // Always close, keeping the first error.
       const closeFailure = close();
-      failure ??= closeFailure;
+      if (failure === null && closeFailure !== null) {
+        failure = closeFailure;
+        failedStep = 'closing a staging file';
+      }
       this.unfinished.delete(abort);
       if (failure !== null) {
         this.removeStaging(temp);
-        throw writeFailure(this.out, 'finishing a staging file', temp, failure);
+        throw writeFailure(this.out, failedStep, temp, failure);
       }
       this.staged.push({ name, temp, target, identity });
       return outputArtifactRef(this.out, name, mimeType);

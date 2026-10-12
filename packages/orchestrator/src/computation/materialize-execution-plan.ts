@@ -259,9 +259,11 @@ function materializeProviderBackedManifest(
   bundle: ProviderBackedMethodBundle,
 ): MaterializedExecutionPlan {
   const computationDir = path.join(runDir, 'computation');
-  // Checked here too, so the manifest written below cannot land elsewhere
-  // through a linked run or computation directory when the method has no files.
-  assertNoSymlinkComponents(runDir, computationDir, 'computation directory', { allowMissingLeaf: true });
+  const manifestPath = path.join(computationDir, 'manifest.json');
+  // Checked before the first write, like the method's files: the manifest is
+  // neither read nor written through a link in the run directory, also when
+  // the method has no files.
+  assertNoSymlinkComponents(runDir, manifestPath, 'computation/manifest.json', { allowMissingLeaf: true });
   writeProviderFiles(runDir, computationDir, bundle.files);
   const tools = new Set(bundle.phases.map(phase => phase.tool));
   const fresh = assertComputationManifestValid({
@@ -303,7 +305,6 @@ function materializeProviderBackedManifest(
     outputs: [...new Set(bundle.phases.flatMap(phase => phase.outputs))],
     created_at: utcNowIso(),
   });
-  const manifestPath = path.join(computationDir, 'manifest.json');
   const manifest = keepStagedCreatedAt(manifestPath, fresh);
   writeJsonAtomic(manifestPath, manifest);
   return { manifestPath, manifest };

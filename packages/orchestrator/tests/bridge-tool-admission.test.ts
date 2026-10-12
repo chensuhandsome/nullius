@@ -174,17 +174,52 @@ describe('the computation bridge tools work only in a run directory inside the a
     expect(fs.readdirSync(outside)).toEqual([]);
   });
 
-  it.each(TOOLS)('%s refuses a run directory whose artifacts/ is a symbolic link, and writes nothing through it', async (tool) => {
-    const { parent, root, alias, handoffPath } = projectWithHandoff();
-    const outside = path.join(parent, 'outside');
-    fs.mkdirSync(outside);
+  it.each(TOOLS.flatMap(tool => ['artifacts', 'attempts', 'computation'].map(entry => [tool, entry])))(
+    '%s refuses a run directory whose %s/ is a symbolic link, and writes nothing through it',
+    async (tool, entry) => {
+      const { parent, root, alias, handoffPath } = projectWithHandoff();
+      const outside = path.join(parent, 'outside');
+      fs.mkdirSync(outside);
+      const runDir = path.join(root, 'artifacts', 'runs', 'r1');
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.symlinkSync(outside, path.join(runDir, entry), 'dir');
+      const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
+      expect(result.isError).toBe(true);
+      expect(result.payload.error.message).toBe(`run_dir/${entry} must not traverse a symbolic link`);
+      expect(fs.readdirSync(outside)).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['the run directory itself is a file', '', 'run_dir must name a directory'],
+    ['artifacts is a file', 'artifacts', 'run_dir/artifacts must be a directory'],
+    ['the launch stamp mirror is a directory', 'run_origin.json', 'run_dir/run_origin.json must be a file'],
+  ])('refuses a run directory where %s, before any write', async (_label, entry, message) => {
+    const { root, alias, handoffPath } = projectWithHandoff();
     const runDir = path.join(root, 'artifacts', 'runs', 'r1');
-    fs.mkdirSync(runDir, { recursive: true });
-    fs.symlinkSync(outside, path.join(runDir, 'artifacts'), 'dir');
-    const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
-    expect(result.isError).toBe(true);
-    expect(result.payload.error.message).toMatch(/run_dir\/artifacts must not traverse a symbolic link/);
-    expect(fs.readdirSync(outside)).toEqual([]);
+    if (entry === '') {
+      fs.mkdirSync(path.dirname(runDir), { recursive: true });
+      fs.writeFileSync(runDir, 'x\n');
+    } else if (entry === 'run_origin.json') {
+      fs.mkdirSync(path.join(runDir, entry), { recursive: true });
+    } else {
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(path.join(runDir, entry), 'x\n');
+    }
+    for (const tool of TOOLS) {
+      const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
+      expect(result.payload.error, tool).toMatchObject({ code: 'UNSAFE_FS', message });
+    }
+  });
+
+  it('refuses a run id that a historical run owns as a parameter error, for every tool', async () => {
+    const { root, alias, handoffPath } = projectWithHandoff();
+    fs.mkdirSync(path.join(root, 'team', 'runs', 'r1'), { recursive: true });
+    for (const tool of TOOLS) {
+      const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
+      expect(result.payload.error, tool).toMatchObject({ code: 'INVALID_PARAMS', message: expect.stringMatching(/^HISTORICAL_RUN_READ_ONLY/) });
+    }
+    expect(fs.existsSync(path.join(root, 'artifacts'))).toBe(false);
   });
 
   it.each([
@@ -262,6 +297,28 @@ describe('a computation run through an alias of the project root', () => {
     // Nothing was written next to the alias.
     expect(fs.readdirSync(project.parent).sort()).toEqual(['alias', 'r-full-handoff.json', 'real']);
   });
+
+  it('requests, accepts and honours an A3 approval for a run reached through the alias', async () => {
+    const project = aliasedProject();
+    expect((await call('orch_run_create', { project_root: project.alias, run_id: 'r-a3', workflow_id: 'computation' })).isError).toBe(false);
+    writeJson(path.join(project.root, '.nullius', 'approval_policy.json'), { require_approval_for: { compute_runs: true } });
+    const runDir = await stagedRun(project, 'r-a3', handoff([{ path: 'scripts/run.py', content: WRITE_VALUE }], 'scripts/run.py', ['outputs/value.txt']));
+    const planned = await call('orch_run_plan_computation', { project_root: project.alias, run_id: 'r-a3', run_dir: runDir });
+    expect(planned.payload.status, JSON.stringify(planned.payload)).toBe('requires_approval');
+    const canonicalRun = path.join(project.root, 'artifacts', 'runs', 'r-a3');
+    expect(fs.existsSync(path.join(canonicalRun, 'approvals', String(planned.payload.approval_id)))).toBe(true);
+    const approved = await call('orch_run_approve', {
+      _confirm: true, project_root: project.alias, approval_id: planned.payload.approval_id,
+      approval_packet_sha256: planned.payload.approval_packet_sha256, note: 'Approve the run reached through the alias.',
+    });
+    expect(approved.isError, JSON.stringify(approved.payload)).toBe(false);
+    const executed = await call('orch_run_execute_manifest', {
+      _confirm: true, project_root: project.alias, run_id: 'r-a3', run_dir: runDir, manifest_path: String(planned.payload.manifest_path),
+    });
+    expect(executed.isError, JSON.stringify(executed.payload)).toBe(false);
+    expect(fs.readFileSync(path.join(canonicalRun, 'computation', 'outputs', 'value.txt'), 'utf-8')).toBe('5\n');
+    expect(fs.existsSync(path.join(canonicalRun, 'run_origin.json'))).toBe(true);
+  });
 });
 
 describe('workspace paths are refused by segment, not by substring', () => {
@@ -330,6 +387,20 @@ describe('a method is written only into the run directory', () => {
     expect(planned.isError).toBe(true);
     expect(planned.payload.error.message).toMatch(/must not traverse a symbolic link/);
     expect(fs.readFileSync(outsideFile, 'utf-8')).toBe('original\n');
+  });
+
+  it.each(['manifest.json', 'execution_plan_v1.json'])('refuses a planning output whose own target %s is a symbolic link, leaving its target untouched', async (name) => {
+    const project = aliasedProject();
+    const runDir = await stagedRun(project, 'r-out', handoff([{ path: 'scripts/run.py', content: WRITE_VALUE }], 'scripts/run.py', ['outputs/value.txt']));
+    const outsideFile = path.join(project.parent, 'outside.json');
+    fs.writeFileSync(outsideFile, '{}\n');
+    fs.mkdirSync(path.join(runDir, 'computation'), { recursive: true });
+    fs.symlinkSync(outsideFile, path.join(runDir, 'computation', name));
+    const planned = await call('orch_run_plan_computation', { project_root: project.alias, run_id: 'r-out', run_dir: runDir, dry_run: true });
+    expect(planned.isError).toBe(true);
+    expect(planned.payload.error.message).toBe(`computation/${name} must not traverse a symbolic link`);
+    expect(fs.readFileSync(outsideFile, 'utf-8')).toBe('{}\n');
+    expect(fs.readdirSync(path.join(runDir, 'computation'))).toEqual([name]);
   });
 
   it('refuses a computation directory that is a symbolic link even when the method has no files', async () => {

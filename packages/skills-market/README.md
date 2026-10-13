@@ -36,6 +36,12 @@ Supported platforms:
 - Kimi Code
 - OpenCode
 
+For computational Julia libraries, the catalog includes
+[`julia-package`](../../skills/julia-package/SKILL.md) for public interfaces,
+numerical contracts and lifecycle checks, and
+[`julia-perf`](../../skills/julia-perf/SKILL.md) for kernel discipline and
+performance measurements. Both support standalone use.
+
 ## Layout
 
 - `packages/`: package metadata (`*.json`)

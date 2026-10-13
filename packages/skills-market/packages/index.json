@@ -1,6 +1,6 @@
 {
   "index_version": "1.4.0",
-  "updated_at": "2026-07-08T00:00:00Z",
+  "updated_at": "2026-10-13T00:00:00Z",
   "packages": [
     "citation-triangulation.json",
     "claim-grounding.json",
@@ -11,12 +11,13 @@
     "figure-hygiene.json",
     "gemini-cli-runner.json",
     "hep-calc.json",
-    "hep-mcp.json",
     "hep-mcp-usage.json",
+    "hep-mcp.json",
     "idea-allocation.json",
     "idea-generation.json",
     "idea-pairwise-match.json",
     "idea-posterior.json",
+    "julia-package.json",
     "julia-perf.json",
     "kimi-cli-runner.json",
     "literature-graph-builder.json",

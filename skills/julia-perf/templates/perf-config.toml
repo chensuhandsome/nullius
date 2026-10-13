@@ -1,34 +1,41 @@
-# julia-perf config template
+# Copy to the candidate package root and customize suite/source/input paths
+# before running. This template is not a benchmark of the skill directory.
 
 [mode]
 # standalone | ecosystem | auto
 mode = "auto"
 
 [target]
-module = "MyModule"
-functions = ["hotpath1", "hotpath2"]
+# Root of candidate package; source hashes can differ from the baseline.
+source_root = "."
+source_files = ["src", "Project.toml"]
 
 [benchmark]
 # Path to a Julia file that defines benchmark workload(s).
 suite_file = "bench-suite-template.jl"
-# Optional baseline artifact.
+# baseline.json produced by --save-baseline; required for comparison.
 baseline_file = ""
+input_files = [] # Include external benchmark datasets/configurations.
 # Gate run defaults.
 samples = 100
 seconds = 30
 timeout_seconds = 600
 
 [benchmark.evals]
-# auto: tiered policy from benchmark protocol.
-# fixed: always use fixed_value.
-policy = "auto"
-tier_1_threshold_ns = 1000
-tier_2_threshold_ns = 1000000
+# fixed: config controls evals; suite: each Benchmark declares evals explicitly.
+# Mutating workloads reset in setup and use evals=1.
+policy = "suite"
 fixed_value = 1
+
+[regression]
+# Declare only project-justified thresholds. Empty means UNVERIFIED, not PASS.
+# max_time_ratio = ...
+# max_memory_ratio = ...
+# max_memory_bytes = ...
+# max_allocations = ...
 
 [output]
 out_dir = ".julia-perf/runs/latest"
-write_diagnostics_markdown = true
 
 [integration]
 # Used when mode resolves to ecosystem.

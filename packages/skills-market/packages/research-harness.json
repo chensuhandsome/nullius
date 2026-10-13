@@ -17,7 +17,8 @@
     "markdown-hygiene": ">=0.1.0 <0.2.0",
     "numerical-reliability-gate": ">=0.1.0 <0.2.0",
     "research-integrity": ">=0.1.0 <0.2.0",
-    "research-team": ">=0.1.0 <0.2.0"
+    "research-team": ">=0.1.0 <0.2.0",
+    "julia-package": ">=0.1.0 <0.2.0"
   },
   "install": {
     "claude_code": "Packaged install copies this skill into the target Claude Code skills root. Installed copies do not auto-follow repo updates; reinstall or rerun install with --force to refresh. For live repo-tracking development installs, use packages/skills-market/scripts/install_symlink_claude_code.sh against the monorepo skills root; that helper symlinks all market-listed skill-pack entries into the target Claude Code skills root, not only research-harness.",

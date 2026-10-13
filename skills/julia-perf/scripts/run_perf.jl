@@ -86,7 +86,7 @@ function materialize_output_dir(raw_dir)
     if basename(resolved) == "latest"
         ispath(resolved) && !islink(resolved) && error("latest exists as a real path; refusing to replace it")
         mkpath(dirname(resolved))
-        run_dir = mktempdir(dirname(resolved); prefix=Dates.format(now(UTC), "yyyymmddTHHMMSS") * "-")
+        run_dir = mktempdir(dirname(resolved); prefix=Dates.format(now(UTC), "yyyymmddTHHMMSS") * "-", cleanup=false)
         islink(resolved) && rm(resolved)
         symlink(basename(run_dir), resolved)
         return run_dir, resolved
@@ -282,6 +282,54 @@ end
 
 comparison_signature(manifest) = Dict(k => manifest[k] for k in ("suite_sha256", "runner_sha256", "runtime", "protocol", "case_evals", "input_files"))
 
+valid_sha256(value) = value isa AbstractString && occursin(r"^[0-9a-f]{64}$", value)
+
+function validate_hash_map(value, label)
+    value isa AbstractDict || error("baseline $label must be a file-hash object")
+    for (path, digest) in value
+        path isa AbstractString && !isempty(strip(path)) && valid_sha256(digest) || error("invalid baseline $label entry")
+    end
+end
+
+function validate_baseline_manifest(manifest)
+    manifest isa AbstractDict || error("baseline manifest is missing")
+    required = ("schema_version", "tool", "timestamp_utc", "config_sha256", "suite_sha256",
+        "runner_sha256", "source_root", "source_files", "git", "runtime", "protocol",
+        "case_evals", "input_files", "output_dir", "limitations")
+    all(key -> haskey(manifest, key), required) || error("baseline manifest is missing provenance fields")
+    version = manifest["schema_version"]
+    version isa Integer && !(version isa Bool) && version == 2 || error("invalid baseline manifest schema")
+    manifest["tool"] == "julia-perf" || error("invalid baseline manifest tool")
+    stamp = manifest["timestamp_utc"]
+    stamp isa AbstractString && tryparse(DateTime, stamp, dateformat"yyyy-mm-ddTHH:MM:SSZ") !== nothing || error("invalid baseline timestamp")
+    for key in ("config_sha256", "suite_sha256", "runner_sha256")
+        valid_sha256(manifest[key]) || error("invalid baseline $key")
+    end
+    for key in ("source_root", "output_dir")
+        manifest[key] isa AbstractString && !isempty(strip(manifest[key])) || error("invalid baseline $key")
+    end
+    validate_hash_map(manifest["source_files"], "source_files")
+    validate_hash_map(manifest["input_files"], "input_files")
+    git = manifest["git"]
+    git isa AbstractDict && haskey(git, "revision") && haskey(git, "dirty") || error("invalid baseline git evidence")
+    if git["revision"] === nothing
+        git["dirty"] === nothing || error("invalid unavailable baseline git evidence")
+    else
+        git["revision"] isa AbstractString && occursin(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$", git["revision"]) && git["dirty"] isa Bool || error("invalid baseline git revision/status")
+        all(key -> haskey(git, key) && valid_sha256(git[key]), ("status_sha256", "diff_sha256")) || error("baseline git evidence lacks status/diff hashes")
+    end
+    for key in ("runtime", "protocol", "case_evals")
+        manifest[key] isa AbstractDict && !isempty(manifest[key]) || error("invalid baseline $key")
+    end
+    for (name, evals) in manifest["case_evals"]
+        name isa AbstractString && !isempty(strip(name)) || error("invalid baseline case name")
+        positive_number(evals, "baseline case evals"; integer=true)
+    end
+    limits = manifest["limitations"]
+    limits isa AbstractVector && !isempty(limits) && all(x -> x isa AbstractString && !isempty(strip(x)), limits) || error("invalid baseline limitations")
+    return manifest
+end
+
 function validate_rows(rows)
     rows isa AbstractVector && !isempty(rows) || error("baseline rows must be a nonempty array")
     indexed = Dict{String,Any}()
@@ -307,10 +355,10 @@ end
 function load_baseline(path)
     path !== nothing && isfile(path) || error("baseline file is missing")
     data = JSON3.read(read(path, String), Dict{String,Any})
-    get(data, "schema_version", nothing) == 2 && get(data, "kind", nothing) == "julia-perf-baseline" || error("baseline lacks the required provenance schema")
+    version = get(data, "schema_version", nothing)
+    version isa Integer && !(version isa Bool) && version == 2 && get(data, "kind", nothing) == "julia-perf-baseline" || error("baseline lacks the required provenance schema")
     manifest = get(data, "manifest", nothing)
-    manifest isa AbstractDict || error("baseline manifest is missing")
-    comparison_signature(manifest)
+    validate_baseline_manifest(manifest)
     rows = validate_rows(get(data, "rows", nothing))
     evals = manifest["case_evals"]
     Set(keys(rows)) == Set(keys(evals)) || error("baseline row names differ from its protocol")

@@ -78,6 +78,12 @@ and candidate. Samples and seconds come from the config, with `gctrial=true`,
    current metrics. No universal regression tolerance is supplied.
 
 Missing, corrupt, empty, duplicate, unmatched, or incomparable baselines fail.
+The embedded manifest must retain well-formed schema/tool, timestamp, config,
+source-root/file hashes, Git evidence, output and limitation fields as well as
+the comparison signature. Source/config hashes can differ between reference
+and candidate; their absence is not a supported way to make a comparison pass.
+Format checks do not authenticate a caller-supplied record or prove undeclared
+inputs were captured.
 Historical arrays lacking provenance remain readable as historical evidence;
 they cannot authorize a new comparison. Absolute allocation/memory metrics
 must be present; historical deltas never substitute for them. No thresholds
@@ -125,6 +131,9 @@ Output artifact writes are atomic. An existing output with result artifacts is
 rejected to prevent stale verdicts. `latest` may be replaced only when it is a
 symlink; an existing real directory is preserved. Source/input/environment
 hashes are checked again after sampling to detect changes during a run.
+Directories published through `latest` persist after the Julia process exits,
+including failed-run summaries; they are evidence outputs, not temporary storage
+registered for process-exit cleanup.
 
 Declare source files explicitly, including code loaded outside `src`; git
 revision alone does not identify dirty/untracked source bytes. Input/source

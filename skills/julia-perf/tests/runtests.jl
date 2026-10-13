@@ -114,6 +114,29 @@ end
         manifest, rows = load_baseline(joinpath(out,"baseline.json"))
         @test haskey(manifest["runtime"], "blas_threads")
         @test length(rows) == 1
+        recorded = JSON3.read(read(joinpath(out,"baseline.json"), String), Dict{String,Any})
+        invalid = joinpath(dir, "invalid-baseline.json")
+        for key in keys(recorded["manifest"])
+            malformed = deepcopy(recorded)
+            delete!(malformed["manifest"], key)
+            write_json(invalid, malformed)
+            @test_throws ErrorException load_baseline(invalid)
+        end
+        for (key, value) in (("source_files", Dict("source.jl" => "missing-hash")),
+            ("source_files", String[]), ("source_root", nothing),
+            ("config_sha256", "invalid"), ("timestamp_utc", "not-a-date"),
+            ("git", Dict()), ("limitations", "omitted"), ("case_evals", Dict("x" => true)))
+            malformed = deepcopy(recorded)
+            malformed["manifest"][key] = value
+            write_json(invalid, malformed)
+            @test_throws ErrorException load_baseline(invalid)
+        end
+        altered_source = deepcopy(recorded)
+        altered_source["manifest"]["source_root"] = joinpath(dir, "another-checkout")
+        altered_source["manifest"]["source_files"] = Dict("source.jl" => repeat("a", 64))
+        write_json(invalid, altered_source)
+        changed_manifest, _ = load_baseline(invalid)
+        @test comparison_signature(changed_manifest) == comparison_signature(manifest)
         cfg["benchmark"]["baseline_file"] = "base/baseline.json"
         open(io -> TOML.print(io, cfg), config, "w")
         out2 = joinpath(dir, "comparison"); mkpath(out2)
@@ -127,12 +150,31 @@ end
         out4 = joinpath(dir,"pass"); mkpath(out4)
         @test worker_main(Dict("save_baseline"=>false),cfg,config,out4) == 0
         @test JSON3.read(read(joinpath(out4,"summary.json"),String)).claim_verified == false
+        # Observe durable latest outputs from a separate parent after the whole
+        # public runner exits; in-process checks cannot detect atexit cleanup.
+        latest = joinpath(dir, "latest")
+        cfg["benchmark"]["timeout_seconds"] = 30.0
+        open(io -> TOML.print(io, cfg), config, "w")
+        runner = abspath(joinpath(@__DIR__, "..", "scripts", "run_perf.jl"))
+        public_command = `$(Base.julia_cmd()) --startup-file=no --project=$(dirname(Base.active_project())) $runner --config $config --out-dir $latest --save-baseline`
+        @test success(pipeline(public_command; stdout=devnull, stderr=devnull))
+        @test islink(latest) && isdir(latest)
+        @test all(name -> isfile(joinpath(latest, name)), ("baseline.json", "summary.json", "manifest.json", "benchmarks.json"))
+        baseline_dir = realpath(latest)
+        write(suite, "using BenchmarkTools\nJULIA_PERF_BENCHMARKS=[\"failure\" => @benchmarkable(error(\"deliberate fixture failure\"), evals=1)]\n")
+        @test !success(pipeline(public_command; stdout=devnull, stderr=devnull))
+        @test islink(latest) && isdir(latest) && realpath(latest) != baseline_dir
+        @test isfile(joinpath(baseline_dir, "baseline.json"))
+        @test all(name -> isfile(joinpath(latest, name)), ("summary.json", "manifest.json", "benchmarks.json"))
+        @test JSON3.read(read(joinpath(latest,"summary.json"),String)).verdict == "FAIL"
         write(suite, "JULIA_PERF_BENCHMARKS=[]\n")
         out5 = joinpath(dir,"empty"); mkpath(out5)
         @test worker_main(opts,cfg,config,out5) == 1
         @test !isfile(joinpath(out5,"baseline.json"))
         # A short supervisor deadline deterministically covers loading/startup;
         # there are no assertions about measured kernel wall times.
+        cfg["benchmark"]["timeout_seconds"] = 0.2
+        open(io -> TOML.print(io, cfg), config, "w")
         @test main(["--config",config,"--out-dir",joinpath(dir,"timeout"),"--save-baseline"]) == 1
         status = JSON3.read(read(joinpath(dir,"timeout","summary.json"),String))
         @test status.hard_failures[1].check_id == "timeout"

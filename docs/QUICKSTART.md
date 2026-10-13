@@ -267,3 +267,5 @@ The owning account can read the authority key, including code executed by a memb
 The configured token window is frozen before the original reviewer subprocess starts and bound into its authenticated runtime observation. Changing historical window metadata cannot admit that receipt. Older observations without this policy remain readable and require a fresh execution for capacity acceptance.
 
 Local directory links leave notebook dependency closure pending and prevent acceptance. The complete-original joint audit requires exact substantive original-byte anchors for every interval; a reasoning checkbox alone cannot supply coverage.
+
+Research output preservation, path classification, read-only inventory, commit checks and automatic origin-snapshot admission are described in [Research output storage](RUN_STORAGE.md). No storage command deletes data, rewrites history or expires recovery records.

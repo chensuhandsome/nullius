@@ -603,3 +603,5 @@ The owning account can read the authority key, including code executed by a memb
 The configured token window is frozen before the original reviewer subprocess starts and bound into its authenticated runtime observation. Changing historical window metadata cannot admit that receipt. Older observations without this policy remain readable and require a fresh execution for capacity acceptance.
 
 Local directory links leave notebook dependency closure pending and prevent acceptance. The complete-original joint audit requires exact substantive original-byte anchors for every interval; a reasoning checkbox alone cannot supply coverage.
+
+Research storage fixtures cover semantic classifications, aggregate admission, bundle content detection, duplicate index objects, zero-write inspection and byte-exact restoration. Run `python3 -m pytest skills/research-harness/tests/test_run_storage.py` and `pnpm -C packages/orchestrator test tests/run-origin-foreign-paths.test.ts tests/validity-ledger.test.ts tests/traceability-stage3.test.ts`. See [Research output storage](RUN_STORAGE.md).

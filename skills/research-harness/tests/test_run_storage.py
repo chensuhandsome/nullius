@@ -1648,3 +1648,228 @@ def test_skill_documents_exactly_the_implemented_subcommands_and_statuses():
         assert f"`{status}`" in section, status
     for phrase in ("bulk_manifest.json", "git worktree remove", "refs/nullius/runs", "5 MiB"):
         assert phrase in section, phrase
+
+
+def test_declared_value_overrides_size_and_store_captures_small_outputs(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path, {"path_rules": [
+        {"path": "artifacts/runs/r1", "disposition": "store", "reason": "reproducible intermediates"},
+        {"path": "artifacts/runs/r1/input.json", "disposition": "git", "reason": "unique frozen input"},
+        {"path": "artifacts/runs/r1/solver.py", "disposition": "git", "reason": "source implementation"},
+        {"path": "artifacts/runs/r1/result.json", "disposition": "git", "reason": "necessary result"},
+    ]})
+    run = repo / "artifacts/runs/r1"
+    run.mkdir()
+    (run / "array.txt").write_text("regenerable\n")
+    (run / "input.json").write_bytes(blob(THRESHOLD + 1))
+    (run / "solver.py").write_text("value = 1\n")
+    (run / "result.json").write_text('{"value": 1}\n')
+    doc = stow_json(run, repo, monkeypatch, capsys)
+    assert [r["path"] for r in doc["stowed"]] == ["array.txt"]
+    sh("git", "add", "-A", cwd=repo)
+    assert run_main(["check", "--staged", "--strict"], repo, monkeypatch) == rs.EXIT_OK
+    assert (run / "input.json").stat().st_mode & stat.S_IWUSR
+    original = (run / "array.txt").read_bytes()
+    (run / "array.txt").unlink()
+    assert run_main(["verify", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    assert run_main(["materialize", str(run)], repo, monkeypatch) == rs.EXIT_OK
+    assert (run / "array.txt").read_bytes() == original
+
+
+def test_admission_uses_index_bytes_and_checks_small_local_files_outside_runs(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path, {"path_rules": [
+        {"path": "backups", "disposition": "local", "reason": "off-repository backups", "retention_days": 30},
+        {"path": "artifacts/runs/r1/array.json", "disposition": "store", "reason": "regenerable samples"},
+    ]})
+    run = repo / "artifacts/runs/r1"
+    run.mkdir()
+    (run / "array.json").write_text("[]")
+    (repo / "backups").mkdir()
+    (repo / "backups/archive.txt").write_text("backup")
+    sh("git", "add", "-A", cwd=repo)
+    (run / "array.json").unlink()  # staged bytes still enter the next commit
+    assert run_main(["check", "--staged", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    doc = json.loads(capsys.readouterr().out)
+    assert {r["reason"] for r in doc["admission_findings"]} == {"declared_store", "declared_local"}
+
+
+@pytest.mark.parametrize("metric", ["bytes", "files"])
+def test_many_small_outputs_trigger_aggregate_admission(tmp_path, monkeypatch, capsys, metric):
+    repo = make_repo(tmp_path, {"admission_max_bytes": 10 if metric == "bytes" else 100,
+                                "admission_max_files": 1 if metric == "files" else 100})
+    run = repo / "artifacts/runs/r1"
+    run.mkdir()
+    for name in ("a.txt", "b.txt"):
+        (run / name).write_text("same data")
+    sh("git", "add", "-A", cwd=repo)
+    assert run_main(["check", "--staged", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["staged_bulk"] == []
+    assert doc["admission_limits"] == [{"metric": metric, "observed": 18 if metric == "bytes" else 2,
+                                         "maximum": 10 if metric == "bytes" else 1}]
+
+
+def test_git_bundle_is_detected_from_bytes_without_extension(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    sh("git", "bundle", "create", "saved.data", "HEAD", cwd=repo)
+    sh("git", "add", "saved.data", cwd=repo)
+    assert run_main(["check", "--snapshot", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    doc = json.loads(capsys.readouterr().out)
+    assert {r["reason"] for r in doc["admission_findings"]} == {"git_backup_archive"}
+    assert (repo / "saved.data").read_bytes().startswith(b"# v2 git bundle")
+
+
+def test_snapshot_checks_unstaged_output_before_any_git_object_write(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    run = repo / "artifacts/runs/r1"
+    run.mkdir()
+    f = run / "output.txt"
+    f.write_text("old\n")
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "small evidence", cwd=repo)
+    f.write_bytes(blob(THRESHOLD))
+    before = {str(p.relative_to(repo)): p.read_bytes() for p in repo.rglob("*") if p.is_file()}
+    monkeypatch.setattr(rs, "case_insensitive", lambda *a: pytest.fail("read-only commands must not probe"))
+    assert run_main(["check", "--snapshot", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    doc = json.loads(capsys.readouterr().out)
+    assert [(r["path"], r["source"]) for r in doc["admission_findings"]] == [("artifacts/runs/r1/output.txt", "working_tree")]
+    after = {str(p.relative_to(repo)): p.read_bytes() for p in repo.rglob("*") if p.is_file()}
+    assert before == after
+
+
+def test_inventory_reports_duplicates_and_retention_without_writes(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path, {"path_rules": [
+        {"path": "artifacts/runs/r1/logs", "disposition": "local", "reason": "disposable raw logs", "retention_days": 1}
+    ]})
+    run = repo / "artifacts/runs/r1"
+    (run / "logs").mkdir(parents=True)
+    for name in ("a.json", "b.json"):
+        (run / name).write_text('{"result": 1}\n')
+    log = run / "logs/raw.txt"
+    log.write_text("old raw log")
+    os.utime(log, (0, 0))
+    sh("git", "add", "-A", cwd=repo)
+    before = {str(p.relative_to(repo)): p.read_bytes() for p in repo.rglob("*") if p.is_file()}
+    monkeypatch.setattr(rs, "case_insensitive", lambda *a: pytest.fail("read-only inventory must not probe"))
+    assert run_main(["inventory", "--json"], repo, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["duplicate_occurrences"] == 1
+    assert doc["duplicate_logical_bytes"] == len('{"result": 1}\n')
+    assert doc["duplicates"][0]["copies"] == 2
+    assert doc["retention_review"] == [{"path": "artifacts/runs/r1/logs/raw.txt", "size": 11,
+                                         "retention_days": 1, "tracked": True, "reason": "disposable raw logs"}]
+    assert before == {str(p.relative_to(repo)): p.read_bytes() for p in repo.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize("rule", [
+    {"path": "../escape", "disposition": "git", "reason": "input"},
+    {"path": ".git/objects", "disposition": "local", "reason": "cache"},
+    {"path": "inputs", "disposition": "git", "reason": ""},
+    {"path": "inputs", "disposition": "git", "reason": "input", "retention_days": 1},
+])
+def test_invalid_classification_fails_before_writes(tmp_path, monkeypatch, rule):
+    repo = make_repo(tmp_path, {"path_rules": [rule]})
+    assert run_main(["check", "--snapshot", "--strict"], repo, monkeypatch) == rs.EXIT_ERROR
+
+
+@pytest.mark.parametrize("name", ["bulk_manifest.json", ".gitignore"])
+def test_backup_header_is_not_exempted_by_storage_record_name(tmp_path, monkeypatch, capsys, name):
+    repo = make_repo(tmp_path)
+    (repo / "backups").mkdir()
+    sh("git", "bundle", "create", "backups/" + name, "HEAD", cwd=repo)
+    sh("git", "add", "backups/" + name, cwd=repo)
+    for mode in ("--staged", "--snapshot"):
+        assert run_main(["check", mode, "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+        doc = json.loads(capsys.readouterr().out)
+        assert {r["reason"] for r in doc["admission_findings"]} == {"git_backup_archive"}
+
+
+def test_retention_reports_local_file_and_directory_rules_outside_run_roots(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path, {"path_rules": [
+        {"path": "logs", "disposition": "local", "reason": "machine logs", "retention_days": 1},
+        {"path": "cache.bin", "disposition": "local", "reason": "disposable cache", "retention_days": 2},
+        {"path": "logs/essential.json", "disposition": "git", "reason": "unique failure evidence"},
+    ]})
+    (repo / "logs").mkdir()
+    for name in ("logs/raw.txt", "cache.bin", "logs/essential.json"):
+        q = repo / name
+        q.write_text("old bytes")
+        os.utime(q, (0, 0))
+    sh("git", "add", "logs/raw.txt", cwd=repo)
+    before = {str(p.relative_to(repo)): p.read_bytes() for p in repo.rglob("*") if p.is_file()}
+    assert run_main(["inventory", "--json"], repo, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    assert [(r["path"], r["tracked"]) for r in doc["retention_review"]] == [("cache.bin", False), ("logs/raw.txt", True)]
+    assert before == {str(p.relative_to(repo)): p.read_bytes() for p in repo.rglob("*") if p.is_file()}
+
+
+def test_retention_union_deduplicates_overlapping_roots_and_never_follows_links(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path, {"path_rules": [
+        {"path": "artifacts", "disposition": "local", "reason": "declared local outputs", "retention_days": 1},
+        {"path": "artifacts/runs/r1/keep.json", "disposition": "git", "reason": "unique retained input"},
+        {"path": "external", "disposition": "local", "reason": "local path", "retention_days": 1},
+    ]})
+    (repo / "artifacts/runs/r1").mkdir()
+    for name in ("old.txt", "keep.json"):
+        q = repo / "artifacts/runs/r1" / name
+        q.write_text("bytes")
+        os.utime(q, (0, 0))
+    external = tmp_path / "outside"
+    external.mkdir()
+    (external / "private.txt").write_text("private")
+    (repo / "external").symlink_to(external, target_is_directory=True)
+    assert run_main(["inventory", "--json"], repo, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    assert [r["path"] for r in doc["retention_review"]] == ["artifacts/runs/r1/old.txt"]
+    assert doc["filesystem"] == [{"path": "artifacts", "files": 3, "logical_bytes": 10}]
+    assert doc["skipped"] == [{"path": "external", "reason": "symlinked_root"}]
+
+
+@pytest.mark.parametrize("name", ["bulk_manifest.json", ".gitignore"])
+def test_declared_local_paths_outside_runs_have_no_record_name_exemption(tmp_path, monkeypatch, capsys, name):
+    repo = make_repo(tmp_path, {"path_rules": [
+        {"path": "backups", "disposition": "local", "reason": "off-repository backups"}
+    ]})
+    (repo / "backups").mkdir()
+    (repo / "backups" / name).write_text("local bytes")
+    sh("git", "add", "backups/" + name, cwd=repo)
+    assert run_main(["check", "--staged", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert json.loads(capsys.readouterr().out)["admission_findings"][0]["reason"] == "declared_local"
+
+
+@pytest.mark.parametrize("name", ["bulk_manifest.json", ".gitignore"])
+@pytest.mark.parametrize("disposition", ["local", "store"])
+def test_arbitrary_reserved_names_inside_runs_do_not_bypass_classification(tmp_path, monkeypatch, capsys, name, disposition):
+    repo = make_repo(tmp_path, {"path_rules": [
+        {"path": "artifacts/runs/r1/" + name, "disposition": disposition, "reason": "declared output"}
+    ]})
+    (repo / "artifacts/runs/r1").mkdir()
+    (repo / "artifacts/runs/r1" / name).write_text("local output\n")
+    sh("git", "add", "-A", cwd=repo)
+    for mode in ("--staged", "--snapshot"):
+        assert run_main(["check", mode, "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+        assert {r["reason"] for r in json.loads(capsys.readouterr().out)["admission_findings"]} == {"declared_" + disposition}
+
+
+def test_arbitrary_reserved_names_are_subject_to_bulk_and_total_limits(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path, {"admission_max_bytes": 16})
+    (repo / "artifacts/runs/r1").mkdir()
+    f = repo / "artifacts/runs/r1/bulk_manifest.json"
+    f.write_text("x" * THRESHOLD)
+    sh("git", "add", "-A", cwd=repo)
+    assert run_main(["check", "--staged", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["admission_findings"][0]["reason"] == "bulk_output"
+    assert doc["admission_limits"] == [{"metric": "bytes", "observed": THRESHOLD, "maximum": 16}]
+
+
+def test_record_exemption_uses_staged_manifest_bytes_not_later_working_bytes(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path, {"path_rules": [
+        {"path": "artifacts/runs/r1", "disposition": "store", "reason": "regenerable outputs"}
+    ]})
+    (repo / "artifacts/runs/r1").mkdir()
+    f = repo / "artifacts/runs/r1/bulk_manifest.json"
+    f.write_text("not a manifest")
+    sh("git", "add", "-A", cwd=repo)
+    f.write_text(json.dumps({"schema": rs.MANIFEST_SCHEMA, "entries": []}))
+    assert run_main(["check", "--staged", "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    assert json.loads(capsys.readouterr().out)["admission_findings"][0]["source"] == "index"

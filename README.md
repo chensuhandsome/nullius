@@ -51,6 +51,7 @@ Within project-local truth, `research_plan.md#Current Status` is the human statu
 Skill source and distribution are separate surfaces:
 
 - `skills/` holds checked-in skill source and manuals.
+- For Julia computational libraries, [`julia-package`](skills/julia-package/SKILL.md) covers APIs, numerical contracts and package lifecycle; [`julia-perf`](skills/julia-perf/SKILL.md) covers kernel discipline and reproducible performance evidence.
 - `packages/skills-market` is the installer/distribution control plane; it does not mean those skills are preinstalled in a client runtime.
 - `research-harness` is the market-listed thin entry skill for external research projects. It intentionally has no hard package dependency on `research-team`, `markdown-hygiene`, or `hep-mcp`; those remain separate capabilities that the host client may already provide or install independently.
 

@@ -12,6 +12,18 @@
 
 ## 0. 一次性准备
 
+Julia 包的接口与生命周期规范见 [`julia-package`](../skills/julia-package/SKILL.md)，
+性能测量见 [`julia-perf`](../skills/julia-perf/SKILL.md)。包测试、数值结果验收和
+性能声明分别核验；benchmark 执行成功或阈值通过不单独构成速度声明的完整证据。
+
+性能测量工具的定向回归可运行：
+
+```bash
+julia --startup-file=no --project=skills/julia-perf/scripts skills/julia-perf/tests/runtests.jl
+```
+
+这检查测量、baseline、状态与监督入口，不计算研究结果或证明加速。
+
 ### 0.0 先确认 front-door 角色
 
 - `nullius` = generic lifecycle + workflow-plan + main-report structural-validation front door

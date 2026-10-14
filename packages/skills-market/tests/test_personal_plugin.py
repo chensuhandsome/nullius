@@ -56,7 +56,12 @@ def packed(tmp_path):
 
 def test_complete_source_payload_and_manifests(packed):
     source, output, manifest = packed
-    assert len(manifest["skill_ids"]) == 31
+    expected_skills = sorted(
+        package_id for package_id, package in load_packages(source / "packages/skills-market").items()
+        if package["package_type"] == "skill-pack"
+    )
+    assert manifest["skill_ids"] == expected_skills
+    assert "julia-package" in expected_skills
     assert sorted(p.name for p in (output / "skills").iterdir()) == manifest["skill_ids"]
     assert manifest["source_dirty"] is True
     assert set(manifest) == {"format", "format_version", "source_commit", "source_dirty", "skill_ids", "files"}
@@ -140,7 +145,11 @@ def test_moved_copied_helpers_use_current_runtime_and_sibling_runners(packed, tm
     ]
     for relative, function, expected in subprocess_checks:
         script = output / "skills" / relative
-        code = "import runpy,sys; ns=runpy.run_path(sys.argv[1]); print(ns[sys.argv[2]]())"
+        # Match normal `python path/to/script.py`: its directory is on sys.path,
+        # so bundled sibling imports work after moving the copied payload.
+        code = ("import pathlib,runpy,sys; "
+                "sys.path.insert(0,str(pathlib.Path(sys.argv[1]).parent)); "
+                "ns=runpy.run_path(sys.argv[1]); print(ns[sys.argv[2]]())")
         result = subprocess.run([sys.executable, "-B", "-c", code, str(script), function], env=environment,
                                 text=True, capture_output=True, timeout=10)
         assert result.returncode == 0, result.stderr

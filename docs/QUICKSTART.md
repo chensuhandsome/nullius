@@ -188,6 +188,11 @@ nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-
 
 ## 常见提示
 
+开发 Julia 计算程序包时，使用 [`julia-package`](../skills/julia-package/SKILL.md)
+检查接口、依赖、数值状态、测试和文档，并为计算内核组合
+[`julia-perf`](../skills/julia-perf/SKILL.md)。两者可以独立于研究状态系统使用。
+已有外部项目的常驻指令不会随模板自动更新；需要时显式添加这条路由。
+
 - 若返回 `invalidParams` 且提示缺少 `run_id`：先执行 `hep_project_create` + `hep_run_create`。
 - 若 citation verifier 失败：重新执行 `hep_run_build_citation_mapping` 后重试。
 - 若 token gate overflow：按返回的 overflow artifact 和 `next_actions` 收敛上下文规模，不要绕过门控。

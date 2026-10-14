@@ -79,7 +79,7 @@ pnpm --filter @nullius/orchestrator exec vitest run tests/run-manifest.test.ts t
 ```bash
 pnpm --filter @nullius/orchestrator exec vitest run tests/cli-run-workflow-recovery.test.ts tests/agent-runner-history-compaction.test.ts tests/cli-run-workflow.test.ts tests/agent-runner.test.ts tests/workflow-runtime.test.ts tests/nullius-cli.test.ts
 pnpm --filter @nullius/hep-mcp exec vitest run tests/contracts/inspireLiteratureProjectRoot.test.ts tests/toolContracts.test.ts tests/docs/docToolDrift.test.ts
-python3 -m pytest -q skills/kimi-cli-runner/tests skills/opencode-cli-runner/tests skills/review-swarm/tests/test_seat_budget.py
+python3 -m pytest -q skills/kimi-cli-runner/tests skills/opencode-cli-runner/tests skills/review-swarm/tests/test_seat_budget.py skills/dsh-cli-runner/tests
 ```
 
 使用虚构工具与临时项目验证真正进程死亡、未知副作用停止、已提交响应回放、暂停和审批续接。压缩测试保留约束与完整工具配对，过长指令不通过删约束恢复。INSPIRE 七种模式的 catalog、parser 与 dispatch 接纳共同参数并拒绝错误模式参数。runner 测试使用虚构 CLI，验证空输出、异常退出、最终长度截断、总调用/时间预算及本地进程树清理；这不证明真实 provider 可用或科研结果正确。

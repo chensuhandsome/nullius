@@ -56,6 +56,13 @@
         "review-swarm": ">=0.1.0 <0.2.0"
       }
     },
+    "dsh-cli-runner": {
+      "type": "skill-pack",
+      "repo": "nullius/skills-market",
+      "channel": "dev",
+      "version": "0.1.0",
+      "source_path": "skills/dsh-cli-runner/SKILL.md"
+    },
     "figure-hygiene": {
       "type": "skill-pack",
       "repo": "nullius/skills-market",

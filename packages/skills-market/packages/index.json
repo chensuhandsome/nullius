@@ -1,6 +1,6 @@
 {
   "index_version": "1.4.0",
-  "updated_at": "2026-10-13T00:00:00Z",
+  "updated_at": "2026-10-14T00:00:00Z",
   "packages": [
     "citation-triangulation.json",
     "claim-grounding.json",
@@ -8,6 +8,7 @@
     "codex-cli-runner.json",
     "deep-literature-review.json",
     "derivation-verify.json",
+    "dsh-cli-runner.json",
     "figure-hygiene.json",
     "gemini-cli-runner.json",
     "hep-calc.json",

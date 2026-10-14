@@ -121,6 +121,16 @@
       "version": "0.1.0",
       "source_path": "skills/idea-posterior/SKILL.md"
     },
+    "julia-package": {
+      "type": "skill-pack",
+      "repo": "nullius/skills-market",
+      "channel": "dev",
+      "version": "0.1.0",
+      "source_path": "skills/julia-package/SKILL.md",
+      "depends_on": {
+        "julia-perf": ">=0.1.0 <0.2.0"
+      }
+    },
     "julia-perf": {
       "type": "skill-pack",
       "repo": "nullius/skills-market",
@@ -236,7 +246,8 @@
         "markdown-hygiene": ">=0.1.0 <0.2.0",
         "numerical-reliability-gate": ">=0.1.0 <0.2.0",
         "research-integrity": ">=0.1.0 <0.2.0",
-        "research-team": ">=0.1.0 <0.2.0"
+        "research-team": ">=0.1.0 <0.2.0",
+        "julia-package": ">=0.1.0 <0.2.0"
       }
     },
     "research-integrity": {

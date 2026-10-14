@@ -175,6 +175,11 @@ hep-mcp 不提供草稿渲染、项目导出或论文打包工具；稿件在项
 
 ## 常见提示
 
+开发 Julia 计算程序包时，使用 [`julia-package`](../skills/julia-package/SKILL.md)
+检查接口、依赖、数值状态、测试和文档，并为计算内核组合
+[`julia-perf`](../skills/julia-perf/SKILL.md)。两者可以独立于研究状态系统使用。
+已有外部项目的常驻指令不会随模板自动更新；需要时显式添加这条路由。
+
 - 若提示 `output_dir requires project_root`：同时传入已初始化项目的绝对 `project_root`。
 - 若提示输出文件已存在（`already exists`）：工具从不覆盖已有输出；换一个新的 `output_dir`（或新的文件名）再调用，旧结果保持原样。调用失败时会撤回本次已发布的文件；若清理失败，错误会写明残留：已发布的文件删不掉时，错误为 UNSAFE_FS，写明输出不完整并在 `files_left` 中列出它们（残留的暂存文件列在 `staging_left`）；只有暂存文件删不掉时，保留原错误并附 `staging_left`；无法识别的暂存文件在 `staging_path` 中给出；删除之后若无法刷盘，错误为 UNSAFE_FS，说明清理可能经不起崩溃，并在 `unflushed_directories` 中列出相应目录。只有在发布途中服务进程崩溃，才可能留下未被报告的不完整文件。这两种情况下，删除这些文件或换新的 `output_dir` 即可。
 - 若 `output_dir` 因符号链接或保留位置（`.nullius/`、`team/runs/`、`artifacts/hep-mcp/`）被拒：换成项目内由真实目录构成的子目录，例如当前 run 目录下的子目录。

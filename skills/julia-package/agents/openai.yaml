@@ -1,0 +1,4 @@
+interface:
+  display_name: "Julia Package"
+  short_description: "Julia modules, extensions, numerical APIs and lifecycle"
+  default_prompt: "Use $julia-package to develop or audit this Julia package and verify the changed public behavior."

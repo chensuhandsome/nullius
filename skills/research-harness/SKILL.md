@@ -145,6 +145,7 @@ node /absolute/path/to/nullius/packages/orchestrator/dist/cli.js init --runtime-
 - If the user needs milestone execution, invoke `research-team` and keep the milestone boundary explicit.
 - If a compute environment, tool build, or documented invocation is new, rebuilt, or reconfigured, pass the three-layer readiness validation (under Long-Running Compute Jobs below) before routing real work onto it.
 - If the task is Markdown formatting, Markdown math escaping, generated TOC LaTeX cleanup, link/citation clickability, or pre-handoff note hygiene, invoke `markdown-hygiene` first, then rerun the relevant project gate.
+- If developing or auditing a Julia computational package, use [`julia-package`](../julia-package/SKILL.md) for its API, numerical contracts and package lifecycle; combine with `julia-perf` for kernels and performance claims.
 - If the task is physics or adjacent scientific literature research, evidence, INSPIRE/arXiv/OpenAlex provider lookup, source reading, bibliography, or literature search exports into project files, use `hep-mcp`. Web search may supplement broad discovery, but it does not replace the provider citation graph gate below.
 - If the task is lifecycle, verification, approval, pause/resume, final conclusions, or export, keep it on `nullius`.
 
@@ -160,6 +161,7 @@ node /absolute/path/to/nullius/packages/orchestrator/dist/cli.js init --runtime-
 | Data figure | finalized a data or results figure (once per generating script) | [`figure-hygiene`](../figure-hygiene/SKILL.md) |
 | Schematic diagram | drew or revised a schematic, process, or geometry diagram | [`physics-diagrams`](../physics-diagrams/SKILL.md) |
 | Performance claim | claimed a speedup or performance regression, or wrote performance-critical numerical code | [`julia-perf`](../julia-perf/SKILL.md) (language-scoped; use an equivalent gate for other languages) |
+| Julia package change | created or changed a computational package's public API, dependency, supported representation, tests or documentation | [`julia-package`](../julia-package/SKILL.md), with `julia-perf` for kernels; package checks do not replace numerical-result acceptance |
 | Independent review | a result-bearing surface needs independent review: a headline result, manuscript, load-bearing derivation, public contract, or an irreversible change — internal scaffolding diffs (writers, fixtures, launchers, schema plumbing) close on local tests plus a single reviewer, not a cross-model panel; an implementation never closes on its author's own tests alone | [`review-swarm`](../review-swarm/SKILL.md) |
 | Prose / notes | Markdown math, TOC, links, or note hygiene before a handoff or gate | [`markdown-hygiene`](../markdown-hygiene/SKILL.md) |
 
@@ -464,6 +466,7 @@ After a milestone or run produces a stable result, gate each result by its type 
 - A citation-backed claim passes [`claim-grounding`](../claim-grounding/SKILL.md); a bibliography being frozen passes [`citation-triangulation`](../citation-triangulation/SKILL.md).
 - A data figure passes [`figure-hygiene`](../figure-hygiene/SKILL.md) (once per generating script); a schematic diagram passes [`physics-diagrams`](../physics-diagrams/SKILL.md).
 - A speedup or performance claim passes its reproducible benchmark gate ([`julia-perf`](../julia-perf/SKILL.md) for Julia code; an equivalent gate for other languages).
+- A Julia package change meets [`julia-package`](../julia-package/SKILL.md)'s affected interface and lifecycle checks; these establish package behavior, not independent scientific acceptance.
 - Walk the [`research-integrity`](../research-integrity/SKILL.md) M1-M7 checklist immediately before the fold itself.
 
 Then land the folded result (the same obligations apply in engine and file mode):

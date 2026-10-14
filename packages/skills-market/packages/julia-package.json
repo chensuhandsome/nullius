@@ -1,0 +1,49 @@
+{
+  "package_id": "julia-package",
+  "package_type": "skill-pack",
+  "repo": "nullius/skills-market",
+  "channel": "dev",
+  "version": "0.1.0",
+  "summary": "Julia computational package interfaces, numerical contracts and lifecycle standards.",
+  "platforms": [
+    "claude_code",
+    "codex",
+    "kimi_code",
+    "opencode"
+  ],
+  "source_path": "skills/julia-package/SKILL.md",
+  "install": {
+    "claude_code": "Link into ~/.claude/skills or install via marketplace when available.",
+    "codex": "Link into ~/.codex/skills for Codex native discovery.",
+    "kimi_code": "Link into ~/.kimi-code/skills for Kimi Code discovery.",
+    "opencode": "Link into ~/.config/opencode/skills for OpenCode discovery."
+  },
+  "source": {
+    "repo": "nullius/skills",
+    "ref": "main",
+    "subpath": "skills/julia-package",
+    "include": [
+      "SKILL.md",
+      "references/**",
+      "agents/**"
+    ],
+    "exclude": [
+      "**/tests/**",
+      "**/test/**",
+      "**/tmp/**",
+      "**/.pytest_cache/**",
+      "**/__pycache__/**",
+      "**/*.pyc",
+      "**/.DS_Store",
+      "team/*",
+      "team/**/*",
+      "process/*",
+      "process/**/*",
+      ".tmp*/*",
+      ".tmp*/**/*"
+    ]
+  },
+  "depends_on": {
+    "julia-perf": ">=0.1.0 <0.2.0"
+  }
+}

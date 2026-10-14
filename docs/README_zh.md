@@ -54,6 +54,7 @@ HEP 工具清单由代码拥有，并由 `HEP_TOOL_MODE` 做模式过滤；精�
 Skill 源码面与分发面是分离的：
 
 - `skills/` 存放 checked-in 的 skill 源码与手册。
+- Julia 计算程序包用 [`julia-package`](../skills/julia-package/SKILL.md) 检查接口、数值契约和包开发规范，用 [`julia-perf`](../skills/julia-perf/SKILL.md) 检查计算内核及可复现的性能证据。
 - `packages/skills-market` 是 installer / distribution control plane；它不意味着这些 skill 已经预装到某个 client runtime 中。
 - `research-harness` 是已进入 market 的 external research project 薄入口 skill。它故意不对 `research-team`、`markdown-hygiene` 或 `hep-mcp` 声明硬 package 依赖；这些能力仍由 host client 独立提供或安装。
 

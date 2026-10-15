@@ -1868,7 +1868,7 @@ def test_worktree_check_understands_only_the_empty_refs_directory_git_itself_cre
     """git creates an empty refs/ in a new worktree's private directory (observed with git 2.50);
     that one directory, while empty, is understood. Any other unknown directory is state this
     check does not assess, even when it is empty: its existence may be the state. refs/ with
-    content in it is state too."""
+    anything inside it, even an empty directory, is state too."""
     repo = make_repo(tmp_path)
     wt = _worktree(repo, tmp_path, "fresh")
     private = repo / ".git" / "worktrees" / "fresh"
@@ -1885,7 +1885,7 @@ def test_worktree_check_understands_only_the_empty_refs_directory_git_itself_cre
     (private / "scratch").rename(private / "gone-scratch")
     (private / "gone-scratch" / "deeper").rmdir()
     (private / "gone-scratch").rmdir()
-    (private / "refs" / "note").write_text("x\n")  # refs/ with content is state as well
+    (private / "refs" / "heads" / "topic").mkdir(parents=True)  # refs/ with anything inside, even empty, is state
     capsys.readouterr()
     assert run_main(["worktree-check", "--all", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
     v = _verdicts(capsys)

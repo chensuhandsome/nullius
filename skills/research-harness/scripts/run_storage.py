@@ -1571,18 +1571,12 @@ def benign_worktree_setting(key: str, value: str, common_dir: Path) -> bool:
     return False
 
 
-def directory_is_empty(path: Path) -> bool:
-    """True when no file or link lives anywhere below `path` (nested directories that
-    are themselves empty still count as empty); a directory that cannot be read, at
-    any depth, counts as not empty. os.walk swallows scan errors unless told
-    otherwise, so they are raised here on purpose."""
-    def raise_error(error: OSError) -> None:
-        raise error
+def has_no_entries(path: Path) -> bool:
+    """True when the directory itself holds nothing at all (no entries of any kind);
+    a directory that cannot be read counts as holding something."""
     try:
-        for _dirpath, dirnames, filenames in os.walk(path, followlinks=False, onerror=raise_error):
-            if filenames or any((Path(_dirpath) / d).is_symlink() for d in dirnames):
-                return False
-        return True
+        with os.scandir(path) as entries:
+            return next(iter(entries), None) is None
     except OSError:
         return False
 
@@ -1596,10 +1590,11 @@ def unassessed_private_git_state(git_dir: Path, common_dir: Path) -> "list[str]"
                 rel = (here / name).relative_to(git_dir).as_posix()
                 if (here / name).is_symlink():
                     unknown.append(rel + "/")
-                elif rel == "refs" and directory_is_empty(here / name):
+                elif rel == "refs" and has_no_entries(here / name):
                     # git itself creates an empty refs/ in every new worktree's private
-                    # directory (seen with git 2.50). Only that one, and only while it is
-                    # empty, is understood; any other unknown directory, empty or not, is
+                    # directory (seen with git 2.50). Only that one, and only while it holds
+                    # no entry at all, is understood; anything inside it (even an empty
+                    # refs/heads/topic/), and any other unknown directory, empty or not, is
                     # state this check does not assess (its existence may be the state).
                     pass
                 elif rel not in KNOWN_PRIVATE_GIT_DIRS:

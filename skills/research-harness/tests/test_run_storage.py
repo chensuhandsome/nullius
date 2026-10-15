@@ -308,13 +308,31 @@ def test_check_lists_but_never_classifies_files_of_a_nested_repository(tmp_path,
 
 
 def test_check_never_counts_the_manifest_or_ignore_file_as_bulk(tmp_path, monkeypatch, capsys):
+    # Staged/snapshot admission exempts validated stow records only; a
+    # reserved filename alone grants no exemption (docs/RUN_STORAGE.md).
     repo = make_repo(tmp_path)
     run = repo / "artifacts" / "runs" / "r1"
     run.mkdir()
     (run / ".gitignore").write_text("# a long user ignore file\n" + "*.tmp\n" * THRESHOLD)
+    (run / "big.bin").write_bytes(blob(THRESHOLD, 14))
+    stow_json(run, repo, monkeypatch, capsys)
     sh("git", "add", "-A", cwd=repo)
-    for argv in (["check", "--staged", "--strict"], ["check", "--strict"]):
+    assert sh("git", "diff", "--cached", "--name-only", cwd=repo).stdout.split() == [
+        "artifacts/runs/r1/.gitignore", "artifacts/runs/r1/bulk_manifest.json"]
+    for argv in (["check", "--staged", "--strict"], ["check", "--snapshot", "--strict"]):
         assert run_main(argv, repo, monkeypatch) == rs.EXIT_OK, argv
+    sh("git", "commit", "-q", "-m", "stow records", cwd=repo)
+    assert run_main(["check", "--strict"], repo, monkeypatch) == rs.EXIT_OK
+    unmanaged = repo / "artifacts" / "runs" / "r2"
+    unmanaged.mkdir()
+    (unmanaged / ".gitignore").write_text("# a long user ignore file\n" + "*.tmp\n" * THRESHOLD)
+    sh("git", "add", "-A", cwd=repo)
+    assert run_main(["check", "--strict"], repo, monkeypatch) == rs.EXIT_OK
+    for mode in ("--staged", "--snapshot"):
+        capsys.readouterr()
+        assert run_main(["check", mode, "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS, mode
+        assert {(r["path"], r["reason"]) for r in json.loads(capsys.readouterr().out)["admission_findings"]} == {
+            ("artifacts/runs/r2/.gitignore", "bulk_output")}
 
 
 def test_a_path_recorded_by_two_manifests_is_damaged_and_neither_record_hides_the_other(tmp_path, monkeypatch, capsys):

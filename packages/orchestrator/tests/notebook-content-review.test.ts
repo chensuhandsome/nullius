@@ -113,8 +113,9 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); fs.rmSync(root, { re
 
 describe('whole-notebook execution and current-version contract', () => {
   it('retains historical failed capacity as unavailable after runtime authority recovers', async () => {
+    // Lookups 1 and 2 locate the origin-capture storage check and the reviewer launcher; later lookups are capacity assessment.
     const originalRuntime = runtime.installedRuntimeRoot; let calls = 0;
-    const spy = vi.spyOn(runtime, 'installedRuntimeRoot').mockImplementation(() => { if (++calls > 1) throw new Error('fixture runtime unavailable during capacity assessment'); return originalRuntime(); });
+    const spy = vi.spyOn(runtime, 'installedRuntimeRoot').mockImplementation(() => { if (++calls > 2) throw new Error('fixture runtime unavailable during capacity assessment'); return originalRuntime(); });
     const first = await review(); expect(first.code).toBe(2); const canonical = path.join(runDir(), 'artifacts/verification_subject_verdict_notebook_v1.json'); const bytes = fs.readFileSync(canonical); expect(JSON.parse(bytes.toString()).status).toBe('failed'); spy.mockRestore();
     expect(checkNotebookContentReview(root)).toMatchObject({ status: 'unavailable' }); expect(checkNotebookContentReview(root).reason).toContain('immutable canonical outcome');
     expect((await cli(['notebook', 'check', '--json'])).code).toBe(2); expect(notebookCloseoutGate(root).decision).toBe('unavailable'); expect(fs.readFileSync(canonical)).toEqual(bytes);

@@ -14,7 +14,7 @@ vi.mock('crypto', async importOriginal => {
 // before a given linkSync call fails.
 const closeFault = vi.hoisted(() => ({ armed: false }));
 const fstatFault = vi.hoisted(() => ({ armed: false }));
-const linkFault = vi.hoisted(() => ({ failOnCall: 0, calls: 0, before: (() => {}) as () => void }));
+const linkFault = vi.hoisted(() => ({ failOnCall: 0, calls: 0, code: 'EIO', before: (() => {}) as () => void }));
 const unlinkFault = vi.hoisted(() => ({ failNext: 0 }));
 const writeFault = vi.hoisted(() => ({ armed: false }));
 const fsyncFault = vi.hoisted(() => ({ armed: false }));
@@ -24,6 +24,8 @@ const closeCount = vi.hoisted(() => ({ calls: 0 }));
 const inodeFake = vi.hoisted(() => ({ armed: false }));
 // Make the first lstatSync after a successful unlink fail.
 const lstatAfterUnlink = vi.hoisted(() => ({ armed: false, pending: false }));
+// Make the next lstatSync of a staging path fail.
+const lstatStagingFault = vi.hoisted(() => ({ armed: false }));
 vi.mock('fs', async importOriginal => {
   const actual = await importOriginal<typeof import('fs')>();
   const closeSync = (fd: number): void => {
@@ -49,6 +51,10 @@ vi.mock('fs', async importOriginal => {
       lstatAfterUnlink.pending = false;
       throw Object.assign(new Error('simulated lstat failure'), { code: 'EIO' });
     }
+    if (lstatStagingFault.armed && String(target).endsWith('.tmp')) {
+      lstatStagingFault.armed = false;
+      throw Object.assign(new Error('simulated staging lookup failure'), { code: 'EIO' });
+    }
     const stat = actual.lstatSync(target, options);
     return inodeFake.armed && String(target).endsWith('.tmp') ? withInode(stat, 2n ** 53n + 1n, Boolean(options?.bigint)) : stat;
   }) as typeof actual.lstatSync;
@@ -63,7 +69,7 @@ vi.mock('fs', async importOriginal => {
     linkFault.calls += 1;
     if (linkFault.calls === linkFault.failOnCall) {
       linkFault.before();
-      throw Object.assign(new Error('simulated link failure'), { code: 'EIO' });
+      throw Object.assign(new Error('simulated link failure'), { code: linkFault.code });
     }
     actual.linkSync(existing, target);
   };
@@ -102,6 +108,7 @@ describe('output staging files are created exclusively', () => {
     fstatFault.armed = false;
     linkFault.failOnCall = 0;
     linkFault.calls = 0;
+    linkFault.code = 'EIO';
     linkFault.before = () => {};
     unlinkFault.failNext = 0;
     writeFault.armed = false;
@@ -109,6 +116,7 @@ describe('output staging files are created exclusively', () => {
     inodeFake.armed = false;
     lstatAfterUnlink.armed = false;
     lstatAfterUnlink.pending = false;
+    lstatStagingFault.armed = false;
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-staging-')));
     const projectRoot = makeProjectRoot(tmpDir);
     alias = path.join(tmpDir, 'alias');
@@ -143,6 +151,20 @@ describe('output staging files are created exclusively', () => {
     });
   });
 
+  it('refuses an output directory on a file system without hard links, naming the file and the system code', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('no-links');
+      const batch = new OutputBatch(out);
+      batch.json('a.json', { x: 1 });
+      linkFault.failOnCall = 1;
+      linkFault.code = 'ENOTSUP';
+      const error = await batch.publish().then(() => null, (e: unknown) => e as Error & { code?: string; data?: Record<string, unknown> });
+      expect(error).toMatchObject({ code: 'UNSAFE_FS', message: expect.stringMatching(/without hard links/) });
+      expect(error?.data).toMatchObject({ path: 'no-links/a.json', errno: 'ENOTSUP' });
+      expect(fs.readdirSync(out.dir)).toEqual([]);
+    });
+  });
+
   it('names a staging file that was created but could not be identified', async () => {
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('unidentified');
@@ -152,6 +174,7 @@ describe('output staging files are created exclusively', () => {
       expect(thrown?.message).toMatch(/could not be identified and was left in place/);
       expect(thrown?.code).toBe('UNSAFE_FS');
       expect(thrown?.data?.staging_path).toBe(`unidentified/.data.json.${process.pid}.00000000-0000-4000-8000-000000000000.tmp`);
+      expect(thrown?.data).toMatchObject({ errno: 'EIO' });
       expect(fs.readdirSync(out.dir).filter(name => name.endsWith('.tmp'))).toHaveLength(1);
     });
   });
@@ -228,9 +251,11 @@ describe('output staging files are created exclusively', () => {
       unlinkFault.failNext = 2;
       let thrown: unknown;
       try { batch.json('data.json', { x: 1 }); } catch (error) { thrown = error; }
-      expect((thrown as Error).message).toBe('simulated close failure');
-      const reported = batch.discard(thrown) as Error & { data?: { staging_left?: string[] } };
-      expect(reported.message).toMatch(/^simulated close failure; staging files could not be removed/);
+      // A failure of the file system is the environment's: UNSAFE_FS, naming the step.
+      expect(thrown).toMatchObject({ code: 'UNSAFE_FS', message: 'closing a staging file failed: simulated close failure', data: { errno: 'EIO' } });
+      const reported = batch.discard(thrown) as Error & { code?: string; data?: { staging_left?: string[] } };
+      expect(reported.code).toBe('UNSAFE_FS');
+      expect(reported.message).toMatch(/^closing a staging file failed: simulated close failure; staging files could not be removed/);
       expect(reported.data?.staging_left).toHaveLength(1);
     });
   });
@@ -258,8 +283,10 @@ describe('output staging files are created exclusively', () => {
       // The rollback's first attempt to remove the published a.json fails once.
       linkFault.before = () => { unlinkFault.failNext = 1; };
       const error = await batch.publish().then(() => null, (e: unknown) => e as Error & { data?: Record<string, unknown> });
-      expect(error?.message).toBe('simulated link failure');
-      expect(error?.data).toBeUndefined();
+      expect(error).toMatchObject({ code: 'UNSAFE_FS', message: 'publishing an output file failed: simulated link failure' });
+      expect(error?.data).toMatchObject({ path: 'publish-retried/b.json', errno: 'EIO' });
+      // The last cleanup attempt removed a.json, so nothing is reported left.
+      expect(error?.data).not.toHaveProperty('files_left');
       expect(batch.discard(error)).toBe(error);
       expect(fs.readdirSync(out.dir)).toEqual([]);
     });
@@ -272,7 +299,9 @@ describe('output staging files are created exclusively', () => {
       const file = batch.openFile('records.jsonl', 'application/x-ndjson');
       file.write('{"a":1}\n');
       writeFault.armed = true;
-      expect(() => file.write('{"b":2}\n')).toThrow('simulated write failure');
+      expect(() => file.write('{"b":2}\n')).toThrow(expect.objectContaining({
+        code: 'UNSAFE_FS', message: 'writing a staging file failed: simulated write failure', data: expect.objectContaining({ errno: 'ENOSPC' }),
+      }));
       expect(() => file.finish()).toThrow(/already finished or discarded/);
       expect(fs.readdirSync(out.dir)).toEqual([]);
       const cause = new Error('cause');
@@ -291,9 +320,10 @@ describe('output staging files are created exclusively', () => {
         writeFault.armed = true;
         let thrown: unknown;
         try { file.write('{"a":1}\n'); } catch (error) { thrown = error; }
-        expect((thrown as Error).message).toBe('simulated write failure');
-        const reported = batch.discard(thrown) as Error & { data?: { staging_left?: string[] } };
-        expect(reported.message).toMatch(/^simulated write failure; staging files could not be removed/);
+        expect(thrown).toMatchObject({ code: 'UNSAFE_FS', message: 'writing a staging file failed: simulated write failure', data: { errno: 'ENOSPC' } });
+        const reported = batch.discard(thrown) as Error & { code?: string; data?: { staging_left?: string[] } };
+        expect(reported.code).toBe('UNSAFE_FS');
+        expect(reported.message).toMatch(/^writing a staging file failed: simulated write failure; staging files could not be removed/);
         expect(reported.data?.staging_left).toHaveLength(1);
       } finally {
         unlinkFault.failNext = 0;
@@ -319,6 +349,32 @@ describe('output staging files are created exclusively', () => {
     });
   });
 
+  it('reports a failed check of a staged file before publishing as an environment failure, and removes it', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('check-failed');
+      const batch = new OutputBatch(out);
+      batch.json('a.json', { x: 1 });
+      lstatStagingFault.armed = true;
+      const error = await batch.publish().then(() => null, (e: unknown) => e as Error & { code?: string; data?: Record<string, unknown> });
+      expect(error).toMatchObject({ code: 'UNSAFE_FS', message: 'checking a staging file failed: simulated staging lookup failure' });
+      expect(error?.data).toMatchObject({ errno: 'EIO' });
+      expect(error?.data).not.toHaveProperty('staging_left');
+      expect(fs.readdirSync(out.dir)).toEqual([]);
+    });
+  });
+
+  it('names a failed flush of a staged file as such, and removes the staging file', async () => {
+    await withHepDataRoot(alias, async () => {
+      const out = resolveOutputDir('flush-failed');
+      const batch = new OutputBatch(out);
+      fsyncFault.armed = true;
+      expect(() => batch.json('data.json', { x: 1 })).toThrow(expect.objectContaining({
+        code: 'UNSAFE_FS', message: 'flushing a staging file failed: simulated fsync failure', data: expect.objectContaining({ errno: 'EIO' }),
+      }));
+      expect(fs.readdirSync(out.dir)).toEqual([]);
+    });
+  });
+
   it('closes the file when flushing it fails, and refuses to write or finish it afterwards', async () => {
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('fsync-failed');
@@ -327,7 +383,11 @@ describe('output staging files are created exclusively', () => {
       file.write('{"a":1}\n');
       fsyncFault.armed = true;
       const before = closeCount.calls;
-      expect(() => file.finish()).toThrow('simulated fsync failure');
+      expect(() => file.finish()).toThrow(expect.objectContaining({
+        code: 'UNSAFE_FS',
+        message: 'flushing a staging file failed: simulated fsync failure',
+        data: expect.objectContaining({ errno: 'EIO' }),
+      }));
       expect(closeCount.calls - before).toBe(1);
       expect(() => file.write('{"b":2}\n')).toThrow(/already finished or discarded/);
       expect(() => file.finish()).toThrow(/already finished or discarded/);

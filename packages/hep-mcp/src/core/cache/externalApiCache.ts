@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
 import { pathToFileURL } from 'url';
-import { invalidParams, McpError, upstreamError, writeBytesAtomicDurable } from '@nullius/shared';
+import { invalidParams, McpError, unsafeFs, upstreamError, writeBytesAtomicDurable } from '@nullius/shared';
 
 import { ensureDir, getCacheDir } from '../../data/dataDir.js';
 import { assertSafePathSegment } from '../paths.js';
@@ -20,6 +20,25 @@ type ExternalApiCacheEntryV1 = {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/**
+ * A provider answer, as its client returns it, that cannot be used: not in
+ * the expected form, or contradicting itself. It is a provider failure (UPSTREAM_ERROR), not the
+ * caller's, but it aborts the whole call instead of being recorded against
+ * one item, since data that cannot be read cannot be attributed. Callers that
+ * report provider failures per item recognize it by the
+ * `invalid_provider_answer` field of its data (`isInvalidProviderAnswer`).
+ */
+export function invalidProviderAnswer(message: string, data: Record<string, unknown>): McpError {
+  return upstreamError(message, { ...data, invalid_provider_answer: true });
+}
+
+export function isInvalidProviderAnswer(error: unknown): boolean {
+  return error instanceof McpError
+    && error.code === 'UPSTREAM_ERROR'
+    && isRecord(error.data)
+    && error.data.invalid_provider_answer === true;
 }
 
 function stableStringify(value: unknown): string {
@@ -79,9 +98,13 @@ function externalApiCacheEntryPath(params: { namespace: string; operation: strin
 
   const cacheRoot = getCacheDir();
   ensureDir(cacheRoot);
-  const dir = path.join(cacheRoot, 'external_api_v1', namespace, operation, hash.slice(0, 2).toLowerCase());
+  const dir = externalApiCacheDir(cacheRoot, namespace, operation, hash);
   ensureDir(dir);
   return path.join(dir, `${hash}.json`);
+}
+
+function externalApiCacheDir(cacheRoot: string, namespace: string, operation: string, hash: string): string {
+  return path.join(cacheRoot, 'external_api_v1', namespace, operation, hash.slice(0, 2).toLowerCase());
 }
 
 function defaultArtifactName(prefix: string, params: { namespace: string; operation: string; request_hash: string }): string {
@@ -116,6 +139,12 @@ export function describeExternalApiRequest(params: { namespace: string; operatio
     request_name: defaultArtifactName('external_api_request', { namespace, operation, request_hash: requestHash }),
     response_name: defaultArtifactName('external_api_response', { namespace, operation, request_hash: requestHash }),
   };
+}
+
+/** The system error code of a file-system failure, as its own field. */
+function errnoOf(error: unknown): { errno?: string } {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return typeof code === 'string' ? { errno: code } : {};
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -191,12 +220,23 @@ async function performCachedCall<T>(
     try {
       return externalApiCacheEntryPath({ namespace, operation, request_hash: requestHash });
     } catch (err) {
-      throw invalidParams('Failed to resolve external API cache path (fail-fast)', {
+      // A refusal keeps its own code; a file-system failure is the environment's.
+      if (err instanceof McpError) throw err;
+      const cacheDir = (() => {
+        try {
+          return externalApiCacheDir(getCacheDir(), namespace, operation, requestHash);
+        } catch {
+          return undefined;
+        }
+      })();
+      throw unsafeFs('Failed to resolve external API cache path (fail-fast)', {
         output_dir: output.relative,
         namespace,
         operation,
         request_hash: requestHash,
+        ...(cacheDir === undefined ? {} : { cache_dir: cacheDir }),
         error: err instanceof Error ? err.message : String(err),
+        ...errnoOf(err),
         next_actions: [
           ...(params.tool ? [{ tool: params.tool.name, args: params.tool.args, reason: 'Retry after fixing cache directory permissions/disk space (fail-fast).' }] : []),
         ],
@@ -204,14 +244,16 @@ async function performCachedCall<T>(
     }
   })();
   const cachedResponseUri = pathToFileURL(cachePath).toString();
-  const corrupted = (message: string, error?: unknown): McpError => invalidParams(message, {
+  // The local cache is in a state this call cannot use: an environment
+  // failure, not the caller's.
+  const corrupted = (message: string, error?: unknown): McpError => unsafeFs(message, {
     output_dir: output.relative,
     namespace,
     operation,
     request_hash: requestHash,
     cached_response_uri: cachedResponseUri,
     cache_path: cachePath,
-    ...(error === undefined ? {} : { error: error instanceof Error ? error.message : String(error) }),
+    ...(error === undefined ? {} : { error: error instanceof Error ? error.message : String(error), ...errnoOf(error) }),
     next_actions: retryAfterRemoving,
   });
 
@@ -230,9 +272,15 @@ async function performCachedCall<T>(
   let response: T;
 
   if (fs.existsSync(cachePath)) {
+    let text: string;
+    try {
+      text = await fs.promises.readFile(cachePath, 'utf-8');
+    } catch (err) {
+      throw corrupted('Failed to read external API cache entry (fail-fast)', err);
+    }
     let cached: unknown;
     try {
-      cached = JSON.parse(await fs.promises.readFile(cachePath, 'utf-8'));
+      cached = JSON.parse(text);
     } catch (err) {
       throw corrupted('External API cache entry is not valid JSON (fail-fast)', err);
     }
@@ -291,7 +339,7 @@ async function performCachedCall<T>(
     try {
       await atomicWriteFile({ file_path: cachePath, bytes: Buffer.from(JSON.stringify(entry, null, 2), 'utf-8') });
     } catch (err) {
-      throw invalidParams('External API cache write failed (fail-fast)', {
+      throw unsafeFs('External API cache write failed (fail-fast)', {
         output_dir: output.relative,
         namespace,
         operation,
@@ -299,6 +347,7 @@ async function performCachedCall<T>(
         cached_response_uri: cachedResponseUri,
         cache_path: cachePath,
         error: err instanceof Error ? err.message : String(err),
+        ...errnoOf(err),
         next_actions: [
           ...(params.tool ? [{ tool: params.tool.name, args: params.tool.args, reason: 'Retry after resolving cache directory IO failures (fail-fast).' }] : []),
         ],

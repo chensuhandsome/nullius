@@ -137,14 +137,14 @@ describe('workflow runtime normalize', () => {
     const result = normalizeWorkflowRuntimeResult(makeRequest(), {
       ok: true,
       isError: false,
-      rawText: '{"uri":"hep://runs/RUN-1/artifact/critical_analysis.json"}',
-      json: { uri: 'hep://runs/RUN-1/artifact/critical_analysis.json' },
+      rawText: '{"uri":"provider://records/RUN-1/artifact/critical_analysis.json"}',
+      json: { uri: 'provider://records/RUN-1/artifact/critical_analysis.json' },
       errorCode: null,
     });
 
     expect(result).toMatchObject({
       status: 'completed',
-      canonical_artifact_uri: 'hep://runs/RUN-1/artifact/critical_analysis.json',
+      canonical_artifact_uri: 'provider://records/RUN-1/artifact/critical_analysis.json',
       additional_artifact_uris: [],
     });
   });
@@ -153,14 +153,14 @@ describe('workflow runtime normalize', () => {
     const result = normalizeWorkflowRuntimeResult(makeRequest(), {
       ok: true,
       isError: false,
-      rawText: '{"summary":{"uri":"hep://runs/RUN-1/artifact/report.json"}}',
-      json: { summary: { uri: 'hep://runs/RUN-1/artifact/report.json' } },
+      rawText: '{"summary":{"uri":"provider://records/RUN-1/artifact/report.json"}}',
+      json: { summary: { uri: 'provider://records/RUN-1/artifact/report.json' } },
       errorCode: null,
     });
 
     expect(result).toMatchObject({
       status: 'completed',
-      canonical_artifact_uri: 'hep://runs/RUN-1/artifact/report.json',
+      canonical_artifact_uri: 'provider://records/RUN-1/artifact/report.json',
     });
   });
 
@@ -184,11 +184,11 @@ describe('workflow runtime normalize', () => {
     const result = normalizeWorkflowRuntimeResult(makeRequest(), {
       ok: true,
       isError: false,
-      rawText: '{"artifacts":[{"uri":"hep://runs/RUN-1/artifact/a.json"},{"uri":"hep://runs/RUN-1/artifact/b.json"}]}',
+      rawText: '{"artifacts":[{"uri":"provider://records/RUN-1/artifact/a.json"},{"uri":"provider://records/RUN-1/artifact/b.json"}]}',
       json: {
         artifacts: [
-          { uri: 'hep://runs/RUN-1/artifact/a.json' },
-          { uri: 'hep://runs/RUN-1/artifact/b.json' },
+          { uri: 'provider://records/RUN-1/artifact/a.json' },
+          { uri: 'provider://records/RUN-1/artifact/b.json' },
         ],
       },
       errorCode: null,
@@ -196,8 +196,8 @@ describe('workflow runtime normalize', () => {
 
     expect(result).toMatchObject({
       status: 'completed',
-      canonical_artifact_uri: 'hep://runs/RUN-1/artifact/a.json',
-      additional_artifact_uris: ['hep://runs/RUN-1/artifact/b.json'],
+      canonical_artifact_uri: 'provider://records/RUN-1/artifact/a.json',
+      additional_artifact_uris: ['provider://records/RUN-1/artifact/b.json'],
     });
     expect(result.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'multiple_artifacts' }),
@@ -285,8 +285,8 @@ describe('workflow runtime diagnostics', () => {
           return {
             ok: true,
             isError: false,
-            rawText: '{"uri":"hep://runs/RUN-1/artifact/critical_analysis.json"}',
-            json: { uri: 'hep://runs/RUN-1/artifact/critical_analysis.json' },
+            rawText: '{"uri":"provider://records/RUN-1/artifact/critical_analysis.json"}',
+            json: { uri: 'provider://records/RUN-1/artifact/critical_analysis.json' },
             errorCode: null,
           };
         },
@@ -295,7 +295,7 @@ describe('workflow runtime diagnostics', () => {
         expect(observed).toEqual(request);
         expect(observed).not.toBe(request);
         const response = await dispatch();
-        expect(response.json).toEqual({ uri: 'hep://runs/RUN-1/artifact/critical_analysis.json' });
+        expect(response.json).toEqual({ uri: 'provider://records/RUN-1/artifact/critical_analysis.json' });
         await expect(dispatch()).rejects.toThrow(/already dispatched once/);
       },
     });
@@ -303,7 +303,7 @@ describe('workflow runtime diagnostics', () => {
     expect(calls).toEqual([{ name: request.tool, args: request.params }]);
     expect(result).toMatchObject({
       status: 'completed',
-      canonical_artifact_uri: 'hep://runs/RUN-1/artifact/critical_analysis.json',
+      canonical_artifact_uri: 'provider://records/RUN-1/artifact/critical_analysis.json',
     });
   });
 
@@ -318,8 +318,8 @@ describe('workflow runtime diagnostics', () => {
           return {
             ok: true,
             isError: false,
-            rawText: '{"uri":"hep://runs/RUN-1/artifact/critical_analysis.json"}',
-            json: { uri: 'hep://runs/RUN-1/artifact/critical_analysis.json' },
+            rawText: '{"uri":"provider://records/RUN-1/artifact/critical_analysis.json"}',
+            json: { uri: 'provider://records/RUN-1/artifact/critical_analysis.json' },
             errorCode: null,
           };
         },
@@ -333,14 +333,14 @@ describe('workflow runtime diagnostics', () => {
         response.ok = false;
         response.isError = true;
         response.rawText = 'fabricated';
-        (response.json as { uri: string }).uri = 'hep://runs/RUN-1/artifact/fabricated.json';
+        (response.json as { uri: string }).uri = 'provider://records/RUN-1/artifact/fabricated.json';
       },
     });
 
     expect(calls).toEqual([{ name: compiled.tool, args: compiled.params }]);
     expect(result).toMatchObject({
       status: 'completed',
-      canonical_artifact_uri: 'hep://runs/RUN-1/artifact/critical_analysis.json',
+      canonical_artifact_uri: 'provider://records/RUN-1/artifact/critical_analysis.json',
     });
   });
 
@@ -528,8 +528,8 @@ describe('workflow runtime diagnostics', () => {
           callTool: async () => ({
             ok: false,
             isError: true,
-            rawText: '{"summary":{"uri":"hep://runs/RUN-1/artifact/export.partial.json"}}',
-            json: { summary: { uri: 'hep://runs/RUN-1/artifact/export.partial.json' } },
+            rawText: '{"summary":{"uri":"provider://records/RUN-1/artifact/export.partial.json"}}',
+            json: { summary: { uri: 'provider://records/RUN-1/artifact/export.partial.json' } },
             errorCode: 'TIMEOUT',
           }),
         },
@@ -538,7 +538,7 @@ describe('workflow runtime diagnostics', () => {
 
     expect(result).toMatchObject({
       status: 'partial',
-      canonical_artifact_uri: 'hep://runs/RUN-1/artifact/export.partial.json',
+      canonical_artifact_uri: 'provider://records/RUN-1/artifact/export.partial.json',
       additional_artifact_uris: [],
     });
   });

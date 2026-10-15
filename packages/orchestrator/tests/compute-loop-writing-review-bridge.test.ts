@@ -187,6 +187,7 @@ describe('compute-loop writing/review bridges', () => {
           id: 'tu_bridge',
           name: 'orch_run_stage_content',
           input: {
+            project_root: projectRoot,
             run_id: runId,
             run_dir: runDir,
             content_type: 'section_output',

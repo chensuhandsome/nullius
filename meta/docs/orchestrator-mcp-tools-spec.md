@@ -30,10 +30,10 @@
 | Tool | Risk | Live responsibility |
 |---|---|---|
 | `orch_run_create` | `write` | Initialize or replay an orchestrator run in a project root |
-| `orch_run_stage_idea` | `write` | Stage IdeaHandoffC2 artifacts into an existing domain-owned run directory |
-| `orch_run_stage_content` | `write` | Stage generic writing/review content into an existing run directory and return a `rep://runs/.../artifact/...` staging URI; loop-owned draft/review tasks may attach task-scoped provenance so completion and downstream review refresh can fail closed on missing outputs |
+| `orch_run_stage_idea` | `write` | Stage IdeaHandoffC2 artifacts into the run's own directory, `<project_root>/artifacts/runs/<run_id>` |
+| `orch_run_stage_content` | `write` | Stage generic writing/review content into the run's own directory and return a `rep://runs/.../artifact/...` staging URI; loop-owned draft/review tasks may attach task-scoped provenance so completion and downstream review refresh can fail closed on missing outputs |
 | `orch_run_plan_computation` | `write` | Compile staged idea artifacts into `execution_plan_v1.json` and a run-local `computation/manifest.json`, requiring a supplied `method_spec` with files and `run_card`; missing methods are refused before executable artifacts are written |
-| `orch_run_execute_manifest` | `destructive` | Execute an approved run-local `computation_manifest_v1` from an existing run directory |
+| `orch_run_execute_manifest` | `destructive` | Execute an approved run-local `computation_manifest_v1` from the run's own directory |
 | `orch_run_progress_followups` | `destructive` | Progress exactly one computation-generated follow-up through the generic delegated runtime surface; delegated idea/literature feedback and writer/reviewer continuation are live |
 | `orch_run_record_proposal_decision` | `write` | Record one local operator decision for the current run's current repair/skill/optimize/innovate proposal and write proposal decision memory into `.nullius/proposal_decisions_v1.json` |
 | `orch_run_record_verification` | `write` | Execute one checker under a runtime environment allowlist and record adjacent production snapshots plus the checker's request-bound self-reported matching observations; `passed` does not prove actual reads or complete dependencies |
@@ -108,6 +108,7 @@ Fleet tools operate on queue items and worker ids rather than on artifact ids or
 3. Approval resolution lives on `orch_run_status`, `orch_run_approvals_list`, `orch_run_approve`, and `orch_run_reject`; domain tools may trigger the need for a gate but do not own the gate state.
 4. Fleet semantics live on the orchestrator fleet-tool family; they are not hidden behind domain packs or legacy Python shells.
 5. `nullius` remains the generic front door for lifecycle / workflow-plan / bounded computation; `orch_*` is the MCP/operator counterpart of that control plane rather than a competing product identity.
+6. The computation bridge tools (`orch_run_stage_idea`, `orch_run_stage_content`, `orch_run_plan_computation`, `orch_run_execute_manifest`, `orch_run_progress_followups`) admit `project_root` as every other front door does (canonical form, outside any nullius checkout) and require `run_dir` to be the run's own directory, `<project_root>/artifacts/runs/<run_id>`, where its approval packets, proposals and team state are kept by run id, so a run's records are never split between two directories. It may be spelled through an alias above the project root; a symbolic link below the project root is refused, and so is one anywhere in the run directory, including every entry directly under `computation/`; only entries nested below the method's own real workspace directories under `computation/` are left to the manifest checks at materialization and preparation. `handoff_path` (`orch_run_stage_idea`) must be absolute. The exception is per subdirectory: at admission the manifest may not exist yet, so every real subdirectory of `computation/` other than the runtime-managed ones is treated as method workspace there. Admission is a pathname check at call time, so it has a time-of-check window across the whole run directory: a link or special file placed anywhere in it after admission is not seen by the bridge tool that admitted the call. The manifest's declared paths are checked again at materialization and preparation, and that later check is what guards execution; later tool calls admit the run directory afresh.
 
 ### 2.3 Interaction Sketch
 
@@ -115,8 +116,8 @@ Fleet tools operate on queue items and worker ids rather than on artifact ids or
 Agent / operator
   │
   ├──► orch_run_create(project_root, run_id)            → initialize / replay run
-  ├──► orch_run_stage_idea(run_dir, handoff_path, ...)  → stage provider-local idea artifacts
-  ├──► orch_run_stage_content(run_dir, content_type, ...) → stage generic writing/review artifacts
+  ├──► orch_run_stage_idea(project_root, run_dir, handoff_path, ...) → stage idea artifacts into the run directory
+  ├──► orch_run_stage_content(project_root, run_dir, content_type, ...) → stage generic writing/review artifacts
   ├──► orch_run_plan_computation(...)                   → compile staged idea into execution plan + run-local manifest
   ├──► orch_run_execute_manifest(...)                   → execute approved run-local computation manifest
   ├──► orch_run_progress_followups(...)                 → advance one feedback/literature or writing/review continuation
@@ -124,7 +125,7 @@ Agent / operator
   ├──► orch_run_record_verification(...)                → record adjacent snapshots plus checker self-reported matching observations
   ├──► orch_run_request_final_conclusions(...)          → return A5 unavailable while dependency closure is incomplete
   ├──► orch_run_status(project_root)                    → lifecycle snapshot
-  ├──► hep_inspire_* / inspire_* / arxiv_* ...         → strategy/domain work (file outputs into an output_dir inside the run directory)
+  ├──► hep_inspire_* / inspire_* / arxiv_* ...         → strategy/domain work (file outputs into a caller-chosen output_dir inside the project root)
   ├──► orch_run_approvals_list(project_root, run_id)    → inspect pending gates
   ├──► orch_run_approve(...) or orch_run_reject(...)    → resolve approval
   ├──► orch_run_execute_agent(...)                      → bounded orchestrator runtime

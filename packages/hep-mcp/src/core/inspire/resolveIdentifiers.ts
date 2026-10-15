@@ -8,7 +8,7 @@ import {
 } from '@nullius/shared';
 
 import * as api from '../../api/client.js';
-import { cachedExternalApiJsonCall, describeExternalApiRequest } from '../cache/externalApiCache.js';
+import { cachedExternalApiJsonCall, describeExternalApiRequest, invalidProviderAnswer, isInvalidProviderAnswer } from '../cache/externalApiCache.js';
 import {
   OutputBatch,
   outputArtifactRef,
@@ -117,15 +117,18 @@ function classifyIdentifier(raw: string): { kind: IdentifierType; normalized: st
 }
 
 // Only a failed INSPIRE lookup becomes an item-level status: the cached-call
-// boundary (cachedExternalApiJsonCall) turns every error raised by the remote
-// call into one of these codes. Anything else (a refused or failed write of
-// the output files, a corrupted cache entry, an unexpected response, an
-// internal fault) aborts the whole call: reporting it per identifier would
-// return success while the recorded evidence is missing or wrong.
+// boundary (cachedExternalApiJsonCall) reports every non-McpError raised by
+// the remote call as UPSTREAM_ERROR, and the client raises these codes itself. Anything else (a refused or failed write of
+// the output files, a corrupted cache entry, an internal fault) aborts the
+// whole call, and so does an answer that cannot be used (invalidProviderAnswer):
+// reporting it per identifier would return success while the recorded
+// evidence is missing or wrong.
 const PROVIDER_FAILURE_CODES = new Set(['UPSTREAM_ERROR', 'RATE_LIMIT', 'NOT_FOUND']);
 
 function isProviderFailure(err: unknown): boolean {
-  return err instanceof McpError && PROVIDER_FAILURE_CODES.has(err.code);
+  // An answer that cannot be used is a provider failure too, but it is never
+  // reported per identifier (see invalidProviderAnswer).
+  return err instanceof McpError && PROVIDER_FAILURE_CODES.has(err.code) && !isInvalidProviderAnswer(err);
 }
 
 /**
@@ -135,14 +138,14 @@ function isProviderFailure(err: unknown): boolean {
  */
 export function paperRecid(response: unknown, operation: string): string | undefined {
   if (!response || typeof response !== 'object' || Array.isArray(response)) {
-    throw invalidParams(`INSPIRE ${operation} returned a non-object response (fail-fast)`, { operation });
+    throw invalidProviderAnswer(`INSPIRE ${operation} returned a non-object response (fail-fast)`, { operation });
   }
   const recid = (response as { recid?: unknown }).recid;
   if (recid === undefined || recid === null) return undefined;
   // INSPIRE recids are non-negative integers, given as a number or a digit string.
   if (typeof recid === 'number' && Number.isSafeInteger(recid) && recid >= 0) return String(recid);
   if (typeof recid === 'string' && /^\d+$/.test(recid)) return recid;
-  throw invalidParams(`INSPIRE ${operation} returned a malformed recid (fail-fast)`, { operation });
+  throw invalidProviderAnswer(`INSPIRE ${operation} returned a malformed recid (fail-fast)`, { operation });
 }
 
 function resolveStatusFromError(err: McpError): { status: ResolveStatusV1; message: string } {
@@ -264,6 +267,10 @@ export async function hepInspireResolveIdentifiers(params: {
       });
       return cached.response;
     } catch (err) {
+      // An unusable answer ends the call; it names the request that got it.
+      if (isInvalidProviderAnswer(err)) {
+        throw invalidProviderAnswer((err as McpError).message, { ...((err as McpError).data as Record<string, unknown>), request });
+      }
       if (!isProviderFailure(err)) throw err;
       const failure = err as McpError;
       indexCall({

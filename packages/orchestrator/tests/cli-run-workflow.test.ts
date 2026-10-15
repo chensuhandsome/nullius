@@ -139,8 +139,8 @@ describe('workflow run consumer', () => {
     const callTool = vi.fn(async () => ({
       ok: true,
       isError: false,
-      rawText: JSON.stringify({ uri: 'hep://runs/M-WF-1/artifact/critical_analysis.json' }),
-      json: { uri: 'hep://runs/M-WF-1/artifact/critical_analysis.json' },
+      rawText: JSON.stringify({ uri: 'provider://records/M-WF-1/artifact/critical_analysis.json' }),
+      json: { uri: 'provider://records/M-WF-1/artifact/critical_analysis.json' },
       errorCode: null,
     }));
     const { io, stdout } = makeIo(projectRoot);
@@ -169,8 +169,8 @@ describe('workflow run consumer', () => {
       run_status: 'completed',
       current_step: null,
       artifacts: {
-        critical_analysis: 'hep://runs/M-WF-1/artifact/critical_analysis.json',
-        research_pack: 'hep://runs/M-WF-1/artifact/critical_analysis.json',
+        critical_analysis: 'provider://records/M-WF-1/artifact/critical_analysis.json',
+        research_pack: 'provider://records/M-WF-1/artifact/critical_analysis.json',
       },
     });
     expect((manager.readState().plan as Record<string, unknown>).current_step_id).toBeUndefined();
@@ -197,8 +197,8 @@ describe('workflow run consumer', () => {
       .mockResolvedValueOnce({
         ok: true,
         isError: false,
-        rawText: '{"uri":"hep://runs/M-WF-1/artifact/research_pack.zip"}',
-        json: { uri: 'hep://runs/M-WF-1/artifact/research_pack.zip' },
+        rawText: '{"uri":"provider://records/M-WF-1/artifact/research_pack.zip"}',
+        json: { uri: 'provider://records/M-WF-1/artifact/research_pack.zip' },
         errorCode: null,
       });
 
@@ -229,7 +229,7 @@ describe('workflow run consumer', () => {
     expect(statusView).toMatchObject({
       artifacts: {
         critical_analysis: fallbackUri,
-        research_pack: 'hep://runs/M-WF-1/artifact/research_pack.zip',
+        research_pack: 'provider://records/M-WF-1/artifact/research_pack.zip',
       },
       workflow_outputs: {
         critical_analysis: {
@@ -250,7 +250,7 @@ describe('workflow run consumer', () => {
           step_id: 'export_project',
           tool: 'hep_export_project',
           runtime_status: 'completed',
-          artifact_uri: 'hep://runs/M-WF-1/artifact/research_pack.zip',
+          artifact_uri: 'provider://records/M-WF-1/artifact/research_pack.zip',
         },
       },
       current_run_workflow_outputs: {
@@ -263,7 +263,7 @@ describe('workflow run consumer', () => {
         },
         research_pack: {
           status: 'completed',
-          artifact_uri: 'hep://runs/M-WF-1/artifact/research_pack.zip',
+          artifact_uri: 'provider://records/M-WF-1/artifact/research_pack.zip',
         },
       },
       current_run_workflow_outputs_source: 'state',
@@ -412,8 +412,8 @@ describe('workflow run consumer', () => {
     const callTool = vi.fn(async () => ({
       ok: true,
       isError: false,
-      rawText: JSON.stringify({ uri: 'hep://runs/M-WF-1/artifact/critical_analysis.json' }),
-      json: { uri: 'hep://runs/M-WF-1/artifact/critical_analysis.json' },
+      rawText: JSON.stringify({ uri: 'provider://records/M-WF-1/artifact/critical_analysis.json' }),
+      json: { uri: 'provider://records/M-WF-1/artifact/critical_analysis.json' },
       errorCode: null,
     }));
     const { io, stdout } = makeIo(projectRoot);
@@ -564,8 +564,8 @@ describe('workflow run consumer', () => {
     const callTool = vi.fn(async () => ({
       ok: true,
       isError: false,
-      rawText: JSON.stringify({ uri: 'hep://runs/M-WF-EMPTY/artifact/research_pack.json' }),
-      json: { uri: 'hep://runs/M-WF-EMPTY/artifact/research_pack.json' },
+      rawText: JSON.stringify({ uri: 'provider://records/M-WF-EMPTY/artifact/research_pack.json' }),
+      json: { uri: 'provider://records/M-WF-EMPTY/artifact/research_pack.json' },
       errorCode: null,
     }));
     const { io, stdout } = makeIo(projectRoot);
@@ -742,8 +742,8 @@ describe('workflow run consumer', () => {
       return {
         ok: true,
         isError: false,
-        rawText: JSON.stringify({ uri: 'hep://runs/M-WF-1/artifact/research_pack.json' }),
-        json: { uri: 'hep://runs/M-WF-1/artifact/research_pack.json' },
+        rawText: JSON.stringify({ uri: 'provider://records/M-WF-1/artifact/research_pack.json' }),
+        json: { uri: 'provider://records/M-WF-1/artifact/research_pack.json' },
         errorCode: null,
       };
     });
@@ -790,8 +790,8 @@ describe('workflow run consumer', () => {
       return {
         ok: true,
         isError: false,
-        rawText: JSON.stringify({ uri: 'hep://runs/M-WF-1/artifact/research_pack.json' }),
-        json: { uri: 'hep://runs/M-WF-1/artifact/research_pack.json' },
+        rawText: JSON.stringify({ uri: 'provider://records/M-WF-1/artifact/research_pack.json' }),
+        json: { uri: 'provider://records/M-WF-1/artifact/research_pack.json' },
         errorCode: null,
       };
     });

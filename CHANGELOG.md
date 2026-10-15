@@ -56,6 +56,31 @@ version is the lockstep number below.
   numeric limit that is not a whole number in range instead of using the default.
 - Oversized hep-mcp tool results are truncated by UTF-8 bytes on a character
   boundary.
+- **The computation bridge tools work only in the run's own directory.**
+  `orch_run_stage_idea`, `orch_run_stage_content`, `orch_run_plan_computation`,
+  `orch_run_execute_manifest` and `orch_run_progress_followups` admit
+  `project_root` as every other front door does and require `run_dir` to be
+  `<project_root>/artifacts/runs/<run_id>`, where the run's approval packets,
+  proposals and team state are kept, so a run's records are never split; it may
+  be spelled through an alias above the root, while a symbolic link below the
+  root is refused, and so is one anywhere in the run directory, including every
+  entry directly under `computation/`; only entries nested below the method's
+  own real workspace directories under `computation/` are left to the manifest
+  checks at materialization and preparation. The two staging tools
+  take a required `project_root`. Workspace paths in manifests and method specs are
+  refused for a `..` segment rather than for any two dots, so names such as
+  `..data.csv` are accepted, and a method's files are never written through a
+  symbolic link in the run directory.
+- **hep-mcp reports failures that are not the caller's under their own codes.**
+  A file-system failure while writing outputs or using the INSPIRE response
+  cache (a full or read-only disk, a name too long, an unusable cache entry) is
+  `UNSAFE_FS`; an INSPIRE answer that fails the checks of the search export or
+  identifier resolution (a malformed page or record as the INSPIRE client returns
+  it, a malformed recid, inconsistent pagination) is `UPSTREAM_ERROR`, marked
+  `invalid_provider_answer`, and still ends the whole call instead of being
+  recorded for one identifier. A
+  search export that does not export every reported record gives one warning for
+  the cause: `max_results` stopped it, or INSPIRE's pages ended before its total.
 
 ### Added
 - **Idea-engine: grounding-audit write path and scoped provenance correction**

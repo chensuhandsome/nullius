@@ -2231,7 +2231,7 @@ def cmd_report(args) -> int:
         try:
             compress_saving += size * max(0.0, 1.0 - sample_ratio(path))
         except OSError:
-            unreadable.append(str(full))  # listed, as every skipped path is
+            unreadable.append(str(path))  # listed, as every skipped path is
             continue
     stale = []
     cutoff = time.time() - args.older_than_days * 86400

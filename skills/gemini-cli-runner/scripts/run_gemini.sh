@@ -134,12 +134,25 @@ def signal_group(pgid, signum):
     except (ProcessLookupError, PermissionError):
         return False  # macOS: EPERM when only the zombie CLI is left in its group
     return True
+def group_has_live_member(pgid):
+    if not sys.platform.startswith("linux"):
+        return signal_group(pgid, 0)
+    for entry in os.listdir("/proc"):  # on Linux the zombie CLI still answers killpg
+        if entry.isdigit():
+            try:
+                with open("/proc/%s/stat" % entry) as stream:
+                    fields = stream.read().rsplit(")", 1)[1].split()
+            except OSError:
+                continue
+            if int(fields[2]) == pgid and fields[0] not in "ZX":
+                return True
+    return False
 proc = subprocess.Popen(sys.argv[1:], start_new_session=True)
 while not received and not exited(proc.pid, 0.05):
     pass
 if signal_group(proc.pid, signal.SIGTERM):
     deadline = time.monotonic() + 0.3
-    while signal_group(proc.pid, 0) and time.monotonic() < deadline:
+    while group_has_live_member(proc.pid) and time.monotonic() < deadline:
         time.sleep(0.01)
     signal_group(proc.pid, signal.SIGKILL)
 proc.wait()

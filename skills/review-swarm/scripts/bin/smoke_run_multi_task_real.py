@@ -34,10 +34,31 @@ def _signal_group(pgid: int, signum: int) -> bool:
     return True
 
 
+def _group_has_live_member(pgid: int) -> bool:
+    """killpg(pgid, 0) answers on macOS (EPERM once only the zombie leader is
+    left); on Linux the zombie leader still counts there, so read /proc."""
+    if not sys.platform.startswith("linux"):
+        return _signal_group(pgid, 0)
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return _signal_group(pgid, 0)
+    for entry in entries:
+        if entry.isdigit():
+            try:
+                with open(f"/proc/{entry}/stat") as stream:
+                    fields = stream.read().rsplit(")", 1)[1].split()
+            except OSError:
+                continue
+            if int(fields[2]) == pgid and fields[0] not in "ZX":
+                return True
+    return False
+
+
 def _stop_group(pgid: int) -> None:
     if _signal_group(pgid, signal.SIGTERM):
         deadline = time.monotonic() + _STOP_GRACE_SECS
-        while _signal_group(pgid, 0) and time.monotonic() < deadline:
+        while _group_has_live_member(pgid) and time.monotonic() < deadline:
             time.sleep(0.05)
         _signal_group(pgid, signal.SIGKILL)
 

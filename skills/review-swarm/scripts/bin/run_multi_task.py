@@ -955,14 +955,38 @@ def _signal_group(proc: subprocess.Popen, signum: int) -> bool:
 _STOP_GRACE_SECS = 2.0
 
 
+def _group_has_live_member(proc: subprocess.Popen) -> bool:
+    """Whether a registered runner's group has anything left to signal.
+    killpg(pgid, 0) says so on macOS (EPERM once only the zombie leader is
+    left); on Linux the zombie leader still counts there, so read /proc."""
+    if not sys.platform.startswith("linux"):
+        return _signal_group(proc, 0)
+    with _PROCESS_LOCK:
+        if proc not in _ACTIVE_PROCESSES:
+            return False
+        try:
+            entries = os.listdir("/proc")
+        except OSError:
+            return _signal_group(proc, 0)
+        for entry in entries:
+            if entry.isdigit():
+                try:
+                    with open(f"/proc/{entry}/stat") as stream:
+                        fields = stream.read().rsplit(")", 1)[1].split()
+                except OSError:
+                    continue
+                if int(fields[2]) == proc.pid and fields[0] not in "ZX":
+                    return True
+        return False
+
+
 def _stop_groups(processes: tuple[subprocess.Popen, ...]) -> None:
     """SIGTERM the runners' groups, wait until nothing in them is left to
-    signal or _STOP_GRACE_SECS, then SIGKILL. On Linux an unreaped leader
-    still counts, so there the whole grace is spent."""
+    signal or _STOP_GRACE_SECS, then SIGKILL."""
     for proc in processes:
         _signal_group(proc, signal.SIGTERM)
     deadline = time.monotonic() + _STOP_GRACE_SECS
-    while any(_signal_group(proc, 0) for proc in processes) and time.monotonic() < deadline:
+    while any(_group_has_live_member(proc) for proc in processes) and time.monotonic() < deadline:
         time.sleep(0.05)
     for proc in processes:
         _signal_group(proc, signal.SIGKILL)

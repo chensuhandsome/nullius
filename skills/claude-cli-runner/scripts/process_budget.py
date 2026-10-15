@@ -74,18 +74,39 @@ def signal_group(pgid: int, signum: int) -> bool:
     return True
 
 
+def group_has_live_member(pgid: int) -> bool:
+    """Whether anything in the group is left to signal. killpg(pgid, 0) says
+    so on macOS (EPERM once only the zombie leader is left); on Linux the
+    zombie leader still counts there, so /proc is read instead."""
+    if sys.platform.startswith('linux'):
+        try:
+            entries = os.listdir('/proc')
+        except OSError:
+            return signal_group(pgid, 0)
+        for entry in entries:
+            if entry.isdigit():
+                try:
+                    with open(f'/proc/{entry}/stat') as stream:
+                        fields = stream.read().rsplit(')', 1)[1].split()
+                except OSError:
+                    continue
+                if int(fields[2]) == pgid and fields[0] not in 'ZX':
+                    return True
+        return False
+    return signal_group(pgid, 0)
+
+
 def stop_group(proc: subprocess.Popen) -> None:
     """Stop the CLI's whole group (SIGTERM, grace, SIGKILL), then reap the CLI.
 
     The CLI may exit before its descendants. Its pid is the group number, which
     names this group provably only while the CLI is unreaped, so every signal
     goes out before the reap and nothing before this function reaps the CLI.
-    The grace ends early only once nothing in the group is left to signal; on
-    Linux the zombie CLI still counts, so the whole grace is given there.
+    The grace ends early once nothing in the group is left to signal.
     """
     if proc.returncode is None and signal_group(proc.pid, signal.SIGTERM):
         deadline = time.monotonic()+0.3
-        while signal_group(proc.pid, 0) and time.monotonic() < deadline:
+        while group_has_live_member(proc.pid) and time.monotonic() < deadline:
             time.sleep(0.01)
         signal_group(proc.pid, signal.SIGKILL)
     proc.wait()

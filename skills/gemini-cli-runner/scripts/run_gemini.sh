@@ -101,9 +101,14 @@ run_gemini_cmd() {
     # The group number is the CLI pid; it names this group provably only while
     # the CLI is unreaped, so the supervisor waits without reaping, signals the
     # group (SIGTERM, grace, SIGKILL), and reaps last. Its handler only records
-    # a signal, so no later signal can interrupt that cleanup.
+    # a signal, so no later signal can interrupt that cleanup. SIGCHLD is set to
+    # its default first: ignored (it survives exec), the kernel would reap the
+    # exited CLI itself and the group number could be reissued.
     python3 -c '
 import os, select, signal, subprocess, sys, time
+signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+class ReapedElsewhere(Exception):
+    pass
 received = []
 def record(signum, frame):
     received.append(signum)
@@ -118,16 +123,22 @@ def exited(pid, timeout):
                 queue.control([select.kevent(pid, select.KQ_FILTER_PROC,
                                              select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
                                              select.KQ_NOTE_EXIT)], 0, 0)
+                ended = bool(queue.control(None, 1, timeout))
             except ProcessLookupError:
-                return True  # the kernel refuses to watch a zombie
-            return bool(queue.control(None, 1, timeout))
+                ended = True  # a zombie, which the kernel refuses to watch, or a reaped pid
         finally:
             queue.close()
+        if ended and signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN:
+            raise ReapedElsewhere()  # no zombie is kept while SIGCHLD is ignored
+        return ended
     deadline = time.monotonic() + timeout
-    while os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None:
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.01)
+    try:
+        while os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+    except ChildProcessError:  # ECHILD: not even a zombie is left
+        raise ReapedElsewhere()
     return True
 def signal_group(pgid, signum):
     try:
@@ -149,9 +160,15 @@ def group_has_live_member(pgid):
                 return True
     return False
 proc = subprocess.Popen(sys.argv[1:], start_new_session=True)
-while not received and not exited(proc.pid, 0.05):
-    pass
-if signal_group(proc.pid, signal.SIGTERM):
+reaped_elsewhere = False
+try:
+    while not received and not exited(proc.pid, 0.05):
+        pass
+except ReapedElsewhere:
+    # The pid no longer names the CLI group: nothing is signalled by it.
+    reaped_elsewhere = True
+    sys.stderr.write("gemini supervisor: the CLI was reaped outside the supervisor; its process group was not signalled\n")
+if not reaped_elsewhere and signal_group(proc.pid, signal.SIGTERM):
     deadline = time.monotonic() + 0.3
     while group_has_live_member(proc.pid) and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -161,7 +178,7 @@ proc.wait()
 # between reading `received` and os._exit would otherwise be recorded but not
 # reported. Leave without interpreter shutdown, which restores default handlers.
 signal.pthread_sigmask(signal.SIG_BLOCK, set(SIGNALS))
-os._exit(128 + received[0] if received else proc.returncode & 0xFF)
+os._exit(128 + received[0] if received else 70 if reaped_elsewhere else proc.returncode & 0xFF)
 ' env "GEMINI_CLI_HOME=${GEMINI_CLI_HOME_OVERRIDE}" gemini "$@" <&0 &
   elif [[ -n "${GEMINI_CLI_HOME_OVERRIDE}" ]]; then
     env "GEMINI_CLI_HOME=${GEMINI_CLI_HOME_OVERRIDE}" gemini "$@" <&0 &

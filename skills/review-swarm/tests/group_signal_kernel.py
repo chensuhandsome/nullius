@@ -153,6 +153,12 @@ def advance_clock_after(marker: str, seconds: float) -> None:
 
 SITECUSTOMIZE = '''\
 import importlib.util, os
+if os.environ.get("GROUP_SIGNAL_IGNORE_SIGCHLD"):
+    # Ignored in this interpreter, as the caller's ignore would leave it: on
+    # Linux an inherited ignore already makes the kernel reap exited children,
+    # macOS clears that at exec and does so only once it is ignored here.
+    import signal
+    signal.signal(signal.SIGCHLD, signal.SIG_IGN)
 _spec = importlib.util.spec_from_file_location("group_signal_kernel", {path!r})
 _module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_module)
@@ -164,6 +170,18 @@ if os.environ.get("GROUP_SIGNAL_TERM_AFTER_SPAWN"):
     _module.term_self_after_spawn(os.environ["GROUP_SIGNAL_TERM_AFTER_SPAWN"],
                                   os.environ["GROUP_SIGNAL_SPAWN_PIDS"])
 '''
+
+
+def ignore_sigchld_for_children(env: dict):
+    """Start a supervisor with SIGCHLD ignored, as a caller that ignores it
+    would: returns a preexec_fn that ignores it across exec (inherited), and
+    marks env so that the sitecustomize hook installed by install_for_children
+    ignores it again inside each interpreter (see SITECUSTOMIZE)."""
+    env["GROUP_SIGNAL_IGNORE_SIGCHLD"] = "1"
+
+    def preexec() -> None:
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+    return preexec
 
 
 def install_for_children(site_dir, env: dict, standin_pgid: int, log_path) -> None:

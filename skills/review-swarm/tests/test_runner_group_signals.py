@@ -10,7 +10,9 @@ whose only remaining member is the zombie leader (see group_signal_kernel).
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -26,6 +28,7 @@ PROCESS_BUDGETS = {name: SKILLS / f"{name}-cli-runner/scripts/process_budget.py"
 RUN_GEMINI = SKILLS / "gemini-cli-runner/scripts/run_gemini.sh"
 RUN_MULTI_TASK = SKILLS / "review-swarm/scripts/bin/run_multi_task.py"
 SMOKE = SKILLS / "review-swarm/scripts/bin/smoke_run_multi_task_real.py"
+REPRODUCTION_CHECK = SKILLS / "research-harness/scripts/independent_reproduction_check.py"
 
 
 def _load(name: str, path: Path):
@@ -143,7 +146,8 @@ def _wait_file(path: Path, timeout: float = 20) -> None:
 
 def _budget_run(tmp_path: Path, provider: str, mode: str, standin: Standin, *,
                 timeout_secs: float = 0, cancel: bool = False,
-                deadline_when_cli_started: bool = False) -> tuple[int, str, Path]:
+                deadline_when_cli_started: bool = False,
+                ignore_sigchld: bool = False) -> tuple[int, str, Path]:
     script = PROCESS_BUDGETS[provider]
     workdir = tmp_path / "work"
     workdir.mkdir()
@@ -159,7 +163,9 @@ def _budget_run(tmp_path: Path, provider: str, mode: str, standin: Standin, *,
     cmd = [sys.executable, str(script), "run", "--state", str(state),
            "--stdout", str(tmp_path / "cli.out"), "--stderr", str(tmp_path / "cli.err"),
            "--", sys.executable, str(fake), mode, str(workdir)]
-    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    preexec = kernel.ignore_sigchld_for_children(env) if ignore_sigchld else None
+    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            preexec_fn=preexec)
     try:
         if cancel:
             _wait_file(workdir / "descendants.ready")
@@ -201,6 +207,83 @@ def test_budget_deadline_stops_group_before_reaping(tmp_path, standin, provider)
     assert standin.alive()
     assert code == 124, stderr
     _assert_descendants_stopped(tmp_path / "work")
+
+
+# A supervisor started with SIGCHLD ignored: unless it sets SIGCHLD back to its
+# default, the kernel reaps the exited CLI itself, and every later signal to
+# the CLI's group number is late (Linux: waitid answers ECHILD; macOS: the
+# kqueue watch answers ESRCH or fires for a pid already reaped).
+
+def _kill_survivors(workdir: Path) -> None:
+    """Kill the fake CLI's descendants that a failed run left behind."""
+    for behaviour in ("exits", "ignores"):
+        log = workdir / f"{behaviour}.log"
+        lines = log.read_text().splitlines() if log.exists() else []
+        if lines and lines[0].startswith("ready "):
+            pid = int(lines[0].split()[1])
+            if not kernel.gone(pid):
+                os.kill(pid, signal.SIGKILL)
+
+
+def _assert_no_echild(stderr: str) -> None:
+    assert "ChildProcessError" not in stderr and "No child processes" not in stderr, stderr
+    assert "Traceback" not in stderr, stderr
+
+
+@pytest.mark.parametrize("provider", sorted(PROCESS_BUDGETS))
+def test_budget_owns_sigchld_when_started_with_it_ignored(tmp_path, standin, provider):
+    try:
+        code, stderr, log = _budget_run(tmp_path, provider, "descendants", standin, ignore_sigchld=True)
+        assert log.read_text() == "", "a group was signalled after its leader was reaped"
+        assert standin.alive()
+        _assert_no_echild(stderr)
+        assert code == 0, stderr
+        _assert_descendants_stopped(tmp_path / "work")
+    finally:
+        _kill_survivors(tmp_path / "work")
+
+
+@pytest.fixture
+def sigchld_ignored():
+    """SIGCHLD ignored in this process: the kernel reaps exited children itself."""
+    previous = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGCHLD, previous)
+
+
+def _child_exited_helpers():
+    helpers = [(f"process_budget_{name}", path, "child_exited", "ChildReapingError")
+               for name, path in sorted(PROCESS_BUDGETS.items())]
+    helpers += [("run_multi_task_reaping", RUN_MULTI_TASK, "_child_exited", "_ChildReapingError"),
+                ("smoke_run_multi_task_real_reaping", SMOKE, "_child_exited", "_ChildReapingError"),
+                ("independent_reproduction_check_reaping", REPRODUCTION_CHECK, "_child_exited",
+                 "ChildReapingError")]
+    return helpers
+
+
+@pytest.mark.parametrize("name,path,function,error", _child_exited_helpers(),
+                         ids=[h[0] for h in _child_exited_helpers()])
+def test_child_exited_reports_a_child_reaped_elsewhere(monkeypatch, sigchld_ignored,
+                                                       name, path, function, error):
+    # A child the kernel has already reaped is no zombie: the helper must say
+    # so rather than answer "exited" (macOS ESRCH) or leak ECHILD (Linux).
+    monkeypatch.syspath_prepend(str(path.parent))
+    module = _load(name, path)
+    proc = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    deadline = time.monotonic() + 20
+    while True:  # auto-reaped: the pid answers ESRCH, never as a zombie
+        try:
+            os.kill(proc.pid, 0)
+        except ProcessLookupError:
+            break
+        assert time.monotonic() < deadline, "the ignored SIGCHLD did not reap the child"
+        time.sleep(0.01)
+    with pytest.raises(Exception) as caught:
+        getattr(module, function)(proc.pid, 1)
+    assert type(caught.value).__name__ == error, repr(caught.value)
+    proc.wait()
 
 
 @pytest.mark.parametrize("provider", sorted(PROCESS_BUDGETS))
@@ -245,6 +328,28 @@ def test_gemini_supervisor_kills_group_before_reaping(tmp_path, standin, mode):
     assert proc.returncode == 0, (tmp_path / "supervisor.err").read_text()
     if mode == "descendants":
         _assert_descendants_stopped(workdir)
+
+
+def test_gemini_supervisor_owns_sigchld_when_started_with_it_ignored(tmp_path, standin):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    fake = tmp_path / "fake_cli.py"
+    fake.write_text(FAKE_CLI)
+    env, log = _child_env(tmp_path, standin)
+    preexec = kernel.ignore_sigchld_for_children(env)
+    with (tmp_path / "supervisor.out").open("wb") as out, (tmp_path / "supervisor.err").open("wb") as err:
+        proc = subprocess.run([sys.executable, "-c", _gemini_supervisor_source(),
+                               sys.executable, str(fake), "descendants", str(workdir)],
+                              env=env, stdout=out, stderr=err, timeout=60, preexec_fn=preexec)
+    stderr = (tmp_path / "supervisor.err").read_text()
+    try:
+        assert log.read_text() == "", "a group was signalled after its leader was reaped"
+        assert standin.alive()
+        _assert_no_echild(stderr)
+        assert proc.returncode == 0, stderr
+        _assert_descendants_stopped(workdir)
+    finally:
+        _kill_survivors(workdir)
 
 
 def test_gemini_supervisor_cleanup_survives_repeated_signals(tmp_path, standin):
@@ -386,6 +491,37 @@ def test_multi_task_completed_runner_group_is_stopped_before_reaping(tmp_path, s
             os.kill(pid, signal.SIGKILL)
 
 
+def test_multi_task_owns_sigchld_when_started_with_it_ignored(tmp_path, standin):
+    # The completed-runner case above, with SIGCHLD ignored by the caller.
+    runner = tmp_path / "run_opencode.sh"
+    runner.write_text(STRAGGLING_RUNNER)
+    runner.chmod(0o755)
+    straggler = tmp_path / "straggler.py"
+    straggler.write_text(STRAGGLER)
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("synthetic test\n")
+    straggler_log, straggler_pid = tmp_path / "straggler.log", tmp_path / "straggler.pid"
+    env, log = _child_env(tmp_path, standin)
+    env.update(REVIEW_SWARM_NO_AUTO_CONFIG="1", STRAGGLER=str(straggler),
+               STRAGGLER_LOG=str(straggler_log), STRAGGLER_PID=str(straggler_pid))
+    preexec = kernel.ignore_sigchld_for_children(env)
+    proc = subprocess.run([sys.executable, str(RUN_MULTI_TASK), "--out-dir", str(tmp_path / "out"),
+                           "--opencode-runner", str(runner), "--system", str(prompt), "--prompt", str(prompt),
+                           "--models", "some-provider/model-a", "--timeout-secs", "120"],
+                          env=env, capture_output=True, text=True, timeout=60, preexec_fn=preexec)
+    pid = int(straggler_pid.read_text())
+    try:
+        assert log.read_text() == "", "a group was signalled after its leader was reaped"
+        assert standin.alive()
+        _assert_no_echild(proc.stderr)
+        assert proc.returncode == 0, proc.stderr
+        assert kernel.wait_gone(pid), "the completed runner's straggler survived"
+        assert "TERM" in straggler_log.read_text(), "the straggler got no SIGTERM before SIGKILL"
+    finally:
+        if not kernel.gone(pid):
+            os.kill(pid, signal.SIGKILL)
+
+
 # The same runner, but the straggler inherits the runner's stdout and stderr,
 # so the pipes stay open until the straggler is stopped.
 INHERITING_RUNNER = STRAGGLING_RUNNER.replace(
@@ -492,6 +628,65 @@ def test_multi_task_stop_survives_repeated_signals(tmp_path, standin, parallel):
             proc.kill()
             proc.wait()
         for pid in runners:
+            if not kernel.gone(pid):
+                os.kill(pid, signal.SIGKILL)
+
+
+# A runner that leaves a same-group straggler (records and ignores SIGTERM)
+# and keeps running until a signal stops it.
+STOPPED_RUNNER = """#!/usr/bin/env bash
+python3 "$STRAGGLER" "$STRAGGLER_LOG" </dev/null >/dev/null 2>&1 &
+echo "$!" > "$STRAGGLER_PID"
+while ! grep -q ready "$STRAGGLER_LOG" 2>/dev/null; do sleep 0.01; done
+exec python3 -c 'import os, pathlib, time; pathlib.Path(os.environ["STUB_READY_DIR"], str(os.getpid())).write_text(""); time.sleep(60)'
+"""
+
+
+def test_multi_task_stop_owns_sigchld_when_started_with_it_ignored(tmp_path, standin):
+    # A stop while the runner runs, with SIGCHLD ignored by the caller: the
+    # runner dies of the SIGTERM while its straggler holds the group through
+    # the grace; the group may be signalled again (grace checks, SIGKILL)
+    # only while the runner is still unreaped.
+    runner = tmp_path / "run_opencode.sh"
+    runner.write_text(STOPPED_RUNNER)
+    runner.chmod(0o755)
+    straggler = tmp_path / "straggler.py"
+    straggler.write_text(STRAGGLER)
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("synthetic test\n")
+    ready = tmp_path / "ready"
+    ready.mkdir()
+    straggler_log, straggler_pid = tmp_path / "straggler.log", tmp_path / "straggler.pid"
+    env, log = _child_env(tmp_path, standin)
+    env.update(REVIEW_SWARM_NO_AUTO_CONFIG="1", STUB_READY_DIR=str(ready), STRAGGLER=str(straggler),
+               STRAGGLER_LOG=str(straggler_log), STRAGGLER_PID=str(straggler_pid))
+    preexec = kernel.ignore_sigchld_for_children(env)
+    proc = subprocess.Popen([sys.executable, str(RUN_MULTI_TASK), "--out-dir", str(tmp_path / "out"),
+                             "--opencode-runner", str(runner), "--system", str(prompt), "--prompt", str(prompt),
+                             "--models", "some-provider/model-a", "--no-parallel", "--timeout-secs", "120"],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            preexec_fn=preexec)
+    pids: list[int] = []
+    try:
+        deadline = time.monotonic() + 30
+        while not list(ready.iterdir()):
+            assert time.monotonic() < deadline and proc.poll() is None, "stub runner did not start"
+            time.sleep(0.02)
+        pids = [int(p.name) for p in ready.iterdir()] + [int(straggler_pid.read_text())]
+        proc.send_signal(signal.SIGTERM)
+        _, stderr = proc.communicate(timeout=30)
+        assert log.read_text() == "", "a group was signalled after its leader was reaped"
+        assert standin.alive()
+        _assert_no_echild(stderr)
+        assert proc.returncode == 128 + signal.SIGTERM, stderr
+        for pid in pids:
+            assert kernel.wait_gone(pid), "the runner or its straggler survived the stop"
+        assert "TERM" in straggler_log.read_text(), "the straggler got no SIGTERM before SIGKILL"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        for pid in pids:
             if not kernel.gone(pid):
                 os.kill(pid, signal.SIGKILL)
 
@@ -604,3 +799,84 @@ def test_smoke_completed_cli_group_is_stopped_before_reaping(tmp_path, standin, 
     assert result.timed_out is False
     assert result.exit_code == 0, result.stderr
     _assert_descendants_stopped(workdir)
+
+
+SMOKE_MAIN = """
+import importlib.util, sys
+smoke, fake, workdir, root = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("smoke_run_multi_task_real", smoke)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+module._STOP_GRACE_SECS = 0.5
+# The fake CLI stands in for run_multi_task; main() is otherwise unchanged.
+module._build_cmd = lambda **_: [sys.executable, fake, "quiet-descendants", workdir]
+sys.argv = [smoke, "--backends", "opencode", "--timeout-secs", "60", "--work-dir", root]
+raise SystemExit(module.main())
+"""
+
+
+def test_smoke_owns_sigchld_when_started_with_it_ignored(tmp_path, standin):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    fake = tmp_path / "fake_cli.py"
+    fake.write_text(FAKE_CLI)
+    env, log = _child_env(tmp_path, standin)
+    preexec = kernel.ignore_sigchld_for_children(env)
+    root = tmp_path / "smoke"
+    proc = subprocess.run([sys.executable, "-c", SMOKE_MAIN, str(SMOKE), str(fake), str(workdir), str(root)],
+                          env=env, capture_output=True, text=True, timeout=60, preexec_fn=preexec)
+    try:
+        assert log.read_text() == "", "a group was signalled after its leader was reaped"
+        assert standin.alive()
+        _assert_no_echild(proc.stderr)
+        # The fake CLI writes no review output, so the smoke case itself fails (1).
+        assert proc.returncode == 1, proc.stderr
+        row = json.loads((root / "smoke_summary.json").read_text())["results"][0]
+        assert (row["timed_out"], row["exit_code"]) == (False, 0), row
+        _assert_descendants_stopped(workdir)
+    finally:
+        _kill_survivors(workdir)
+
+
+# --- independent_reproduction_check.py (standalone) --------------------------
+
+def test_reproduction_check_owns_sigchld_when_started_with_it_ignored(tmp_path, standin):
+    # The entry's shell exits normally while a descendant that records and
+    # ignores SIGTERM still runs in its group.
+    project = tmp_path / "proj"
+    manifest = project / "artifacts" / "runs" / "demo" / "reproduction_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    descendant = project / "descendant.py"
+    descendant.write_text(STRAGGLER)
+    descendant_log, descendant_pid = tmp_path / "descendant.log", tmp_path / "descendant.pid"
+    q = shlex.quote
+    entry = (f"{q(sys.executable)} descendant.py {q(str(descendant_log))} </dev/null >/dev/null 2>&1 & "
+             f"echo $! > {q(str(descendant_pid))}; "
+             f"while ! grep -q ready {q(str(descendant_log))} 2>/dev/null; do sleep 0.01; done; "
+             "echo 'final value = 1.5'")
+    manifest.write_text(json.dumps({
+        "manifest_version": 1, "entry_command": entry, "working_inputs": ["descendant.py"],
+        "timeout_seconds": 60, "environment_note": "test interpreter; no network",
+        "expected": [{"id": "value", "stdout_pattern": r"final value = ([-+0-9.eE]+)",
+                      "value": 1.5, "tolerance": {"kind": "absolute", "value": 1e-9}}]}))
+    env, log = _child_env(tmp_path, standin)
+    preexec = kernel.ignore_sigchld_for_children(env)
+    work = tmp_path / "check"
+    proc = subprocess.run([sys.executable, str(REPRODUCTION_CHECK), "--manifest", str(manifest),
+                           "--project-root", str(project), "--isolation", "copy", "--work-dir", str(work)],
+                          env=env, capture_output=True, text=True, timeout=60, preexec_fn=preexec)
+    pid = int(descendant_pid.read_text())
+    try:
+        report = json.loads((work / "report.json").read_text())
+        assert log.read_text() == "", "a group was signalled after its leader was reaped"
+        assert standin.alive()
+        _assert_no_echild(proc.stderr)
+        assert report["errors"] == [], report["errors"]
+        assert report["entry"]["exit_code"] == 0, report["entry"]
+        assert (proc.returncode, report["verdict"]) == (0, "reproduced"), proc.stderr
+        assert kernel.wait_gone(pid), "the entry's descendant survived"
+        assert "TERM" in descendant_log.read_text(), "the descendant got no SIGTERM before SIGKILL"
+    finally:
+        if not kernel.gone(pid):
+            os.kill(pid, signal.SIGKILL)

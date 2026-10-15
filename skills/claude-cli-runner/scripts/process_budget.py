@@ -28,11 +28,29 @@ def remaining(state: dict) -> float | None:
     return None if deadline is None else max(0, deadline-time.monotonic())
 
 
+class ChildReapingError(RuntimeError):
+    """The CLI was reaped outside this supervisor, as the kernel does itself
+    while SIGCHLD is ignored. Its pid then no longer names its process group,
+    so nothing may be signalled by that number."""
+
+
+def own_child_reaping() -> None:
+    """Keep an exited CLI as a zombie until this supervisor reaps it.
+
+    An ignored SIGCHLD survives exec. While it is ignored the kernel reaps an
+    exited child at once (Linux; macOS once it is ignored in this process) and
+    the number of the group the child led may be reissued. Called once at
+    startup, before any CLI is spawned; nothing here sets it back.
+    """
+    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+
+
 def child_exited(pid: int, timeout: float | None) -> bool:
     """Whether the child has exited, waiting up to timeout seconds (None: no limit).
 
     Never reaps: an exited, unreaped child stays a zombie that keeps its pid,
-    and with it the number of the process group it leads.
+    and with it the number of the process group it leads. Raises
+    ChildReapingError when the child may already have been reaped elsewhere.
     """
     if hasattr(select, 'kqueue'):  # macOS CPython has no os.waitid
         queue = select.kqueue()
@@ -41,23 +59,31 @@ def child_exited(pid: int, timeout: float | None) -> bool:
                 queue.control([select.kevent(pid, select.KQ_FILTER_PROC,
                                              select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
                                              select.KQ_NOTE_EXIT)], 0, 0)
+                exited = bool(queue.control(None, 1, timeout))
             except ProcessLookupError:
-                return True  # the kernel refuses to watch a zombie
-            return bool(queue.control(None, 1, timeout))
+                exited = True  # a zombie, which the kernel refuses to watch, or a reaped pid
         finally:
             queue.close()
+        # ESRCH does not tell a zombie from a reaped pid; only an unignored
+        # SIGCHLD guarantees that an exited child is kept as a zombie.
+        if exited and signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN:
+            raise ChildReapingError(f'child {pid} exited while SIGCHLD is ignored')
+        return exited
     flags = os.WEXITED | os.WNOWAIT
-    if timeout is None:
-        os.waitid(os.P_PID, pid, flags)
-        return True
-    deadline = time.monotonic()+timeout
-    delay = 0.001
-    while os.waitid(os.P_PID, pid, flags | os.WNOHANG) is None:
-        left = deadline-time.monotonic()
-        if left <= 0:
-            return False
-        time.sleep(min(delay, left))
-        delay = min(2*delay, 0.05)
+    try:
+        if timeout is None:
+            os.waitid(os.P_PID, pid, flags)
+            return True
+        deadline = time.monotonic()+timeout
+        delay = 0.001
+        while os.waitid(os.P_PID, pid, flags | os.WNOHANG) is None:
+            left = deadline-time.monotonic()
+            if left <= 0:
+                return False
+            time.sleep(min(delay, left))
+            delay = min(2*delay, 0.05)
+    except ChildProcessError:  # ECHILD: not even a zombie is left
+        raise ChildReapingError(f'child {pid} was reaped outside this supervisor') from None
     return True
 
 
@@ -96,15 +122,16 @@ def group_has_live_member(pgid: int) -> bool:
     return signal_group(pgid, 0)
 
 
-def stop_group(proc: subprocess.Popen) -> None:
+def stop_group(proc: subprocess.Popen, reaped_elsewhere: bool = False) -> None:
     """Stop the CLI's whole group (SIGTERM, grace, SIGKILL), then reap the CLI.
 
     The CLI may exit before its descendants. Its pid is the group number, which
     names this group provably only while the CLI is unreaped, so every signal
     goes out before the reap and nothing before this function reaps the CLI.
-    The grace ends early once nothing in the group is left to signal.
+    The grace ends early once nothing in the group is left to signal. A CLI
+    reaped elsewhere (ChildReapingError) gets no signal by that number.
     """
-    if proc.returncode is None and signal_group(proc.pid, signal.SIGTERM):
+    if not reaped_elsewhere and proc.returncode is None and signal_group(proc.pid, signal.SIGTERM):
         deadline = time.monotonic()+0.3
         while group_has_live_member(proc.pid) and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -217,6 +244,7 @@ def main() -> int:
     if sys.version_info < (3, 10):
         print('Runner supervision requires Python >= 3.10 for a cross-process monotonic deadline.', file=sys.stderr)
         return 2
+    own_child_reaping()
     ap = argparse.ArgumentParser()
     ap.add_argument('action', choices=['init', 'run', 'sleep', 'finish'])
     ap.add_argument('--state', type=Path, required=True)
@@ -321,10 +349,14 @@ def main() -> int:
             progress = capture.state if capture else {"capture_health":"unknown", "last_advancing_monotonic":None}
             diagnostic_since = None
             diagnostics = []
+            reaped_elsewhere = False
             while True:
                 now = time.monotonic()
                 if capture: capture.read()
-                ended = child_exited(proc.pid, 0)
+                try:
+                    ended = child_exited(proc.pid, 0)
+                except ChildReapingError:
+                    ended = reaped_elsewhere = True
                 progress.update(elapsed_secs=now-started, process_status='exited' if ended else 'running',
                                 provider_status='terminal_result_seen' if capture and capture.terminal else 'unknown',
                                 expected_duration_exceeded=bool(args.expected_secs and now-state['started_monotonic'] >= args.expected_secs))
@@ -356,14 +388,18 @@ def main() -> int:
                     termination_reason = 'confirmed_inactivity'
                     code = 69
                     break
-                child_exited(proc.pid, 0.05)
+                with contextlib.suppress(ChildReapingError):  # the check above records it
+                    child_exited(proc.pid, 0.05)
+            if reaped_elsewhere:
+                termination_reason = 'reaped_outside_supervisor'
+                stderr.write(b'Runner subprocess was reaped outside the supervisor (SIGCHLD ignored); its process group was not signalled and its exit status is unknown.\n')
             # Save evidence before cleanup. Silence on unknown/degraded capture
             # never permits inactivity termination, even with explicit policy.
             progress['termination_reason'] = termination_reason
             save(progress_path, progress)
-            stop_group(proc)
+            stop_group(proc, reaped_elsewhere)
             if exited:
-                code = proc.returncode
+                code = 70 if reaped_elsewhere else proc.returncode
             if capture:
                 capture.read(final=True)
                 terminal = capture.terminal

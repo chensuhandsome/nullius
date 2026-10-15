@@ -27,11 +27,23 @@ from typing import Any, Optional
 _STOP_GRACE_SECS = 5.0
 
 
+class _ChildReapingError(RuntimeError):
+    """The CLI is not, or may no longer be, kept unreaped until its group is
+    stopped. While SIGCHLD is ignored (an ignored SIGCHLD survives exec) the
+    kernel reaps an exited child itself, and the number of the group it led
+    may be reissued; nothing may be signalled by that number then."""
+
+
+def _sigchld_ignored() -> bool:
+    return signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN
+
+
 def _child_exited(pid: int, timeout: float) -> bool:
     """Whether the child exited within timeout seconds; never reaps it.
 
     An exited, unreaped child stays a zombie that keeps its pid, and with it
-    the number of the process group it leads.
+    the number of the process group it leads. Raises _ChildReapingError when
+    the child may already have been reaped elsewhere.
     """
     if hasattr(select, "kqueue"):  # macOS CPython has no os.waitid
         queue = select.kqueue()
@@ -40,19 +52,27 @@ def _child_exited(pid: int, timeout: float) -> bool:
                 queue.control([select.kevent(pid, select.KQ_FILTER_PROC,
                                              select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
                                              select.KQ_NOTE_EXIT)], 0, 0)
+                exited = bool(queue.control(None, 1, timeout))
             except ProcessLookupError:
-                return True  # the kernel refuses to watch a zombie
-            return bool(queue.control(None, 1, timeout))
+                exited = True  # a zombie, which the kernel refuses to watch, or a reaped pid
         finally:
             queue.close()
+        # ESRCH does not tell a zombie from a reaped pid; only an unignored
+        # SIGCHLD guarantees that an exited child is kept as a zombie.
+        if exited and _sigchld_ignored():
+            raise _ChildReapingError(f"CLI {pid} exited while SIGCHLD is ignored")
+        return exited
     deadline = time.monotonic() + timeout
     delay = 0.001
-    while os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None:
-        left = deadline - time.monotonic()
-        if left <= 0:
-            return False
-        time.sleep(min(delay, left))
-        delay = min(2 * delay, 0.05)
+    try:
+        while os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            time.sleep(min(delay, left))
+            delay = min(2 * delay, 0.05)
+    except ChildProcessError:  # ECHILD: not even a zombie is left
+        raise _ChildReapingError(f"CLI {pid} was reaped outside this supervisor") from None
     return True
 
 
@@ -103,17 +123,27 @@ class CmdResult:
 
 
 def _run_with_timeout(cmd: list[str], timeout_sec: int) -> CmdResult:
+    if _sigchld_ignored():  # main() sets it to its default at startup
+        raise _ChildReapingError(
+            "SIGCHLD is ignored in this process, so the kernel would reap the exited CLI and "
+            "its process-group number could be reissued before the group is stopped; "
+            "set SIGCHLD to SIG_DFL first")
     start = time.monotonic()
     # Files, not pipes: communicate() would reap the CLI as soon as its pipes
     # close, before its group (descendants may outlive it) could be stopped.
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         proc = subprocess.Popen(cmd, stdout=out, stderr=err, start_new_session=True)
+        reaped_elsewhere = False
         try:
             timed_out = not _child_exited(proc.pid, timeout_sec)
+        except _ChildReapingError:
+            reaped_elsewhere = True  # the pid no longer names the CLI's group
+            raise
         finally:
             # Unreaped, so the pid still names the CLI's group, on a normal
             # exit and at the deadline alike; reap only after the stop.
-            _stop_group(proc.pid)
+            if not reaped_elsewhere:
+                _stop_group(proc.pid)
             returncode = proc.wait()
         out.seek(0)
         err.seek(0)
@@ -251,6 +281,9 @@ def _print_summary(rows: list[dict[str, Any]], root: Path, summary_json: Path) -
 
 
 def main() -> int:
+    # Keep each exited CLI a zombie until it is reaped here: an ignored SIGCHLD
+    # survives exec and would let the kernel reap it at once.
+    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--backends",

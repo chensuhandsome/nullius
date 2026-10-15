@@ -569,11 +569,23 @@ def sanitize_child_env(environ: dict, forbidden_roots: "list[Path]",
 ENTRY_STOP_GRACE_SECONDS = 2.0
 
 
+class ChildReapingError(RuntimeError):
+    """The entry's shell is not, or may no longer be, kept unreaped until its
+    group is stopped. While SIGCHLD is ignored (an ignored SIGCHLD survives
+    exec) the kernel reaps an exited child itself, and the number of the group
+    it led may be reissued; nothing may be signalled by that number then."""
+
+
+def _sigchld_ignored() -> bool:
+    return signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN
+
+
 def _child_exited(pid: int, timeout: float) -> bool:
     """Whether the child exited within timeout seconds; never reaps it.
 
     An exited, unreaped child stays a zombie that keeps its pid, and with it
-    the number of the process group it leads.
+    the number of the process group it leads. Raises ChildReapingError when
+    the child may already have been reaped elsewhere.
     """
     if hasattr(select, "kqueue"):  # macOS CPython has no os.waitid
         queue = select.kqueue()
@@ -582,19 +594,28 @@ def _child_exited(pid: int, timeout: float) -> bool:
                 queue.control([select.kevent(pid, select.KQ_FILTER_PROC,
                                              select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
                                              select.KQ_NOTE_EXIT)], 0, 0)
+                exited = bool(queue.control(None, 1, timeout))
             except ProcessLookupError:
-                return True  # the kernel refuses to watch a zombie
-            return bool(queue.control(None, 1, timeout))
+                exited = True  # a zombie, which the kernel refuses to watch, or a reaped pid
         finally:
             queue.close()
+        # ESRCH does not tell a zombie from a reaped pid; only an unignored
+        # SIGCHLD guarantees that an exited child is kept as a zombie.
+        if exited and _sigchld_ignored():
+            raise ChildReapingError(f"the entry's shell (pid {pid}) exited while SIGCHLD is ignored")
+        return exited
     deadline = time.monotonic() + timeout
     delay = 0.001
-    while os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None:
-        left = deadline - time.monotonic()
-        if left <= 0:
-            return False
-        time.sleep(min(delay, left))
-        delay = min(2 * delay, 0.05)
+    try:
+        while os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            time.sleep(min(delay, left))
+            delay = min(2 * delay, 0.05)
+    except ChildProcessError:  # ECHILD: not even a zombie is left
+        raise ChildReapingError(
+            f"the entry's shell (pid {pid}) was reaped outside this check") from None
     return True
 
 
@@ -637,11 +658,23 @@ def _stop_group(pgid: int) -> None:
 
 def run_entry(entry_command: str, run_root: Path, timeout_seconds: float,
               stdout_path: Path, stderr_path: Path, env: "dict | None" = None) -> dict:
+    # The process-wide SIGCHLD disposition belongs to the caller; a standalone
+    # run sets it to its default at startup. Refuse rather than spawn a shell
+    # whose group could not be stopped safely.
+    if _sigchld_ignored():
+        raise ChildReapingError(
+            "SIGCHLD is ignored in this process, so the kernel would reap the entry's shell "
+            "on exit and its process-group number could be reissued before the group is "
+            "stopped; set SIGCHLD to SIG_DFL before calling run_entry")
     started = time.time()
     with stdout_path.open("wb") as out, stderr_path.open("wb") as err:
         proc = subprocess.Popen(["/bin/sh", "-c", entry_command], cwd=str(run_root),
                                 stdout=out, stderr=err, start_new_session=True, env=env)
-        timed_out = not _child_exited(proc.pid, timeout_seconds)
+        try:
+            timed_out = not _child_exited(proc.pid, timeout_seconds)
+        except ChildReapingError:
+            proc.wait()  # nothing is signalled by a number that no longer names its group
+            raise
         # The pid (start_new_session: also the group number) names the shell's
         # group only until the shell is reaped, so its group, including any
         # descendants that outlive the shell, is stopped first (getpgid would
@@ -956,6 +989,10 @@ def main(argv: "list[str] | None" = None) -> int:
         report["errors"].append(f"entry could not be launched: {exc}")
         isolation["kept"] = checkout_dir.exists()
         return finish("environment_failed", work_dir)
+    except ChildReapingError as exc:  # the entry's group was not signalled
+        report["errors"].append(f"entry could not be supervised: {exc}")
+        isolation["kept"] = checkout_dir.exists()
+        return finish("environment_failed", work_dir)
     report["entry"]["environment_entries_dropped"] = env_dropped
     entry_ok = report["entry"]["exit_code"] == 0 and not report["entry"]["timed_out"]
     try:
@@ -1012,4 +1049,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
 
 if __name__ == "__main__":
+    # Keep the exited entry shell as a zombie until its group is stopped: an
+    # ignored SIGCHLD survives exec and would let the kernel reap it at once.
+    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     raise SystemExit(main())

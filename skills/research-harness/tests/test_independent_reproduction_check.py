@@ -363,6 +363,28 @@ def test_timeout_stops_the_entry_group_with_sigterm_first(tmp_path, monkeypatch)
     _assert_stopped_with_sigterm_first(log, pidfile)
 
 
+def test_run_entry_refuses_to_spawn_while_sigchld_is_ignored(tmp_path):
+    # Called as a library, run_entry does not own the process-wide SIGCHLD
+    # disposition. Ignored, the kernel would reap the exited shell and its
+    # group number could be reissued before the group stop: refuse, spawn nothing.
+    marker = tmp_path / "spawned"
+    previous = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+    try:
+        try:
+            irc.run_entry(f"touch {shlex.quote(str(marker))}", tmp_path, 60,
+                          tmp_path / "entry.out", tmp_path / "entry.err")
+        except Exception as exc:
+            refusal = exc
+        else:
+            refusal = None
+    finally:
+        signal.signal(signal.SIGCHLD, previous)
+    assert type(refusal).__name__ == "ChildReapingError", repr(refusal)
+    assert "SIGCHLD is ignored" in str(refusal)
+    # run_entry waits for any shell it spawns, so a spawned entry would have left the marker
+    assert not marker.exists(), "the entry was spawned although SIGCHLD is ignored"
+
+
 def test_manifest_validation_failure_is_environment_failed(tmp_path):
     doc = _manifest_doc()
     del doc["expected"][0]["tolerance"]

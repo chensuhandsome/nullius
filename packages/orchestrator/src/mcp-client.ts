@@ -201,8 +201,116 @@ function waitForProcessExit(proc: ChildProcess, timeoutMs: number): Promise<bool
   });
 }
 
+// POSIX servers run under an anchor: a small Node process spawned with setsid
+// (`detached`), so it leads the server's session and process group and the
+// group number is the anchor's pid. The anchor reads the server's environment
+// as one JSON line on fd 3 (the anchor itself runs with an empty one, which
+// the runtime may extend), starts the server in its group with exactly that
+// environment, reports on fd 3 how the server ended, and then stays in the
+// group, ignoring the signals that end the server, until the client sends
+// SIGKILL. The anchor's pid cannot be reissued before the client reaps it, so
+// a group signal sent while the anchor is unreaped reaches the server's group,
+// also after the server itself has exited and left descendants behind.
+// The anchor never leaves while the rest of the group may still run: if fd 3
+// ends or fails (the client exited without stopping it) or the anchor itself
+// fails, it stops the group on its own, SIGTERM and then, after the client's
+// kill grace (passed as its first argument), SIGKILL, which ends the anchor
+// together with every remaining member. The anchor cannot observe the
+// server's descendants, so it always waits the whole grace.
+const SERVER_ANCHOR_SOURCE = `
+'use strict';
+const { spawn } = require('node:child_process');
+const net = require('node:net');
+const [graceText, command, ...args] = process.argv.slice(1);
+const graceMs = Math.max(0, Number(graceText) || 0);
+const control = new net.Socket({ fd: 3, readable: true, writable: true });
+let stopping = false;
+const signalGroup = signal => {
+  try {
+    process.kill(-process.pid, signal);
+  } catch {}
+};
+const stopGroup = () => {
+  if (stopping) return;
+  stopping = true;
+  signalGroup('SIGTERM');
+  setTimeout(() => {
+    signalGroup('SIGKILL');
+    process.exit(1);
+  }, graceMs);
+};
+control.on('error', stopGroup);
+control.on('end', stopGroup);
+process.on('uncaughtException', stopGroup);
+for (const signal of ['SIGHUP', 'SIGINT', 'SIGTERM']) process.on(signal, () => {});
+let reported = false;
+const report = status => {
+  if (reported || !control.writable) return;
+  reported = true;
+  control.write(JSON.stringify(status) + '\\n');
+};
+let received = '';
+const start = chunk => {
+  received += chunk;
+  const end = received.indexOf('\\n');
+  if (end < 0) return;
+  control.off('data', start);
+  control.resume();
+  try {
+    const env = JSON.parse(received.slice(0, end));
+    const server = spawn(command, args, { env, stdio: ['inherit', 'inherit', 'inherit', 'ignore'] });
+    server.on('error', error => report({ error: error.message }));
+    server.on('exit', (code, signal) => report({ code, signal }));
+  } catch (error) {
+    report({ error: error.message });
+  }
+};
+control.setEncoding('utf8');
+control.on('data', start);
+`;
+
+type ServerExit = { code: number | null; signal: NodeJS.Signals | null } | { error: string };
+
+function parseServerExit(line: string): ServerExit {
+  try {
+    const status = JSON.parse(line) as Record<string, unknown>;
+    if (typeof status.error === 'string') return { error: status.error };
+    return {
+      code: typeof status.code === 'number' ? status.code : null,
+      signal: typeof status.signal === 'string' ? status.signal as NodeJS.Signals : null,
+    };
+  } catch {
+    return { code: null, signal: null };
+  }
+}
+
+// Resolves once with how the server ended: the anchor's report, or the exit
+// of the spawned process itself (an anchor that ends unreported, or the
+// server on Windows).
+function watchServerExit(proc: ChildProcess, anchored: boolean): Promise<ServerExit> {
+  return new Promise(resolve => {
+    proc.once('exit', (code, signal) => resolve({ code, signal }));
+    const status = proc.stdio[3];
+    if (anchored && status) {
+      // A broken control channel (EPIPE when the anchor dies before reading
+      // the environment) carries nothing beyond the anchor's own exit.
+      status.on('error', () => {});
+      readline.createInterface({ input: status as NodeJS.ReadableStream })
+        .on('error', () => {})
+        .once('line', line => resolve(parseServerExit(line)));
+    }
+  });
+}
+
+// A fresh error for each later call, carrying the recorded transport failure
+// (and through it the pipe error) as its cause.
+function transportFailureError(failure: Error): Error {
+  return new Error(failure.message, { cause: failure });
+}
+
 export class McpClient {
   private proc: ChildProcess | null = null;
+  private readonly serverExits = new WeakMap<ChildProcess, Promise<ServerExit>>();
   private nextId = 1;
   private readonly pending = new Map<JsonRpcId, PendingRequest>();
   private readonly sampling: SamplingRuntime | null;
@@ -220,6 +328,7 @@ export class McpClient {
   private closed = false;
   private unusable = false;
   private terminationPromise: Promise<void> | null = null;
+  private transportFailure: Error | null = null;
 
   constructor(options?: McpClientOptions) {
     const maxReconnects = options?.maxReconnects ?? 3;
@@ -274,17 +383,31 @@ export class McpClient {
       options.requiredCredentialNames ?? [],
     );
     const cwd = options.cwd ?? this.controlledHome;
-    const proc = spawn(command, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env,
-      cwd,
-      detached: process.platform !== 'win32',
-    });
+    const anchored = process.platform !== 'win32';
+    const proc = anchored
+      ? spawn(process.execPath, ['-e', SERVER_ANCHOR_SOURCE, '--', String(this.killGraceMs), command, ...args], {
+          stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+          env: {},
+          cwd,
+          detached: true,
+        })
+      : spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'], env, cwd });
     if (!proc.stdout) {
       throw new Error('No stdout from MCP process');
     }
     this.proc = proc;
+    if (anchored) (proc.stdio[3] as NodeJS.WritableStream).write(`${JSON.stringify(env)}\n`);
+    const serverExit = watchServerExit(proc, anchored);
+    this.serverExits.set(proc, serverExit);
+    // stderr is drained, never read: a failure on it carries nothing about
+    // the JSON-RPC connection and must not escape as an uncaught exception.
+    proc.stderr?.on('error', () => {});
     proc.stderr?.resume();
+    // A failed write or read on the JSON-RPC pipes (EPIPE once nothing reads
+    // the server's stdin) ends the connection instead of escaping as an
+    // uncaught exception. readline re-emits its input's errors.
+    proc.stdin?.on('error', error => this.failTransport(proc, 'stdin', error));
+    proc.stdout.on('error', error => this.failTransport(proc, 'stdout', error));
     readline.createInterface({ input: proc.stdout }).on('line', line => {
       consumeJsonRpcLine({
         line,
@@ -295,24 +418,25 @@ export class McpClient {
           writeResponse: response => writeJsonRpcMessage(this.proc?.stdin ?? null, response),
         }),
       });
-    });
-    proc.on('exit', code => {
-      const wasConnected = this.initialized;
-      this.initialized = false;
-      for (const [, pending] of this.pending) {
-        pending.reject(new Error(`MCP process exited with code ${code}`));
+    }).on('error', error => this.failTransport(proc, 'stdout', error));
+    void serverExit.then(status => {
+      // An anchor outlives its server: release the server's stdin as Node
+      // does when a direct child exits.
+      proc.stdin?.destroy();
+      if ('error' in status) {
+        this.failPending(`MCP process failed to start: ${status.error}`);
+        return;
       }
-      this.pending.clear();
+      const wasConnected = this.initialized;
+      this.failPending(status.signal
+        ? `MCP process exited on signal ${status.signal}`
+        : `MCP process exited with code ${status.code}`);
       if (wasConnected && !this.closed && !this.unusable && !this.reconnecting) {
         this.scheduleReconnect();
       }
     });
     proc.on('error', error => {
-      this.initialized = false;
-      for (const [, pending] of this.pending) {
-        pending.reject(new Error(`MCP process failed to start: ${error.message}`));
-      }
-      this.pending.clear();
+      this.failPending(`MCP process failed to start: ${error.message}`);
     });
 
     const initResponse = await this.request('initialize', {
@@ -376,6 +500,7 @@ export class McpClient {
 
   async request(method: string, params?: Record<string, unknown>, timeoutMs = 60_000): Promise<Record<string, unknown>> {
     if (this.closed || this.unusable || !this.proc?.stdin?.writable) {
+      if (this.transportFailure) throw transportFailureError(this.transportFailure);
       throw new Error('McpClient is not usable');
     }
     const id = this.nextId++;
@@ -401,9 +526,7 @@ export class McpClient {
   }
 
   private async requestToolCall(toolName: string, args: Record<string, unknown>, timeoutMs?: number): Promise<McpToolResult> {
-    if (!this.initialized) {
-      throw new Error('McpClient not initialized — call start() first');
-    }
+    this.assertInitialized();
     return toMcpToolResult(await this.request('tools/call', { name: toolName, arguments: args }, timeoutMs));
   }
 
@@ -417,17 +540,37 @@ export class McpClient {
     permissionView: ToolPermissionView,
     timeoutMs?: number,
   ): Promise<McpToolResult> {
-    if (!this.initialized) {
-      throw new Error('McpClient not initialized — call start() first');
-    }
+    this.assertInitialized();
     assertToolCallAllowed(toolName, permissionView);
     return this.requestToolCall(toolName, args, timeoutMs);
+  }
+
+  // A client whose transport failed reports that failure on every later call,
+  // also where initialization is checked first. Any other uninitialized client
+  // (never started, or between a server exit and its reconnect) is reported
+  // as not initialized.
+  private assertInitialized(): void {
+    if (this.initialized) return;
+    if (this.transportFailure) throw transportFailureError(this.transportFailure);
+    throw new Error('McpClient not initialized — call start() first');
   }
 
   async close(): Promise<void> {
     this.closed = true;
     await this.terminateProcessTree();
     this.removeControlledHome();
+  }
+
+  // The first pipe failure of the current server makes the client unusable:
+  // pending requests and every later request fail with it. Pipes of a server
+  // this client has already replaced carry none of its requests.
+  private failTransport(proc: ChildProcess, stream: 'stdin' | 'stdout', error: Error): void {
+    if (this.proc !== proc || this.transportFailure) return;
+    this.transportFailure = new Error(
+      `MCP transport failed on ${stream}: ${error.message}; client is unusable`,
+      { cause: error },
+    );
+    this.invalidateAndTerminate(this.transportFailure);
   }
 
   private invalidateAndTerminate(error: Error): void {
@@ -456,30 +599,64 @@ export class McpClient {
     } catch {
       // CONTRACT-EXEMPT: CODE-01.5 best-effort shutdown cleanup
     }
-    await waitForProcessExit(proc, this.shutdownGraceMs);
+    await this.waitForServerExit(proc, this.shutdownGraceMs);
+    // Signal from a fresh macrotask, never from inside libuv's reaping pass
+    // (see signalProcessTree).
+    await new Promise(resolve => setImmediate(resolve));
     const termSent = this.signalProcessTree(proc, 'SIGTERM');
     if (termSent) {
       await new Promise(resolve => setTimeout(resolve, this.killGraceMs));
     }
     this.signalProcessTree(proc, 'SIGKILL');
     await waitForProcessExit(proc, this.killGraceMs);
+    proc.stdio[3]?.destroy();
   }
 
+  private async waitForServerExit(proc: ChildProcess, timeoutMs: number): Promise<void> {
+    const serverExit = this.serverExits.get(proc);
+    if (!serverExit) return;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([serverExit, new Promise(resolve => { timer = setTimeout(resolve, timeoutMs); })]);
+    clearTimeout(timer);
+  }
+
+  // The group number is the anchor's pid and names the server's group exactly
+  // while the anchor is unreaped. Node sets exitCode/signalCode in the exit
+  // callback that libuv runs for each child it reaped, but libuv reaps every
+  // exited child before running any of their callbacks, so inside that pass a
+  // reaped child can still show unset fields. libuv runs the whole pass within
+  // its poll phase, so callers signal only from a fresh timer or immediate
+  // callback, where every reaped child has had its callback and unset fields
+  // mean the anchor is unreaped. A member running
+  // under credentials this process may not signal is out of reach and cannot
+  // be detected either: kill(2) succeeds for a group when any member accepts.
   private signalProcessTree(proc: ChildProcess, signal: NodeJS.Signals): boolean {
     if (!proc.pid) return false;
+    if (process.platform === 'win32') return proc.kill(signal);
+    // The anchor is reaped, so its pid, the group number, may already name an
+    // unrelated group: send nothing. Nothing is abandoned by this, because the
+    // anchor leaves only through a SIGKILL to the whole group, sent either by
+    // this client or by the anchor itself after it lost its client (see
+    // SERVER_ANCHOR_SOURCE). The exception is an anchor killed from outside,
+    // whose group is out of this client's reach once the anchor is reaped.
+    if (proc.exitCode !== null || proc.signalCode !== null) return false;
     try {
-      if (process.platform === 'win32') {
-        return proc.kill(signal);
-      } else {
-        process.kill(-proc.pid, signal);
-        return true;
-      }
+      process.kill(-proc.pid, signal);
+      return true;
     } catch (error) {
+      // ESRCH: no member is left. EPERM: none this process may signal; macOS
+      // reports it for a group whose members have all exited, such as an
+      // anchor killed from outside and not yet reaped.
       const code = (error as NodeJS.ErrnoException).code;
-      const directProcessExited = proc.exitCode !== null || proc.signalCode !== null;
-      if (code === 'ESRCH' || (code === 'EPERM' && directProcessExited)) return false;
+      if (code === 'ESRCH' || code === 'EPERM') return false;
       throw error;
     }
+  }
+
+  private failPending(message: string): void {
+    this.initialized = false;
+    for (const [, pending] of this.pending) pending.reject(new Error(message));
+    this.pending.clear();
   }
 
   private removeControlledHome(): void {

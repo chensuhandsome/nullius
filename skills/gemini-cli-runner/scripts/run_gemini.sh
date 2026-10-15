@@ -176,7 +176,9 @@ if not reaped_elsewhere and signal_group(proc.pid, signal.SIGTERM):
 proc.wait()
 # Block the recorded signals before choosing the exit status: a signal arriving
 # between reading `received` and os._exit would otherwise be recorded but not
-# reported. Leave without interpreter shutdown, which restores default handlers.
+# reported. This block is the committed-exit boundary: a signal arriving after
+# it stays pending and the exit status is the one chosen here. Leave without
+# interpreter shutdown, which restores default handlers.
 signal.pthread_sigmask(signal.SIG_BLOCK, set(SIGNALS))
 os._exit(128 + received[0] if received else 70 if reaped_elsewhere else proc.returncode & 0xFF)
 ' env "GEMINI_CLI_HOME=${GEMINI_CLI_HOME_OVERRIDE}" gemini "$@" <&0 &

@@ -2688,18 +2688,25 @@ def main() -> int:
             return
         _stop_runners(signum)
 
+    old_sigchld = None
     try:
         if threading.current_thread() is threading.main_thread():
             # Keep every exited runner a zombie until it is reaped here: an
             # ignored SIGCHLD survives exec and would let the kernel reap it at
-            # once. Not restored on return: a runner left registered by a stop
-            # stays unreaped until this process exits.
-            signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+            # once. The caller's disposition comes back only once no runner is
+            # registered any more: a runner left registered by a stop stays
+            # unreaped, so its group number stays protected, until this process
+            # exits.
+            old_sigchld = signal.signal(signal.SIGCHLD, signal.SIG_DFL)
             for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                 old_handlers[signum] = signal.signal(signum, stop)
         with contextlib.ExitStack() as home_stack:
             return _main(home_stack)
     finally:
+        if old_sigchld is not None:
+            with _PROCESS_LOCK:
+                if not _ACTIVE_PROCESSES:
+                    signal.signal(signal.SIGCHLD, old_sigchld)
         for signum, handler in old_handlers.items():
             signal.signal(signum, handler)
 

@@ -1864,6 +1864,25 @@ def test_worktree_check_keeps_a_worktree_whose_reflog_cannot_be_read(tmp_path, m
         os.chmod(log, 0o644)
 
 
+def test_worktree_check_ignores_an_empty_private_directory_but_not_a_populated_one(tmp_path, monkeypatch, capsys):
+    """git creates an empty refs/ in a new worktree's private directory (observed with git 2.50);
+    an empty directory holds no state. The same directory with a file in it is state."""
+    repo = make_repo(tmp_path)
+    wt = _worktree(repo, tmp_path, "fresh")
+    private = repo / ".git" / "worktrees" / "fresh"
+    (private / "refs").mkdir(exist_ok=True)
+    (private / "scratch" / "deeper").mkdir(parents=True)  # empty, nested: still no state
+    capsys.readouterr()
+    assert run_main(["worktree-check", "--all", "--json"], repo, monkeypatch) in (rs.EXIT_OK, rs.EXIT_FINDINGS)
+    v = _verdicts(capsys)
+    assert v["fresh"]["unassessed_git_state"] == [] and v["fresh"]["verdict"] == "safe_to_remove"
+    (private / "scratch" / "deeper" / "note.txt").write_text("state\n")  # the same directory, now populated
+    capsys.readouterr()
+    assert run_main(["worktree-check", "--all", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    v = _verdicts(capsys)
+    assert v["fresh"]["verdict"] == "keep" and "scratch/" in v["fresh"]["unassessed_git_state"]
+
+
 @pytest.mark.parametrize("state", ["private_ref_reflog", "merge_in_progress", "lock_file", "custom_worktree_config",
                                    "foreign_hooks_path", "private_info_exclude", "cone_sparse_patterns",
                                    "own_sparse_patterns", "locked_by_git_worktree_lock"])
@@ -2465,6 +2484,32 @@ def test_report_does_not_count_hard_linked_bundles_or_duplicates_as_reclaimable(
     assert doc["summary_bytes"]["bundles_contained_in_reference"] == 0
     assert [(d["copies"], d["reclaimable"]) for d in doc["duplicates"]] == [(3, len(data))], \
         "two copies have other hard links (removing them frees nothing): only the single-linked copy can go"
+
+
+def test_report_does_not_count_a_duplicate_group_when_a_copy_vanished_after_hashing(tmp_path, monkeypatch, capsys):
+    """Two identical copies are hashed; one disappears (or becomes unreadable) before its link
+    count is read. The survivor is then the only copy, so nothing in the group is reclaimable."""
+    repo = make_repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    (scratch / "a").mkdir(parents=True)
+    data = blob(2 * 1024 * 1024, 153)
+    gone, kept = scratch / "a" / "gone.bin", scratch / "a" / "kept.bin"
+    gone.write_bytes(data)
+    kept.write_bytes(data)
+    real_link_count = rs.link_count
+
+    def vanishing_link_count(path):
+        if path == gone:
+            gone.unlink(missing_ok=True)  # the copy is gone by the time its links are counted
+        return real_link_count(path)
+
+    monkeypatch.setattr(rs, "link_count", vanishing_link_count)
+    capsys.readouterr()
+    assert run_main(["report", str(scratch), "--repo", str(repo), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    assert [(d["copies"], d["reclaimable"]) for d in doc["duplicates"]] == [(2, 0)], \
+        "a copy that cannot be examined may already be gone: the group must not name the survivor as reclaimable"
+    assert doc["summary_bytes"]["duplicate_content"] == 0
 
 
 def test_report_counts_a_bundle_against_a_partial_clone_as_not_assessed_even_with_a_missing_tip(tmp_path, monkeypatch,

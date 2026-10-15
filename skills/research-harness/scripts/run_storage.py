@@ -1571,6 +1571,18 @@ def benign_worktree_setting(key: str, value: str, common_dir: Path) -> bool:
     return False
 
 
+def directory_is_empty(path: Path) -> bool:
+    """True when nothing at all lives below `path` (no files, links or subdirectories);
+    an unreadable directory counts as not empty."""
+    try:
+        for _dirpath, dirnames, filenames in os.walk(path, followlinks=False):
+            if filenames or any((Path(_dirpath) / d).is_symlink() for d in dirnames):
+                return False
+        return True
+    except OSError:
+        return False
+
+
 def unassessed_private_git_state(git_dir: Path, common_dir: Path) -> "list[str]":
     unknown = []
     try:
@@ -1578,7 +1590,11 @@ def unassessed_private_git_state(git_dir: Path, common_dir: Path) -> "list[str]"
             here = Path(dirpath)
             for name in dirnames:
                 rel = (here / name).relative_to(git_dir).as_posix()
-                if rel not in KNOWN_PRIVATE_GIT_DIRS or (here / name).is_symlink():
+                if (here / name).is_symlink():
+                    unknown.append(rel + "/")
+                elif rel not in KNOWN_PRIVATE_GIT_DIRS and not directory_is_empty(here / name):
+                    # An empty directory holds no state. git itself creates an empty
+                    # refs/ in every new worktree's private directory.
                     unknown.append(rel + "/")
             dirnames[:] = [d for d in dirnames if (here / d).relative_to(git_dir).as_posix() in KNOWN_PRIVATE_GIT_DIRS
                            and not (here / d).is_symlink()]
@@ -2043,12 +2059,12 @@ def store_contained(durable: DurableObjects, git_dir: Path) -> "bool | None":
                                                                                     sorted(reachable)))
 
 
-def link_count(path: Path) -> int:
-    """Hard links of a file; 0 when it cannot be examined (counted as not freeable)."""
+def link_count(path: Path) -> "int | None":
+    """Hard links of a file; None when it cannot be examined (vanished or unreadable)."""
     try:
         return path.lstat().st_nlink
     except OSError:
-        return 0
+        return None
 
 
 def sample_ratio(path: Path, sample_bytes: int = 4 * CHUNK) -> float:
@@ -2151,9 +2167,12 @@ def cmd_report(args) -> int:
                 unique_large.append((same[0], size))
                 if len(same) > 1:
                     # Removing a copy that has other hard links frees nothing: keep one copy, count the rest
-                    # that are single-linked.
-                    single = sum(1 for p in same if link_count(p) == 1)
-                    freeable = min(single, len(same) - 1)
+                    # that are single-linked. A copy that can no longer be examined (vanished or unreadable
+                    # since it was hashed) may already be gone, so the group is not counted at all rather
+                    # than risk naming the last remaining copy as reclaimable.
+                    counts = [link_count(p) for p in same]
+                    single = sum(1 for n in counts if n == 1)
+                    freeable = 0 if any(n is None for n in counts) else min(single, len(same) - 1)
                     duplicates.append({"sha256": sha, "size": size, "copies": len(same),
                                        "reclaimable": size * freeable, "paths": [str(p) for p in same]})
     duplicates.sort(key=lambda d: -d["reclaimable"])

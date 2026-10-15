@@ -1873,7 +1873,7 @@ def test_worktree_check_ignores_an_empty_private_directory_but_not_a_populated_o
     (private / "refs").mkdir(exist_ok=True)
     (private / "scratch" / "deeper").mkdir(parents=True)  # empty, nested: still no state
     capsys.readouterr()
-    assert run_main(["worktree-check", "--all", "--json"], repo, monkeypatch) in (rs.EXIT_OK, rs.EXIT_FINDINGS)
+    assert run_main(["worktree-check", "--all", "--json"], repo, monkeypatch) == rs.EXIT_OK
     v = _verdicts(capsys)
     assert v["fresh"]["unassessed_git_state"] == [] and v["fresh"]["verdict"] == "safe_to_remove"
     (private / "scratch" / "deeper" / "note.txt").write_text("state\n")  # the same directory, now populated

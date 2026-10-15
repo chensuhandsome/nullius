@@ -2500,8 +2500,9 @@ def test_report_counts_reclaimable_bytes(tmp_path, monkeypatch, capsys):
     assert rc == rs.EXIT_OK
     doc = json.loads(capsys.readouterr().out)
     assert doc["summary_bytes"]["duplicate_content"] == len(dup)
-    assert doc["summary_bytes"]["regenerable_directories"] == rs.on_disk(
-        os.lstat(scratch / "a" / "node_modules" / "x" / "f.js")), "overlapping roots are counted once"
+    assert doc["summary_bytes"]["regenerable_directories"] == os.lstat(
+        scratch / "a" / "node_modules" / "x" / "f.js").st_blocks * 512, \
+        "overlapping roots are counted once, and a 1000-byte file counts the block it occupies"
     bundles = {Path(b["path"]).name: b["contained_in_reference"] for b in doc["bundles"]}
     assert bundles == {"contained.bundle": True, "extra.bundle": False, "dangling.bundle": False}
     stores = {(Path(g["path"]).parent.name if Path(g["path"]).name == ".git" else Path(g["path"]).name):

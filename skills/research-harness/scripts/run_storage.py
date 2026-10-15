@@ -2451,8 +2451,10 @@ def cmd_report(args) -> int:
                     dirnames.remove(name)
                 elif (name == ".git" or name.endswith(".git")) and is_git_store(full):
                     size, count, _, _, _ = dir_size(full, unreadable)
-                    # Containment is verified for the objects (and the refs that name them); the
-                    # rest of the git directory (config, hooks, index, logs, info) is not compared.
+                    # Containment is checked for the objects reachable from the copy's refs, HEAD,
+                    # reflogs and index; its objects directory may also hold unreachable objects
+                    # (not compared, lost with the copy), and the rest of the git directory
+                    # (config, hooks, index, logs, info) is not compared at all.
                     objects, _, _, _, linked = dir_size(full / "objects", unreadable)
                     record = {"path": str(full), "bytes": size, "object_bytes": objects,
                               "other_bytes": size - objects, "reclaimable_bytes": objects - linked,
@@ -2598,9 +2600,10 @@ def cmd_report(args) -> int:
             "In a duplicate group, `size` is the content length (what made the copies a group); `occupied` lists "
             "the bytes each copy holds on disk, in `paths` order; `reclaimable` sums the single-linked copies "
             "that may go, keeping the copy that occupies the least when every copy is single-linked.",
-            "For a git copy, `reclaimable_bytes` counts its objects directory net of hard links (what the "
-            "containment check verified); `other_bytes` (config, hooks, index, logs, refs, info) is not compared "
-            "with the reference and not counted.",
+            "For a git copy, `reclaimable_bytes` counts its objects directory net of hard links; the containment "
+            "check compared the objects reachable from its refs, HEAD, reflogs and index, while unreachable objects "
+            "in that directory are counted but not compared (lost on removal). `other_bytes` (config, hooks, index, "
+            "logs, refs, info) is not compared with the reference and not counted.",
             "Categories can overlap (a stale root may contain duplicates or regenerable directories).",
             "Stale temporary roots are judged by age alone (the newest file or directory time; a root with any "
             "unreadable part is not listed); check that nothing still uses them before removing.",
@@ -2615,7 +2618,8 @@ def cmd_report(args) -> int:
     labels = {
         "duplicate_content": "identical content stored more than once",
         "regenerable_directories": "regenerable directories (dependency trees, caches)",
-        "history_copies_contained_in_reference": "objects of separate git stores already contained in --repo",
+        "history_copies_contained_in_reference": "object storage of separate git stores whose reachable objects "
+                                                 "are contained in --repo",
         "bundles_contained_in_reference": "git bundles already contained in --repo",
         "stale_temporary_roots": f"temporary roots unchanged for {args.older_than_days} days "
                                  "(age only: whether a process still uses them is not checked)",

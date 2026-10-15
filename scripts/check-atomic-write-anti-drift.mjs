@@ -26,14 +26,6 @@
  *      itself. It is the SOURCE of the durable sequence; it has to call the
  *      bare fs operations internally.
  *
- *   2. packages/hep-mcp/src/data/papersCacheFetch.ts:179 —
- *      cross-parent dir-rename (arxivSubdir → finalLatexDir, different
- *      parents under the same tmpContentDir). `commitStagedDurable`
- *      requires same-parent, so this site cannot be migrated directly. The
- *      enclosing tmpContentDir is durably committed at a higher level via
- *      papersCache.ts (`commitStagedDurable(tmpRoot, paths.root)`), which
- *      subsumes this intermediate rename's local durability.
- *
  * Import-bound rule: the patterns below only see calls spelled `fs.<name>`.
  * A file that imports a writer under another binding — a named import
  * (`import { writeFileSync } from 'node:fs'`), an alias, a default import, or
@@ -104,7 +96,6 @@ const FORBIDDEN_PATTERNS = [
 // entry MUST be justified in the file-level docstring above.
 const ALLOWLIST = new Set([
   'packages/shared/src/atomic-write.ts',
-  'packages/hep-mcp/src/data/papersCacheFetch.ts',
 ]);
 
 const FS_MODULES = new Set(['fs', 'node:fs']);
@@ -139,11 +130,6 @@ const BOUND_CALL_EXCEPTIONS = [
     path: 'packages/rep-sdk/src/transport/file-transport.ts',
     line: "await appendFile(this.filePath, `${serializeEnvelope(validation.data)}\\n`, 'utf8');",
     reason: 'standalone SDK without workspace dependencies; its JSONL transport is documented as not crash-atomic',
-  },
-  {
-    path: 'packages/hep-mcp/src/core/evidence.ts',
-    line: "const out = fs.createWriteStream(catalogPath, { encoding: 'utf-8' });",
-    reason: 'evidence catalog writer; the evidence tools are scheduled for removal',
   },
 ];
 

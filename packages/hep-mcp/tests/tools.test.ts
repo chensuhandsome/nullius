@@ -119,7 +119,7 @@ const stance = await import('../src/tools/research/stance/index.js');
 const cleanupDownloads = await import('../src/tools/research/cleanupDownloads.js');
 const validateBibliography = await import('../src/tools/research/validateBibliography.js');
 const paperClassifier = await import('../src/tools/research/paperClassifier.js');
-const { makeProjectRoot, readProjectFile } = await import('./support/hepProjectUri.js');
+const { makeProjectRoot, readProjectFile } = await import('./support/projectFiles.js');
 
 function getBibtexEntryKey(bibtex: string): string | null {
   const cleaned = bibtex.replace(/^\uFEFF/, '').trim();

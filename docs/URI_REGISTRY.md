@@ -28,11 +28,10 @@ receipt under its original run ID; it never relocates or rewrites that evidence.
 
 ## Covered Schemes
 
-The current emitted/resolved URI schemes covered by this registry are `hep://`, `pdg://`, `orch://`, `rep://`, `hepdata://`, `openalex://`, `zotero://`, `file://`, and `project://`.
+The current emitted/resolved URI schemes covered by this registry are `pdg://`, `orch://`, `rep://`, `hepdata://`, `openalex://`, `zotero://`, `file://`, and `project://`. `hep://` identifiers are historical only: no current tool emits or resolves them (see Historical `hep://runs` references and Historical `hep://projects` references below).
 
 | Scheme | Owner | Live authority | Surface type | Live patterns | Scope boundary |
 |---|---|---|---|---|---|
-| `hep://` | `@nullius/hep-mcp` | `packages/hep-mcp/src/tools/registry/projectCore.ts`; `packages/hep-mcp/src/core/evidence.ts`; `packages/hep-mcp/src/core/diagnostics.ts` | Tool-return/local artifact identifiers, not MCP resources | `hep://projects/{project_id}`; `hep://projects/{project_id}/artifact/{artifact_name}`; `hep://projects/{project_id}/papers/{paper_id}`; `hep://projects/{project_id}/papers/{paper_id}/evidence/catalog` | HEP paper/evidence project manifests and project artifacts only. hep-mcp no longer creates `hep://runs/...` identifiers; see Historical `hep://runs` references below. It does not own orchestrator lifecycle/read-model state. |
 | `pdg://` | `@nullius/pdg-mcp` | `packages/pdg-mcp/src/artifacts.ts`; `packages/pdg-mcp/src/tools/registry.ts` | Tool-return/local artifact identifiers, not MCP resources | `pdg://artifacts/{artifact_name}` | PDG local artifact cache identifiers only. Full artifacts live under `PDG_DATA_DIR/artifacts`; the server does not expose MCP resources. |
 | `orch://` | `@nullius/orchestrator` | `packages/orchestrator/src/orch-tools/{approval,control,create-status-list,run-read-model}.ts`; `packages/orchestrator/src/workflow-runtime.ts`; `packages/orchestrator/src/cli-run.ts` | Tool-return lifecycle/read-model/artifact identifiers | `orch://runs/{run_id}`; `orch://runs/{run_id}/approvals/{approval_dir}`; `orch://runs/{run_id}/artifact/{artifact_path}`; `orch://runs/export` | Orchestrator lifecycle/read-model/export summaries and orchestrator-owned workflow/result artifacts only. It does not own HEP research artifact payloads. |
 | `rep://` | `@nullius/orchestrator`, `@nullius/rep-sdk`, shared generated schemas | `packages/orchestrator/src/orch-tools/index.ts`; `packages/orchestrator/src/orch-tools/{bridge-tools,final-conclusions}.ts`; `packages/orchestrator/src/computation/review-followup-gate.ts`; `packages/rep-sdk/schemas/artifact_ref_v1.schema.json`; `meta/schemas/artifact_ref_v1.schema.json` | Local artifact-ref identifiers, not MCP resources | `rep://runs/{run_id}/artifact/{artifact_path}` is the canonical form that current orchestrator code emits and validates. The live `artifact_ref_v1` schema `uri` description still shows the simplified `rep://{run_id}/{artifact_path}` example, and older test fixtures may contain `rep://{run_id}/{artifact_path}` or `rep://run-1/...`; treat the 4-segment `rep://runs/.../artifact/...` form as authoritative. | Local computation/staging/verification artifact references only. It is not a remote REP publishing surface in this lane. |
@@ -45,7 +44,7 @@ The current emitted/resolved URI schemes covered by this registry are `hep://`, 
 ## Boundary Rules
 
 1. `hep://` and `orch://` are separate owned namespaces.
-   `hep://projects/{project_id}/...` identifiers name HEP paper/evidence projects owned by `@nullius/hep-mcp`; hep-mcp keeps no runs, and files its tools produce are returned as project-relative paths inside a caller-chosen `output_dir`.
+   `hep://` identifiers are historical only: earlier `@nullius/hep-mcp` versions named their own runs and paper/evidence projects with them. hep-mcp now keeps neither, and files its tools produce are returned as project-relative paths inside a caller-chosen `output_dir`.
    `orch://runs/{run_id}` and `orch://runs/{run_id}/approvals/{approval_dir}` are the lifecycle/read-model views owned by `@nullius/orchestrator`.
    The current codebase does not expose a shared cross-scheme resolver or alias between the two schemes.
    There is no implicit `hep://` <-> `orch://` aliasing layer in live authority.
@@ -61,8 +60,8 @@ The current emitted/resolved URI schemes covered by this registry are `hep://`, 
 | Reference | Status | Replacement / note |
 |---|---|---|
 | `autoresearch-meta/docs/uri_registry.md` | Stale path | The current monorepo registry lives at `docs/URI_REGISTRY.md`. |
-| `hep://corpora` | Removed | Do not treat it as a live entry point. Current HEP tools return project ids, `hep://projects/...` identifiers, and project-relative output paths. |
-| `hep://projects` and `hep://projects/{project_id}/papers` | Removed with the hep URI reader | No current tool emits or resolves these index forms; list projects with `hep_project_list`. |
+| `hep://corpora` | Removed | Do not treat it as a live entry point. Current HEP tools return project-relative output paths. |
+| `hep://projects`, `hep://projects/{project_id}`, `hep://projects/{project_id}/artifact/{artifact_name}`, `hep://projects/{project_id}/papers`, `hep://projects/{project_id}/papers/{paper_id}`, `hep://projects/{project_id}/papers/{paper_id}/evidence/catalog` | Historical only; no longer created | Resolve historical references by hand or script with the rule in Historical `hep://projects` references. |
 | `hep://runs`, `hep://runs/{run_id}`, `hep://runs/{run_id}/manifest`, `hep://runs/{run_id}/artifact/{artifact_name}` | Historical only; no longer created | Resolve historical references by hand or script with the rule in Historical `hep://runs` references. |
 | `orch://runs/{run_id}/state` and `orch://runs/{run_id}/ledger` | Older design examples, not current live emitted URIs | Current checked-in tool surfaces emit `orch://runs/{run_id}`, `orch://runs/{run_id}/approvals/{approval_dir}`, and `orch://runs/export`. |
 | Remote Streamable HTTP/OAuth MCP endpoint URIs | Not implemented in this lane | Current MCP connection truth is local stdio. Remote MCP deployment is a separate future surface. |
@@ -82,15 +81,31 @@ Earlier hep-mcp versions kept their own runs and returned `hep://runs/...` ident
 
 These directories are historical evidence: read them in place, and never rewrite, move, or delete them.
 
+## Historical `hep://projects` references
+
+Earlier hep-mcp versions also kept paper/evidence projects (with an evidence catalog per paper) and returned `hep://projects/...` identifiers. hep-mcp no longer creates these projects, catalogs or identifiers, and no current tool resolves them; they map to files by this rule:
+
+| Historical reference | File |
+|---|---|
+| `hep://projects/<project_id>` | `<HEP data root>/projects/<project_id>/project.json` |
+| `hep://projects/<project_id>/artifact/<name>` | `<HEP data root>/projects/<project_id>/artifacts/<name>` |
+| `hep://projects/<project_id>/papers/<paper_id>` | `<HEP data root>/projects/<project_id>/papers/<paper_id>/paper.json` |
+| `hep://projects/<project_id>/papers/<paper_id>/evidence/catalog` | `<HEP data root>/projects/<project_id>/papers/<paper_id>/evidence/catalog.jsonl` |
+| `hep://projects` | No single file: a JSON listing built on read, `{"projects": [...]}`, with one row per readable `<HEP data root>/projects/<project_id>/project.json` (`project_id`, `name`, `description`, `created_at`, `updated_at`, and `uri` = `hep://projects/<project_id>`), most recently updated (`updated_at`) first; a directory without a readable `project.json` was skipped |
+| `hep://projects/<project_id>/papers` | No single file: a JSON listing built on read, `{"project_id": ..., "papers": [...]}`, with one row per readable `<HEP data root>/projects/<project_id>/papers/<paper_id>/paper.json` (`paper_id`, `updated_at`, `uri` = `hep://projects/<project_id>/papers/<paper_id>`, and `evidence_catalog_uri` = the paper's `artifacts.evidence_catalog.uri`, absent when the paper has no catalog), most recently updated first; a directory without a readable `paper.json` was skipped |
+
+`<HEP data root>` follows the same rule as for historical runs above. `<project_id>`, `<paper_id>` and `<name>` are the percent-decoded URI path segments. These two listings were served as MCP resources until 2026-05-16, when hep-mcp became tool-only; after that no tool emitted these two `hep://` index forms (`hep_project_list` returned its own project summaries until this removal). The `uri` values in them are built from percent-encoded ids. When that resource reader served `hep://projects/<project_id>/artifact/<name>`, it returned the file's text for a `.json`, `.jsonl`, `.txt`, `.md`, `.tex` or `.bib` artifact and, for any other file, a JSON description (`file_path`, `size`, `sha256`, `mimeType`) in its place; the file itself is the one in the table.
+
+An evidence catalog is a JSON Lines file, one item per line. The item format is the `evidence_catalog_item_v1` schema, which no longer exists in the live tree; read it with `git show 90c3979b:meta/schemas/evidence_catalog_item_v1.schema.json`. A LaTeX item's `locator.file` is relative to the paper's `sources/latex/extracted/` directory, and its offsets, lines and columns refer to that original file. `sources/latex/merged.tex` and `sources/latex/sourceMap.json` beside it are the merged source and its map back to the original files; a paper directory may hold these two files without a catalog when a build failed after writing them, and they are not a catalog.
+
+These directories are historical evidence: read them in place, and never rewrite, move, or delete them.
+
 ## Audit Basis
 
 - `docs/ARCHITECTURE.md`
 - `docs/README_zh.md`
 - `docs/TESTING_GUIDE.md`
 - `meta/docs/orchestrator-mcp-tools-spec.md`
-- `packages/hep-mcp/src/tools/registry/projectCore.ts`
-- `packages/hep-mcp/src/core/evidence.ts`
-- `packages/hep-mcp/src/core/diagnostics.ts`
 - `packages/hep-mcp/src/core/outputDir.ts`
 - `packages/pdg-mcp/src/artifacts.ts`
 - `packages/orchestrator/src/orch-tools/*.ts`

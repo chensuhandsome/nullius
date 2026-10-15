@@ -11,7 +11,7 @@ import {
   type EvalResult,
 } from '../../src/eval/index.js';
 import { withHepDataRoot } from '../../src/data/dataDir.js';
-import { makeProjectRoot } from '../support/hepProjectUri.js';
+import { makeProjectRoot } from '../support/projectFiles.js';
 import { assertEvalSnapshot, BASELINES_DIR, readEvalSetFixture } from './evalSnapshots.js';
 import {
   ALLOWED_AGGREGATE_METRICS,

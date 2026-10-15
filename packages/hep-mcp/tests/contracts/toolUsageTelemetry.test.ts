@@ -43,9 +43,10 @@ describe('Contract: optional tool usage telemetry', () => {
   it('hep_health exposes aggregated tool usage when telemetry is enabled', async () => {
     process.env.HEP_ENABLE_TOOL_USAGE_TELEMETRY = '1';
 
-    await handleToolCall('hep_project_create', { name: 'telemetry-proj', description: 'telemetry' }, 'standard');
-    await handleToolCall('hep_project_list', {}, 'standard');
-    await handleToolCall('hep_project_list', {}, 'standard');
+    // Two local tools that need no network: one call of one, two of the other.
+    expect((await handleToolCall('openalex_rate_limit', {}, 'standard')).isError).not.toBe(true);
+    expect((await handleToolCall('hep_health', { check_inspire: false }, 'standard')).isError).not.toBe(true);
+    expect((await handleToolCall('hep_health', { check_inspire: false }, 'standard')).isError).not.toBe(true);
 
     const healthRes = await handleToolCall('hep_health', { check_inspire: false, inspire_timeout_ms: 500 }, 'standard');
     expect(healthRes.isError).not.toBe(true);
@@ -64,14 +65,14 @@ describe('Contract: optional tool usage telemetry', () => {
     expect((payload.telemetry?.unique_tools ?? 0) >= 2).toBe(true);
 
     const byTool = new Map((payload.telemetry?.by_tool ?? []).map(row => [row.tool, row.calls]));
-    expect(byTool.get('hep_project_create')).toBe(1);
-    expect(byTool.get('hep_project_list')).toBe(2);
+    expect(byTool.get('openalex_rate_limit')).toBe(1);
+    expect(byTool.get('hep_health')).toBe(2);
   });
 
   it('hep_health reports telemetry disabled when env opt-in is not set', async () => {
     delete process.env.HEP_ENABLE_TOOL_USAGE_TELEMETRY;
 
-    await handleToolCall('hep_project_list', {}, 'standard');
+    expect((await handleToolCall('openalex_rate_limit', {}, 'standard')).isError).not.toBe(true);
     const healthRes = await handleToolCall('hep_health', { check_inspire: false, inspire_timeout_ms: 500 }, 'standard');
     expect(healthRes.isError).not.toBe(true);
 

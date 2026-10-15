@@ -4,25 +4,22 @@
  * Per the 2026-05-23 P3-C-redesign code audit, hep-mcp's dispatcher wraps
  * every tool call with `withHepDataRoot(projectRootArg(args), ...)` AND
  * `withPdgDataDir(resolvedPdgDataDirForCurrentHepRoot(), ...)` (see
- * `handleToolCall` in `src/tools/dispatcher.ts`), except tools whose spec sets
- * `resolvesOwnDataRoot` (the hep_admin_* tools that admit their own project
- * roots); those are classified as always state-touching below. This means even
- * tools that look like generic provider queries may write project-keyed paths
- * when a `project_root` arg is supplied.
+ * `handleToolCall` in `src/tools/dispatcher.ts`). This means even tools that
+ * look like generic provider queries may write project-keyed paths when a
+ * `project_root` arg is supplied.
  *
  * Three buckets per tool — verified by reading each handler:
  *
- *   ALWAYS_STATE_TOUCHING        Always reads/writes a project-id keyed path
- *                                under `<hep_data_root>/`, or writes into the
- *                                caller's output_dir inside the project.
+ *   ALWAYS_STATE_TOUCHING        Always writes into the caller's output_dir
+ *                                inside the project.
  *                                Anchor required regardless of args.
  *
  *   VERIFY_IF_PROJECT_ROOT       Conditionally writes a project-keyed path
  *                                when `project_root` arg is present (via
  *                                hep-mcp's `withHepDataRoot` /
  *                                `withPdgDataDir` scope). Anchor required
- *                                only if `project_root` (or `project_roots`)
- *                                is in args.
+ *                                only if `project_root` (or `output_dir`) is
+ *                                in args.
  *
  *   ALWAYS_NO_STATE_TOUCH        Never reads/writes project-keyed state
  *                                regardless of args (re-exported provider
@@ -40,30 +37,17 @@
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bucket 1: ALWAYS_STATE_TOUCHING
-// All hep_project_* / hep_admin_* tools write to id-keyed paths under
-// `<hep_data_root>/`. hep_import_from_zotero, hep_inspire_search_export,
+// hep_import_from_zotero, hep_inspire_search_export,
 // hep_inspire_resolve_identifiers, inspire_parse_latex and
 // inspire_theoretical_conflicts require output_dir and write into it inside
 // the project.
 // ─────────────────────────────────────────────────────────────────────────────
 const ALWAYS_STATE_TOUCHING = new Set<string>([
-  // hep_project_*
-  'hep_project_create',
-  'hep_project_get',
-  'hep_project_list',
-  'hep_project_build_evidence',
-  'hep_project_query_evidence',
-  'hep_project_playback_evidence',
   // writes into output_dir
   'hep_import_from_zotero',
   // hep_inspire_*
   'hep_inspire_search_export',
   'hep_inspire_resolve_identifiers',
-  // hep_admin_*
-  'hep_admin_migrate_papers_cache',
-  'hep_admin_prune_paper_cache',
-  'hep_admin_import_paper',
-  'hep_admin_link_kb_notes',
   // inspire_* tools that write into output_dir (required):
   'inspire_parse_latex',
   'inspire_theoretical_conflicts',
@@ -71,7 +55,7 @@ const ALWAYS_STATE_TOUCHING = new Set<string>([
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bucket 2: VERIFY_IF_PROJECT_ROOT
-// State-touching only when `project_root` / `project_roots` is in args.
+// State-touching only when `project_root` / `output_dir` is in args.
 // ─────────────────────────────────────────────────────────────────────────────
 const VERIFY_IF_PROJECT_ROOT = new Set<string>([
   // inspire_search: with output_dir it dispatches to hep_inspire_search_export,
@@ -92,7 +76,7 @@ const VERIFY_IF_PROJECT_ROOT = new Set<string>([
   'pdg_batch',
 ]);
 
-const PROJECT_ROOT_ARG_KEYS = ['project_root', 'project_roots', 'output_dir'] as const;
+const PROJECT_ROOT_ARG_KEYS = ['project_root', 'output_dir'] as const;
 
 function hasProjectRootArg(args: Record<string, unknown>): boolean {
   for (const key of PROJECT_ROOT_ARG_KEYS) {

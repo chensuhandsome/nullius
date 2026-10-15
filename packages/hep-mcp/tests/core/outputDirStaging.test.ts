@@ -91,7 +91,7 @@ vi.mock('fs', async importOriginal => {
 
 const { withHepDataRoot } = await import('../../src/data/dataDir.js');
 const { OutputBatch, resolveOutputDir } = await import('../../src/core/outputDir.js');
-const { makeProjectRoot } = await import('../support/hepProjectUri.js');
+const { makeProjectRoot } = await import('../support/projectFiles.js');
 
 describe('output staging files are created exclusively', () => {
   let tmpDir: string;

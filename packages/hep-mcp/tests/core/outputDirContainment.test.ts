@@ -13,7 +13,7 @@ vi.mock('../../src/api/client.js', () => ({
 
 const api = await import('../../src/api/client.js');
 const { handleToolCall } = await import('../../src/tools/index.js');
-const { makeProjectRoot } = await import('../support/hepProjectUri.js');
+const { makeProjectRoot } = await import('../support/projectFiles.js');
 const { withHepDataRoot } = await import('../../src/data/dataDir.js');
 const { OutputBatch, resolveOutputDir } = await import('../../src/core/outputDir.js');
 const { describeExternalApiRequest } = await import('../../src/core/cache/externalApiCache.js');
@@ -803,34 +803,9 @@ describe('inspire_search export mode refuses parameters that do not apply', () =
   });
 });
 
-describe('a removed include_explanation argument is refused rather than silently dropped', () => {
-  it('hep_project_query_evidence with include_explanation fails instead of returning plain lexical hits', async () => {
-    const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-explain-')));
-    try {
-      const projectRoot = makeProjectRoot(tmpDir);
-      const alias = path.join(tmpDir, 'alias');
-      fs.symlinkSync(projectRoot, alias, 'dir');
-      const created = await handleToolCall('hep_project_create', { project_root: alias, name: 'explain' });
-      const projectId = (JSON.parse(created.content[0]!.text) as { project_id: string }).project_id;
-      const plain = await handleToolCall('hep_project_query_evidence', { project_root: alias, project_id: projectId, query: 'x' });
-      expect(plain.isError).toBeFalsy();
-      const result = await handleToolCall('hep_project_query_evidence', {
-        project_root: alias, project_id: projectId, query: 'x', include_explanation: true,
-      });
-      const error = errorOf(result);
-      expect(error.code).toBe('INVALID_PARAMS');
-      // Refused by the strict schema as an unrecognized argument.
-      expect(result.content[0]!.text).toContain('include_explanation');
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-});
-
 describe('a run_id argument is refused rather than silently dropped', () => {
   it.each([
     ['inspire_search', { query: 't:x', run_id: 'run_abc' }],
-    ['hep_project_query_evidence', { project_id: 'p1', query: 'x', run_id: 'run_abc' }],
     ['hep_inspire_search_export', { query: 't:x', run_id: 'run_abc' }],
     // A destructive tool reports the run_id refusal, not a confirmation request.
     ['hepdata_download', { hepdata_id: 1, run_id: 'run_abc' }],

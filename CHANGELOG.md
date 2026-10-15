@@ -24,6 +24,21 @@ version is the lockstep number below.
   every hep-mcp tool. Historical hep run directories stay readable in place;
   `docs/URI_REGISTRY.md` gives the rule for resolving historical `hep://runs/...`
   references to files.
+- **hep-mcp keeps no paper/evidence projects, evidence catalogs or papers cache.**
+  Removed tools: `hep_project_create`, `hep_project_get`, `hep_project_list`,
+  `hep_project_build_evidence`, `hep_project_query_evidence`,
+  `hep_project_playback_evidence`, `hep_admin_import_paper`,
+  `hep_admin_migrate_papers_cache`, `hep_admin_prune_paper_cache` and
+  `hep_admin_link_kb_notes` (with their command-line entry points), the
+  user-global papers cache, the `hep://projects/...` identifiers, the
+  `literature_to_evidence` workflow recipe with its `materialize.evidence_build`
+  action, the `evidence_catalog_item_v1` schema and the
+  `HEP_BUDGET_EVIDENCE_MAX_PARAGRAPH_LENGTH` setting. Paper sources are read with
+  `arxiv_paper_source` / `inspire_paper_source`; `literature_landscape` takes the
+  recipe's place in the documented literature entry point. Historical project
+  directories and evidence catalogs stay readable in place; `docs/URI_REGISTRY.md`
+  gives the rule for resolving historical `hep://projects/...` references to files
+  and where to read the catalog item format.
 
 ### Changed
 - **hep-mcp research-output tools take a caller-chosen `output_dir`.**
@@ -37,9 +52,8 @@ version is the lockstep number below.
   (published files in `files_left` with an "outputs are incomplete" error, staging
   files in `staging_left` or `staging_path`, unflushed removals in
   `unflushed_directories`), and only a crash during publication
-  can leave part of a set unreported (later calls naming those files are refused). These tools and the lexical `hep_project_query_evidence` refuse a
+  can leave part of a set unreported (later calls naming those files are refused). These tools refuse a
   numeric limit that is not a whole number in range instead of using the default.
-  `hep_project_query_evidence` is lexical only.
 - Oversized hep-mcp tool results are truncated by UTF-8 bytes on a character
   boundary.
 

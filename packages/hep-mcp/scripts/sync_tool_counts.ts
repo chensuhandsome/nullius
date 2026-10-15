@@ -72,6 +72,25 @@ function replaceOrThrow(source: string, pattern: RegExp, replacement: string, la
   return source.replace(pattern, replacement);
 }
 
+// The personal plugin composes project-mcp, the default (standard) hep-mcp
+// inventory and idea-mcp; its stated total is the sum of the three counts in
+// the same sentence.
+function syncPersonalPluginTotal(
+  source: string,
+  pattern: RegExp,
+  render: (project: number, hep: number, idea: number, total: number) => string,
+  hepStandard: number,
+  label: string
+): string {
+  const match = pattern.exec(source);
+  if (!match) {
+    throw new Error(`Pattern not found for ${label}: ${String(pattern)}`);
+  }
+  const project = Number(match[1]);
+  const idea = Number(match[2]);
+  return source.replace(pattern, render(project, hepStandard, idea, project + hepStandard + idea));
+}
+
 function syncToolCategories(source: string, counts: ToolCounts): string {
   return replaceOrThrow(
     source,
@@ -95,6 +114,14 @@ function syncProjectStatus(source: string, zoteroOn: ToolCounts, zoteroOff: Tool
     `- \`HEP_ENABLE_ZOTERO=0\` → \`standard=${zoteroOff.standard}\`, \`full=${zoteroOff.full}\``,
     'PROJECT_STATUS zotero-off counts'
   );
+  out = syncPersonalPluginTotal(
+    out,
+    /combines project (\d+), default HEP \d+, and idea (\d+): \d+ unique tool names/,
+    (project, hep, idea, total) =>
+      `combines project ${project}, default HEP ${hep}, and idea ${idea}: ${total} unique tool names`,
+    zoteroOn.standard,
+    'PROJECT_STATUS personal plugin counts'
+  );
   return out;
 }
 
@@ -112,7 +139,24 @@ function syncTestingGuide(source: string, counts: ToolCounts): string {
     `- \`full\` 模式工具数为 \`${counts.full}\``,
     'TESTING_GUIDE full count'
   );
+  out = syncPersonalPluginTotal(
+    out,
+    /默认个人插件组合 project (\d+)、HEP standard \d+、idea (\d+)，共 \d+ 个不同工具名/,
+    (project, hep, idea, total) =>
+      `默认个人插件组合 project ${project}、HEP standard ${hep}、idea ${idea}，共 ${total} 个不同工具名`,
+    counts.standard,
+    'TESTING_GUIDE personal plugin counts'
+  );
   return out;
+}
+
+function syncPersonalPluginLiveTest(source: string, counts: ToolCounts): string {
+  return replaceOrThrow(
+    source,
+    /assert report\["servers"\]\["hep-mcp"\]\["count"\] == \d+/,
+    `assert report["servers"]["hep-mcp"]["count"] == ${counts.standard}`,
+    'personal plugin live test HEP count'
+  );
 }
 
 function syncTarget(target: SyncTarget, checkOnly: boolean): boolean {
@@ -137,6 +181,10 @@ function main(): void {
     { relPath: 'docs/TOOL_CATEGORIES.md', transform: source => syncToolCategories(source, zoteroOn) },
     { relPath: 'docs/PROJECT_STATUS.md', transform: source => syncProjectStatus(source, zoteroOn, zoteroOff) },
     { relPath: 'docs/TESTING_GUIDE.md', transform: source => syncTestingGuide(source, zoteroOn) },
+    {
+      relPath: 'packages/skills-market/tests/test_personal_plugin_live.py',
+      transform: source => syncPersonalPluginLiveTest(source, zoteroOn),
+    },
   ];
 
   const changedFiles = targets.filter(target => syncTarget(target, checkOnly)).map(target => target.relPath);

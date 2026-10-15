@@ -16,8 +16,8 @@ Native computation binds an enabled A3 approval to the current manifest, scripts
 - `pnpm -r test` ✅
 - `pnpm -r lint` ✅
 - `pnpm --filter @nullius/hep-mcp docs:tool-counts:check` ✅
-- `standard=62`, `full=68` (tool counts are kept in sync with the live registry by `docs:tool-counts:sync`, not frozen at the baseline above)
-- `HEP_ENABLE_ZOTERO=0` → `standard=53`, `full=59`
+- `standard=52`, `full=58` (tool counts are kept in sync with the live registry by `docs:tool-counts:sync`, not frozen at the baseline above)
+- `HEP_ENABLE_ZOTERO=0` → `standard=43`, `full=49`
 
 ## Local installation and personal plugin
 
@@ -25,7 +25,7 @@ The [`project-mcp`](../packages/project-mcp/README.md) leaf adapter binds one
 external project through `NULLIUS_PROJECT_ROOT` and reuses canonical
 `handleToolCall` / `runCli`. Its 16 selected `orch_*` operations plus five transport
 tools expose 21 tools. The [personal plugin](../packages/skills-market/docs/PERSONAL_PLUGIN.md)
-combines project 21, default HEP 62, and idea 6: 89 unique tool names; the live
+combines project 21, default HEP 52, and idea 6: 79 unique tool names; the live
 plugin check compares them against the real local stdio servers. Runtime configuration is host-private; generated
 plugin manifests and ordinary copy-install metadata do not record source-machine
 paths. Copied skill helpers discover the current runtime through an explicit
@@ -74,7 +74,7 @@ This is a local build and validation result, not an installed marketplace releas
 - **Dependency-map rendering front door**: `nullius graph --kind <claims|progress|literature|roadmap>` consumes the domain-neutral `@nullius/shared/graph-viz` engine (already-built adapters) to render a Graphviz DOT dependency graph (plus optional PNG/SVG when Graphviz is present) — `claims` from a claim DAG (`claims.jsonl`/`edges.jsonl`), `progress` from a scaffolded `research_plan.md` (milestone/task graph), `literature` from a citation/reference record set, and `roadmap` from a planning spec (`--spec <roadmap.json>`: milestones/lanes with status / dependency kind / critical path); takes explicit input paths so it needs no project root
 - **Experimental TS idea runtime surface**: the idea-engine search/eval runtime is archived; `@nullius/idea-mcp` remains campaign-lifecycle oriented on explicit external data roots, while `@nullius/idea-engine` keeps node posterior/lifecycle updates, generation-pack import (`node.import_generated`, the sole derived-node entry point), and posterior-based ranking and promotion inside the runtime contract, not as a root front door or a new default capability lane; contracts + store are retained, and scoring consumes an external belief-graph posterior (pinned tool, current pin gaia-lang==0.5.0a4)
 - **Current most mature domain MCP front door**: `@nullius/hep-mcp` exposed through `packages/hep-mcp/dist/index.js`
-- **HEP project/evidence tools**: `hep_*` paper/evidence projects and evidence catalogs; HEP research-output tools (search exports, identifier and Zotero mappings, LaTeX parses, conflict maps) put their files in a caller-chosen `output_dir` inside the project, while runs, approvals and lifecycle belong to the orchestrator
+- **HEP research-output tools**: search exports, identifier and Zotero mappings, LaTeX parses and conflict maps put their files in a caller-chosen `output_dir` inside the project, while runs, approvals and lifecycle belong to the orchestrator
 - **Direct provider families**: `inspire_*`, `openalex_*`, `arxiv_*`, `hepdata_*`, `pdg_*`, `zotero_*`
 
 Persisted workflow-plan dispatch uses the existing run manifest for immutable tool/input identity and response-before-projection commits. Unknown outcomes stop; committed responses replay. Pause and canonical approval gate subsequent dispatch. Agent overflow recovery retains original user instructions and whole tool exchanges without claiming that excerpts are complete evidence.
@@ -94,7 +94,7 @@ Persisted workflow-plan dispatch uses the existing run manifest for immutable to
 - **Research brainstorm durable harness**: `research_brainstorm` captures context, candidate angles, screening, one recommendation, and a `next_contract` that may suggest `literature_landscape` or `literature_gap_analysis`; the contract requires explicit approval and does not auto-start the heavier recipe or provide a built-in runnable tool chain
 - **Native TS run workflow**: `nullius run` remains the only execution front door; `--workflow-id computation` executes a prepared `computation/manifest.json`, while persisted workflow-plan steps advance in a bounded loop until completion or a blocking failure is reached
 - **Experimental idea campaign workflow**: `idea_campaign_init` with `idea_campaign_status` / `idea_campaign_topup` / `idea_campaign_pause` / `idea_campaign_resume` / `idea_campaign_complete` on `idea-mcp`; node posterior/lifecycle updates, grounding-audit recording, optimistic whole-card revision, scoped provenance correction, generation-pack import, posterior ranking, and promotion stay engine-side (`node.set_posterior`, `node.set_lifecycle`, `node.set_grounding_audit`, `node.revise_card`, `node.rewrite_provenance`, `node.import_generated`, `rank.compute`, `node.promote`); the archived search/eval phase does not reopen island-search scoring, memory graph, positive memory retrieval, broad retrieval, generic eval platform, or front-door expansion
-- **HEP project evidence workflow**: `hep_project_create` -> `hep_project_build_evidence` -> `hep_project_query_evidence` (lexical) -> `hep_project_playback_evidence`; HEP research-output tools (search exports, identifier and Zotero mappings, LaTeX parses, conflict maps) take a caller-chosen `output_dir` inside the project
+- **HEP research-output workflow**: HEP research-output tools (search exports, identifier and Zotero mappings, LaTeX parses, conflict maps) take a caller-chosen `output_dir` inside the project
 - **Literature/data workflow**: direct provider search, retrieval, export, and bounded analysis operators
 - **Local reference workflow**: Zotero Local API and offline PDG lookups
 
@@ -109,8 +109,8 @@ Persisted workflow-plan dispatch uses the existing run manifest for immutable to
 ## State and artifact truth
 
 - HEP data root resolution is project-aware: tool-call `project_root` writes under `<project_root>/artifacts/hep-mcp`; absent that, `HEP_DATA_DIR` is the explicit override; absent that, scratch fallback is `~/.nullius/hep-mcp`
-- HEP project artifacts live under `projects/<project_id>/...`; HEP research-output tools (search exports, identifier and Zotero mappings, LaTeX parses, conflict maps) put their files in a caller-chosen `output_dir` inside the project root (not the root itself, never under `.nullius/`, `team/runs/` or `artifacts/hep-mcp/`, compared ignoring letter case), never replace an existing file, and return project-relative paths
-- Historical HEP run directories (`runs/<run_id>/...` under the HEP data root) are evidence from earlier versions: they stay readable in place and no tool creates or rewrites them; `docs/URI_REGISTRY.md` gives the reading rule for historical `hep://runs/...` references
+- HEP research-output tools (search exports, identifier and Zotero mappings, LaTeX parses, conflict maps) put their files in a caller-chosen `output_dir` inside the project root (not the root itself, never under `.nullius/`, `team/runs/` or `artifacts/hep-mcp/`, compared ignoring letter case), never replace an existing file, and return project-relative paths
+- Historical HEP run directories (`runs/<run_id>/...` under the HEP data root) and paper/evidence project directories (`projects/<project_id>/...`, including evidence catalogs) are evidence from earlier versions: they stay readable in place and no tool creates or rewrites them; `docs/URI_REGISTRY.md` gives the reading rules for historical `hep://runs/...` and `hep://projects/...` references
 - Paper originals, extracted text, arXiv source tarballs, and source trees are filesystem materials: keep one-off checks in local temp, and persist verification/continuation inputs under the external project root in suitable project/run artifact directories
 - Generic lifecycle state lives in external project roots under `.nullius/`
 - Project-local durable memory lives alongside that state in files such as `project_index.md`, `research_plan.md`, `research_contract.md`, substantive `research_notebook.md`, and registered immutable reports; reconnecting agents should treat those files plus `.nullius/` as the enduring project truth

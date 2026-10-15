@@ -13,7 +13,7 @@ vi.mock('../../src/api/client.js', () => ({
 
 const api = await import('../../src/api/client.js');
 const { handleToolCall } = await import('../../src/tools/index.js');
-const { makeProjectRoot, readProjectFile } = await import('../support/hepProjectUri.js');
+const { makeProjectRoot, readProjectFile } = await import('../support/projectFiles.js');
 
 describe('Open Roadmap R5: INSPIRE API export + mapping into the caller output_dir', () => {
   let tmpDir: string;

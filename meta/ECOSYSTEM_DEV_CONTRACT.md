@@ -146,7 +146,7 @@ pnpm --filter @nullius/orchestrator test -- tests/nullius-cli.test.ts
 ```json
 {
   "uri": "rep://runs/{run_id}/artifact/{artifact_path}",
-  "kind": "evidence_catalog | section_draft | token_budget | ...",
+  "kind": "section_draft | token_budget | ...",
   "schema_version": 1,
   "sha256": "hex string",
   "size_bytes": 12345,
@@ -273,7 +273,6 @@ make codegen-check  # 重新生成 → git diff --exit-code */generated/
 | `HEP_BUDGET_INSPIRE_SEARCH_PAGE_SIZE` | int | `1000` | tool arg > env > .env > default | hep-mcp |
 | `HEP_BUDGET_INSPIRE_SEARCH_MAX_RESULTS` | int | `10000` | tool arg > env > .env > default | hep-mcp |
 | `HEP_BUDGET_CONCURRENCY` | int | `4` | tool arg > env > .env > default | hep-mcp |
-| `HEP_BUDGET_EVIDENCE_MAX_PARAGRAPH_LENGTH` | int | `0` | tool arg > env > .env > default | hep-mcp |
 | `PDG_DB_PATH` | path | (必需) | env > .env | pdg-mcp |
 | `PDG_ARTIFACT_TTL_HOURS` | int | `24` | env > .env > default | pdg-mcp |
 | `ZOTERO_BASE_URL` | URL | `http://127.0.0.1:23119` | env > .env > default | zotero-mcp |

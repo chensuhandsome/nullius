@@ -368,12 +368,6 @@ export async function handleToolCall(
     verifyHarnessInvocationMarker(process.cwd(), {
       toolIsStateTouching: isStateTouchingHepMcp(name, args),
     });
-    // Tools that resolve their own data root are not wrapped in the per-call
-    // HEP/PDG data root, so an outer call's root cannot refuse them. An outer
-    // call's scope stays visible to code that reads it; their handlers do not.
-    if (getToolSpec(name)?.resolvesOwnDataRoot) {
-      return await handleToolCallInResolvedDataRoot(name, args, mode, ctx);
-    }
     return await withHepDataRoot(projectRootArg(args), () =>
       withPdgDataDir(resolvedPdgDataDirForCurrentHepRoot(), () =>
         handleToolCallInResolvedDataRoot(name, args, mode, ctx)

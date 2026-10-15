@@ -16,7 +16,6 @@
 | orchestrator run-tool family | `@nullius/orchestrator` | Project-root run lifecycle, approvals, export, and bounded agent runtime execution |
 | orchestrator policy-tool family | `@nullius/orchestrator` | Read-only policy inspection for approval/operation gates |
 | orchestrator fleet-tool family | `@nullius/orchestrator` | Queue and worker coordination for the per-project fleet substrate |
-| `hep_project_*` | `@nullius/hep-mcp` | Paper/evidence project catalogs, evidence build, query, and playback |
 | `hep_inspire_*` / `hep_import_from_zotero` | `@nullius/hep-mcp` | Search exports and identifier mappings written into a caller-chosen `output_dir` inside the project; hep-mcp keeps no runs of its own |
 | `inspire_*` / `hepdata_*` / `openalex_*` / `arxiv_*` | provider packages | Network/data retrieval and literature analysis |
 | `pdg_*` | `@nullius/pdg-mcp` | PDG offline lookups |
@@ -125,7 +124,7 @@ Agent / operator
   ├──► orch_run_record_verification(...)                → record adjacent snapshots plus checker self-reported matching observations
   ├──► orch_run_request_final_conclusions(...)          → return A5 unavailable while dependency closure is incomplete
   ├──► orch_run_status(project_root)                    → lifecycle snapshot
-  ├──► hep_project_* / hep_inspire_* / inspire_* ...   → strategy/domain work (file outputs into an output_dir inside the run directory)
+  ├──► hep_inspire_* / inspire_* / arxiv_* ...         → strategy/domain work (file outputs into an output_dir inside the run directory)
   ├──► orch_run_approvals_list(project_root, run_id)    → inspect pending gates
   ├──► orch_run_approve(...) or orch_run_reject(...)    → resolve approval
   ├──► orch_run_execute_agent(...)                      → bounded orchestrator runtime
@@ -228,11 +227,10 @@ orch://runs/export                  → export summary pointer
 ### 5.2 Relationship with `hep://`
 
 ```
-hep://projects/<project_id>         → project root / evidence-facing project identity
 orch://runs/<run_id>                → lifecycle / control-plane view
 ```
 
-hep-mcp no longer creates `hep://runs/...` identifiers; historical ones are resolved by the reading rule in `docs/URI_REGISTRY.md`.
+hep-mcp no longer creates `hep://` identifiers (`hep://runs/...` or `hep://projects/...`); historical ones are resolved by the reading rules in `docs/URI_REGISTRY.md`.
 
 `hep://` and `orch://` are intentionally separate owned namespaces. Cross-scheme correlation must be carried explicitly by workflow metadata or operator context, not by implicit aliasing.
 

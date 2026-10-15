@@ -1,14 +1,14 @@
 # @nullius/hep-mcp
 
-Current most mature HEP domain pack. Local stdio MCP server exposing `hep_*` tools for paper/evidence projects, evidence retrieval, literature search exports, and provider-local composition.
+Current most mature HEP domain pack. Local stdio MCP server exposing `hep_*` tools for literature search exports, identifier and Zotero mappings, and provider-local composition.
 
 ## Layer
 
 Domain workflow pack. The strongest end-to-end example in the repo, but **not the root product identity** — generic lifecycle and contracts live in `@nullius/orchestrator` and `@nullius/shared`. See root [README.md](../../README.md) §3 Layer Model.
 
-Paper/evidence projects, `hep://projects/...` identifiers and local catalogs belong to this domain pack; they are not generic lifecycle or approval authority. `hep-mcp` keeps no runs of its own: runs, approvals and lifecycle belong to the orchestrator (`<project_root>/artifacts/runs/<run_id>/`). Tools that produce files (`hep_inspire_search_export`, `hep_inspire_resolve_identifiers`, `hep_import_from_zotero`, `inspire_parse_latex`, `inspire_theoretical_conflicts`, and `inspire_search` when given `output_dir`) write them into a caller-chosen `output_dir`, typically a subdirectory of the current run directory, and return project-relative paths (`export_path`, `meta_path`, `mapping_path`, `path`, `artifacts[].path`). INSPIRE lookups made through the response cache (by `hep_inspire_search_export`, `hep_inspire_resolve_identifiers`, `inspire_search` with `output_dir`, and the INSPIRE resolution step of `hep_import_from_zotero`) are recorded request by request under `<output_dir>/external_api/`; other provider calls (the Zotero local API, the paper fetches of `inspire_theoretical_conflicts`, the source retrieval of `inspire_parse_latex`) are not recorded there. `hep_project_query_evidence` is lexical only; `mode: 'semantic'` is refused. There are no draft rendering, project export or paper bundling tools.
+`hep-mcp` is a tool package, not generic lifecycle or approval authority. It keeps no runs, paper/evidence projects or evidence catalogs of its own: runs, approvals and lifecycle belong to the orchestrator (`<project_root>/artifacts/runs/<run_id>/`). Tools that produce files (`hep_inspire_search_export`, `hep_inspire_resolve_identifiers`, `hep_import_from_zotero`, `inspire_parse_latex`, `inspire_theoretical_conflicts`, and `inspire_search` when given `output_dir`) write them into a caller-chosen `output_dir`, typically a subdirectory of the current run directory, and return project-relative paths (`export_path`, `meta_path`, `mapping_path`, `path`, `artifacts[].path`). INSPIRE lookups made through the response cache (by `hep_inspire_search_export`, `hep_inspire_resolve_identifiers`, `inspire_search` with `output_dir`, and the INSPIRE resolution step of `hep_import_from_zotero`) are recorded request by request under `<output_dir>/external_api/`; other provider calls (the Zotero local API, the paper fetches of `inspire_theoretical_conflicts`, the source retrieval of `inspire_parse_latex`) are not recorded there. There are no project or evidence catalog, draft rendering, project export or paper bundling tools.
 
-Historical HEP run directories (`runs/<run_id>/` under a HEP data root) written by earlier versions are evidence: they stay readable in place and no tool creates or rewrites them. [docs/URI_REGISTRY.md](../../docs/URI_REGISTRY.md) gives the reading rule for historical `hep://runs/...` references.
+Historical HEP run directories (`runs/<run_id>/` under a HEP data root) and paper/evidence project directories (`projects/<project_id>/`, including evidence catalogs) written by earlier versions are evidence: they stay readable in place and no tool creates or rewrites them. [docs/URI_REGISTRY.md](../../docs/URI_REGISTRY.md) gives the reading rules for historical `hep://runs/...` and `hep://projects/...` references.
 
 ## Aggregated providers
 
@@ -44,16 +44,10 @@ Resolved per tool call, in this order:
 
 A `project_root` is admitted as at the other nullius front doors: in canonical
 (symlink-resolved) form, outside any nullius checkout, and initialized. The
-admin tools (`hep_admin_migrate_papers_cache`, `hep_admin_prune_paper_cache`,
-`hep_admin_link_kb_notes`) admit their project roots the same way. The
 project-local directories a call actually uses must be reached through real
-directories: for ordinary tool calls these are `artifacts/`,
-`artifacts/hep-mcp/` and `artifacts/hep-mcp/pdg/`, and a symlink there
-(dangling or not) is refused rather than followed out of the project. An admin
-tool uses `artifacts/hep-mcp/` unless its `hep_data_root` override selects
-another directory; an override inside the project is held to the same rule,
-and an override outside the project is an independent data root chosen by the
-caller, as `HEP_DATA_DIR` is. Absolute
+directories: these are `artifacts/`, `artifacts/hep-mcp/` and
+`artifacts/hep-mcp/pdg/`, and a symlink there (dangling or not) is refused
+rather than followed out of the project. Absolute
 paths compared with the data root, such as `output_dir`, may name the project
 through any alias of its root, while a path that really lands outside it,
 including through a dangling symlink, is refused.

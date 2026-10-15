@@ -2138,6 +2138,7 @@ def cmd_report(args) -> int:
                 try:
                     dst = full.lstat()
                 except OSError:
+                    unreadable.append(str(full))  # listed, as every skipped path is
                     continue
                 if (dst.st_dev, dst.st_ino) in seen_dirs:
                     dirnames.remove(name)
@@ -2162,6 +2163,7 @@ def cmd_report(args) -> int:
                 try:
                     st = full.lstat()
                 except OSError:
+                    unreadable.append(str(full))  # listed, as every skipped path is
                     continue
                 if not stat.S_ISREG(st.st_mode):
                     continue
@@ -2201,20 +2203,25 @@ def cmd_report(args) -> int:
                 except OSError:
                     unreadable.append(str(path))
             for sha, same in by_full.items():
+                if len(same) == 1:
+                    unique_large.append((same[0], size))
+                    continue
+                # A copy that can no longer be examined as the file that was scanned (vanished,
+                # unreadable, replaced or rewritten since) may already be gone or hold other content.
+                # Such a group is then not a known set of duplicates any more: it is not reported as
+                # one, its examinable members do not stand in for it, and the skipped paths are listed.
+                counts = [link_count_if_unchanged(p, identity[p]) for p in same]
+                unreadable += [str(p) for p, n in zip(same, counts) if n == "unreadable"]  # listed, as every skipped path is
+                changed_since_scan += [str(p) for p, n in zip(same, counts) if n == "changed"]
+                if any(isinstance(n, str) for n in counts):
+                    continue
                 unique_large.append((same[0], size))
-                if len(same) > 1:
-                    # Removing a copy that has other hard links frees nothing: keep one copy, count the rest
-                    # that are single-linked. A copy that can no longer be examined as the file that was
-                    # scanned (vanished, unreadable, replaced or rewritten since) may already be gone or
-                    # hold other content, so the group is not counted at all rather than risk naming the
-                    # last remaining copy, or a non-duplicate, as reclaimable.
-                    counts = [link_count_if_unchanged(p, identity[p]) for p in same]
-                    unreadable += [str(p) for p, n in zip(same, counts) if n == "unreadable"]  # listed, as every skipped path is
-                    changed_since_scan += [str(p) for p, n in zip(same, counts) if n == "changed"]
-                    single = sum(1 for n in counts if n == 1)
-                    freeable = 0 if any(isinstance(n, str) for n in counts) else min(single, len(same) - 1)
-                    duplicates.append({"sha256": sha, "size": size, "copies": len(same),
-                                       "reclaimable": size * freeable, "paths": [str(p) for p in same]})
+                # Removing a copy that has other hard links frees nothing: keep one copy, count the rest
+                # that are single-linked.
+                single = sum(1 for n in counts if n == 1)
+                freeable = min(single, len(same) - 1)
+                duplicates.append({"sha256": sha, "size": size, "copies": len(same),
+                                   "reclaimable": size * freeable, "paths": [str(p) for p in same]})
     duplicates.sort(key=lambda d: -d["reclaimable"])
     unique_large.sort(key=lambda item: -item[1])
     candidates = [(p, s) for p, s in unique_large if p.suffix.lower() not in ALREADY_COMPRESSED_SUFFIXES]
@@ -2224,6 +2231,7 @@ def cmd_report(args) -> int:
         try:
             compress_saving += size * max(0.0, 1.0 - sample_ratio(path))
         except OSError:
+            unreadable.append(str(full))  # listed, as every skipped path is
             continue
     stale = []
     cutoff = time.time() - args.older_than_days * 86400

@@ -2593,10 +2593,11 @@ def test_report_does_not_count_a_duplicate_group_when_a_copy_vanished_after_hash
     capsys.readouterr()
     assert run_main(["report", str(scratch), "--repo", str(repo), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
     doc = json.loads(capsys.readouterr().out)
-    assert [(d["copies"], d["reclaimable"]) for d in doc["duplicates"]] == [(2, 0)], \
-        "a copy that cannot be examined may already be gone: the group must not name the survivor as reclaimable"
+    assert doc["duplicates"] == [], \
+        "a copy that cannot be examined may already be gone: the group is no known set of duplicates any more"
     assert doc["summary_bytes"]["duplicate_content"] == 0
     assert str(gone) in doc["unreadable"], "a skipped path is listed, not silently dropped"
+    assert all(Path(u["path"]).name != "gone.bin" for u in doc.get("unique_large", [])) if "unique_large" in doc else True
 
 
 def test_report_does_not_count_a_duplicate_group_when_a_copy_was_replaced_after_hashing(tmp_path, monkeypatch, capsys):
@@ -2624,8 +2625,7 @@ def test_report_does_not_count_a_duplicate_group_when_a_copy_was_replaced_after_
     capsys.readouterr()
     assert run_main(["report", str(scratch), "--repo", str(repo), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
     doc = json.loads(capsys.readouterr().out)
-    assert [(d["copies"], d["reclaimable"]) for d in doc["duplicates"]] == [(2, 0)], \
-        "a copy replaced after hashing is no duplicate any more: the group must not be counted"
+    assert doc["duplicates"] == [], "a copy replaced after hashing is no duplicate any more: the group is not reported as one"
     assert doc["summary_bytes"]["duplicate_content"] == 0
     assert str(replaced) in doc["changed_since_scan"] and str(replaced) not in doc["unreadable"]
 

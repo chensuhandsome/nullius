@@ -3,9 +3,9 @@
 
 Every byte of a tracked file exists once per checkout (the main checkout and
 every linked worktree) plus once in the object store, and snapshot refs that
-pin run origins keep historical blobs alive permanently. Small text evidence
-(scripts, configs, tables, logs, manifests) belongs in git; bulk numerical or
-binary outputs above a size threshold do not. This tool implements that
+pin run origins keep historical blobs alive permanently. Source, unique inputs, essential results and provenance need preservation
+by purpose. Size is a default review signal, not a value classifier; declared
+reproducible outputs are stowed even when small. This tool implements that
 policy for a project repository.
 
 Size policy
@@ -24,6 +24,10 @@ Size policy
   carries the hashes of the bulk inputs, while the bulk bytes stay out of
   history.
 
+  Semantic path_rules (git/store/local with reasons) override size; admission
+  limits default to 64 MiB / 2000 changed run-output paths. Origin capture
+  runs check --snapshot --strict before creating snapshot objects.
+
   Optional ``.nullius/storage_policy.json`` (commit it: every checkout reads
   its own copy, so an uncommitted policy leaves other worktrees on the
   defaults):
@@ -33,6 +37,7 @@ Size policy
   through a symbolic link (files behind one are refused or flagged).
 
 Subcommands
+  inventory         read-only counts, duplicate index objects and retention review.
   check             report bulk files under the run roots (``--staged``: in
                     the index, i.e. about to be committed). Warns; exits 1
                     only with ``--strict``. Nested repositories are listed,
@@ -86,6 +91,8 @@ from pathlib import Path
 
 DEFAULT_THRESHOLD = 5 * 1024 * 1024
 DEFAULT_RUN_ROOTS = ("artifacts/runs",)
+DEFAULT_ADMISSION_BYTES = 64 * 1024 * 1024
+DEFAULT_ADMISSION_FILES = 2000
 POLICY_REL = ".nullius/storage_policy.json"
 POLICY_SCHEMA = "storage_policy_v1"
 MANIFEST_NAME = "bulk_manifest.json"
@@ -265,7 +272,8 @@ def case_insensitive(directory: Path) -> bool:
 class Repo:
     """A checkout (main or linked worktree) of a git repository."""
 
-    def __init__(self, start: Path):
+    def __init__(self, start: Path, *, read_only: bool = False):
+        self.read_only = read_only
         start = Path(start).resolve()
         if start.is_file():
             start = start.parent
@@ -296,7 +304,9 @@ class Repo:
         if self._ignorecase is None:
             configured = git(["config", "--bool", "core.ignorecase"], self.toplevel,
                              check=False).stdout.decode().strip() == "true"
-            self._ignorecase = configured or case_insensitive(self.toplevel)
+            # Read commands must not create a filesystem probe. Conservative
+            # folding is safe: each alias is still checked by device/inode.
+            self._ignorecase = True if self.read_only else configured or case_insensitive(self.toplevel)
         return self._ignorecase
 
     def symlinked_run_roots(self) -> "list[str]":
@@ -384,7 +394,8 @@ class Repo:
 
 
 def load_policy(toplevel: Path) -> dict:
-    policy = {"bulk_threshold_bytes": DEFAULT_THRESHOLD, "run_roots": list(DEFAULT_RUN_ROOTS), "store_root": None}
+    policy = {"bulk_threshold_bytes": DEFAULT_THRESHOLD, "run_roots": list(DEFAULT_RUN_ROOTS), "store_root": None, "path_rules": [],
+              "admission_max_bytes": DEFAULT_ADMISSION_BYTES, "admission_max_files": DEFAULT_ADMISSION_FILES}
     path = toplevel / POLICY_REL
     if not path.exists():
         return policy
@@ -394,7 +405,8 @@ def load_policy(toplevel: Path) -> dict:
         raise StorageError(f"{POLICY_REL}: unreadable ({exc})")
     if not isinstance(doc, dict) or doc.get("schema") != POLICY_SCHEMA:
         raise StorageError(f"{POLICY_REL}: expected an object with schema '{POLICY_SCHEMA}'")
-    unknown = set(doc) - {"schema", "bulk_threshold_bytes", "run_roots", "store_root"}
+    unknown = set(doc) - {"schema", "bulk_threshold_bytes", "run_roots", "store_root", "path_rules",
+                          "admission_max_bytes", "admission_max_files"}
     if unknown:
         raise StorageError(f"{POLICY_REL}: unknown fields {sorted(unknown)}")
     if "bulk_threshold_bytes" in doc:
@@ -425,7 +437,45 @@ def load_policy(toplevel: Path) -> dict:
             # worktree could delete the very store that was meant to outlive it.
             raise StorageError(f"{POLICY_REL}: store_root must be an absolute path (or start with ~)")
         policy["store_root"] = root
+    for key in ("admission_max_bytes", "admission_max_files"):
+        if key in doc:
+            value = doc[key]
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise StorageError(f"{POLICY_REL}: {key} must be a positive integer")
+            policy[key] = value
+    rules = doc.get("path_rules", [])
+    if not isinstance(rules, list):
+        raise StorageError(f"{POLICY_REL}: path_rules must be a list")
+    seen = set()
+    for rule in rules:
+        if (not isinstance(rule, dict) or set(rule) - {"path", "disposition", "reason", "retention_days"}
+                or not isinstance(rule.get("path"), str) or not rule["path"]
+                or rule["path"].startswith("/") or any(c in rule["path"] for c in "\\\n\r\x00")
+                or posixpath.normpath(rule["path"]) != rule["path"]
+                or any(c in (".", "..", ".git") for c in rule["path"].split("/"))
+                or rule.get("disposition") not in ("git", "store", "local")
+                or not isinstance(rule.get("reason"), str) or not rule["reason"].strip()):
+            raise StorageError(f"{POLICY_REL}: each path rule needs a plain relative path, "
+                               "git/store/local disposition and a nonempty reason")
+        if rule["path"] in seen:
+            raise StorageError(f"{POLICY_REL}: duplicate path rule {rule['path']!r}")
+        seen.add(rule["path"])
+        if "retention_days" in rule:
+            days = rule["retention_days"]
+            if rule["disposition"] != "local" or not isinstance(days, int) or isinstance(days, bool) or days <= 0:
+                raise StorageError(f"{POLICY_REL}: retention_days is a positive integer for local rules only")
+    policy["path_rules"] = rules
     return policy
+
+
+def path_rule(repo: Repo, rel: str) -> "dict | None":
+    matches = [r for r in repo.policy["path_rules"] if rel == r["path"] or rel.startswith(r["path"] + "/")]
+    return max(matches, key=lambda r: len(r["path"]), default=None)
+
+
+def bulk_candidate(repo: Repo, rel: str, size: int, threshold: int) -> bool:
+    rule = path_rule(repo, rel)
+    return rule["disposition"] == "store" if rule else size >= threshold
 
 
 def resolve_threshold(repo: "Repo | None", override: "int | None") -> int:
@@ -617,6 +667,10 @@ def load_manifest(run_dir: Path) -> "dict | None":
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise StorageError(f"{path}: unreadable ({exc}); {RESERVED_NOTE}")
+    return validate_manifest_doc(doc, path)
+
+
+def validate_manifest_doc(doc, path):
     if not isinstance(doc, dict) or doc.get("schema") != MANIFEST_SCHEMA or not isinstance(doc.get("entries"), list):
         raise StorageError(f"{path}: expected schema '{MANIFEST_SCHEMA}' with an entries list; {RESERVED_NOTE}")
     seen: "set[str]" = set()
@@ -831,7 +885,7 @@ def staged_bulk(repo: Repo, threshold: int) -> "list[dict]":
         parts = line.split()
         if len(parts) == 2 and parts[1].isdigit():
             sizes[parts[0]] = int(parts[1])
-    return sorted(({"path": p, "size": sizes[s]} for p, s in shas.items() if sizes.get(s, 0) >= threshold),
+    return sorted(({"path": p, "size": sizes[s]} for p, s in shas.items() if bulk_candidate(repo, p, sizes.get(s, 0), threshold)),
                   key=lambda r: (-r["size"], r["path"]))
 
 
@@ -895,9 +949,11 @@ def working_tree_bulk(repo: Repo, threshold: int, store: Path) -> "dict[str, lis
             for name in filenames:
                 full = here / name
                 st = full.lstat()
-                if not stat.S_ISREG(st.st_mode) or st.st_size < threshold:
+                if not stat.S_ISREG(st.st_mode):
                     continue
                 rel = repo.rel(full)
+                if not bulk_candidate(repo, rel, st.st_size, threshold):
+                    continue
                 if is_storage_record(rel):
                     continue
                 record = {"path": rel, "size": st.st_size}
@@ -916,13 +972,232 @@ def working_tree_bulk(repo: Repo, threshold: int, store: Path) -> "dict[str, lis
     return classes
 
 
+def object_sizes(repo: Repo, oids: "list[str]") -> dict:
+    if not oids:
+        return {}
+    out = git(["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"], repo.toplevel,
+              input_bytes=("\n".join(sorted(set(oids))) + "\n").encode()).stdout.decode().splitlines()
+    sizes = {}
+    for line in out:
+        fields = line.split()
+        if len(fields) != 3 or fields[1] != "blob" or not fields[2].isdigit():
+            raise StorageError("a required index object is unavailable; no fetch was attempted")
+        sizes[fields[0]] = int(fields[2])
+    return sizes
+
+
+def bundle_blob(repo: Repo, oid: str) -> bool:
+    # Header, not extension, identifies a Git backup. Read only a prefix;
+    # do not materialize the archive or trigger a partial-clone fetch.
+    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0")
+    proc = subprocess.Popen(["git", "-c", "protocol.allow=never", "cat-file", "blob", oid],
+                            cwd=repo.toplevel, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+    try:
+        prefix = proc.stdout.read(32)
+    finally:
+        proc.stdout.close()
+        if proc.poll() is None:
+            proc.terminate()
+        proc.wait(timeout=10)
+    return prefix.startswith((b"# v2 git bundle\n", b"# v3 git bundle\n"))
+
+
+def admission_storage_record(repo: Repo, row: dict, index: dict, cache: dict) -> bool:
+    """Exempt validated stow metadata, never a name alone. Index checks use
+    index bytes; working checks use working bytes. Exact record rules win."""
+    rel = row["path"]
+    if not is_storage_record(rel):
+        return False
+    parent = posixpath.dirname(rel)
+    key = (parent, row["source"])
+    if key not in cache:
+        try:
+            if row["source"] == "index":
+                pair = index.get(parent + "/" + MANIFEST_NAME)
+                if not pair or pair[0] not in ("100644", "100755"):
+                    cache[key] = None
+                else:
+                    data = git(["cat-file", "blob", pair[1]], repo.toplevel).stdout
+                    cache[key] = validate_manifest_doc(json.loads(data), parent + "/" + MANIFEST_NAME)
+            else:
+                cache[key] = load_manifest(repo.toplevel / parent)
+        except (StorageError, ValueError, UnicodeError):
+            cache[key] = None
+    doc = cache[key]
+    if doc is None:
+        return False
+    if posixpath.basename(rel) == MANIFEST_NAME:
+        return True
+    try:
+        data = (git(["cat-file", "blob", row["oid"]], repo.toplevel).stdout
+                if row["source"] == "index" else (repo.toplevel / rel).read_bytes())
+        lines = data.decode("utf-8").splitlines()
+        if lines.count(GITIGNORE_BEGIN) != 1 or lines.count(GITIGNORE_END) != 1:
+            return False
+        first, last = lines.index(GITIGNORE_BEGIN), lines.index(GITIGNORE_END)
+        return first < last and lines[first + 1:last] == [gitignore_escape(e["path"]) for e in doc["entries"]]
+    except (StorageError, OSError, ValueError, UnicodeError):
+        return False
+
+
+def admission(repo: Repo, threshold: int, snapshot: bool = False) -> dict:
+    changed = git_z(["diff", "--cached", "--no-renames", "--name-only", "-z", "--diff-filter=ACMT"], repo.toplevel)
+    index = blob_ids(repo, ["ls-files", "--stage", "-z"])
+    selected = {rel: index[rel] for rel in changed if rel in index and index[rel][0] in ("100644", "100755")}
+    sizes = object_sizes(repo, [oid for _, oid in selected.values()])
+    rows = [{"path": rel, "size": sizes[oid], "source": "index", "oid": oid} for rel, (_, oid) in selected.items()]
+    if snapshot and git(["rev-parse", "--verify", "-q", "HEAD"], repo.toplevel, check=False).returncode == 0:
+        dirty = git_z(["diff", "HEAD", "--no-renames", "--name-only", "-z", "--diff-filter=ACMT"], repo.toplevel)
+        for rel in dirty:
+            full = repo.toplevel / rel
+            # A tracked directory replaced by a symlink is never followed.
+            if repo.rel(full) != repo.git_form(rel):
+                raise StorageError(f"unsafe snapshot path {rel!r}")
+            try:
+                st = full.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISREG(st.st_mode):
+                rows.append({"path": rel, "size": st.st_size, "source": "working_tree"})
+    findings = []
+    totals = {}
+    record_cache = {}
+    for row in rows:
+        rel = row["path"]
+        in_root = any(rel == r or rel.startswith(r + "/") for r in repo.run_roots)
+        storage_record = in_root and admission_storage_record(repo, row, index, record_cache)
+        rule = path_rule(repo, rel)
+        if rule and rule["disposition"] == "git":
+            continue
+        reason = None
+        if rule and (not storage_record or rule["path"] == rel):
+            reason = "declared_" + rule["disposition"]
+        elif in_root and row["size"] >= threshold and not storage_record:
+            reason = "bulk_output"
+        if reason is None:
+            if row["source"] == "index":
+                backup = bundle_blob(repo, row["oid"])
+            else:
+                with open(repo.toplevel / rel, "rb") as fh:
+                    backup = fh.read(32).startswith((b"# v2 git bundle\n", b"# v3 git bundle\n"))
+            if backup:
+                reason = "git_backup_archive"
+        if reason:
+            findings.append({**row, "reason": reason})
+        if in_root and not storage_record:
+            totals[rel] = max(totals.get(rel, 0), row["size"])
+    total = sum(totals.values())
+    limits = []
+    for metric, value, key in [("bytes", total, "admission_max_bytes"),
+                               ("files", len(totals), "admission_max_files")]:
+        if value > repo.policy[key]:
+            limits.append({"metric": metric, "observed": value, "maximum": repo.policy[key]})
+    return {"admission_findings": sorted(findings, key=lambda r: (r["path"], r["source"])),
+            "admission_totals": {"files": len(totals), "logical_bytes": total}, "admission_limits": limits}
+
+
+def cmd_inventory(args) -> int:
+    """Index identities and filesystem sizes only; no probes, hashes or writes."""
+    repo = Repo(args.project_root, read_only=True)
+    index = {rel: pair for rel, pair in blob_ids(repo, ["ls-files", "--stage", "-z"]).items()
+             if pair[0] in ("100644", "100755")}
+    sizes = object_sizes(repo, [oid for _, oid in index.values()])
+    groups, copies, declarations = {}, {}, {"git": [], "store": [], "local": []}
+    for rel, (_, oid) in sorted(index.items()):
+        copies.setdefault(oid, []).append(rel)
+        matched = next((r for r in repo.run_roots if rel.startswith(r + "/")), None)
+        if matched:
+            group = matched + "/" + rel[len(matched) + 1:].split("/")[0]
+            item = groups.setdefault(group, {"path": group, "files": 0, "logical_bytes": 0})
+            item["files"] += 1
+            item["logical_bytes"] += sizes[oid]
+        rule = path_rule(repo, rel)
+        if rule:
+            declarations[rule["disposition"]].append({"path": rel, "size": sizes[oid], "reason": rule["reason"]})
+    duplicates = [{"oid": oid, "size": sizes[oid], "copies": len(paths), "paths": paths[:args.limit]}
+                  for oid, paths in copies.items() if len(paths) > 1]
+    duplicates.sort(key=lambda r: (-r["size"] * (r["copies"] - 1), r["oid"]))
+    filesystem, retention, skipped = [], [], []
+    now = datetime.now(timezone.utc).timestamp()
+    # Inspect declared local paths as well as run roots; a project may
+    # keep caches or backups elsewhere. Collapse overlap before walking.
+    scan_roots = []
+    requested = set(repo.run_roots) | {r["path"] for r in repo.policy["path_rules"] if r["disposition"] == "local"}
+    for candidate in sorted(requested, key=lambda r: (len(r.split("/")), r)):
+        if not any(candidate == r or candidate.startswith(r + "/") for r in scan_roots):
+            scan_roots.append(candidate)
+    def observe(full: Path) -> tuple:
+        st = full.lstat()
+        if not stat.S_ISREG(st.st_mode):
+            skipped.append({"path": repo.rel(full), "reason": "not_regular_file"})
+            return 0, 0
+        rel = repo.rel(full)
+        rule = path_rule(repo, rel)
+        if rule and rule.get("retention_days") and now - st.st_mtime >= rule["retention_days"] * 86400:
+            retention.append({"path": rel, "size": st.st_size, "retention_days": rule["retention_days"],
+                              "tracked": rel in index, "reason": rule["reason"]})
+        return 1, st.st_size
+    for scan_root in scan_roots:
+        base = repo.toplevel / scan_root
+        if Path(os.path.realpath(base)) != base:
+            skipped.append({"path": scan_root, "reason": "symlinked_root"})
+            continue
+        if not base.exists():
+            continue
+        count, nbytes = 0, 0
+        if base.is_file():
+            count, nbytes = observe(base)
+        else:
+            for directory, dirs, files in os.walk(base, followlinks=False, onerror=walk_error):
+                here = Path(directory)
+                if ".git" in dirs or ".git" in files:
+                    skipped.append({"path": repo.rel(here), "reason": "nested_repository"})
+                    dirs[:] = []
+                    continue
+                for d in list(dirs):
+                    if (here / d).is_symlink():
+                        skipped.append({"path": repo.rel(here / d), "reason": "symlinked_directory"})
+                        dirs.remove(d)
+                for name in files:
+                    amount, size = observe(here / name)
+                    count += amount
+                    nbytes += size
+        filesystem.append({"path": scan_root, "files": count, "logical_bytes": nbytes})
+    refs = git_text(["for-each-ref", "--format=%(refname) %(objecttype)"], repo.toplevel).splitlines()
+    namespaces = {}
+    for ref in refs:
+        name, kind = ref.rsplit(" ", 1)
+        group = "/".join(name.split("/")[:2])
+        key = group + ":" + kind
+        namespaces[key] = namespaces.get(key, 0) + 1
+    result = {"mode": "inventory", "scope": "current_index_run_roots_and_declared_local_paths", "read_only": True,
+              "tracked_files": len(index), "tracked_logical_bytes": sum(sizes[oid] for _, oid in index.values()),
+              "unique_blob_bytes": sum(sizes.values()), "unique_blobs": len(sizes),
+              "duplicate_occurrences": len(index) - len(sizes),
+              "duplicate_logical_bytes": sum(sizes[r["oid"]] * (r["copies"] - 1) for r in duplicates),
+              "duplicates": duplicates[:args.limit], "run_groups": sorted(groups.values(), key=lambda r: (-r["files"], r["path"])),
+              "filesystem": filesystem, "declared_tracked": declarations, "skipped": skipped,
+              "retention_review": sorted(retention, key=lambda r: r["path"]), "ref_namespaces": namespaces,
+              "limitations": ["Logical bytes are not disk usage or recoverable space.",
+                              "Duplicate content does not imply duplicate scientific purpose.",
+                              "No history, reflog, store reachability or reference-graph deletion proof is claimed.",
+                              "Retention ages use mtime and require owner review; no files or refs are removed."]}
+    emit(result, args.json, [f"run-storage: {len(index)} tracked files; {len(sizes)} unique blobs; "
+                            f"{len(index) - len(sizes)} repeated occurrences (not deletion candidates).",
+                            *[f"  {g['files']:6d} files  {human(g['logical_bytes']):>12}  {g['path']}"
+                              for g in result["run_groups"][:args.limit]],
+                            f"  {len(retention)} declared local files need retention review; nothing was changed."])
+    return EXIT_OK
+
+
 def cmd_check(args) -> int:
-    repo = Repo(args.project_root)
+    repo = Repo(args.project_root, read_only=True)
     threshold = resolve_threshold(repo, args.threshold)
-    if args.staged:
+    if args.staged or args.snapshot:
+        review = admission(repo, threshold, snapshot=args.snapshot)
         found = staged_bulk(repo, threshold)
         symlinked = repo.symlinked_run_roots()
-        result = {"mode": "staged", "threshold_bytes": threshold, "run_roots": repo.run_roots, "staged_bulk": found,
+        result = {"mode": "snapshot" if args.snapshot else "staged", **review, "threshold_bytes": threshold, "run_roots": repo.run_roots, "staged_bulk": found,
                   "symlinked_run_roots": symlinked}
         lines = [f"run-storage: run root {r} passes through a symbolic link; files staged behind it are not "
                  "checked (configure the real path in run_roots)" for r in symlinked]
@@ -935,8 +1210,14 @@ def cmd_check(args) -> int:
                          "instead), then run_storage.py stow <run_dir> (see research-harness: Run Storage).")
         elif not symlinked:
             lines.append(f"run-storage: no staged file at or above {human(threshold)} under the run roots.")
-        emit(result, args.json, lines if (found or symlinked or not args.quiet) else [])
-        return EXIT_FINDINGS if ((found or symlinked) and args.strict) else EXIT_OK
+        for finding in review["admission_findings"]:
+            lines.append(f"  {finding['reason']}: {finding['path']} ({finding['source']})")
+        for limit in review["admission_limits"]:
+            lines.append(f"  admission {limit['metric']}: {limit['observed']} exceeds {limit['maximum']}; "
+                         "classify unique evidence explicitly or stow reproducible outputs before capture")
+        violations = found or symlinked or review["admission_findings"] or review["admission_limits"]
+        emit(result, args.json, lines if (violations or not args.quiet) else [])
+        return EXIT_FINDINGS if (violations and args.strict) else EXIT_OK
     store = repo.store(args.store)
     classes = working_tree_bulk(repo, threshold, store)
     result = {"mode": "working_tree", "threshold_bytes": threshold, "run_roots": repo.run_roots,
@@ -1047,7 +1328,7 @@ def make_read_only(path: Path) -> None:
 
 
 def cmd_stow(args) -> int:
-    repo = Repo(args.project_root if args.project_root else args.run_dir)
+    repo = Repo(args.project_root if args.project_root else args.run_dir, read_only=args.dry_run)
     run_dir = resolve_run_dir(repo, args.run_dir)
     threshold = resolve_threshold(repo, args.threshold)
     store = repo.store(args.store)
@@ -1096,7 +1377,7 @@ def cmd_stow(args) -> int:
                 respelled.append(rel_run)
                 continue
             st = full.lstat()
-            if not stat.S_ISREG(st.st_mode) or st.st_size < threshold:
+            if not stat.S_ISREG(st.st_mode) or not bulk_candidate(repo, repo.rel(full), st.st_size, threshold):
                 continue
             if repo.rel(full) in committed:
                 legacy.append({"path": rel_run, "size": st.st_size})
@@ -1361,7 +1642,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("check", help="report bulk files under the run roots")
     common(p)
-    p.add_argument("--staged", action="store_true", help="only files staged for the next commit")
+    modes = p.add_mutually_exclusive_group()
+    modes.add_argument("--staged", action="store_true", help="inspect index bytes for the next commit")
+    modes.add_argument("--snapshot", action="store_true", help="inspect index and dirty tracked bytes before origin capture")
     p.add_argument("--threshold", type=int, default=None, help="bytes (default: policy, 5 MiB)")
     p.add_argument("--strict", action="store_true",
                    help="exit 1 when something needs attention: with --staged, bulk files staged for the next "
@@ -1393,16 +1676,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_materialize)
 
+    p = sub.add_parser("inventory", help="read-only file counts, duplicate index objects and retention review")
+    common(p)
+    p.set_defaults(func=cmd_inventory)
     return parser
 
 
-SUBCOMMANDS = ("check", "stow", "verify", "materialize")
+SUBCOMMANDS = ("check", "stow", "verify", "materialize", "inventory")
 
 
 def main(argv: "list[str] | None" = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if getattr(args, "project_root", None) is None and args.command == "check":
+    if getattr(args, "project_root", None) is None and args.command in ("check", "inventory"):
         args.project_root = "."
     try:
         return args.func(args)

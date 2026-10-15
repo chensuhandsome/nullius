@@ -81,8 +81,9 @@ and delegation contracts, and consolidated run authority under one canonical
   concurrency, tests, documentation and release readiness; `julia-perf` reworks
   its benchmark protocol and environment references, adds a structured/device-work
   reference and a test suite, rewrites the `run_perf.jl` driver with its suite
-  template and config, and keeps benchmark evidence whose baseline origin is
-  validated; the optimization-equivalence lock pins the skill's new error-budget wording.
+  template and config, and validates the origin of the baseline that benchmark
+  evidence is compared against; the optimization-equivalence lock pins the skill's
+  new error-budget wording.
 - **Final display semantics gate for figures and tables.** `figure-hygiene` checks
   the final rendered output after overrides, conversions, rounding and
   translations (extending `check_display_acceptance.py` with the

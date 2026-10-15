@@ -208,25 +208,47 @@ function waitForProcessExit(proc: ChildProcess, timeoutMs: number): Promise<bool
 // the runtime may extend), starts the server in its group with exactly that
 // environment, reports on fd 3 how the server ended, and then stays in the
 // group, ignoring the signals that end the server, until the client sends
-// SIGKILL or closes fd 3. The anchor's pid cannot be reissued before the
-// client reaps it, so a group signal sent while the anchor is unreaped
-// reaches the server's group, also after the server itself has exited and
-// left descendants behind.
+// SIGKILL. The anchor's pid cannot be reissued before the client reaps it, so
+// a group signal sent while the anchor is unreaped reaches the server's group,
+// also after the server itself has exited and left descendants behind.
+// The anchor never leaves while the rest of the group may still run: if fd 3
+// ends or fails (the client exited without stopping it) or the anchor itself
+// fails, it stops the group on its own, SIGTERM and then, after the client's
+// kill grace (passed as its first argument), SIGKILL, which ends the anchor
+// together with every remaining member. The anchor cannot observe the
+// server's descendants, so it always waits the whole grace.
 const SERVER_ANCHOR_SOURCE = `
 'use strict';
 const { spawn } = require('node:child_process');
 const net = require('node:net');
+const [graceText, command, ...args] = process.argv.slice(1);
+const graceMs = Math.max(0, Number(graceText) || 0);
 const control = new net.Socket({ fd: 3, readable: true, writable: true });
-control.on('error', () => process.exit(1));
-control.on('end', () => process.exit(0));
+let stopping = false;
+const signalGroup = signal => {
+  try {
+    process.kill(-process.pid, signal);
+  } catch {}
+};
+const stopGroup = () => {
+  if (stopping) return;
+  stopping = true;
+  signalGroup('SIGTERM');
+  setTimeout(() => {
+    signalGroup('SIGKILL');
+    process.exit(1);
+  }, graceMs);
+};
+control.on('error', stopGroup);
+control.on('end', stopGroup);
+process.on('uncaughtException', stopGroup);
 for (const signal of ['SIGHUP', 'SIGINT', 'SIGTERM']) process.on(signal, () => {});
 let reported = false;
 const report = status => {
-  if (reported) return;
+  if (reported || !control.writable) return;
   reported = true;
   control.write(JSON.stringify(status) + '\\n');
 };
-const [command, ...args] = process.argv.slice(1);
 let received = '';
 const start = chunk => {
   received += chunk;
@@ -363,7 +385,7 @@ export class McpClient {
     const cwd = options.cwd ?? this.controlledHome;
     const anchored = process.platform !== 'win32';
     const proc = anchored
-      ? spawn(process.execPath, ['-e', SERVER_ANCHOR_SOURCE, '--', command, ...args], {
+      ? spawn(process.execPath, ['-e', SERVER_ANCHOR_SOURCE, '--', String(this.killGraceMs), command, ...args], {
           stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
           env: {},
           cwd,
@@ -406,7 +428,9 @@ export class McpClient {
         return;
       }
       const wasConnected = this.initialized;
-      this.failPending(`MCP process exited with code ${status.code}`);
+      this.failPending(status.signal
+        ? `MCP process exited on signal ${status.signal}`
+        : `MCP process exited with code ${status.code}`);
       if (wasConnected && !this.closed && !this.unusable && !this.reconnecting) {
         this.scheduleReconnect();
       }
@@ -609,6 +633,12 @@ export class McpClient {
   private signalProcessTree(proc: ChildProcess, signal: NodeJS.Signals): boolean {
     if (!proc.pid) return false;
     if (process.platform === 'win32') return proc.kill(signal);
+    // The anchor is reaped, so its pid, the group number, may already name an
+    // unrelated group: send nothing. Nothing is abandoned by this, because the
+    // anchor leaves only through a SIGKILL to the whole group, sent either by
+    // this client or by the anchor itself after it lost its client (see
+    // SERVER_ANCHOR_SOURCE). The exception is an anchor killed from outside,
+    // whose group is out of this client's reach once the anchor is reaped.
     if (proc.exitCode !== null || proc.signalCode !== null) return false;
     try {
       process.kill(-proc.pid, signal);

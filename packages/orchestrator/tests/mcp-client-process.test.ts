@@ -407,7 +407,15 @@ describe('McpClient subprocess containment', () => {
       await new Promise(resolve => setTimeout(resolve, 20));
     }
     expect(client.isConnected).toBe(false);
-    await new Promise(resolve => setTimeout(resolve, 250));
+    // A start happens only inside an armed reconnect, which keeps
+    // `reconnecting` set until it has finished. Once the client is unusable,
+    // no reconnect is armed or running, and the last group is drained, no
+    // further start can begin, and every start that happened has counted.
+    const state = client as unknown as { unusable: boolean; reconnecting: boolean; proc: ChildProcess | null };
+    while (!(state.unusable && !state.reconnecting && state.proc === null) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    expect(state).toMatchObject({ unusable: true, reconnecting: false, proc: null });
     expect(fs.readFileSync(countPath, 'utf8')).toBe('3');
     expect(client.isConnected).toBe(false);
     await expect(client.callTool('retry', {})).rejects.toThrow('not initialized');
@@ -861,6 +869,147 @@ describe('McpClient subprocess containment', () => {
       await client.close();
     } finally {
       if (descendantPid !== undefined && processAlive(descendantPid)) realKill(descendantPid, 'SIGKILL');
+    }
+  });
+
+  it('has the anchor stop the server and its descendants when the client goes away without stopping them', async () => {
+    if (process.platform === 'win32') return;
+    const tmpDir = makeTmpDir();
+    tmpDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, 'server.mjs');
+    const serverPidPath = path.join(tmpDir, 'server-pid');
+    const serverTermPath = path.join(tmpDir, 'server-got-sigterm');
+    const descendantPidPath = path.join(tmpDir, 'descendant-pid');
+    const descendantTermPath = path.join(tmpDir, 'descendant-got-sigterm');
+    // The server outlives the end of its stdin, and it and its descendant (in
+    // the server's group) record SIGTERM and keep running, so only SIGKILL
+    // ends them.
+    writeServer(scriptPath, `${INITIALIZE_REPLY}
+      if (msg.method === 'initialize') {
+        process.on('SIGTERM', () => fs.writeFileSync(process.env.SERVER_TERM_PATH, 'term'));
+        setInterval(() => {}, 1_000);
+        spawn(process.execPath, ['-e', \`
+          const fs = require('fs');
+          process.on('SIGTERM', () => fs.writeFileSync(\${JSON.stringify(process.env.DESCENDANT_TERM_PATH)}, 'term'));
+          fs.writeFileSync(\${JSON.stringify(process.env.DESCENDANT_PID_PATH)}, String(process.pid));
+          setInterval(() => {}, 1_000);
+        \`], { stdio: 'ignore' }).unref();
+        fs.writeFileSync(process.env.SERVER_PID_PATH, String(process.pid));
+      }
+    `);
+    const unrelated = spawnUnrelatedGroupLeader();
+    // The anchor's own grace is the client's kill grace; a wide one gives both
+    // processes time to record the SIGTERM before the SIGKILL.
+    const client = new McpClient({ shutdownGraceMs: 20, killGraceMs: 2_000, maxReconnects: 0 });
+    let serverPid: number | undefined;
+    let descendantPid: number | undefined;
+    try {
+      await client.start(process.execPath, [scriptPath], {
+        configEnv: {
+          SERVER_PID_PATH: serverPidPath,
+          SERVER_TERM_PATH: serverTermPath,
+          DESCENDANT_PID_PATH: descendantPidPath,
+          DESCENDANT_TERM_PATH: descendantTermPath,
+        },
+        cwd: tmpDir,
+      });
+      serverPid = await waitForPid(serverPidPath);
+      descendantPid = await waitForPid(descendantPidPath);
+      const anchor = serverProcess(client);
+      const groupNumber = anchor.pid!;
+      // Every group signal this client sends is recorded; one sent after the
+      // anchor is reaped goes to the unrelated stand-in.
+      const clientGroupSignals: string[] = [];
+      vi.spyOn(process, 'kill').mockImplementation((target, signal) => {
+        if (target === -groupNumber) {
+          clientGroupSignals.push(String(signal));
+          if (!processExists(groupNumber)) return realKill(-unrelated.pid!, signal);
+        }
+        return realKill(target, signal);
+      });
+      // What an unexpected exit of this process does to the anchor: every
+      // descriptor this side holds to it closes, fd 3 included, and nothing is
+      // signalled.
+      for (const stream of anchor.stdio) stream?.destroy();
+      const deadline = Date.now() + 15_000;
+      while ((processAlive(serverPid) || processAlive(descendantPid)) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      expect(processAlive(serverPid)).toBe(false);
+      expect(processAlive(descendantPid)).toBe(false);
+      expect(fs.existsSync(serverTermPath)).toBe(true);
+      expect(fs.existsSync(descendantTermPath)).toBe(true);
+      while (isUnreaped(anchor) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      expect(anchor.signalCode).toBe('SIGKILL');
+      await client.close();
+      expect(clientGroupSignals).toEqual([]);
+      expect(isUnreaped(unrelated)).toBe(true);
+    } finally {
+      unrelated.kill('SIGKILL');
+      for (const pid of [serverPid, descendantPid]) {
+        if (pid !== undefined && processAlive(pid)) realKill(pid, 'SIGKILL');
+      }
+      await client.close();
+    }
+  });
+
+  it('names the signal when the server is ended by one', async () => {
+    if (process.platform === 'win32') return;
+    const tmpDir = makeTmpDir();
+    tmpDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, 'server.mjs');
+    writeServer(scriptPath, `${INITIALIZE_REPLY}
+      if (msg.method === 'test/die') process.kill(process.pid, 'SIGKILL');
+    `);
+    const client = new McpClient({ shutdownGraceMs: 20, killGraceMs: 20, maxReconnects: 0 });
+    try {
+      await client.start(process.execPath, [scriptPath], { cwd: tmpDir });
+      await expect(client.request('test/die', {}, 5_000)).rejects.toThrow(/^MCP process exited on signal SIGKILL$/);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('leaves no anchor and no controlled home behind when start fails, and signals no unrelated group', async () => {
+    if (process.platform === 'win32') return;
+    const tmpDir = makeTmpDir();
+    tmpDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, 'server.mjs');
+    // Exits before it answers initialize.
+    fs.writeFileSync(scriptPath, 'process.exit(3);\n');
+    const cases: Array<{ command: string; args: string[]; message: string }> = [
+      { command: process.execPath, args: [scriptPath], message: 'MCP process exited with code 3' },
+      { command: path.join(tmpDir, 'missing-server'), args: [], message: 'MCP process failed to start: ' },
+    ];
+    for (const { command, args, message } of cases) {
+      const unrelated = spawnUnrelatedGroupLeader();
+      const client = new McpClient({ shutdownGraceMs: 20, killGraceMs: 20 });
+      try {
+        const starting = client.start(command, args, { cwd: tmpDir });
+        starting.catch(() => undefined);
+        const anchor = serverProcess(client);
+        const controlledHome = (client as unknown as { controlledHome: string | null }).controlledHome;
+        expect(controlledHome && fs.existsSync(controlledHome)).toBe(true);
+        const lateSignals = redirectSignalsAfterReap(anchor.pid!, unrelated);
+        await expect(starting).rejects.toThrow(message);
+        const deadline = Date.now() + 10_000;
+        while (isUnreaped(anchor) && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        // The client's own group SIGKILL ended the anchor, and it is reaped.
+        expect(anchor.signalCode).toBe('SIGKILL');
+        expect(processExists(anchor.pid!)).toBe(false);
+        expect(fs.existsSync(controlledHome!)).toBe(false);
+        await client.close();
+        expect(lateSignals).toEqual([]);
+        expect(isUnreaped(unrelated)).toBe(true);
+      } finally {
+        vi.restoreAllMocks();
+        unrelated.kill('SIGKILL');
+        await client.close();
+      }
     }
   });
 });

@@ -2227,12 +2227,14 @@ def cmd_report(args) -> int:
     candidates = [(p, s) for p, s in unique_large if p.suffix.lower() not in ALREADY_COMPRESSED_SUFFIXES]
     sampled = candidates[: args.compress_sample]
     compress_saving = 0.0
+    sampled_ok = 0
     for path, size in sampled:
         try:
             compress_saving += size * max(0.0, 1.0 - sample_ratio(path))
         except OSError:
             unreadable.append(str(path))  # listed, as every skipped path is
             continue
+        sampled_ok += 1
     stale = []
     cutoff = time.time() - args.older_than_days * 86400
     for d in args.stale_dir:
@@ -2278,7 +2280,7 @@ def cmd_report(args) -> int:
         "min_size": args.min_size, "summary_bytes": summary,
         "duplicates": duplicates, "regenerable": sorted(regenerable, key=lambda r: -r["bytes"]),
         "git_object_stores": git_stores, "bundles": bundles, "stale": stale,
-        "compression": {"sampled_files": len(sampled), "candidate_files": len(candidates)},
+        "compression": {"sampled_files": sampled_ok, "candidate_files": len(candidates)},
         "unreadable": sorted(set(unreadable)),
         "changed_since_scan": sorted(set(changed_since_scan)),
         "notes": [

@@ -116,8 +116,10 @@ function assertRunDirectoryIsReal(runDir: string): void {
     const stat = lstatIfPresent(path.join(runDir, name), runDir);
     if (stat === null || stat.isSymbolicLink()) continue;
     const wantsDirectory = RUN_DIRECTORY_DIRECTORIES.includes(name);
-    if (stat.isDirectory() !== wantsDirectory) {
-      throw unsafeFs(`run_dir/${name} must be a ${wantsDirectory ? 'directory' : 'file'}`, { run_dir: runDir, path: path.join(runDir, name) });
+    // A regular file is required where a file is expected: a FIFO or device node
+    // there would stall or misread the tools that open it.
+    if (wantsDirectory ? !stat.isDirectory() : !stat.isFile()) {
+      throw unsafeFs(`run_dir/${name} must be a ${wantsDirectory ? 'directory' : 'regular file'}`, { run_dir: runDir, path: path.join(runDir, name) });
     }
   }
   for (const name of listDirectory(runDir, runDir)) {
@@ -154,7 +156,8 @@ function assertRunDirectoryIsReal(runDir: string): void {
  * anywhere in the run directory, including every entry directly under
  * computation/; only entries nested below the method's own real workspace
  * directories are left to the manifest checks
- * (assertRunDirectoryIsReal). Everything the tool writes, reads or executes
+ * (the walk is assertRunDirectoryIsReal; the manifest checks run at
+ * materialization and preparation). Everything the tool writes, reads or executes
  * then derives from the admitted run directory.
  */
 function admitProjectRun(params: { project_root: string; run_id: string; run_dir: string }): { projectRoot: string; runDir: string } {

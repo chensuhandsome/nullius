@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -224,7 +225,8 @@ describe('the computation bridge tools work only in a run directory inside the a
   it.each([
     ['the run directory itself is a file', '', 'run_dir must name a directory'],
     ['artifacts is a file', 'artifacts', 'run_dir/artifacts must be a directory'],
-    ['the launch stamp mirror is a directory', 'run_origin.json', 'run_dir/run_origin.json must be a file'],
+    ['the launch stamp mirror is a directory', 'run_origin.json', 'run_dir/run_origin.json must be a regular file'],
+    ['the launch stamp mirror is a FIFO', 'run_origin.json:fifo', 'run_dir/run_origin.json must be a regular file'],
   ])('refuses a run directory where %s, before any write', async (_label, entry, message) => {
     const { root, alias, handoffPath } = projectWithHandoff();
     const runDir = path.join(root, 'artifacts', 'runs', 'r1');
@@ -233,6 +235,9 @@ describe('the computation bridge tools work only in a run directory inside the a
       fs.writeFileSync(runDir, 'x\n');
     } else if (entry === 'run_origin.json') {
       fs.mkdirSync(path.join(runDir, entry), { recursive: true });
+    } else if (entry === 'run_origin.json:fifo') {
+      fs.mkdirSync(runDir, { recursive: true });
+      execFileSync('mkfifo', [path.join(runDir, 'run_origin.json')]);
     } else {
       fs.mkdirSync(runDir, { recursive: true });
       fs.writeFileSync(path.join(runDir, entry), 'x\n');

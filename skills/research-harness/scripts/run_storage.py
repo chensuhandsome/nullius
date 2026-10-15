@@ -1596,9 +1596,13 @@ def unassessed_private_git_state(git_dir: Path, common_dir: Path) -> "list[str]"
                 rel = (here / name).relative_to(git_dir).as_posix()
                 if (here / name).is_symlink():
                     unknown.append(rel + "/")
-                elif rel not in KNOWN_PRIVATE_GIT_DIRS and not directory_is_empty(here / name):
-                    # An empty directory holds no state. git itself creates an empty
-                    # refs/ in every new worktree's private directory.
+                elif rel == "refs" and directory_is_empty(here / name):
+                    # git itself creates an empty refs/ in every new worktree's private
+                    # directory (seen with git 2.50). Only that one, and only while it is
+                    # empty, is understood; any other unknown directory, empty or not, is
+                    # state this check does not assess (its existence may be the state).
+                    pass
+                elif rel not in KNOWN_PRIVATE_GIT_DIRS:
                     unknown.append(rel + "/")
             dirnames[:] = [d for d in dirnames if (here / d).relative_to(git_dir).as_posix() in KNOWN_PRIVATE_GIT_DIRS
                            and not (here / d).is_symlink()]

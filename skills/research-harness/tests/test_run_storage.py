@@ -1864,23 +1864,32 @@ def test_worktree_check_keeps_a_worktree_whose_reflog_cannot_be_read(tmp_path, m
         os.chmod(log, 0o644)
 
 
-def test_worktree_check_ignores_an_empty_private_directory_but_not_a_populated_one(tmp_path, monkeypatch, capsys):
+def test_worktree_check_understands_only_the_empty_refs_directory_git_itself_creates(tmp_path, monkeypatch, capsys):
     """git creates an empty refs/ in a new worktree's private directory (observed with git 2.50);
-    an empty directory holds no state. The same directory with a file in it is state."""
+    that one directory, while empty, is understood. Any other unknown directory is state this
+    check does not assess, even when it is empty: its existence may be the state. refs/ with
+    content in it is state too."""
     repo = make_repo(tmp_path)
     wt = _worktree(repo, tmp_path, "fresh")
     private = repo / ".git" / "worktrees" / "fresh"
     (private / "refs").mkdir(exist_ok=True)
-    (private / "scratch" / "deeper").mkdir(parents=True)  # empty, nested: still no state
     capsys.readouterr()
     assert run_main(["worktree-check", "--all", "--json"], repo, monkeypatch) == rs.EXIT_OK
     v = _verdicts(capsys)
     assert v["fresh"]["unassessed_git_state"] == [] and v["fresh"]["verdict"] == "safe_to_remove"
-    (private / "scratch" / "deeper" / "note.txt").write_text("state\n")  # the same directory, now populated
+    (private / "scratch" / "deeper").mkdir(parents=True)  # unknown and empty: still state
     capsys.readouterr()
     assert run_main(["worktree-check", "--all", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
     v = _verdicts(capsys)
     assert v["fresh"]["verdict"] == "keep" and "scratch/" in v["fresh"]["unassessed_git_state"]
+    (private / "scratch").rename(private / "gone-scratch")
+    (private / "gone-scratch" / "deeper").rmdir()
+    (private / "gone-scratch").rmdir()
+    (private / "refs" / "note").write_text("x\n")  # refs/ with content is state as well
+    capsys.readouterr()
+    assert run_main(["worktree-check", "--all", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+    v = _verdicts(capsys)
+    assert v["fresh"]["verdict"] == "keep" and "refs/" in v["fresh"]["unassessed_git_state"]
 
 
 def test_worktree_check_treats_an_unreadable_private_directory_as_state(tmp_path, monkeypatch, capsys):

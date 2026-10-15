@@ -1727,9 +1727,20 @@ def rewritten_copy_on_base(path: Path, base: str, obj: str) -> bool:
     theirs = exact_patch_ids(path, [f"{obj}..{base}"])
     if stretch.returncode != 0 or not commits or mine is None or theirs is None:
         return False
-    on_base = set(theirs.values())
-    # A commit with an empty patch (no id) is not shown to be on base: kept.
-    return all(c in mine and mine[c] in on_base for c in commits)
+    # Each commit of the stretch must be matched by a distinct base commit with
+    # the same patch text: a change made twice here (P, its inverse, P again)
+    # is not reproduced by a base that made it once, so digests are consumed,
+    # not merely looked up. A commit with an empty patch (no id) is not shown
+    # to be on base: kept.
+    available: "dict[str, int]" = {}
+    for digest in theirs.values():
+        available[digest] = available.get(digest, 0) + 1
+    for c in commits:
+        digest = mine.get(c)
+        if digest is None or available.get(digest, 0) == 0:
+            return False
+        available[digest] -= 1
+    return True
 
 
 def worktree_private_refs(path: Path, base: str) -> "list[str]":
@@ -2069,20 +2080,25 @@ def store_contained(durable: DurableObjects, git_dir: Path) -> "bool | None":
                                                                                     sorted(reachable)))
 
 
-FileIdentity = "tuple[int, int, int, int]"  # device, inode, size, mtime in ns
+FileIdentity = "tuple[int, int, int, int, int]"  # device, inode, size, mtime and ctime in ns
 
 
-def link_count_if_unchanged(path: Path, identity: "tuple[int, int, int, int]") -> "int | None":
-    """Hard links of the file that was scanned under `identity`; None when the path
-    cannot be examined (vanished or unreadable) or no longer names that file (a
-    different device or inode, size or modification time: replaced or rewritten
-    since it was scanned and hashed)."""
+def file_identity(st: os.stat_result) -> "tuple[int, int, int, int, int]":
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def link_count_if_unchanged(path: Path, identity: "tuple[int, int, int, int, int]") -> "int | None | str":
+    """Hard links of the file that was scanned under `identity`. "unreadable" when the
+    path cannot be examined (vanished or unreadable); "changed" when it no longer
+    names that file (another device or inode, size, modification or change time:
+    replaced or rewritten since it was scanned and hashed; the change time cannot be
+    set back by a writer)."""
     try:
         st = path.lstat()
     except OSError:
-        return None
-    if (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) != identity:
-        return None
+        return "unreadable"
+    if file_identity(st) != identity:
+        return "changed"
     return st.st_nlink
 
 
@@ -2107,6 +2123,7 @@ def cmd_report(args) -> int:
     roots = [r for r in roots if not any(r != q and is_under(r, q) for q in roots)]  # overlapping roots once
     seen_dirs: set = set()
     unreadable: "list[str]" = []
+    changed_since_scan: "list[str]" = []
     reference = Path(args.repo).expanduser().resolve() if args.repo else None
     durable = DurableObjects(reference) if reference is not None else None
     regenerable, git_stores, bundles = [], [], []
@@ -2159,7 +2176,7 @@ def cmd_report(args) -> int:
                     bundles.append(record)
                 if st.st_size >= args.min_size and (st.st_dev, st.st_ino) not in seen_inodes:
                     seen_inodes.add((st.st_dev, st.st_ino))
-                    files.setdefault(st.st_size, []).append((full, (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)))
+                    files.setdefault(st.st_size, []).append((full, file_identity(st)))
     duplicates = []
     unique_large: "list[tuple[Path, int]]" = []
     for size, group in files.items():
@@ -2192,9 +2209,10 @@ def cmd_report(args) -> int:
                     # hold other content, so the group is not counted at all rather than risk naming the
                     # last remaining copy, or a non-duplicate, as reclaimable.
                     counts = [link_count_if_unchanged(p, identity[p]) for p in same]
-                    unreadable += [str(p) for p, n in zip(same, counts) if n is None]  # listed, as every skipped path is
+                    unreadable += [str(p) for p, n in zip(same, counts) if n == "unreadable"]  # listed, as every skipped path is
+                    changed_since_scan += [str(p) for p, n in zip(same, counts) if n == "changed"]
                     single = sum(1 for n in counts if n == 1)
-                    freeable = 0 if any(n is None for n in counts) else min(single, len(same) - 1)
+                    freeable = 0 if any(isinstance(n, str) for n in counts) else min(single, len(same) - 1)
                     duplicates.append({"sha256": sha, "size": size, "copies": len(same),
                                        "reclaimable": size * freeable, "paths": [str(p) for p in same]})
     duplicates.sort(key=lambda d: -d["reclaimable"])
@@ -2254,6 +2272,7 @@ def cmd_report(args) -> int:
         "git_object_stores": git_stores, "bundles": bundles, "stale": stale,
         "compression": {"sampled_files": len(sampled), "candidate_files": len(candidates)},
         "unreadable": sorted(set(unreadable)),
+        "changed_since_scan": sorted(set(changed_since_scan)),
         "notes": [
             "Read-only: nothing was changed.",
             "Duplicate bytes are an upper bound: copy-on-write clones share blocks but look like separate files.",
@@ -2263,7 +2282,8 @@ def cmd_report(args) -> int:
             "Reclaimable totals leave out files with more than one hard link (local clones, pnpm stores): removing "
             "one link may free nothing. Copy-on-write clones cannot be told apart, so totals stay upper bounds.",
             "The compression figure extrapolates a zlib ratio measured on the first 4 MiB of each sampled file.",
-            "Unreadable paths are skipped and listed; the figures do not include them.",
+            "Unreadable paths, and duplicate copies replaced or rewritten since they were scanned, are skipped and listed "
+            "(`unreadable`, `changed_since_scan`); the figures do not include them.",
         ],
     }
     lines = ["run-storage report (read-only; nothing was changed)"]

@@ -2350,6 +2350,35 @@ def test_worktree_check_does_not_credit_the_same_change_made_at_another_place(tm
     assert orphan in v["reflog_only_commits"] and v["rewritten_copies_on_base"] == []
 
 
+def test_worktree_check_does_not_credit_a_change_made_twice_against_a_base_that_made_it_once(tmp_path, monkeypatch, capsys):
+    """Base: P then its inverse. The worktree's orphaned history: P, its inverse, P again. Every
+    patch text of the orphaned stretch occurs on base, but the second P has no base commit of its
+    own: the stretch ends in a state base never reached. Credit consumes distinct base commits."""
+    repo = make_repo(tmp_path)
+    (repo / "p.txt").write_text("before\n")
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "start", cwd=repo)
+    wt = tmp_path / "lane"
+    sh("git", "worktree", "add", "-q", "--detach", str(wt), "main", cwd=repo)
+    for text, msg in (("after\n", "P"), ("before\n", "inverse"), ("after\n", "P again")):
+        (wt / "p.txt").write_text(text)
+        sh("git", "add", "-A", cwd=wt)
+        sh("git", "commit", "-q", "-m", msg, cwd=wt)
+    orphan = sh("git", "rev-parse", "HEAD", cwd=wt).stdout.strip()
+    for text, msg in (("after\n", "P on base"), ("before\n", "inverse on base")):
+        (repo / "p.txt").write_text(text)
+        sh("git", "add", "-A", cwd=repo)
+        sh("git", "commit", "-q", "-m", msg, cwd=repo)
+    sh("git", "reset", "-q", "--hard", "main", cwd=wt)  # the orphaned stretch survives only in this worktree's reflog
+    capsys.readouterr()
+    rc = run_main(["worktree-check", str(wt), "--json"], repo, monkeypatch)
+    v = _verdicts(capsys)["lane"]
+    assert rc == rs.EXIT_FINDINGS and v["verdict"] == "keep"
+    # The reflog also remembers the intermediate P and inverse commits; each of those stretches is
+    # matched by distinct base commits and is credited. The final commit's stretch needs P twice.
+    assert orphan in v["reflog_only_commits"] and orphan not in v["rewritten_copies_on_base"]
+
+
 # ----------------------------------------------------------------- report
 
 def test_report_counts_reclaimable_bytes(tmp_path, monkeypatch, capsys):
@@ -2598,7 +2627,7 @@ def test_report_does_not_count_a_duplicate_group_when_a_copy_was_replaced_after_
     assert [(d["copies"], d["reclaimable"]) for d in doc["duplicates"]] == [(2, 0)], \
         "a copy replaced after hashing is no duplicate any more: the group must not be counted"
     assert doc["summary_bytes"]["duplicate_content"] == 0
-    assert str(replaced) in doc["unreadable"]
+    assert str(replaced) in doc["changed_since_scan"] and str(replaced) not in doc["unreadable"]
 
 
 def test_report_counts_a_bundle_against_a_partial_clone_as_not_assessed_even_with_a_missing_tip(tmp_path, monkeypatch,

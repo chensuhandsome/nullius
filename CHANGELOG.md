@@ -9,7 +9,7 @@ the version to cite.
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-10-10
+## [0.6.0] - 2026-10-16
 
 First archived release. Nullius is positioned as an evidence-first harness for
 agent-assisted research; this release gathers everything since 0.5.0 (the lockstep

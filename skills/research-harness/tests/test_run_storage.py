@@ -21,6 +21,7 @@ _spec.loader.exec_module(rs)
 
 SKILL_MD = Path(__file__).resolve().parent.parent / "SKILL.md"
 THRESHOLD = 4096
+STOWED_FOR_LARGE_MANIFEST = 24  # enough manifest entries to exceed THRESHOLD bytes
 
 
 @pytest.fixture(autouse=True)
@@ -314,13 +315,21 @@ def test_check_never_counts_the_manifest_or_ignore_file_as_bulk(tmp_path, monkey
     run = repo / "artifacts" / "runs" / "r1"
     run.mkdir()
     (run / ".gitignore").write_text("# a long user ignore file\n" + "*.tmp\n" * THRESHOLD)
-    (run / "big.bin").write_bytes(blob(THRESHOLD, 14))
+    for i in range(STOWED_FOR_LARGE_MANIFEST):
+        (run / f"big{i:02d}.bin").write_bytes(blob(THRESHOLD, 14 + i))
     stow_json(run, repo, monkeypatch, capsys)
     sh("git", "add", "-A", cwd=repo)
     assert sh("git", "diff", "--cached", "--name-only", cwd=repo).stdout.split() == [
         "artifacts/runs/r1/.gitignore", "artifacts/runs/r1/bulk_manifest.json"]
-    for argv in (["check", "--staged", "--strict"], ["check", "--snapshot", "--strict"]):
-        assert run_main(argv, repo, monkeypatch) == rs.EXIT_OK, argv
+    # Both records are at or above the threshold, so passing requires the
+    # validated-record exemption, not merely small files.
+    assert min((run / n).stat().st_size for n in (".gitignore", rs.MANIFEST_NAME)) >= THRESHOLD
+    for mode in ("--staged", "--snapshot"):
+        capsys.readouterr()
+        assert run_main(["check", mode, "--strict", "--json"], repo, monkeypatch) == rs.EXIT_OK, mode
+        doc = json.loads(capsys.readouterr().out)
+        assert doc["admission_findings"] == [] and doc["admission_limits"] == []
+        assert doc["admission_totals"] == {"files": 0, "logical_bytes": 0}  # records excluded from totals
     sh("git", "commit", "-q", "-m", "stow records", cwd=repo)
     assert run_main(["check", "--strict"], repo, monkeypatch) == rs.EXIT_OK
     unmanaged = repo / "artifacts" / "runs" / "r2"
@@ -328,11 +337,13 @@ def test_check_never_counts_the_manifest_or_ignore_file_as_bulk(tmp_path, monkey
     (unmanaged / ".gitignore").write_text("# a long user ignore file\n" + "*.tmp\n" * THRESHOLD)
     sh("git", "add", "-A", cwd=repo)
     assert run_main(["check", "--strict"], repo, monkeypatch) == rs.EXIT_OK
+    (unmanaged / rs.MANIFEST_NAME).write_text("x" * THRESHOLD)  # reserved name, not a stow record
+    sh("git", "add", "-A", cwd=repo)
     for mode in ("--staged", "--snapshot"):
         capsys.readouterr()
         assert run_main(["check", mode, "--strict", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS, mode
         assert {(r["path"], r["reason"]) for r in json.loads(capsys.readouterr().out)["admission_findings"]} == {
-            ("artifacts/runs/r2/.gitignore", "bulk_output")}
+            ("artifacts/runs/r2/.gitignore", "bulk_output"), ("artifacts/runs/r2/" + rs.MANIFEST_NAME, "bulk_output")}
 
 
 def test_a_path_recorded_by_two_manifests_is_damaged_and_neither_record_hides_the_other(tmp_path, monkeypatch, capsys):

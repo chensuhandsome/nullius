@@ -117,6 +117,9 @@ describe('whole-notebook execution and current-version contract', () => {
     const originalRuntime = runtime.installedRuntimeRoot; let calls = 0;
     const spy = vi.spyOn(runtime, 'installedRuntimeRoot').mockImplementation(() => { if (++calls > 2) throw new Error('fixture runtime unavailable during capacity assessment'); return originalRuntime(); });
     const first = await review(); expect(first.code).toBe(2); const canonical = path.join(runDir(), 'artifacts/verification_subject_verdict_notebook_v1.json'); const bytes = fs.readFileSync(canonical); expect(JSON.parse(bytes.toString()).status).toBe('failed'); spy.mockRestore();
+    // Only the capacity-assessment runtime lookup wraps the thrown text in this form; a failure moved to another phase would not.
+    const capacityFailure = 'Installed review-swarm runtime is unavailable: fixture runtime unavailable during capacity assessment';
+    expect(first.value.reason).toBe(capacityFailure); expect(JSON.parse(bytes.toString())).toMatchObject({ summary: capacityFailure, missing_decisive_checks: [{ check_kind: 'notebook_content_review', reason: capacityFailure }] });
     expect(checkNotebookContentReview(root)).toMatchObject({ status: 'unavailable' }); expect(checkNotebookContentReview(root).reason).toContain('immutable canonical outcome');
     expect((await cli(['notebook', 'check', '--json'])).code).toBe(2); expect(notebookCloseoutGate(root).decision).toBe('unavailable'); expect(fs.readFileSync(canonical)).toEqual(bytes);
   });

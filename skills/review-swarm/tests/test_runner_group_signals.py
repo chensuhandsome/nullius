@@ -42,7 +42,9 @@ kernel = _load("group_signal_kernel", Path(__file__).with_name("group_signal_ker
 # The fake CLI. "alone" exits at once. "descendants" first leaves two
 # descendants in its group, one that stops on SIGTERM and one that ignores it
 # (only SIGKILL stops it), each recording the signals it sees, then exits.
-# "sleeps" does the same but keeps running; "sleeps-alone" just keeps running.
+# "quiet-descendants" does the same with the descendants' output redirected
+# away from the CLI's. "sleeps" does the same as "descendants" but keeps
+# running; "sleeps-alone" just keeps running.
 FAKE_CLI = r'''
 import os, signal, subprocess, sys, time
 mode, workdir = sys.argv[1], sys.argv[2]
@@ -63,9 +65,11 @@ while True:
 def ready(behaviour):
     path = os.path.join(workdir, behaviour + ".log")
     return os.path.exists(path) and "ready" in open(path).read()
-if mode in ("descendants", "sleeps"):
+if mode in ("descendants", "quiet-descendants", "sleeps"):
+    quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL} if mode.startswith("quiet") else {}
     for behaviour in ("exits", "ignores"):
-        subprocess.Popen([sys.executable, "-c", DESCENDANT, os.path.join(workdir, behaviour + ".log"), behaviour])
+        subprocess.Popen([sys.executable, "-c", DESCENDANT, os.path.join(workdir, behaviour + ".log"), behaviour],
+                         **quiet)
     while not (ready("exits") and ready("ignores")):
         time.sleep(0.01)
     open(os.path.join(workdir, "descendants.ready"), "w").close()
@@ -382,6 +386,116 @@ def test_multi_task_completed_runner_group_is_stopped_before_reaping(tmp_path, s
             os.kill(pid, signal.SIGKILL)
 
 
+# The same runner, but the straggler inherits the runner's stdout and stderr,
+# so the pipes stay open until the straggler is stopped.
+INHERITING_RUNNER = STRAGGLING_RUNNER.replace(
+    'python3 "$STRAGGLER" "$STRAGGLER_LOG" </dev/null >/dev/null 2>&1 &',
+    'python3 "$STRAGGLER" "$STRAGGLER_LOG" </dev/null &')
+
+
+def test_multi_task_completed_runner_group_is_stopped_before_pipe_eof(tmp_path, standin):
+    # A runner that completes normally may leave a same-group descendant that
+    # inherited its stdout and stderr: the group is stopped (SIGTERM, then
+    # SIGKILL) and the runner reaped without waiting for end of file.
+    assert INHERITING_RUNNER != STRAGGLING_RUNNER
+    runner = tmp_path / "run_opencode.sh"
+    runner.write_text(INHERITING_RUNNER)
+    runner.chmod(0o755)
+    straggler = tmp_path / "straggler.py"
+    straggler.write_text(STRAGGLER)
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("synthetic test\n")
+    straggler_log, straggler_pid = tmp_path / "straggler.log", tmp_path / "straggler.pid"
+    env, log = _child_env(tmp_path, standin)
+    env.update(REVIEW_SWARM_NO_AUTO_CONFIG="1", STRAGGLER=str(straggler),
+               STRAGGLER_LOG=str(straggler_log), STRAGGLER_PID=str(straggler_pid))
+    proc = subprocess.Popen([sys.executable, str(RUN_MULTI_TASK), "--out-dir", str(tmp_path / "out"),
+                             "--opencode-runner", str(runner), "--system", str(prompt), "--prompt", str(prompt),
+                             "--models", "some-provider/model-a", "--timeout-secs", "0"],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        try:
+            _, stderr = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            pytest.fail("run_multi_task waited for the straggler's end of file instead of stopping its group")
+        pid = int(straggler_pid.read_text())
+        assert log.read_text() == "", "a group was signalled after its leader was reaped"
+        assert standin.alive()
+        assert proc.returncode == 0, stderr
+        assert kernel.wait_gone(pid), "the completed runner's straggler survived"
+        assert "TERM" in straggler_log.read_text(), "the straggler got no SIGTERM before SIGKILL"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        if straggler_pid.exists():
+            pid = int(straggler_pid.read_text())
+            if not kernel.gone(pid):
+                os.kill(pid, signal.SIGKILL)
+
+
+# A runner that records each SIGTERM it sees and keeps running (only SIGKILL
+# stops it), so the stop spends its whole grace period sleeping.
+TERM_COUNTING_RUNNER = """#!/usr/bin/env bash
+exec python3 - "$@" <<'PY'
+import os, signal, time
+from pathlib import Path
+log = Path(os.environ["STUB_READY_DIR"]) / str(os.getpid())
+def on_term(signum, frame):
+    with open(log, "a") as stream:
+        stream.write("TERM\\n")
+signal.signal(signal.SIGTERM, on_term)
+log.write_text("ready\\n")
+while True:
+    time.sleep(0.05)
+PY
+"""
+
+
+@pytest.mark.parametrize("parallel", ["--parallel", "--no-parallel"])
+def test_multi_task_stop_survives_repeated_signals(tmp_path, standin, parallel):
+    # Signals arriving while the stop sleeps through its grace period must not
+    # start another stop inside it: the runner sees exactly one SIGTERM.
+    runner = tmp_path / "run_opencode.sh"
+    runner.write_text(TERM_COUNTING_RUNNER)
+    runner.chmod(0o755)
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("synthetic test\n")
+    ready = tmp_path / "ready"
+    ready.mkdir()
+    env, log = _child_env(tmp_path, standin)
+    env.update(REVIEW_SWARM_NO_AUTO_CONFIG="1", STUB_READY_DIR=str(ready))
+    proc = subprocess.Popen([sys.executable, str(RUN_MULTI_TASK), "--out-dir", str(tmp_path / "out"),
+                             "--opencode-runner", str(runner), "--system", str(prompt), "--prompt", str(prompt),
+                             "--models", "some-provider/model-a", parallel, "--timeout-secs", "120"],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    runners: list[int] = []
+    try:
+        deadline = time.monotonic() + 30
+        while not any("ready" in p.read_text() for p in ready.iterdir()):
+            assert time.monotonic() < deadline and proc.poll() is None, "stub runner did not start"
+            time.sleep(0.02)
+        runners = [int(p.name) for p in ready.iterdir()]
+        # All within 0.6 s, well inside the 2 s grace the ignoring runner forces.
+        for _ in range(60):
+            proc.send_signal(signal.SIGTERM)
+            time.sleep(0.01)
+        _, stderr = proc.communicate(timeout=30)
+        assert log.read_text() == "", "a group was signalled after its leader was reaped"
+        assert standin.alive()
+        assert proc.returncode == 128 + signal.SIGTERM, stderr
+        for pid in runners:
+            assert kernel.wait_gone(pid), "a stub runner survived the stop"
+            assert (ready / str(pid)).read_text().count("TERM") == 1, "the stop was restarted inside itself"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        for pid in runners:
+            if not kernel.gone(pid):
+                os.kill(pid, signal.SIGKILL)
+
+
 def test_multi_task_stop_between_spawn_and_registration(tmp_path, standin):
     # Sequential mode spawns on the main thread, where the stop handler runs:
     # a stop arriving right after Popen() must still reach the new runner.
@@ -433,24 +547,20 @@ def test_multi_task_signal_group_treats_eperm_as_nothing_left(monkeypatch):
 def test_smoke_timeout_kill_treats_eperm_as_nothing_left(monkeypatch):
     module = _load("smoke_run_multi_task_real_group_signals", SMOKE)
     monkeypatch.setattr(os, "killpg", kernel.emulated_killpg(os.killpg))
-    real_communicate = subprocess.Popen.communicate
-    first = []
 
-    def communicate(self, input=None, timeout=None):
+    def child_exited(pid, timeout):
         # The deadline falls due just after the CLI exited but before the reap.
-        if timeout is not None and not first:
-            first.append(True)
-            kernel.wait_zombie(self.pid)
-            raise subprocess.TimeoutExpired(self.args, timeout)
-        return real_communicate(self, input, timeout)
+        kernel.wait_zombie(pid)
+        return False
 
-    monkeypatch.setattr(subprocess.Popen, "communicate", communicate)
+    monkeypatch.setattr(module, "_child_exited", child_exited)
     result = module._run_with_timeout([sys.executable, "-c", "pass"], 60)
     assert result.timed_out is True
+    assert result.exit_code is None
 
 
-def test_smoke_timeout_sends_sigterm_before_sigkill(tmp_path, standin, monkeypatch):
-    module = _load("smoke_run_multi_task_real_group_stop", SMOKE)
+def _smoke_with_late_signal_log(tmp_path, standin, monkeypatch, name):
+    module = _load(name, SMOKE)
     monkeypatch.setattr(module, "_STOP_GRACE_SECS", 0.5, raising=False)
     log = tmp_path / "late-signals.log"
     log.touch()
@@ -459,20 +569,38 @@ def test_smoke_timeout_sends_sigterm_before_sigkill(tmp_path, standin, monkeypat
     workdir.mkdir()
     fake = tmp_path / "fake_cli.py"
     fake.write_text(FAKE_CLI)
-    real_communicate = subprocess.Popen.communicate
-    first = []
+    return module, log, workdir, fake
 
-    def communicate(self, input=None, timeout=None):
-        # The deadline falls due once the CLI and its descendants are running.
-        if timeout is not None and not first:
-            first.append(True)
-            _wait_file(workdir / "descendants.ready")
-            raise subprocess.TimeoutExpired(self.args, timeout)
-        return real_communicate(self, input, timeout)
 
-    monkeypatch.setattr(subprocess.Popen, "communicate", communicate)
+def test_smoke_timeout_sends_sigterm_before_sigkill(tmp_path, standin, monkeypatch):
+    module, log, workdir, fake = _smoke_with_late_signal_log(
+        tmp_path, standin, monkeypatch, "smoke_run_multi_task_real_group_stop")
+    real_child_exited = module._child_exited
+
+    def child_exited(pid, timeout):
+        # The deadline falls due once the CLI and its descendants are running;
+        # the CLI is still running then, as it would be at any real deadline.
+        _wait_file(workdir / "descendants.ready")
+        assert not real_child_exited(pid, 0)
+        return False
+
+    monkeypatch.setattr(module, "_child_exited", child_exited)
     result = module._run_with_timeout([sys.executable, str(fake), "sleeps", str(workdir)], 60)
     assert log.read_text() == "", "a group was signalled after its leader was reaped"
     assert standin.alive()
     assert result.timed_out is True
+    _assert_descendants_stopped(workdir)
+
+
+def test_smoke_completed_cli_group_is_stopped_before_reaping(tmp_path, standin, monkeypatch):
+    # A CLI that exits normally may leave same-group descendants with their
+    # output redirected: they still get SIGTERM, then SIGKILL, while the CLI
+    # is unreaped (a signal after the reap would be logged as late).
+    module, log, workdir, fake = _smoke_with_late_signal_log(
+        tmp_path, standin, monkeypatch, "smoke_run_multi_task_real_completed")
+    result = module._run_with_timeout([sys.executable, str(fake), "quiet-descendants", str(workdir)], 60)
+    assert log.read_text() == "", "a group was signalled after its leader was reaped"
+    assert standin.alive()
+    assert result.timed_out is False
+    assert result.exit_code == 0, result.stderr
     _assert_descendants_stopped(workdir)

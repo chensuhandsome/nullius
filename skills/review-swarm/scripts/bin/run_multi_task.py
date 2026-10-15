@@ -50,6 +50,9 @@ _STOP_REQUESTED = threading.Event()
 # signal arriving there is deferred until the runner is registered.
 _MAIN_SPAWNING = False
 _DEFERRED_STOP: list[int] = []
+# A stop is in progress on the main thread; signals arriving while it sleeps
+# through the grace period must not start another one inside it.
+_STOPPING = False
 _RE_MODEL_SLUG = re.compile(r"[^A-Za-z0-9._-]+")
 _EXIT_NEEDS_USER_DECISION = 4
 _DEFAULT_TIMEOUT_SECS = 0
@@ -993,7 +996,15 @@ def _stop_groups(processes: tuple[subprocess.Popen, ...]) -> None:
 
 
 def _stop_runners(signum: int) -> None:
-    """Stop every registered runner's group, then exit with 128 + signum."""
+    """Stop every registered runner's group, then exit with 128 + signum.
+
+    Runs on the main thread only (the signal handler, or the deferred stop
+    after a spawn); a repeated signal returns at once and lets the stop it
+    interrupted finish."""
+    global _STOPPING
+    if _STOPPING:
+        return
+    _STOPPING = True
     _STOP_REQUESTED.set()
     # Hold the lock throughout: workers leave the registry under it before
     # reaping, so no process signalled here can be reaped meanwhile.
@@ -1082,9 +1093,11 @@ def _run_with_timeout(cmd: list[str], *, timeout_secs: float, context_tokens: Op
         def left() -> Optional[float]:
             return None if deadline is None else max(0.0, deadline - time.monotonic())
 
-        if _child_exited(proc.pid, left()) and reader.join(left()):
-            _reap(proc)
-            stdout, stderr = reader.result()
+        if _child_exited(proc.pid, left()):
+            # Stop the group and reap now, while the readers keep draining:
+            # a same-group descendant that inherited stdout or stderr holds
+            # the pipes open until it is stopped.
+            stdout, stderr = _stop_and_collect(proc, reader)
             runtime_capture_observation._finish(observation, proc)
             return {
                 "timed_out": False,
@@ -2626,9 +2639,11 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     """Own temporary authentication until every worker has stopped."""
+    global _STOPPING
     old_handlers: dict[int, Any] = {}
     _STOP_REQUESTED.clear()
     _DEFERRED_STOP.clear()
+    _STOPPING = False
 
     def stop(signum: int, _frame: Any) -> None:
         if _MAIN_SPAWNING:

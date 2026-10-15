@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import select
 import shutil
 import signal
 import subprocess
@@ -24,6 +25,35 @@ from typing import Any, Optional
 # After a timeout the child (run_multi_task) needs up to 2 s to stop its
 # runners' own process groups on SIGTERM; SIGKILL follows only after this.
 _STOP_GRACE_SECS = 5.0
+
+
+def _child_exited(pid: int, timeout: float) -> bool:
+    """Whether the child exited within timeout seconds; never reaps it.
+
+    An exited, unreaped child stays a zombie that keeps its pid, and with it
+    the number of the process group it leads.
+    """
+    if hasattr(select, "kqueue"):  # macOS CPython has no os.waitid
+        queue = select.kqueue()
+        try:
+            try:
+                queue.control([select.kevent(pid, select.KQ_FILTER_PROC,
+                                             select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                             select.KQ_NOTE_EXIT)], 0, 0)
+            except ProcessLookupError:
+                return True  # the kernel refuses to watch a zombie
+            return bool(queue.control(None, 1, timeout))
+        finally:
+            queue.close()
+    deadline = time.monotonic() + timeout
+    delay = 0.001
+    while os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return False
+        time.sleep(min(delay, left))
+        delay = min(2 * delay, 0.05)
+    return True
 
 
 def _signal_group(pgid: int, signum: int) -> bool:
@@ -74,33 +104,28 @@ class CmdResult:
 
 def _run_with_timeout(cmd: list[str], timeout_sec: int) -> CmdResult:
     start = time.monotonic()
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
+    # Files, not pipes: communicate() would reap the CLI as soon as its pipes
+    # close, before its group (descendants may outlive it) could be stopped.
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(cmd, stdout=out, stderr=err, start_new_session=True)
+        try:
+            timed_out = not _child_exited(proc.pid, timeout_sec)
+        finally:
+            # Unreaped, so the pid still names the CLI's group, on a normal
+            # exit and at the deadline alike; reap only after the stop.
+            _stop_group(proc.pid)
+            returncode = proc.wait()
+        out.seek(0)
+        err.seek(0)
+        stdout = out.read().decode("utf-8", errors="replace")
+        stderr = err.read().decode("utf-8", errors="replace")
+    return CmdResult(
+        timed_out=timed_out,
+        exit_code=None if timed_out else returncode,
+        stdout=stdout,
+        stderr=stderr,
+        elapsed_sec=time.monotonic() - start,
     )
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout_sec)
-        return CmdResult(
-            timed_out=False,
-            exit_code=proc.returncode,
-            stdout=stdout,
-            stderr=stderr,
-            elapsed_sec=time.monotonic() - start,
-        )
-    except subprocess.TimeoutExpired:
-        # Unreaped, so the pid still names the CLI's group; reap only after.
-        _stop_group(proc.pid)
-        stdout, stderr = proc.communicate()
-        return CmdResult(
-            timed_out=True,
-            exit_code=None,
-            stdout=stdout,
-            stderr=stderr,
-            elapsed_sec=time.monotonic() - start,
-        )
 
 
 def _read_json(path: Path) -> dict[str, Any]:

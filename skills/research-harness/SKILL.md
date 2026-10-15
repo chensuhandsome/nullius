@@ -90,6 +90,9 @@ The check is also skipped for:
   `state-touch-classification.ts`);
 - standalone use where `process.cwd()` has no `.nullius/`
   directory (no lifecycle context to drift from);
+- `process.cwd()` being the home directory, which is never a project root
+  (the CLI's project-root search skips it too; `~/.nullius/` there holds
+  user-level data such as the agent roster);
 - `NULLIUS_HARNESS_VERIFY=skip` env override (escape hatch) and
   `NODE_ENV=test` default.
 4. If `.nullius/` exists but `.nullius/HARNESS` is missing, or if both entrypoints are unavailable, repair only the runtime handshake and launcher, then retry the project-local CLI:

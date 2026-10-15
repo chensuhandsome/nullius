@@ -2553,14 +2553,14 @@ def test_report_does_not_count_a_duplicate_group_when_a_copy_vanished_after_hash
     gone, kept = scratch / "a" / "gone.bin", scratch / "a" / "kept.bin"
     gone.write_bytes(data)
     kept.write_bytes(data)
-    real_link_count = rs.link_count
+    real_link_count = rs.link_count_if_unchanged
 
-    def vanishing_link_count(path):
+    def vanishing_link_count(path, identity):
         if path == gone:
             gone.unlink(missing_ok=True)  # the copy is gone by the time its links are counted
-        return real_link_count(path)
+        return real_link_count(path, identity)
 
-    monkeypatch.setattr(rs, "link_count", vanishing_link_count)
+    monkeypatch.setattr(rs, "link_count_if_unchanged", vanishing_link_count)
     capsys.readouterr()
     assert run_main(["report", str(scratch), "--repo", str(repo), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
     doc = json.loads(capsys.readouterr().out)
@@ -2568,6 +2568,37 @@ def test_report_does_not_count_a_duplicate_group_when_a_copy_vanished_after_hash
         "a copy that cannot be examined may already be gone: the group must not name the survivor as reclaimable"
     assert doc["summary_bytes"]["duplicate_content"] == 0
     assert str(gone) in doc["unreadable"], "a skipped path is listed, not silently dropped"
+
+
+def test_report_does_not_count_a_duplicate_group_when_a_copy_was_replaced_after_hashing(tmp_path, monkeypatch, capsys):
+    """Two identical copies are hashed; one is atomically replaced by other content of the same size
+    before its links are counted. The path no longer names the file that was hashed, so the group
+    is not counted and the path is listed."""
+    repo = make_repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    (scratch / "a").mkdir(parents=True)
+    data = blob(2 * 1024 * 1024, 154)
+    other = blob(2 * 1024 * 1024, 155)
+    replaced, kept = scratch / "a" / "replaced.bin", scratch / "a" / "kept.bin"
+    replaced.write_bytes(data)
+    kept.write_bytes(data)
+    real_link_count = rs.link_count_if_unchanged
+
+    def replacing_link_count(path, identity):
+        if path == replaced:
+            new = scratch / "a" / "incoming.bin"
+            new.write_bytes(other)
+            new.replace(replaced)  # same path, different file and content
+        return real_link_count(path, identity)
+
+    monkeypatch.setattr(rs, "link_count_if_unchanged", replacing_link_count)
+    capsys.readouterr()
+    assert run_main(["report", str(scratch), "--repo", str(repo), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    assert [(d["copies"], d["reclaimable"]) for d in doc["duplicates"]] == [(2, 0)], \
+        "a copy replaced after hashing is no duplicate any more: the group must not be counted"
+    assert doc["summary_bytes"]["duplicate_content"] == 0
+    assert str(replaced) in doc["unreadable"]
 
 
 def test_report_counts_a_bundle_against_a_partial_clone_as_not_assessed_even_with_a_missing_tip(tmp_path, monkeypatch,

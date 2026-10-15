@@ -2069,12 +2069,21 @@ def store_contained(durable: DurableObjects, git_dir: Path) -> "bool | None":
                                                                                     sorted(reachable)))
 
 
-def link_count(path: Path) -> "int | None":
-    """Hard links of a file; None when it cannot be examined (vanished or unreadable)."""
+FileIdentity = "tuple[int, int, int, int]"  # device, inode, size, mtime in ns
+
+
+def link_count_if_unchanged(path: Path, identity: "tuple[int, int, int, int]") -> "int | None":
+    """Hard links of the file that was scanned under `identity`; None when the path
+    cannot be examined (vanished or unreadable) or no longer names that file (a
+    different device or inode, size or modification time: replaced or rewritten
+    since it was scanned and hashed)."""
     try:
-        return path.lstat().st_nlink
+        st = path.lstat()
     except OSError:
         return None
+    if (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) != identity:
+        return None
+    return st.st_nlink
 
 
 def sample_ratio(path: Path, sample_bytes: int = 4 * CHUNK) -> float:
@@ -2150,7 +2159,7 @@ def cmd_report(args) -> int:
                     bundles.append(record)
                 if st.st_size >= args.min_size and (st.st_dev, st.st_ino) not in seen_inodes:
                     seen_inodes.add((st.st_dev, st.st_ino))
-                    files.setdefault(st.st_size, []).append((full, st.st_dev, st.st_ino))
+                    files.setdefault(st.st_size, []).append((full, (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)))
     duplicates = []
     unique_large: "list[tuple[Path, int]]" = []
     for size, group in files.items():
@@ -2158,7 +2167,8 @@ def cmd_report(args) -> int:
             unique_large.append((group[0][0], size))
             continue
         by_prefix: "dict[str, list[Path]]" = {}
-        for path, _, _ in group:
+        identity = {path: ident for path, ident in group}
+        for path, _ in group:
             try:
                 by_prefix.setdefault(hash_prefix(path), []).append(path)
             except OSError:
@@ -2177,10 +2187,11 @@ def cmd_report(args) -> int:
                 unique_large.append((same[0], size))
                 if len(same) > 1:
                     # Removing a copy that has other hard links frees nothing: keep one copy, count the rest
-                    # that are single-linked. A copy that can no longer be examined (vanished or unreadable
-                    # since it was hashed) may already be gone, so the group is not counted at all rather
-                    # than risk naming the last remaining copy as reclaimable.
-                    counts = [link_count(p) for p in same]
+                    # that are single-linked. A copy that can no longer be examined as the file that was
+                    # scanned (vanished, unreadable, replaced or rewritten since) may already be gone or
+                    # hold other content, so the group is not counted at all rather than risk naming the
+                    # last remaining copy, or a non-duplicate, as reclaimable.
+                    counts = [link_count_if_unchanged(p, identity[p]) for p in same]
                     unreadable += [str(p) for p, n in zip(same, counts) if n is None]  # listed, as every skipped path is
                     single = sum(1 for n in counts if n == 1)
                     freeable = 0 if any(n is None for n in counts) else min(single, len(same) - 1)

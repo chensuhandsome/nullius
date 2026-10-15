@@ -2117,9 +2117,9 @@ def check_one_worktree(path: Path, base: str, main_root: "Path | None", store: P
     # With core.filemode off, `git status` also hides a changed executable bit on every
     # tracked file; the bit is compared regardless, since removal would lose it.
     if git(["config", "--bool", "core.filemode"], path, check=False).stdout.decode().strip() == "false":
-        modes = git_z(["-c", "core.filemode=true", "diff", "--no-renames", "--name-only", "-z",
-                       "--ignore-submodules=all"], path)
-        changed += [rel for rel in modes if rel not in changed]
+        differing = git_z(["-c", "core.filemode=true", "diff", "--no-renames", "--name-only", "-z",
+                           "--ignore-submodules=all"], path)  # content differences included; deduplicated below
+        changed += [rel for rel in differing if rel not in changed]
     report["tracked_changes"] = changed
     report["untracked"] = untracked
     gitlinks = [item for item in git_z(["ls-files", "-z", "--stage"], path) if item.startswith("160000 ")]
@@ -2609,6 +2609,9 @@ def cmd_report(args) -> int:
             "unreadable part is not listed); check that nothing still uses them before removing.",
             "Reclaimable totals leave out files with more than one hard link (local clones, pnpm stores): removing "
             "one link may free nothing. Copy-on-write clones cannot be told apart, so totals stay upper bounds.",
+            "Bytes held in files with more than one hard link are left out even when every link lies in what "
+            "would be removed (a git copy whose objects are hard-linked among themselves, a duplicate linked only "
+            "to another duplicate), so those figures can be underestimates.",
             "The compression figure extrapolates a zlib ratio measured on the first 4 MiB of each sampled file.",
             "Unreadable paths, and duplicate copies replaced or rewritten since they were scanned, are skipped and listed "
             "(`unreadable`, `changed_since_scan`); the figures do not include them.",

@@ -2614,10 +2614,12 @@ def test_many_paths_are_passed_to_git_in_batches(tmp_path, monkeypatch, capsys):
 
 def test_long_path_names_are_also_batched_by_size(monkeypatch):
     monkeypatch.setattr(rs, "PATH_BYTES_PER_CALL", 100)
-    names = [f"d/{'x' * 40}{i}" for i in range(5)]
+    names = [f"d/{'x' * 40}{i}" for i in range(5)] + ["d/" + "文" * 30]  # the last name is 92 bytes, 32 characters
     groups = rs.batches(names)
     assert [n for g in groups for n in g] == names
-    assert all(sum(len(n) + 1 for n in g) <= 100 or len(g) == 1 for g in groups) and len(groups) >= 3
+    # The budget is in encoded bytes, not characters: a multibyte name must be sized the way the kernel sees it.
+    assert all(sum(len(os.fsencode(n)) + 1 for n in g) <= 100 or len(g) == 1 for g in groups) and len(groups) >= 4
+    assert groups[-1] == [names[-1]] or sum(len(os.fsencode(n)) + 1 for n in groups[-1]) <= 100
     assert rs.batches([]) == [[]]
 
 

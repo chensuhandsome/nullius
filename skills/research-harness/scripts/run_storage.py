@@ -250,7 +250,7 @@ def git_z(args: "list[str]", cwd: Path) -> "list[str]":
 
 
 PATHS_PER_CALL = 500
-PATH_BYTES_PER_CALL = 64 * 1024  # far below any POSIX command-line limit, whatever the name lengths
+PATH_BYTES_PER_CALL = 64 * 1024  # a conservative macOS/Linux budget for the path arguments of one call (the fixed arguments and the environment come on top; a failed call is reported, never read as a verdict)
 
 
 def batches(paths: "list[str]") -> "list[list[str]]":

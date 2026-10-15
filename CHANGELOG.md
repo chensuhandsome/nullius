@@ -17,8 +17,82 @@ version was never tagged). Headline themes: result traceability from run to comm
 a machine-enforced closeout discipline for notebooks and results, fail-closed review
 and delegation contracts, and consolidated run authority under one canonical
 `artifacts/runs/<run_id>/` layout.
+### Removed
+- **hep-mcp modules no entry reaches.** Thirty-five source modules (the removed
+  discovery, preprocessing, survey and research pipelines and their contracts in
+  `@nullius/shared`) that no declared entry or launcher imported are deleted.
+- **hep-mcp keeps no runs of its own.** Runs, approvals and lifecycle belong to
+  the orchestrator (`<project_root>/artifacts/runs/<run_id>/`). Removed tools:
+  `hep_run_create`, `hep_run_read_artifact_chunk`, `hep_run_clear_manifest_lock`,
+  `hep_run_stage_content`, `hep_run_build_writing_evidence`,
+  `hep_run_build_measurements`, `hep_run_build_citation_mapping`,
+  `hep_run_ingest_skill_artifacts`, `hep_project_compare_measurements`,
+  `hep_project_query_evidence_semantic`, `hep_render_latex`, `hep_export_project`,
+  `hep_export_paper_scaffold` and `hep_import_paper_bundle`, with the modules only
+  they used, the `hep://runs/...` identifiers, the workflow recipes
+  `derivation_cycle` and `review_cycle`, the `computation_evidence_catalog_item_v1`
+  schema and the `WRITING_PROGRESS_DIR` setting. A `run_id` argument is refused by
+  every hep-mcp tool. Historical hep run directories stay readable in place;
+  `docs/URI_REGISTRY.md` gives the rule for resolving historical `hep://runs/...`
+  references to files.
+- **hep-mcp keeps no paper/evidence projects, evidence catalogs or papers cache.**
+  Removed tools: `hep_project_create`, `hep_project_get`, `hep_project_list`,
+  `hep_project_build_evidence`, `hep_project_query_evidence`,
+  `hep_project_playback_evidence`, `hep_admin_import_paper`,
+  `hep_admin_migrate_papers_cache`, `hep_admin_prune_paper_cache` and
+  `hep_admin_link_kb_notes` (with their command-line entry points), the
+  user-global papers cache, the `hep://projects/...` identifiers, the
+  `literature_to_evidence` workflow recipe with its `materialize.evidence_build`
+  action, the `evidence_catalog_item_v1` schema and the
+  `HEP_BUDGET_EVIDENCE_MAX_PARAGRAPH_LENGTH` setting. Paper sources are read with
+  `arxiv_paper_source` / `inspire_paper_source`; `literature_landscape` takes the
+  recipe's place in the documented literature entry point. Historical project
+  directories and evidence catalogs stay readable in place; `docs/URI_REGISTRY.md`
+  gives the rule for resolving historical `hep://projects/...` references to files
+  and where to read the catalog item format.
+
 
 ### Added
+- **Large run outputs outside git history.** `skills/research-harness/scripts/run_storage.py`
+  gains `check`, `stow`, `verify`, `materialize` and `inventory`: bulk outputs under
+  the run roots are stowed in a content store outside any git worktree, the
+  originals become read-only, and a tracked hash manifest records them; `verify`
+  and `materialize` restore or check them in another worktree. Research outputs
+  are classified before a commit or a pinned snapshot admits them, so bulk run
+  products stay out of history behind the manifest; a reserved file name alone
+  grants no exemption, only a validated stow record does. Two read-only commands
+  measure before anything is deleted: `worktree-check` says whether removing a
+  linked worktree loses anything (uncommitted and hidden tracked changes, a
+  changed executable bit even with `core.filemode` off, untracked and unique
+  ignored files, per-worktree refs, commits only its own records remember unless
+  their patch text is byte-identical to a base commit, private git state it
+  does not understand) and prints the removal command only when it does not;
+  `report` estimates reclaimable bytes (duplicate content by allocated blocks,
+  regenerable directories, git copies and bundles whose reachable objects a
+  reference repository already holds, stale temporary roots) and lists every
+  path it could not examine.
+- **Per-package test temp roots.** Every vitest package runs in a private temp
+  root that is removed on a clean pass, kept on failure or interruption, and swept
+  only when it carries the package's own marker.
+- **Julia package and performance standards.** The `julia-package` skill covers
+  modules and extensions, public APIs, numerical contracts, dependencies,
+  concurrency, tests, documentation and release readiness; `julia-perf` gains a
+  benchmark protocol, environment and structured/device-work references, a
+  `run_perf.jl` driver with a suite template and config, and benchmark evidence
+  whose baseline origin is validated; the optimization-equivalence lock covers them.
+- **Final display semantics gate for figures and tables.** `figure-hygiene` checks
+  the final rendered output after overrides, conversions, rounding and
+  translations (`check_display_acceptance.py` with the `display_semantics.py`
+  helper and a reference on reader selection and quantity identity); a lock
+  ties the gate's coverage to the skill text.
+- **DeepSeek Harness task runner.** `dsh-cli-runner` dispatches a bounded
+  file-prompt task through the installed `dsh` headless CLI to an explicitly
+  selected provider/model, captures the raw session, rejects incomplete output,
+  and refuses CLI versions whose contracts have not been checked; running
+  through it does not make the model DeepSeek or establish family independence.
+- **Unreachable-module check for hep-mcp.** `check:unreachable-modules` (in CI)
+  fails when a source module is reached from no declared entry or allowlisted
+  root, following imports through extensionless launchers.
 - **Repository positioning, citation, and license.** The identity sentence on every
   public surface (READMEs, positioning document, status page, root package
   description, and the front-door wording lock) now reads "an evidence-first harness
@@ -284,6 +358,71 @@ and delegation contracts, and consolidated run authority under one canonical
   decisions, misaligned report indexes, and overrides that match nothing.
 
 ### Changed
+- **Staged writes at fresh exclusive names.** Shared atomic writes, the openalex
+  bulk export and content download, the idea-engine store and recovery log,
+  arxiv-mcp extraction, download and rate-limit state, and graph-viz output stage
+  at an unpredictable name created exclusively, check file identity before commit
+  and cleanup, and commit by rename then directory fsync (new
+  `writeChunksAtomicDurable`); the atomic-write lock scans every package,
+  recognises import-bound write calls, and excuses the remaining sites line by
+  line. Path containment at the remaining two-dot sites (idea-mcp, idea-engine,
+  openalex-mcp, hep-mcp) uses the exact escape test; openalex-mcp compares real
+  candidate with real parent, and a cached LaTeX `main_path` must name a regular
+  file inside the extracted tree as spelled and where it really lands.
+- **The home directory is never a project root.** The shared harness-invocation
+  verifier skips it (its `~/.nullius/` holds user-level data, not project state),
+  and the CLI project-root search compares real paths so an alias of the home
+  directory is still the home directory.
+- **Process groups are signalled only while their leader is unreaped.** The
+  orchestrator's MCP client runs each server under a Node anchor that owns the
+  server's process group and stops it (SIGTERM, grace, SIGKILL) when the client
+  goes away, so a reused group number is never signalled; a transport failure is
+  reported with its cause on every tool-call path, and a server ended by a signal
+  is named. The Python supervisors (the claude, kimi and opencode process budgets,
+  the gemini runner, the independent reproduction check, `run_multi_task.py` and
+  its smoke helper) wait for a CLI without reaping it (kqueue on macOS, `waitid`
+  with `WNOWAIT` on Linux), signal its group, reap last on every path, own
+  `SIGCHLD`, and treat a child reaped elsewhere as unsupervisable.
+- **hep-mcp research-output tools take a caller-chosen `output_dir`.**
+  `hep_inspire_search_export`, `hep_inspire_resolve_identifiers`,
+  `hep_import_from_zotero`, `inspire_parse_latex`, `inspire_theoretical_conflicts`
+  and `inspire_search` (export mode, formerly triggered by `run_id`) write into an
+  `output_dir` inside the admitted project root, reached through real directories
+  only and never under `.nullius/`, `team/runs/` or `artifacts/hep-mcp/`, and return
+  project-relative paths. A call never replaces an existing file, and a call that
+  fails removes what it had published; if it cannot, the error names what is left
+  (published files in `files_left` with an "outputs are incomplete" error, staging
+  files in `staging_left` or `staging_path`, unflushed removals in
+  `unflushed_directories`), and only a crash during publication
+  can leave part of a set unreported (later calls naming those files are refused). These tools refuse a
+  numeric limit that is not a whole number in range instead of using the default.
+- Oversized hep-mcp tool results are truncated by UTF-8 bytes on a character
+  boundary.
+- **The computation bridge tools work only in the run's own directory.**
+  `orch_run_stage_idea`, `orch_run_stage_content`, `orch_run_plan_computation`,
+  `orch_run_execute_manifest` and `orch_run_progress_followups` admit
+  `project_root` as every other front door does and require `run_dir` to be
+  `<project_root>/artifacts/runs/<run_id>`, where the run's approval packets,
+  proposals and team state are kept, so a run's records are never split; it may
+  be spelled through an alias above the root, while a symbolic link below the
+  root is refused, and so is one anywhere in the run directory, including every
+  entry directly under `computation/`; only entries nested below the method's
+  own real workspace directories under `computation/` are left to the manifest
+  checks at materialization and preparation. The two staging tools
+  take a required `project_root`. Workspace paths in manifests and method specs are
+  refused for a `..` segment rather than for any two dots, so names such as
+  `..data.csv` are accepted, and a method's files are never written through a
+  symbolic link in the run directory.
+- **hep-mcp reports failures that are not the caller's under their own codes.**
+  A file-system failure while writing outputs or using the INSPIRE response
+  cache (a full or read-only disk, a name too long, an unusable cache entry) is
+  `UNSAFE_FS`; an INSPIRE answer that fails the checks of the search export or
+  identifier resolution (a malformed page or record as the INSPIRE client returns
+  it, a malformed recid, inconsistent pagination) is `UPSTREAM_ERROR`, marked
+  `invalid_provider_answer`, and still ends the whole call instead of being
+  recorded for one identifier. A
+  search export that does not export every reported record gives one warning for
+  the cause: `max_results` stopped it, or INSPIRE's pages ended before its total.
 - **Run authority consolidated.** All newly created managed runs live under
   `artifacts/runs/<run_id>/`, with team and draft executor payloads in
   `research_team/` beneath the run. The team runner refuses any `--out-dir` other
@@ -320,6 +459,11 @@ and delegation contracts, and consolidated run authority under one canonical
   skills-market catalog ranges).
 
 ### Fixed
+- **A case-folded name stands in for a recorded file only when it is that file.**
+  `run_storage.py check` and `stow` treated a name differing only in letter case
+  from a recorded entry as that entry whenever `core.ignorecase` was set, so a
+  distinct file on a case-sensitive file system carrying that setting was neither
+  reported nor stowed; the fold now requires the same device and inode.
 - **Complete reviewer output through capacity checks.** The Claude CLI runner
   assembles the complete, ordered assistant text from its stream log (raw tool and
   thinking events stay in the log), and the review-capacity checks in research-team,

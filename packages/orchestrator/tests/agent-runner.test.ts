@@ -871,6 +871,55 @@ describe('AgentRunner', () => {
     expect(mcpClient.callTool).not.toHaveBeenCalled();
   });
 
+  it('dispatches a producer input that names the delegated project root through an alias, and refuses a directory inside it', async () => {
+    // An explicit alias, so this holds whether or not the platform temp
+    // directory is itself reached through a symlink.
+    const parent = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-runner-alias-')));
+    try {
+      const root = path.join(parent, 'real');
+      fs.mkdirSync(path.join(root, 'sub'), { recursive: true });
+      fs.symlinkSync(root, path.join(parent, 'alias'), 'dir');
+      const attempt = async (requestedRoot: string) => {
+        const mcpClient = makeMockMcpClient({
+          [ORCH_RUN_EXECUTE_MANIFEST]: resultWithJson(approvalEnvelope({
+            runId: 'expected-root-run',
+            approvalId: 'apr_alias_project',
+            packetPath: 'artifacts/runs/expected-root-run/approval.json',
+          })),
+        });
+        const runner = makeRunner({
+          model: 'claude-opus-4-6',
+          runId: 'runtime-project-run',
+          approvalRunId: 'expected-root-run',
+          approvalProjectRoot: root,
+          mcpClient,
+          _messagesCreate: vi.fn().mockResolvedValue(
+            toolUseResponse('tu_alias_project', ORCH_RUN_EXECUTE_MANIFEST, { run_id: 'expected-root-run', project_root: requestedRoot }),
+          ),
+        });
+        const events = await collectEvents(runner.run(
+          [{ role: 'user', content: 'Execute' }],
+          [toolDefinition(ORCH_RUN_EXECUTE_MANIFEST)],
+        ));
+        return { events, mcpClient };
+      };
+
+      const viaAlias = await attempt(path.join(parent, 'alias'));
+      expect(viaAlias.mcpClient.callTool).toHaveBeenCalled();
+      expect(viaAlias.events.some(event => event.type === 'error'
+        && String((event as { error?: { message?: string } }).error?.message).includes('must target the delegated runtime project root'))).toBe(false);
+
+      const inside = await attempt(path.join(parent, 'alias', 'sub'));
+      expect(inside.events.at(-1)).toMatchObject({
+        type: 'error',
+        error: { message: expect.stringContaining('must target the delegated runtime project root') },
+      });
+      expect(inside.mcpClient.callTool).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
   it('crash recovery can resume a durable not_started approval-producing intent', async () => {
     const runId = 'run-recovery-apr';
     const toolUse = {

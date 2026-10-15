@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { invalidParams } from '@nullius/shared';
+import { invalidParams, McpError, unsafeFs } from '@nullius/shared';
 import {
   executeComputationManifest,
   planComputationFromRunDir,
@@ -28,17 +28,15 @@ import type { DelegatedComputationFollowupTask } from '../computation/delegated-
 import type {
   FeedbackFollowupLaunchOutcome,
 } from '../computation/feedback-followup-progression.js';
+import { resolveProjectContainedPath, resolveUnderRoot } from '../computation/path-safety.js';
 import { utcNowIso } from '../util.js';
+import { resolveProjectRoot } from './common.js';
+import { runDirFor, HISTORICAL_RUN_UNAVAILABLE_PREFIX } from '../run-paths.js';
 
 function resolvePathWithinParent(parentDir: string, candidatePath: string, field: string): string {
   const resolvedParent = path.resolve(parentDir);
-  const resolved = path.isAbsolute(candidatePath)
-    ? path.resolve(candidatePath)
-    : path.resolve(resolvedParent, candidatePath);
-  const relative = path.relative(resolvedParent, resolved);
-  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
-    return resolved;
-  }
+  const resolved = resolveUnderRoot(resolvedParent, candidatePath);
+  if (resolved !== null) return resolved;
   throw invalidParams(`${field} must be within ${resolvedParent}`, {
     field,
     parent_dir: resolvedParent,
@@ -46,23 +44,189 @@ function resolvePathWithinParent(parentDir: string, candidatePath: string, field
   });
 }
 
+// What the run directory must look like before a bridge tool works in it.
+// No symbolic link may stand anywhere in it, so nothing these tools or the
+// computation code behind them read or write there (staged artifacts,
+// approval packets, attempt archives, team state, launch stamps, execution
+// logs and status) can lie outside it. The one exception is the method's own
+// workspace below computation/ (its scripts, data and outputs, which may be
+// large): the paths a manifest names there are checked when it is
+// materialized and prepared. Entries the tools create must also be of the
+// kind they create (directories, and a file for run_origin.json), so a
+// misplaced file is refused here rather than failing a later write.
+const RUN_DIRECTORY_DIRECTORIES = ['artifacts', 'attempts', 'approvals', 'computation'];
+const RUN_DIRECTORY_FILES = ['run_origin.json'];
+// Below computation/, the entries the computation code manages itself (the
+// runtime creates them in computation/runner.ts; a new managed subtree must be
+// added here, or links inside it would be admitted as method workspace files).
+const COMPUTATION_MANAGED_DIRECTORIES = ['logs'];
+
+function lstatIfPresent(entry: string, runDir: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(entry);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return null;
+    throw unsafeFs(`cannot inspect ${entry}: ${error instanceof Error ? error.message : String(error)}`, {
+      run_dir: runDir,
+      path: entry,
+      ...(typeof code === 'string' ? { errno: code } : {}),
+    });
+  }
+}
+
+function listDirectory(dir: string, runDir: string): string[] {
+  try {
+    return fs.readdirSync(dir);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    throw unsafeFs(`cannot list ${dir}: ${error instanceof Error ? error.message : String(error)}`, {
+      run_dir: runDir,
+      path: dir,
+      ...(typeof code === 'string' ? { errno: code } : {}),
+    });
+  }
+}
+
+function refuseSpecialFile(entry: string, runDir: string): never {
+  throw unsafeFs(`run_dir/${path.relative(runDir, entry)} must be a regular file or a directory`, { run_dir: runDir, path: entry });
+}
+
+function refuseLink(entry: string, runDir: string): never {
+  throw unsafeFs(`run_dir/${path.relative(runDir, entry).split(path.sep).join('/')} must not be a symbolic link`, {
+    run_dir: runDir,
+    symlink_path: entry,
+  });
+}
+
+/** Refuse any symbolic link at or below `dir`. */
+function assertNoLinksBelow(dir: string, runDir: string): void {
+  for (const name of listDirectory(dir, runDir)) {
+    const entry = path.join(dir, name);
+    const stat = lstatIfPresent(entry, runDir);
+    if (stat === null) continue;
+    if (stat.isSymbolicLink()) refuseLink(entry, runDir);
+    if (stat.isDirectory()) assertNoLinksBelow(entry, runDir);
+    else if (!stat.isFile()) refuseSpecialFile(entry, runDir);
+  }
+}
+
+function assertRunDirectoryIsReal(runDir: string): void {
+  const run = lstatIfPresent(runDir, runDir);
+  if (run === null) return;
+  if (!run.isDirectory()) {
+    throw unsafeFs('run_dir must name a directory', { run_dir: runDir });
+  }
+  for (const name of RUN_DIRECTORY_DIRECTORIES.concat(RUN_DIRECTORY_FILES)) {
+    const stat = lstatIfPresent(path.join(runDir, name), runDir);
+    if (stat === null || stat.isSymbolicLink()) continue;
+    const wantsDirectory = RUN_DIRECTORY_DIRECTORIES.includes(name);
+    // A regular file is required where a file is expected: a FIFO or device node
+    // there would stall or misread the tools that open it.
+    if (wantsDirectory ? !stat.isDirectory() : !stat.isFile()) {
+      throw unsafeFs(`run_dir/${name} must be a ${wantsDirectory ? 'directory' : 'regular file'}`, { run_dir: runDir, path: path.join(runDir, name) });
+    }
+  }
+  for (const name of listDirectory(runDir, runDir)) {
+    const entry = path.join(runDir, name);
+    const stat = lstatIfPresent(entry, runDir);
+    if (stat === null) continue;
+    if (stat.isSymbolicLink()) refuseLink(entry, runDir);
+    if (!stat.isDirectory()) {
+      if (!stat.isFile()) refuseSpecialFile(entry, runDir);
+      continue;
+    }
+    if (name !== 'computation') {
+      assertNoLinksBelow(entry, runDir);
+      continue;
+    }
+    // The computation directory: every direct entry, and everything below the
+    // subtrees the computation code manages; entries nested below the method's
+    // own real workspace directories are the manifest checks' business.
+    for (const inner of listDirectory(entry, runDir)) {
+      const innerEntry = path.join(entry, inner);
+      const innerStat = lstatIfPresent(innerEntry, runDir);
+      if (innerStat === null) continue;
+      if (innerStat.isSymbolicLink()) refuseLink(innerEntry, runDir);
+      if (!innerStat.isDirectory() && !innerStat.isFile()) refuseSpecialFile(innerEntry, runDir);
+      if (innerStat.isDirectory() && COMPUTATION_MANAGED_DIRECTORIES.includes(inner)) assertNoLinksBelow(innerEntry, runDir);
+    }
+  }
+}
+
+/**
+ * The project root and run directory a bridge tool works in. The root is
+ * admitted like every other front door's (tilde expansion, canonical form,
+ * outside any nullius checkout). The run directory must be the run's own,
+ * <project_root>/artifacts/runs/<run_id>, where its approval packets,
+ * proposals and team state are kept by run id, so a run's records are never
+ * split between two directories; it may be spelled through an alias above
+ * the root, while a symbolic link below the root is refused, and so is one
+ * anywhere in the run directory, including every entry directly under
+ * computation/; only entries nested below the method's own real workspace
+ * directories are left to the manifest checks
+ * (the walk is assertRunDirectoryIsReal, a pathname check at call time; the
+ * manifest checks at materialization and preparation re-verify declared paths). Everything the tool writes, reads or executes
+ * then derives from the admitted run directory.
+ */
+function admitProjectRun(params: { project_root: string; run_id: string; run_dir: string }): { projectRoot: string; runDir: string } {
+  const projectRoot = resolveProjectRoot(params.project_root);
+  if (!path.isAbsolute(params.run_dir)) {
+    throw invalidParams('run_dir must be an absolute path inside project_root', {
+      project_root: projectRoot,
+      run_dir: params.run_dir,
+    });
+  }
+  if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) {
+    throw invalidParams('project_root must name an existing directory', { project_root: projectRoot });
+  }
+  const runDir = resolveProjectContainedPath(projectRoot, params.run_dir, 'run_dir');
+  let ownRunDir: string;
+  try {
+    ownRunDir = runDirFor(projectRoot, params.run_id);
+  } catch (error) {
+    // An invalid run id, or one a historical run owns: the caller's to change;
+    // a historical run that cannot be inspected is the environment's.
+    if (error instanceof McpError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith(HISTORICAL_RUN_UNAVAILABLE_PREFIX)) throw unsafeFs(message, { project_root: projectRoot, run_id: params.run_id });
+    throw invalidParams(message, { project_root: projectRoot, run_id: params.run_id });
+  }
+  if (runDir !== ownRunDir) {
+    throw invalidParams('run_dir must be the run\'s own directory, <project_root>/artifacts/runs/<run_id>', {
+      project_root: projectRoot,
+      run_id: params.run_id,
+      run_dir: params.run_dir,
+      expected_run_dir: ownRunDir,
+    });
+  }
+  assertRunDirectoryIsReal(runDir);
+  return { projectRoot, runDir };
+}
+
 export async function handleOrchRunStageIdea(params: {
+  project_root: string;
   run_id: string;
   run_dir: string;
   handoff_path: string;
   handoff_uri?: string;
 }) {
+  const { runDir } = admitProjectRun(params);
+  // A relative path would be read against the server's working directory.
+  if (!path.isAbsolute(params.handoff_path)) {
+    throw invalidParams('handoff_path must be an absolute path', { handoff_path: params.handoff_path });
+  }
   const staged = stageIdeaArtifactsIntoRunFromPath({
     handoffPath: params.handoff_path,
     handoffUri: params.handoff_uri,
-    runDir: params.run_dir,
+    runDir,
   });
   return {
     status: 'staged',
     run_id: params.run_id,
     run_dir: params.run_dir,
-    outline_seed_path: path.relative(params.run_dir, staged.outlineSeedPath).split(path.sep).join('/'),
-    hints_snapshot_path: path.relative(params.run_dir, staged.hintsSnapshotPath).split(path.sep).join('/'),
+    outline_seed_path: path.relative(runDir, staged.outlineSeedPath).split(path.sep).join('/'),
+    hints_snapshot_path: path.relative(runDir, staged.hintsSnapshotPath).split(path.sep).join('/'),
     next_actions: [
       {
         tool: 'orch_run_plan_computation',
@@ -73,6 +237,7 @@ export async function handleOrchRunStageIdea(params: {
 }
 
 export async function handleOrchRunStageContent(params: {
+  project_root: string;
   run_id: string;
   run_dir: string;
   content_type: 'section_output' | 'outline_plan' | 'paperset_curation' | 'revision_plan' | 'reviewer_report' | 'judge_decision';
@@ -81,9 +246,10 @@ export async function handleOrchRunStageContent(params: {
   task_id?: string;
   task_kind?: 'draft_update' | 'review';
 }) {
+  const { runDir } = admitProjectRun(params);
   return stageContentInRunDir({
     runId: params.run_id,
-    runDir: params.run_dir,
+    runDir,
     contentType: params.content_type,
     content: params.content,
     artifactSuffix: params.artifact_suffix,
@@ -98,10 +264,11 @@ export async function handleOrchRunPlanComputation(params: {
   run_dir: string;
   dry_run?: boolean;
 }) {
+  const { projectRoot, runDir } = admitProjectRun(params);
   return planComputationFromRunDir({
     dryRun: params.dry_run,
-    projectRoot: params.project_root,
-    runDir: params.run_dir,
+    projectRoot,
+    runDir,
     runId: params.run_id,
   });
 }
@@ -113,13 +280,14 @@ export async function handleOrchRunExecuteManifest(params: {
   manifest_path: string;
   dry_run?: boolean;
 }) {
-  const manifestPath = resolvePathWithinParent(params.run_dir, params.manifest_path, 'manifest_path');
-  resolvePathWithinParent(path.join(params.run_dir, 'computation'), manifestPath, 'manifest_path');
+  const { projectRoot, runDir } = admitProjectRun(params);
+  const manifestPath = resolvePathWithinParent(runDir, params.manifest_path, 'manifest_path');
+  resolvePathWithinParent(path.join(runDir, 'computation'), manifestPath, 'manifest_path');
   return executeComputationManifest({
     dryRun: params.dry_run,
     manifestPath,
-    projectRoot: params.project_root,
-    runDir: params.run_dir,
+    projectRoot,
+    runDir,
     runId: params.run_id,
   });
 }
@@ -140,7 +308,9 @@ function loadComputationResultFromRunDir(params: {
     }
     return computationResult;
   } catch (error) {
-    if (error instanceof Error && 'code' in (error as unknown as Record<string, unknown>)) {
+    // A refusal keeps its own code; a read or parse failure (a missing or
+    // unreadable file is a system error with a code too) is reported here.
+    if (error instanceof McpError) {
       throw error;
     }
     throw invalidParams('Failed to load computation_result_v1 from run_dir', {
@@ -178,6 +348,7 @@ async function launchFollowupTaskViaTeamRuntime(params: {
   computationResult: Awaited<ReturnType<typeof loadComputationResultFromRunDir>>;
   projectRoot: string;
   runId: string;
+  runDir: string;
   task: DelegatedFeedbackFollowupTask | DelegatedComputationFollowupTask;
   team: DelegatedFollowupTeamConfig;
 }): Promise<FeedbackFollowupLaunchOutcome | DelegatedComputationFollowupLaunchOutcome> {
@@ -189,7 +360,9 @@ async function launchFollowupTaskViaTeamRuntime(params: {
     messages: [{
       role: 'user',
       content: buildFollowupRuntimePrompt({
+        projectRoot: params.projectRoot,
         runId: params.runId,
+        runDir: params.runDir,
         taskId: params.task.task_id,
         taskKind: params.task.kind,
         taskTitle: params.task.title,
@@ -312,6 +485,7 @@ export async function handleOrchRunProgressFollowups(
   },
   ctx: AgentToolHandlerContext = {},
 ) {
+  const { projectRoot, runDir } = admitProjectRun(params);
   if (!ctx.createMessage || !ctx.callTool) {
     throw invalidParams('orch_run_progress_followups requires host sampling/createMessage support and tool-call loopback.', {
       missing_context: [
@@ -322,18 +496,19 @@ export async function handleOrchRunProgressFollowups(
   }
   const computationResult = loadComputationResultFromRunDir({
     runId: params.run_id,
-    runDir: params.run_dir,
+    runDir,
   });
   const result = await progressRunFollowups({
     computationResult,
-    projectRoot: params.project_root,
+    projectRoot,
     runId: params.run_id,
-    runDir: params.run_dir,
+    runDir,
     launchFeedbackTask: async launchParams => launchFollowupTaskViaTeamRuntime({
       ctx,
       computationResult: launchParams.computationResult,
       projectRoot: launchParams.projectRoot,
       runId: launchParams.runId,
+      runDir,
       task: launchParams.task,
       team: launchParams.team,
     }) as Promise<FeedbackFollowupLaunchOutcome>,
@@ -342,13 +517,14 @@ export async function handleOrchRunProgressFollowups(
       computationResult: launchParams.computationResult,
       projectRoot: launchParams.projectRoot,
       runId: launchParams.runId,
+      runDir,
       task: launchParams.task,
       team: launchParams.team,
     }) as Promise<DelegatedComputationFollowupLaunchOutcome>,
   });
   syncCompletedFollowupTaskIntoComputationResult({
     runId: params.run_id,
-    runDir: params.run_dir,
+    runDir,
     launchResult: result,
   });
   return result;

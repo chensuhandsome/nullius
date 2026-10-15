@@ -13,43 +13,23 @@ vi.mock('../../src/api/client.js', () => ({
 
 const api = await import('../../src/api/client.js');
 const { handleToolCall } = await import('../../src/tools/index.js');
-const { readHepUri } = await import('../../src/core/uriReader.js');
+const { makeProjectRoot, readProjectFile } = await import('../support/projectFiles.js');
 
-function artifactNameFromUri(uri: string): string {
-  const m = uri.match(/\/artifact\/([^/]+)$/);
-  if (!m?.[1]) throw new Error(`Not an artifact uri: ${uri}`);
-  return decodeURIComponent(m[1]);
-}
-
-describe('Open Roadmap R5: INSPIRE API export + mapping (Evidence-first)', () => {
-  let dataDir: string;
-  let originalDataDirEnv: string | undefined;
+describe('Open Roadmap R5: INSPIRE API export + mapping into the caller output_dir', () => {
+  let tmpDir: string;
+  let projectRoot: string;
 
   beforeEach(() => {
     vi.resetAllMocks();
-    originalDataDirEnv = process.env.HEP_DATA_DIR;
-    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hep-data-'));
-    process.env.HEP_DATA_DIR = dataDir;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hep-r5-'));
+    projectRoot = makeProjectRoot(tmpDir);
   });
 
   afterEach(() => {
-    if (originalDataDirEnv !== undefined) {
-      process.env.HEP_DATA_DIR = originalDataDirEnv;
-    } else {
-      delete process.env.HEP_DATA_DIR;
-    }
-    if (fs.existsSync(dataDir)) {
-      fs.rmSync(dataDir, { recursive: true, force: true });
-    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('hep_inspire_search_export writes artifacts and returns URIs + summary', async () => {
-    const projectRes = await handleToolCall('hep_project_create', { name: 'R5 export project' });
-    const projectPayload = JSON.parse(projectRes.content[0].text) as { project_id: string };
-
-    const runRes = await handleToolCall('hep_run_create', { project_id: projectPayload.project_id });
-    const runPayload = JSON.parse(runRes.content[0].text) as { run_id: string };
-
+  it('hep_inspire_search_export writes files into output_dir and returns project-relative paths + summary', async () => {
     const papers = [
       { recid: '1', title: 'T1', authors: [] },
       { recid: '2', title: 'T2', authors: [] },
@@ -70,88 +50,82 @@ describe('Open Roadmap R5: INSPIRE API export + mapping (Evidence-first)', () =>
     } as any);
 
     const exportRes = await handleToolCall('hep_inspire_search_export', {
-      run_id: runPayload.run_id,
+      project_root: projectRoot,
+      output_dir: 'artifacts/runs/M1-search/inspire',
       query: 't:qcd',
       size: 2,
       max_results: 10,
       output_format: 'jsonl',
     });
 
+    expect(exportRes.isError).toBeFalsy();
     const payload = JSON.parse(exportRes.content[0].text) as {
-      export_uri: string;
-      meta_uri: string;
+      output_dir: string;
+      export_path: string;
+      meta_path: string;
+      artifacts: Array<{ name: string; path: string }>;
       summary: { total: number; exported: number; pages_fetched: number };
     };
 
-    expect(payload.export_uri).toMatch(/^hep:\/\/runs\//);
-    expect(payload.meta_uri).toMatch(/^hep:\/\/runs\//);
+    expect(payload.output_dir).toBe('artifacts/runs/M1-search/inspire');
+    expect(payload.export_path).toMatch(/^artifacts\/runs\/M1-search\/inspire\/inspire_search_export_[0-9a-f]{16}\.jsonl$/);
+    expect(payload.meta_path).toMatch(/^artifacts\/runs\/M1-search\/inspire\/inspire_search_export_[0-9a-f]{16}_meta\.json$/);
     expect(payload.summary.total).toBe(3);
     expect(payload.summary.exported).toBe(3);
     expect(payload.summary.pages_fetched).toBe(2);
 
-    const exportContent = readHepUri(payload.export_uri) as any;
-    const lines = (exportContent.text as string).trim().split('\n').map((l: string) => JSON.parse(l));
+    const lines = readProjectFile(projectRoot, payload.export_path).trim().split('\n').map((l: string) => JSON.parse(l));
     expect(lines).toEqual(papers);
 
-    const metaContent = readHepUri(payload.meta_uri) as any;
-    const meta = JSON.parse(metaContent.text) as { exported: number; total: number; artifacts: { export_uri: string } };
+    const meta = JSON.parse(readProjectFile(projectRoot, payload.meta_path)) as {
+      exported: number; total: number; output_dir: string; artifacts: { export_path: string; diagnostics_path: string };
+    };
     expect(meta.exported).toBe(3);
     expect(meta.total).toBe(3);
-    expect(meta.artifacts.export_uri).toBe(payload.export_uri);
+    expect(meta.output_dir).toBe(payload.output_dir);
+    expect(meta.artifacts.export_path).toBe(payload.export_path);
+    expect(JSON.parse(readProjectFile(projectRoot, meta.artifacts.diagnostics_path)).operation).toBe('inspire_search_export');
 
-    const manifestUri = `hep://runs/${encodeURIComponent(runPayload.run_id)}/manifest`;
-    const manifest = JSON.parse((readHepUri(manifestUri) as any).text) as {
-      steps: Array<{ step: string; artifacts?: Array<{ name: string }> }>;
-    };
-
-    const step = manifest.steps.find(s => s.step === 'inspire_search_export');
-    expect(step).toBeTruthy();
-    const artifactNames = (step?.artifacts ?? []).map(a => a.name);
-    expect(artifactNames).toContain(artifactNameFromUri(payload.export_uri));
-    expect(artifactNames).toContain(artifactNameFromUri(payload.meta_uri));
+    // Every reported file exists where reported; the two API pages are recorded under external_api/.
+    for (const artifact of payload.artifacts) {
+      expect(fs.existsSync(path.join(projectRoot, artifact.path)), artifact.path).toBe(true);
+    }
+    const apiRecords = fs.readdirSync(path.join(projectRoot, payload.output_dir, 'external_api')).sort();
+    expect(apiRecords.filter(name => name.startsWith('external_api_response_'))).toHaveLength(2);
+    // No hep-mcp run state is created anywhere.
+    expect(fs.existsSync(path.join(projectRoot, 'artifacts', 'hep-mcp', 'runs'))).toBe(false);
   });
 
-  it('hep_inspire_resolve_identifiers writes mapping jsonl and summary', async () => {
-    const projectRes = await handleToolCall('hep_project_create', { name: 'R5 mapping project' });
-    const projectPayload = JSON.parse(projectRes.content[0].text) as { project_id: string };
-
-    const runRes = await handleToolCall('hep_run_create', { project_id: projectPayload.project_id });
-    const runPayload = JSON.parse(runRes.content[0].text) as { run_id: string };
-
+  it('hep_inspire_resolve_identifiers writes mapping jsonl and summary into output_dir', async () => {
     vi.mocked(api.getPaper).mockResolvedValueOnce({ recid: '123' } as any);
     vi.mocked(api.getByDoi).mockResolvedValueOnce({ recid: '456' } as any);
     vi.mocked(api.getByArxiv).mockResolvedValueOnce({ recid: '789' } as any);
 
     const res = await handleToolCall('hep_inspire_resolve_identifiers', {
-      run_id: runPayload.run_id,
+      project_root: projectRoot,
+      output_dir: 'notes/ids',
       identifiers: ['123', '10.1000/xyz', 'arxiv:1207.7214', 'weird'],
     });
 
+    expect(res.isError).toBeFalsy();
     const payload = JSON.parse(res.content[0].text) as {
-      mapping_uri: string;
-      meta_uri: string;
+      mapping_path: string;
+      meta_path: string;
       summary: { total: number; matched: number; not_found: number; errors: number };
     };
 
     expect(payload.summary).toMatchObject({ total: 4, matched: 3, not_found: 1, errors: 0 });
+    expect(payload.mapping_path.startsWith('notes/ids/')).toBe(true);
 
-    const mappingContent = readHepUri(payload.mapping_uri) as any;
-    const lines = (mappingContent.text as string).trim().split('\n').map((l: string) => JSON.parse(l));
+    const lines = readProjectFile(projectRoot, payload.mapping_path).trim().split('\n').map((l: string) => JSON.parse(l));
     expect(lines.map((l: any) => l.status)).toEqual(['matched', 'matched', 'matched', 'not_found']);
     expect(lines.map((l: any) => l.recid)).toEqual(['123', '456', '789', undefined]);
 
-    const metaContent = readHepUri(payload.meta_uri) as any;
-    const meta = JSON.parse(metaContent.text) as { matched: number; not_found: number; errors: number; total: number };
+    const meta = JSON.parse(readProjectFile(projectRoot, payload.meta_path)) as { matched: number; not_found: number; errors: number; total: number };
     expect(meta).toMatchObject({ total: 4, matched: 3, not_found: 1, errors: 0 });
   });
 
-  it('inspire_search export path matches wrapper semantics', async () => {
-    const projectRes = await handleToolCall('hep_project_create', { name: 'R5 merged inspire_search project' });
-    const projectPayload = JSON.parse(projectRes.content[0].text) as { project_id: string };
-
-    const runRes = await handleToolCall('hep_run_create', { project_id: projectPayload.project_id });
-    const runPayload = JSON.parse(runRes.content[0].text) as { run_id: string };
-
+  it('inspire_search with output_dir exports like hep_inspire_search_export', async () => {
     const papers = [
       { recid: '11', title: 'U1', authors: [] },
       { recid: '22', title: 'U2', authors: [] },
@@ -172,25 +146,25 @@ describe('Open Roadmap R5: INSPIRE API export + mapping (Evidence-first)', () =>
     } as any);
 
     const exportRes = await handleToolCall('inspire_search', {
-      run_id: runPayload.run_id,
+      project_root: projectRoot,
+      output_dir: 'scratch/merged',
       query: 't:merged',
       size: 2,
       max_results: 10,
       output_format: 'jsonl',
     });
 
+    expect(exportRes.isError).toBeFalsy();
     const payload = JSON.parse(exportRes.content[0].text) as {
-      export_uri: string;
-      meta_uri: string;
+      export_path: string;
+      meta_path: string;
       summary: { total: number; exported: number; pages_fetched: number };
     };
 
-    expect(payload.export_uri).toMatch(/^hep:\/\/runs\//);
-    expect(payload.meta_uri).toMatch(/^hep:\/\/runs\//);
+    expect(payload.export_path.startsWith('scratch/merged/')).toBe(true);
     expect(payload.summary).toMatchObject({ total: 3, exported: 3, pages_fetched: 2 });
 
-    const exportContent = readHepUri(payload.export_uri) as any;
-    const lines = (exportContent.text as string).trim().split('\n').map((l: string) => JSON.parse(l));
+    const lines = readProjectFile(projectRoot, payload.export_path).trim().split('\n').map((l: string) => JSON.parse(l));
     expect(lines).toEqual(papers);
   });
 

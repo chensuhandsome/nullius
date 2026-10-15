@@ -14,13 +14,18 @@ describe('project-aware HEP data root resolution', () => {
   let tmpRoot: string;
   let originalHepDataDir: string | undefined;
   let originalPdgDataDir: string | undefined;
+  let originalDownloadDir: string | undefined;
 
   beforeEach(() => {
-    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hep-project-root-'));
+    // project_root is admitted in canonical form, so expected paths are built
+    // from the canonical spelling of the temp directory.
+    tmpRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-project-root-')));
     originalHepDataDir = process.env.HEP_DATA_DIR;
     originalPdgDataDir = process.env.PDG_DATA_DIR;
+    originalDownloadDir = process.env.HEP_DOWNLOAD_DIR;
     delete process.env.HEP_DATA_DIR;
     delete process.env.PDG_DATA_DIR;
+    delete process.env.HEP_DOWNLOAD_DIR;
   });
 
   afterEach(() => {
@@ -28,6 +33,8 @@ describe('project-aware HEP data root resolution', () => {
     else delete process.env.HEP_DATA_DIR;
     if (originalPdgDataDir !== undefined) process.env.PDG_DATA_DIR = originalPdgDataDir;
     else delete process.env.PDG_DATA_DIR;
+    if (originalDownloadDir !== undefined) process.env.HEP_DOWNLOAD_DIR = originalDownloadDir;
+    else delete process.env.HEP_DOWNLOAD_DIR;
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 
@@ -37,15 +44,19 @@ describe('project-aware HEP data root resolution', () => {
     fs.mkdirSync(path.join(projectRoot, '.nullius'), { recursive: true });
     process.env.HEP_DATA_DIR = envDataRoot;
 
-    const result = await handleToolCall('hep_project_create', {
+    const result = await handleToolCall('hep_health', {
       project_root: projectRoot,
-      name: 'project local HEP root',
+      check_inspire: false,
     });
 
     expect(result.isError).not.toBe(true);
     const payload = parsePayload(result);
-    expect(fs.existsSync(path.join(projectRoot, 'artifacts', 'hep-mcp', 'projects', payload.project_id, 'project.json'))).toBe(true);
-    expect(fs.existsSync(path.join(envDataRoot, 'projects', payload.project_id, 'project.json'))).toBe(false);
+    expect(payload.config.hep_data_dir).toMatchObject({
+      path: path.join(projectRoot, 'artifacts', 'hep-mcp'),
+      source: 'project_root',
+      project_root: projectRoot,
+    });
+    expect(payload.config.hep_data_dir.path).not.toBe(envDataRoot);
   });
 
   it('project_root also overrides static colocated directory env vars', async () => {
@@ -53,7 +64,6 @@ describe('project-aware HEP data root resolution', () => {
     fs.mkdirSync(path.join(projectRoot, '.nullius'), { recursive: true });
     process.env.HEP_DATA_DIR = path.join(tmpRoot, 'env-hep-data');
     process.env.HEP_DOWNLOAD_DIR = path.join(tmpRoot, 'env-downloads');
-    process.env.WRITING_PROGRESS_DIR = path.join(tmpRoot, 'env-writing-progress');
     process.env.PDG_DATA_DIR = path.join(tmpRoot, 'env-pdg');
 
     const result = await handleToolCall('hep_health', {
@@ -74,19 +84,18 @@ describe('project-aware HEP data root resolution', () => {
     const envDataRoot = path.join(tmpRoot, 'env-hep-data');
     process.env.HEP_DATA_DIR = envDataRoot;
 
-    const result = await handleToolCall('hep_project_create', {
-      name: 'env local HEP root',
-    });
+    const result = await handleToolCall('hep_health', { check_inspire: false });
 
     expect(result.isError).not.toBe(true);
     const payload = parsePayload(result);
-    expect(fs.existsSync(path.join(envDataRoot, 'projects', payload.project_id, 'project.json'))).toBe(true);
+    expect(payload.config.hep_data_dir).toMatchObject({ path: envDataRoot, source: 'env' });
+    expect(payload.config.hep_data_dir.project_root).toBeUndefined();
   });
 
-  it('rejects non-absolute project_root values before writing data', async () => {
-    const result = await handleToolCall('hep_project_create', {
+  it('rejects non-absolute project_root values before resolving any data directory', async () => {
+    const result = await handleToolCall('hep_health', {
       project_root: 'relative/project',
-      name: 'bad root',
+      check_inspire: false,
     });
 
     expect(result.isError).toBe(true);
@@ -99,9 +108,9 @@ describe('project-aware HEP data root resolution', () => {
     const projectRoot = path.join(tmpRoot, 'not-initialized');
     fs.mkdirSync(projectRoot, { recursive: true });
 
-    const result = await handleToolCall('hep_project_create', {
+    const result = await handleToolCall('hep_health', {
       project_root: projectRoot,
-      name: 'bad root',
+      check_inspire: false,
     });
 
     expect(result.isError).toBe(true);
@@ -117,8 +126,8 @@ describe('project-aware HEP data root resolution', () => {
   });
 
   it('advertises project_root as a common optional MCP tool input', () => {
-    const createTool = getTools('standard').find(tool => tool.name === 'hep_project_create');
-    expect(createTool?.inputSchema.properties?.project_root).toMatchObject({
+    const healthTool = getTools('standard').find(tool => tool.name === 'hep_health');
+    expect(healthTool?.inputSchema.properties?.project_root).toMatchObject({
       type: 'string',
     });
   });

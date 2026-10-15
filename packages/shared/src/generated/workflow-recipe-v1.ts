@@ -18,8 +18,7 @@ export interface WorkflowRecipeV1 {
             | "analyze.citation_network"
             | "analyze.paper_connections"
             | "analyze.provenance_trace"
-            | "analyze.paper_set_critical_review"
-            | "materialize.evidence_build";
+            | "analyze.paper_set_critical_review";
           purpose: string;
           depends_on?: string[];
           required_capabilities?: (
@@ -159,8 +158,7 @@ export interface WorkflowRecipeV1 {
             | "analyze.citation_network"
             | "analyze.paper_connections"
             | "analyze.provenance_trace"
-            | "analyze.paper_set_critical_review"
-            | "materialize.evidence_build";
+            | "analyze.paper_set_critical_review";
           purpose: string;
           depends_on?: string[];
           required_capabilities?: (
@@ -302,8 +300,7 @@ export interface WorkflowRecipeV1 {
             | "analyze.citation_network"
             | "analyze.paper_connections"
             | "analyze.provenance_trace"
-            | "analyze.paper_set_critical_review"
-            | "materialize.evidence_build";
+            | "analyze.paper_set_critical_review";
           purpose: string;
           depends_on?: string[];
           required_capabilities?: (
@@ -443,8 +440,7 @@ export interface WorkflowRecipeV1 {
             | "analyze.citation_network"
             | "analyze.paper_connections"
             | "analyze.provenance_trace"
-            | "analyze.paper_set_critical_review"
-            | "materialize.evidence_build";
+            | "analyze.paper_set_critical_review";
           purpose: string;
           depends_on?: string[];
           required_capabilities?: (

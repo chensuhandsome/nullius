@@ -36,6 +36,17 @@ Supported platforms:
 - Kimi Code
 - OpenCode
 
+For computational Julia libraries, the catalog includes
+[`julia-package`](../../skills/julia-package/SKILL.md) for public interfaces,
+numerical contracts and lifecycle checks, and
+[`julia-perf`](../../skills/julia-perf/SKILL.md) for kernel discipline and
+performance measurements. Both support standalone use.
+
+For bounded, tool-free file-prompt tasks through DeepSeek Harness, the catalog
+includes [`dsh-cli-runner`](../../skills/dsh-cli-runner/SKILL.md). It requires an
+explicit provider/model and retains complete session evidence; it does not
+register a review-swarm backend or install DSH.
+
 ## Layout
 
 - `packages/`: package metadata (`*.json`)

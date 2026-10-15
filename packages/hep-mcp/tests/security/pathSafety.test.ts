@@ -5,7 +5,7 @@ import * as path from 'path';
 
 import { handleToolCall } from '../../src/tools/index.js';
 import { cleanupDownloads } from '../../src/tools/research/cleanupDownloads.js';
-import { getWritingProgressDir } from '../../src/data/dataDir.js';
+import { getDownloadsDir } from '../../src/data/dataDir.js';
 import { writeDirectoryMarker } from '../../src/data/markers.js';
 import { assertSafePathSegment } from '../../src/core/paths.js';
 
@@ -50,14 +50,20 @@ describe('Path safety + marker cleanup (M1)', () => {
   it('rejects symlink escape within data dir (realpath guard)', () => {
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outside-'));
     try {
-      const linkPath = path.join(dataDir, 'writing_progress');
+      const linkPath = path.join(dataDir, 'downloads');
       fs.symlinkSync(outsideDir, linkPath, 'dir');
+      const savedDownloadEnv = [process.env.HEP_DOWNLOAD_DIR, process.env.ARXIV_DOWNLOAD_DIR];
+      delete process.env.HEP_DOWNLOAD_DIR;
+      delete process.env.ARXIV_DOWNLOAD_DIR;
 
       try {
-        getWritingProgressDir();
+        getDownloadsDir();
         throw new Error('Expected UNSAFE_FS');
       } catch (err) {
         expect((err as { code?: unknown }).code).toBe('UNSAFE_FS');
+      } finally {
+        if (savedDownloadEnv[0] !== undefined) process.env.HEP_DOWNLOAD_DIR = savedDownloadEnv[0];
+        if (savedDownloadEnv[1] !== undefined) process.env.ARXIV_DOWNLOAD_DIR = savedDownloadEnv[1];
       }
     } finally {
       fs.rmSync(outsideDir, { recursive: true, force: true });

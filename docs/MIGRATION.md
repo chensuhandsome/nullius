@@ -64,5 +64,9 @@ What each layer does during migration:
   with that move.
 - **Global scratch data**: the HEP scratch fallback moved `~/.autoresearch/` →
   `~/.nullius/`. Project-rooted data (`<project>/artifacts/hep-mcp`) is
-  unaffected. The old global cache can be moved (`mv ~/.autoresearch ~/.nullius`)
-  or simply abandoned — it holds re-downloadable material only.
+  unaffected. The old global directory holds re-downloadable caches, except
+  hep-mcp run and project directories (`~/.autoresearch/hep-mcp/runs/`,
+  `~/.autoresearch/hep-mcp/projects/`): notes may cite those as historical
+  evidence, by path or by `hep://runs/...` URI, so keep them where they are and
+  do not delete them (the reading rule is in `docs/URI_REGISTRY.md`). The rest
+  can be moved or abandoned.

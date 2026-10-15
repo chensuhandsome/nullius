@@ -17,15 +17,16 @@ Environment variables follow a strict priority chain (highest → lowest):
 
 | Key | Type | Default | Description | Read by |
 |-----|------|---------|-------------|---------|
-| `HEP_DATA_DIR` | path | `~/.hep-mcp` | Root data directory for HEP artifacts, downloads, cache, and colocated provider state | hep-mcp, pdg-mcp |
+| `HEP_DATA_DIR` | path | `~/.nullius/hep-mcp` | Root data directory for HEP artifacts, downloads, cache, and colocated provider state | hep-mcp, pdg-mcp |
 | `HEP_TOOL_MODE` | `standard` \| `full` | `standard` | Tool exposure level — `standard` shows core tools, `full` shows all | hep-mcp |
 | `HEP_DOWNLOAD_DIR` | path | `<HEP_DATA_DIR>/downloads` | Override directory for arXiv/paper downloads | hep-mcp |
 | `ARXIV_DOWNLOAD_DIR` | path | `<HEP_DATA_DIR>/downloads` | Alias for `HEP_DOWNLOAD_DIR` (fallback) | hep-mcp |
-| `WRITING_PROGRESS_DIR` | path | `<HEP_DATA_DIR>/writing_progress` | Directory for run progress artifacts | hep-mcp |
 | `HEP_ENABLE_ZOTERO` | boolean | `true` | Enable/disable Zotero Local API integration | hep-mcp |
-| `HEP_ENABLE_MULTIMODAL_RETRIEVAL` | boolean | `true` | Enable multimodal retrieval surfaces when supported by the current build | hep-mcp |
-| `HEP_DEBUG` | comma-separated | (none) | Enable debug logging for specific categories (e.g. `cache,evidence`) | hep-mcp |
+| `HEP_DEBUG` | comma-separated | (none) | Enable debug logging for specific categories (e.g. `cache,api`) | hep-mcp |
 | `HEP_ENABLE_TOOL_USAGE_TELEMETRY` | boolean | (unset) | Enable tool call telemetry artifacts and summaries | hep-mcp |
+| `HEP_BUDGET_INSPIRE_SEARCH_PAGE_SIZE` | int, 1–1000 | `1000` | Page size of an INSPIRE search export (`hep_inspire_search_export`, or `inspire_search` with `output_dir`) when the call gives no `size`. Out-of-range values are clamped; the value used is recorded in the export's diagnostics | hep-mcp |
+| `HEP_BUDGET_INSPIRE_SEARCH_MAX_RESULTS` | int, 1–10000 | `10000` | Most records of an INSPIRE search export (same tools) when the call gives no `max_results`. Out-of-range values are clamped; the value used is recorded in the export's diagnostics | hep-mcp |
+| `HEP_BUDGET_CONCURRENCY` | int, 1–16 | `4` | Parallel requests of `hep_import_from_zotero` when the call gives no `concurrency` | hep-mcp |
 
 ### Runtime / Sampling (`hep-mcp`)
 

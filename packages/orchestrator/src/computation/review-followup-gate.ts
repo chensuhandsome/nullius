@@ -10,6 +10,7 @@ import type {
 import {
   evaluateVerificationKernelGateV1,
 } from '@nullius/shared';
+import { assertNoSymlinkComponents } from './path-safety.js';
 
 export type ReviewFollowupGateDecision = 'pass' | 'block' | 'advisory_only' | 'unavailable';
 
@@ -33,6 +34,9 @@ function runArtifactPathFromUri(runDir: string, uri: string): string {
   if (filePath !== runDir && !filePath.startsWith(`${runDir}${path.sep}`)) {
     throw new Error(`review follow-up gate artifact ref escapes run dir: ${uri}`);
   }
+  // A recorded ref names a file inside the run; none is read through a
+  // symlink below the run directory.
+  assertNoSymlinkComponents(runDir, filePath, 'review follow-up gate artifact');
   if (!fs.existsSync(filePath)) {
     throw new Error(`review follow-up gate artifact ref not found: ${uri}`);
   }

@@ -14,14 +14,14 @@ vi.mock('../../src/api/rateLimiter.js', () => ({
 const rateLimiter = await import('../../src/api/rateLimiter.js');
 const { clearAllCaches } = await import('../../src/cache/memoryCache.js');
 const { handleToolCall } = await import('../../src/tools/index.js');
-const { readHepUri } = await import('../../src/core/uriReader.js');
+const { makeProjectRoot, readProjectFile } = await import('../support/projectFiles.js');
 
 type DatasetInput = { query: string; sort: string; size: number; max_results: number };
 type DatasetExpected = { total: number; exported: number; pages_fetched: number; has_more: boolean };
 
 type DatasetExportPayload = {
-  export_uri: string;
-  meta_uri: string;
+  export_path: string;
+  meta_path: string;
   summary: { total: number; exported: number; pages_fetched: number; has_more: boolean };
 };
 
@@ -36,8 +36,8 @@ type DatasetMeta = {
   has_more: boolean;
   warnings: unknown[];
   artifacts?: {
-    export_uri?: string;
-    meta_uri?: string;
+    export_path?: string;
+    meta_path?: string;
   };
 };
 
@@ -51,12 +51,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function readUriText(uri: string): string {
-  const resource = readHepUri(uri);
-  if (!('text' in resource)) {
-    throw new Error(`Expected text resource: ${uri}`);
-  }
-  return resource.text;
+function baseName(projectRelativePath: string | undefined): string | null {
+  return projectRelativePath ? projectRelativePath.split('/').pop() ?? null : null;
 }
 
 function readControlNumber(record: unknown): number | null {
@@ -140,16 +136,13 @@ describe('eval: dataset export stability (mocked INSPIRE)', () => {
       );
     });
 
-    const projectRes = await handleToolCall('hep_project_create', { name: 'Eval Project', description: 'eval-dataset' });
-    const project = JSON.parse(projectRes.content[0].text) as { project_id: string };
-
-    const runRes = await handleToolCall('hep_run_create', { project_id: project.project_id });
-    const run = JSON.parse(runRes.content[0].text) as { run_id: string };
+    const projectRoot = makeProjectRoot(dataDir);
 
     const report = await runEvalSet<DatasetInput, DatasetActual>(evalSet, {
       run: async (input: DatasetInput) => {
         const exportRes = await handleToolCall('hep_inspire_search_export', {
-          run_id: run.run_id,
+          project_root: projectRoot,
+          output_dir: 'eval/dataset',
           query: input.query,
           sort: input.sort,
           size: input.size,
@@ -157,9 +150,9 @@ describe('eval: dataset export stability (mocked INSPIRE)', () => {
           output_format: 'jsonl',
         });
         const payload = JSON.parse(exportRes.content[0].text) as DatasetExportPayload;
-        const metaText = readUriText(payload.meta_uri);
+        const metaText = readProjectFile(projectRoot, payload.meta_path);
         const meta = JSON.parse(metaText) as DatasetMeta;
-        const exportText = readUriText(payload.export_uri);
+        const exportText = readProjectFile(projectRoot, payload.export_path);
         const controlNumbers = exportText
           .split('\n')
           .map(line => line.trim())
@@ -186,8 +179,8 @@ describe('eval: dataset export stability (mocked INSPIRE)', () => {
           has_more: actual.meta.has_more,
           warnings: actual.meta.warnings,
           control_numbers: actual.controlNumbers,
-          export_artifact_name: String(actual.meta.artifacts?.export_uri ?? '').split('/artifact/')[1] ?? null,
-          meta_artifact_name: String(actual.meta.artifacts?.meta_uri ?? '').split('/artifact/')[1] ?? null,
+          export_artifact_name: baseName(actual.meta.artifacts?.export_path),
+          meta_artifact_name: baseName(actual.meta.artifacts?.meta_path),
         });
         return {
           passed: true,

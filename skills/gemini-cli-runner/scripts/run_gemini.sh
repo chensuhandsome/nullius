@@ -98,23 +98,89 @@ run_gemini_cmd() {
   if [[ -n "${MANAGED_GEMINI_HOME}" ]]; then
     # Keep a supervisor outside the CLI process group so a caught interruption
     # stops the whole CLI/sandbox tree before deleting its authentication home.
+    # The group number is the CLI pid; it names this group provably only while
+    # the CLI is unreaped, so the supervisor waits without reaping, signals the
+    # group (SIGTERM, grace, SIGKILL), and reaps last. Its handler only records
+    # a signal, so no later signal can interrupt that cleanup. SIGCHLD is set to
+    # its default first: ignored (it survives exec), the kernel would reap the
+    # exited CLI itself and the group number could be reissued.
     python3 -c '
-import os, signal, subprocess, sys
-proc = None
-def stop(signum, frame):
-    raise SystemExit(128 + signum)
-for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-    signal.signal(signum, stop)
-try:
-    proc = subprocess.Popen(sys.argv[1:], start_new_session=True)
-    raise SystemExit(proc.wait())
-finally:
-    if proc is not None:
+import os, select, signal, subprocess, sys, time
+signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+class ReapedElsewhere(Exception):
+    pass
+received = []
+def record(signum, frame):
+    received.append(signum)
+SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+for signum in SIGNALS:
+    signal.signal(signum, record)
+def exited(pid, timeout):
+    if hasattr(select, "kqueue"):  # macOS CPython has no os.waitid
+        queue = select.kqueue()
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.wait()
+            try:
+                queue.control([select.kevent(pid, select.KQ_FILTER_PROC,
+                                             select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                             select.KQ_NOTE_EXIT)], 0, 0)
+                ended = bool(queue.control(None, 1, timeout))
+            except ProcessLookupError:
+                ended = True  # a zombie, which the kernel refuses to watch, or a reaped pid
+        finally:
+            queue.close()
+        if ended and signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN:
+            raise ReapedElsewhere()  # no zombie is kept while SIGCHLD is ignored
+        return ended
+    deadline = time.monotonic() + timeout
+    try:
+        while os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+    except ChildProcessError:  # ECHILD: not even a zombie is left
+        raise ReapedElsewhere()
+    return True
+def signal_group(pgid, signum):
+    try:
+        os.killpg(pgid, signum)
+    except (ProcessLookupError, PermissionError):
+        return False  # macOS: EPERM when only the zombie CLI is left in its group — same-user CLIs only; a descendant that changed credentials would answer EPERM too and is outside this model
+    return True
+def group_has_live_member(pgid):
+    if not sys.platform.startswith("linux"):
+        return signal_group(pgid, 0)
+    for entry in os.listdir("/proc"):  # on Linux the zombie CLI still answers killpg
+        if entry.isdigit():
+            try:
+                with open("/proc/%s/stat" % entry) as stream:
+                    fields = stream.read().rsplit(")", 1)[1].split()
+            except OSError:
+                continue
+            if int(fields[2]) == pgid and fields[0] not in "ZX":
+                return True
+    return False
+proc = subprocess.Popen(sys.argv[1:], start_new_session=True)
+reaped_elsewhere = False
+try:
+    while not received and not exited(proc.pid, 0.05):
+        pass
+except ReapedElsewhere:
+    # The pid no longer names the CLI group: nothing is signalled by it.
+    reaped_elsewhere = True
+    sys.stderr.write("gemini supervisor: the CLI was reaped outside the supervisor; its process group was not signalled\n")
+if not reaped_elsewhere and signal_group(proc.pid, signal.SIGTERM):
+    deadline = time.monotonic() + 0.3
+    while group_has_live_member(proc.pid) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    signal_group(proc.pid, signal.SIGKILL)
+proc.wait()
+# Block the recorded signals before choosing the exit status: a signal arriving
+# between reading `received` and os._exit would otherwise be recorded but not
+# reported. This block is the committed-exit boundary: a signal arriving after
+# it stays pending and the exit status is the one chosen here. Leave without
+# interpreter shutdown, which restores default handlers.
+signal.pthread_sigmask(signal.SIG_BLOCK, set(SIGNALS))
+os._exit(128 + received[0] if received else 70 if reaped_elsewhere else proc.returncode & 0xFF)
 ' env "GEMINI_CLI_HOME=${GEMINI_CLI_HOME_OVERRIDE}" gemini "$@" <&0 &
   elif [[ -n "${GEMINI_CLI_HOME_OVERRIDE}" ]]; then
     env "GEMINI_CLI_HOME=${GEMINI_CLI_HOME_OVERRIDE}" gemini "$@" <&0 &

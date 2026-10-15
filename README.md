@@ -32,7 +32,7 @@ Native computation binds an enabled A3 approval to the current manifest, scripts
 | Stateful literature planning | `nullius workflow-plan` | Checked-in workflow authority resolved via `@nullius/literature-workflows`, persisted to `.nullius/state.json#/plan`, and rendered to `.nullius/plan.md` |
 | Agent research project harness skill | `research-harness` | Thin client skill for Codex / Claude Code / OpenCode to recover external project state, route work to `nullius`, `research-team`, `markdown-hygiene`, and `hep-mcp`, and fold results back into durable project artifacts |
 | Experimental idea runtime bridge | `node /absolute/path/to/nullius/packages/idea-mcp/dist/server.js` | TS-hosted campaign lifecycle bridge for `idea_campaign_*` on explicit external data roots; posterior-based rank/promote, node posterior/lifecycle/grounding-audit/card-revision updates, provenance correction, and generation-pack import (`node.import_generated`) remain `idea-engine` runtime-contract truth, not a root front door |
-| Current most mature domain MCP front door | `node /absolute/path/to/nullius/packages/hep-mcp/dist/index.js` | HEP domain MCP server for research, evidence, writing, export, and provider-local composition |
+| Current most mature domain MCP front door | `node /absolute/path/to/nullius/packages/hep-mcp/dist/index.js` | HEP domain MCP server for literature research and provider-local composition; its research-output tools write their files into a caller-chosen `output_dir` inside the project |
 | Bounded provider MCP operators | `@nullius/openalex-mcp`, `@nullius/arxiv-mcp`, `@nullius/hepdata-mcp`, `@nullius/pdg-mcp`, `@nullius/zotero-mcp` | Atomic literature, data, reference, and evidence operators that stay MCP-first |
 
 The live HEP tool inventory is code-owned and mode-filtered by `HEP_TOOL_MODE`; keep exact counts in the generated category/status docs rather than this README.
@@ -54,6 +54,7 @@ Within project-local truth, `research_plan.md#Current Status` is the human statu
 Skill source and distribution are separate surfaces:
 
 - `skills/` holds checked-in skill source and manuals.
+- For Julia computational libraries, [`julia-package`](skills/julia-package/SKILL.md) covers APIs, numerical contracts and package lifecycle; [`julia-perf`](skills/julia-perf/SKILL.md) covers kernel discipline and reproducible performance evidence.
 - `packages/skills-market` is the installer/distribution control plane; it does not mean those skills are preinstalled in a client runtime.
 - `research-harness` is the market-listed thin entry skill for external research projects. It intentionally has no hard package dependency on `research-team`, `markdown-hygiene`, or `hep-mcp`; those remain separate capabilities that the host client may already provide or install independently.
 
@@ -69,19 +70,11 @@ For the project's non-surface guarantees — what Nullius is *not*, which agent 
 <resolved HEP data root>/
   cache/
   downloads/
-  projects/<project_id>/
-    project.json
-    artifacts/
-    papers/<paper_id>/
-      paper.json
-      evidence/
-  runs/<run_id>/
-    manifest.json
-    artifacts/
+  pdg/
 ```
 
-- Project roots are created under `projects/<project_id>/...`.
-- Run state lives under `runs/<run_id>/manifest.json` and `runs/<run_id>/artifacts/...`.
+- `hep-mcp` keeps no runs of its own: runs, approvals, and lifecycle belong to the orchestrator under `<project_root>/artifacts/runs/<run_id>/`. The HEP research-output tools (search exports, identifier mappings, Zotero mappings, LaTeX parses, conflict maps) write their files into a caller-chosen `output_dir` inside the project root, typically a subdirectory of the current run directory, and return project-relative paths. `output_dir` requires `project_root`, may not be the project root itself or traverse a symbolic link below it, and may not lie under `.nullius/`, `team/runs/`, or `artifacts/hep-mcp/` (compared ignoring letter case); a call never replaces an existing file. Downloads made by `inspire_paper_source`, caches and PDG data stay in hep-mcp's data root (`<project_root>/artifacts/hep-mcp` or `HEP_DATA_DIR`).
+- Historical HEP run directories (`runs/<run_id>/` under the HEP data root) and paper/evidence project directories (`projects/<project_id>/`, including evidence catalogs) from earlier versions are evidence: they stay readable in place and no tool creates or rewrites them. [`docs/URI_REGISTRY.md`](./docs/URI_REGISTRY.md) gives the reading rules for historical `hep://runs/...` and `hep://projects/...` references.
 - `PDG_DATA_DIR` is the PDG-local companion root. If unset, it follows the resolved HEP data root at `<resolved HEP data root>/pdg`.
 - Text and binary artifacts remain on disk under package-owned artifact roots; tool results stay compact and point back to project artifacts instead of inlining large payloads.
 - Paper originals, extracted text, arXiv source tarballs, and source trees are ordinary local files. If they are only needed during the current check, keep them in a local temporary directory; if later verification or continuation needs them, place them under the external project root in the appropriate project/run artifact directory.
@@ -147,7 +140,7 @@ Universal MCP config pattern:
 Notes:
 
 - Build first: `pnpm -r build`.
-- MCP environment paths are filesystem roots, not URI/protocol settings. For durable nullius project work, pass the initialized `project_root` in HEP tool calls so artifacts go under `<project_root>/artifacts/hep-mcp`. Keep `HEP_DATA_DIR` as a scratch fallback or explicit override for one-off checks, CI, and migrations.
+- MCP environment paths are filesystem roots, not URI/protocol settings. For durable nullius project work, pass the initialized `project_root` in HEP tool calls so hep-mcp's downloads, caches and PDG data go under `<project_root>/artifacts/hep-mcp` and file outputs go into the `output_dir` you name inside the project. Keep `HEP_DATA_DIR` as a scratch fallback or explicit override for one-off checks, CI, and migrations.
 - If `nullius` is not on `PATH`, create a local wrapper after building:
 
 ```bash
@@ -231,7 +224,7 @@ via: nullius decision list) until resolved.
 
   New decision entries use six-character branch-local handles drawn from 30 unbiased random bits ($32^6 = 2^{30}$). Candidates that also spell durable `D<n>` ids, plus locally known ids and retained mappings, are redrawn; the exact pair-collision probability is therefore context-dependent. With no local reservations it is $1/(2^{30}-90{,}000)\approx 9.314\times 10^{-10}$, slightly above $2^{-30}$. This is probabilistic, not structural; collisions fail closed. `--resolves` is the closing relation and accepts only an open `pending` target; `--relates` records non-closing context and may point to an earlier readable `decided` or `pending` entry. A malformed persisted relation is reported under `unrecognized_relations` and ignored without voiding its record. A legacy or unknown non-empty string `kind` remains readable under current `decided` semantics, with its original spelling exposed through `source_kind` and `normalized_kinds`; only the exact persisted `pending` kind creates an open item, while an otherwise valid `resolves` on a normalized entry still closes its pending target. `decision land` atomically assigns the next durable `D<n>` values, rewrites handle-valued relations, and retains each mapping as `provisional_id`. Existing `D<n>` ledgers remain valid and resolvable without migration. If one retained provisional id maps to multiple entries or is reused as a current id, list/status name the conflicting lines and landing fails without changing the ledger. Once initialized, reconnect is local-first: `.nullius/HARNESS`, `.nullius/bin/nullius`, `AGENTS.md`, `project_index.md`, `research_plan.md`, `research_contract.md`, registered reports, and `artifacts/runs/<run_id>/` are enough for an agent to recover the project state after a closed session or a network outage. Network access is only needed for tasks that actually fetch external sources.
 
-- For stateful literature workflows, first initialize the target external project root with `nullius init`, then use `nullius workflow-plan` from that root or with `--project-root`. It resolves recipes directly via `@nullius/literature-workflows`, persists `.nullius/state.json#/plan`, and derives `.nullius/plan.md`. Pass an explicit `--run-id` for meaningful external research runs; if omitted, the derived `<recipe>-<phase>` id is only a planning placeholder. `research_brainstorm` is the lightweight planning-only durable harness form: `nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-topic-r1 --topic "<topic>"` records brainstorm context, candidate angles, screening, one recommendation, and a `next_contract` handoff. `.nullius/plan.md` is a human read model rather than machine orchestration SSOT. The contract may suggest a heavier follow-up recipe such as `literature_landscape`, `literature_gap_analysis`, `derivation_cycle`, or `review_cycle`, but it does not start that recipe automatically and it does not depend on any host-native thinking process. The persisted `research_brainstorm.*` step tools are handoff authority, not built-in runtime tools, unless a future external tool caller explicitly implements them. Any checked-in Python workflow consumers remain maintainer/eval proof only and are not a second front-door shell.
+- For stateful literature workflows, first initialize the target external project root with `nullius init`, then use `nullius workflow-plan` from that root or with `--project-root`. It resolves recipes directly via `@nullius/literature-workflows`, persists `.nullius/state.json#/plan`, and derives `.nullius/plan.md`. Pass an explicit `--run-id` for meaningful external research runs; if omitted, the derived `<recipe>-<phase>` id is only a planning placeholder. `research_brainstorm` is the lightweight planning-only durable harness form: `nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-topic-r1 --topic "<topic>"` records brainstorm context, candidate angles, screening, one recommendation, and a `next_contract` handoff. `.nullius/plan.md` is a human read model rather than machine orchestration SSOT. The contract may suggest a heavier follow-up recipe such as `literature_landscape` or `literature_gap_analysis`, but it does not start that recipe automatically and it does not depend on any host-native thinking process. The persisted `research_brainstorm.*` step tools are handoff authority, not built-in runtime tools, unless a future external tool caller explicitly implements them. Any checked-in Python workflow consumers remain maintainer/eval proof only and are not a second front-door shell.
 - Delegated agent execution is now durable at the tool boundary: attempts are recorded as `not_started`, `outcome_unknown`, or `committed`, unknown side effects stop for operator reconciliation, and exact committed MCP results are replayed without re-dispatch. Its journals live in structurally separate `artifacts/delegated-runs/direct/<run_id>/` and `artifacts/delegated-runs/team/<runtime_run_id>/` namespaces, so caller-chosen root or direct run ids cannot alias team checkpoints. Approval resolvers remain host/operator-only. When `nullius run` launches a configured stdio MCP server, non-secret settings use `NULLIUS_RUN_MCP_ENV_JSON`, secrets use `NULLIUS_RUN_MCP_CREDENTIALS_JSON`, and mandatory names may be declared with `NULLIUS_RUN_MCP_REQUIRED_CREDENTIALS_JSON`; missing required values fail before spawn.
 
 Persisted workflow-plan execution also journals each dispatch under `artifacts/runs/<run_id>/manifest.json`. An interrupted unknown outcome requires reconciliation; a committed response is replayed without another tool call. Pause is checked at dispatch boundaries, and an approval request keeps its step unfinished until canonical approval permits execution. Overflow recovery retains original user instructions verbatim and complete tool exchanges; an instruction that alone exceeds the window is not silently truncated.
@@ -273,18 +266,9 @@ If you want the current strongest domain-pack smoke path next, connect your MCP 
 
 1. Call `hep_health`.
 1. For durable project work, pass `project_root=/absolute/path/to/external-project` on each HEP tool call.
-1. Call `hep_project_create`.
-1. Call `hep_run_create`.
-1. Inspect the created run manifest from the tool result or from `<project_root>/artifacts/hep-mcp/runs/<run_id>/manifest.json`; for scratch checks without `project_root`, inspect the resolved `HEP_DATA_DIR` run directory.
+1. Call `hep_inspire_search_export` with `project_root` and an `output_dir` such as `artifacts/runs/<run_id>/literature`; inspect the returned project-relative `export_path` / `meta_path` and the per-call external API records under `<output_dir>/external_api/`.
 
-If you want the current strongest end-to-end workflow family, continue with:
-
-1. `hep_run_build_citation_mapping`
-1. `hep_run_build_writing_evidence` or `hep_project_build_evidence`
-1. `hep_render_latex`
-1. `hep_export_project`
-
-HEP projects and runs catalog domain inputs and artifacts; generic lifecycle and approval remain orchestrator-owned. Draft rendering preserves caller-supplied grounding metadata, with omitted flags unknown, and does not verify claims. Export requires BibTeX entries for every cited key.
+Runs, generic lifecycle, and approval remain orchestrator-owned. `hep-mcp` provides no project or evidence catalog, draft rendering, project export, or paper bundling tools; read paper sources with `arxiv_paper_source` / `inspire_paper_source` and record what you check against them in the project's own notes.
 
 ## Documentation
 
@@ -387,3 +371,5 @@ Runtime observations bind the actual report location, so copying signed capture 
 Member origin trusts the configured runner and owning host runtime: the complete runner bytes are recorded, but no runner allowlist or provider attestation is claimed. Offline or injected host execution establishes a local process/callable observation; actual provider capacity evidence requires the corresponding CLI capture. The canonical team cycle performs a postflight source assessment and a separate fresh assessment at the final consumer; both use the configured assessor request/execution budgets.
 
 Local directory links leave notebook dependency closure pending and prevent acceptance. The complete-original joint audit requires exact substantive original-byte anchors for every interval; a reasoning checkbox alone cannot supply coverage.
+
+Research output preservation, path classification, read-only inventory, commit checks and automatic origin-snapshot admission are described in [Research output storage](docs/RUN_STORAGE.md). No storage command deletes data, rewrites history or expires recovery records.

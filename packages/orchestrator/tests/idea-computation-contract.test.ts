@@ -34,8 +34,10 @@ function fixture(fail: boolean | 'missing-output' = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'idea-computation-'));
   roots.push(root);
   const projectRoot = path.join(root, 'project');
-  const runDir = path.join(root, 'provider-data', 'session');
   const runId = 'explicit-domain-operation';
+  // The run's own directory.
+  const runDir = path.join(projectRoot, 'artifacts', 'runs', runId);
+  fs.mkdirSync(projectRoot);
   const handoffPath = path.join(root, 'handoff.json');
   const handoffUri = pathToFileURL(handoffPath).href;
   const handoff = {
@@ -60,7 +62,7 @@ function fixture(fail: boolean | 'missing-output' = false) {
 }
 type Fixture = ReturnType<typeof fixture>;
 async function stage(f: Fixture) {
-  return call('orch_run_stage_idea', { run_id: f.runId, run_dir: f.runDir, handoff_path: f.handoffPath, handoff_uri: f.handoffUri });
+  return call('orch_run_stage_idea', { project_root: f.projectRoot, run_id: f.runId, run_dir: f.runDir, handoff_path: f.handoffPath, handoff_uri: f.handoffUri });
 }
 async function create(f: Fixture) {
   expect((await call('orch_run_create', { project_root: f.projectRoot, run_id: f.runId, workflow_id: 'computation' })).run_id).toBe(f.runId);
@@ -83,7 +85,7 @@ describe('idea computation at the generic owner', () => {
     }
   });
 
-  it('stages an explicit domain directory and preserves outline, hints and file-URI provenance', async () => {
+  it('stages into the run\'s own directory and preserves outline, hints and file-URI provenance', async () => {
     const f = fixture();
     const staged = await stage(f);
     expect(staged.status).toBe('staged');
@@ -121,7 +123,7 @@ describe('idea computation at the generic owner', () => {
     const f = fixture();
     if (kind === 'missing') fs.unlinkSync(f.handoffPath);
     else writeJson(f.handoffPath, { ...f.handoff, idea_card: {} });
-    const result = await handleToolCall('orch_run_stage_idea', { run_id: f.runId, run_dir: f.runDir, handoff_path: f.handoffPath }, 'full');
+    const result = await handleToolCall('orch_run_stage_idea', { project_root: f.projectRoot, run_id: f.runId, run_dir: f.runDir, handoff_path: f.handoffPath }, 'full');
     expect(result.isError).toBe(true);
     expect(fs.existsSync(path.join(f.runDir, 'artifacts'))).toBe(false);
     expect(fs.existsSync(path.join(f.projectRoot, '.nullius'))).toBe(false);
@@ -207,7 +209,7 @@ describe('idea computation at the generic owner', () => {
   it('keeps writing/review bridge refs without attaching provider delegated-launch policy', async () => {
     const f = fixture(); await stage(f); await create(f);
     for (const [content_type, content] of [['section_output', 'existing draft seed'], ['reviewer_report', 'existing review seed']]) {
-      await call('orch_run_stage_content', { run_id: f.runId, run_dir: f.runDir, content_type, content });
+      await call('orch_run_stage_content', { project_root: f.projectRoot, run_id: f.runId, run_dir: f.runDir, content_type, content });
     }
     const result = await approveAndExecute(f, await plan(f));
     expect(result.status).toBe('completed');

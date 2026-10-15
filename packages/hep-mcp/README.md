@@ -1,12 +1,14 @@
 # @nullius/hep-mcp
 
-Current most mature HEP domain pack and end-to-end workflow example. Local stdio MCP server exposing `hep_*` tools for projects, runs, evidence, writing, export, and provider-local composition.
+Current most mature HEP domain pack. Local stdio MCP server exposing `hep_*` tools for literature search exports, identifier and Zotero mappings, and provider-local composition.
 
 ## Layer
 
 Domain workflow pack. The strongest end-to-end example in the repo, but **not the root product identity** — generic lifecycle and contracts live in `@nullius/orchestrator` and `@nullius/shared`. See root [README.md](../../README.md) §3 Layer Model.
 
-Projects, run manifests, artifact URIs and local catalogs belong to this domain pack. They are artifact sessions, not generic lifecycle or approval authority. `hep_render_latex` renders structured drafts without verifying source support or enforcing citation allowlists: omitted `is_grounded` remains unknown, and explicit flags are caller assertions. `hep_export_project` rejects missing BibTeX entries for cited keys; this does not verify the claims themselves.
+`hep-mcp` is a tool package, not generic lifecycle or approval authority. It keeps no runs, paper/evidence projects or evidence catalogs of its own: runs, approvals and lifecycle belong to the orchestrator (`<project_root>/artifacts/runs/<run_id>/`). Tools that produce files (`hep_inspire_search_export`, `hep_inspire_resolve_identifiers`, `hep_import_from_zotero`, `inspire_parse_latex`, `inspire_theoretical_conflicts`, and `inspire_search` when given `output_dir`) write them into a caller-chosen `output_dir`, typically a subdirectory of the current run directory, and return project-relative paths (`export_path`, `meta_path`, `mapping_path`, `path`, `artifacts[].path`). INSPIRE lookups made through the response cache (by `hep_inspire_search_export`, `hep_inspire_resolve_identifiers`, `inspire_search` with `output_dir`, and the INSPIRE resolution step of `hep_import_from_zotero`) are recorded request by request under `<output_dir>/external_api/`; other provider calls (the Zotero local API, the paper fetches of `inspire_theoretical_conflicts`, the source retrieval of `inspire_parse_latex`) are not recorded there. There are no project or evidence catalog, draft rendering, project export or paper bundling tools.
+
+Historical HEP run directories (`runs/<run_id>/` under a HEP data root) and paper/evidence project directories (`projects/<project_id>/`, including evidence catalogs) written by earlier versions are evidence: they stay readable in place and no tool creates or rewrites them. [docs/URI_REGISTRY.md](../../docs/URI_REGISTRY.md) gives the reading rules for historical `hep://runs/...` and `hep://projects/...` references.
 
 ## Aggregated providers
 
@@ -39,6 +41,43 @@ Resolved per tool call, in this order:
 3. `~/.nullius/hep-mcp/` (scratch fallback)
 
 `PDG_DATA_DIR` follows the resolved root by default at `<resolved root>/pdg`.
+
+A `project_root` is admitted as at the other nullius front doors: in canonical
+(symlink-resolved) form, outside any nullius checkout, and initialized. The
+project-local directories a call actually uses must be reached through real
+directories: these are `artifacts/`, `artifacts/hep-mcp/` and
+`artifacts/hep-mcp/pdg/`, and a symlink there (dangling or not) is refused
+rather than followed out of the project. Absolute
+paths compared with the data root, such as `output_dir`, may name the project
+through any alias of its root, while a path that really lands outside it,
+including through a dangling symlink, is refused.
+
+`output_dir` requires `project_root`. It is relative to the project root or
+absolute (any spelling of the root), is created if missing, may not traverse a
+symbolic link below the project root, may not lie under `.nullius/`,
+`team/runs/` or `artifacts/hep-mcp/` (compared ignoring letter case), and may not
+be the project root itself. An output name is one file name (or
+`external_api/<file name>` for API records); the names of one call must be
+distinct even when compared ignoring case and Unicode normalization, and none may
+be `external_api` itself. A request repeated within one call is made and recorded
+once.
+Each output file is staged and flushed first and only then given its name, and
+a call never replaces an existing file: if any file it would write already
+exists, the call is refused, before any provider request when the name is known
+in advance. A call that fails removes the files it had already published, so when
+that cleanup succeeds it leaves all of its files or none. If cleanup fails, the
+error says what is left: published files that could not be removed make it
+UNSAFE_FS, stating that the outputs are incomplete and listing them in
+`files_left` (with any remaining staging files in `staging_left`); staging files
+alone that could not be removed keep the original error, extended with
+`staging_left`; a staging file that could not even be identified is named in
+`staging_path`; and if the removals cannot be flushed to disk, the error is
+UNSAFE_FS saying the cleanup may not survive a crash, with
+`unflushed_directories`. Only a crash of the server process during
+publication can leave part of a set without such a report. Either way, a later
+call naming those files is then
+refused until they are removed. Choose a new `output_dir` (or new artifact names)
+to run a tool again; earlier outputs keep their bytes.
 
 ## Build & run
 

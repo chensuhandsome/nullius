@@ -40,7 +40,7 @@ export { type Span, type SpanStatus, type SpanHandle, type SpanSink, generateSpa
 // Retry Policy (H-19)
 export { type RetryPolicy, DEFAULT_RETRY_POLICY } from './retry-policy.js';
 
-// Discovery (NEW-DISC-01 kickoff)
+// Discovery: provider capability descriptors and evidence artifact contracts
 export * from './discovery/index.js';
 
 // Utils
@@ -82,6 +82,7 @@ export { redact } from './redaction.js';
 // Durable atomic writes (P1) — primitives for POSIX-correct file writes
 export {
   writeBytesAtomicDurable,
+  writeChunksAtomicDurable,
   writeJsonAtomicDurable,
   appendJsonlDurable,
   appendBytesDurable,
@@ -89,6 +90,9 @@ export {
   commitStagedDurable,
   moveEntryDurable,
   fsyncParentDirectoryDurable,
+  fileIdentityOfFd,
+  unlinkIfSameFile,
+  type FileIdentity,
   // Test-only: audit hook for sequence-locking regression tests.
   _setAtomicWriteAuditHook,
   type AtomicWriteAudit,
@@ -167,4 +171,4 @@ export {
   readIntegrityReceipts,
 } from './integrity-receipt.js';
 
-export { canonicalProjectPath, assertExternalProjectRoot } from './project-root.js';
+export { canonicalProjectPath, assertExternalProjectRoot, respellUnderDirectory } from './project-root.js';

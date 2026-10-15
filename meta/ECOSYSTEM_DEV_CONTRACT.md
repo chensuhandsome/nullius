@@ -28,11 +28,13 @@
   "code": "string (错误码)",
   "message": "string (人类可读)",
   "retryable": "boolean",
-  "run_id": "string | null",
+  "run_id": "string | null (仅拥有 run 的组件)",
   "trace_id": "string (UUID v4)",
   "data": "object | null (附加上下文)"
 }
 ```
+
+`run_id` 只属于拥有 run 的组件（orchestrator 等）。不拥有 run 的 provider 包（hep-mcp 及其他 `*-mcp` 包）没有 run 可报，其错误信封不带 `run_id` 字段。
 
 **CI 验证**:
 ```bash
@@ -80,9 +82,9 @@ pnpm --filter @nullius/orchestrator test -- tests/orchestrator-mcp-tools-spec.te
 
 **违规行为**: **fail-closed** — 错误码丢失导致调用方无法区分可重试/不可重试错误
 
-### ERR-04: 错误响应禁止 run_id: null
+### ERR-04: run 上下文中的错误必须带 run_id
 
-**规则**: 当错误发生在 run 上下文中时，`run_id` 必须填充实际值。仅在无 run 上下文时允许 `null`。
+**规则**: 拥有 run 的组件中，错误发生在 run 上下文时，`run_id` 必须填充实际值；仅在无 run 上下文时允许 `null`。不拥有 run 的 provider 包（如 hep-mcp）的错误信封不带此字段（见 ERR-01）。
 
 **CI 验证**:
 ```bash
@@ -143,8 +145,8 @@ pnpm --filter @nullius/orchestrator test -- tests/nullius-cli.test.ts
 
 ```json
 {
-  "uri": "hep://runs/{run_id}/artifact/{name}",
-  "kind": "evidence_catalog | section_draft | token_budget | ...",
+  "uri": "rep://runs/{run_id}/artifact/{artifact_path}",
+  "kind": "section_draft | token_budget | ...",
   "schema_version": 1,
   "sha256": "hex string",
   "size_bytes": 12345,
@@ -157,7 +159,7 @@ pnpm --filter @nullius/orchestrator test -- tests/nullius-cli.test.ts
 ```bash
 # 当前没有独立的 repo-local ArtifactRef validator。
 # 至少保持 artifact / URI authority 相关 contract tests 通过。
-pnpm --filter @nullius/hep-mcp test -- tests/contracts/runArtifactUriAuthority.test.ts
+pnpm --filter @nullius/shared test -- src/__tests__/artifact-ref.test.ts
 ```
 
 **违规行为**: **fail-closed** — 缺少完整性字段的 artifact 引用阻断 CI
@@ -265,21 +267,23 @@ make codegen-check  # 重新生成 → git diff --exit-code */generated/
 
 | 键 | 类型 | 默认值 | 优先级 | 组件 |
 |---|---|---|---|---|
-| `HEP_DATA_DIR` | path | `~/.hep-mcp` | env > .env > default | hep-mcp |
+| `HEP_DATA_DIR` | path | `~/.nullius/hep-mcp` | env > .env > default | hep-mcp |
 | `HEP_TOOL_MODE` | enum | `standard` | env > .env > default | hep-mcp |
 | `HEP_ENABLE_ZOTERO` | bool | `true` | env > .env > default | hep-mcp |
+| `HEP_BUDGET_INSPIRE_SEARCH_PAGE_SIZE` | int | `1000` | tool arg > env > .env > default | hep-mcp |
+| `HEP_BUDGET_INSPIRE_SEARCH_MAX_RESULTS` | int | `10000` | tool arg > env > .env > default | hep-mcp |
+| `HEP_BUDGET_CONCURRENCY` | int | `4` | tool arg > env > .env > default | hep-mcp |
 | `PDG_DB_PATH` | path | (必需) | env > .env | pdg-mcp |
 | `PDG_ARTIFACT_TTL_HOURS` | int | `24` | env > .env > default | pdg-mcp |
 | `ZOTERO_BASE_URL` | URL | `http://127.0.0.1:23119` | env > .env > default | zotero-mcp |
 
 **CI 验证**:
 ```bash
-# 当前没有独立的 repo-local config-key linter。
-# 先由 checked-in config docs + package-local config tests 保持该约束。
-pnpm --filter @nullius/hep-mcp test -- tests/research/config.test.ts
+# 当前没有自动检查未注册配置键的 linter 或测试。
+# 新增配置键须登记在上表，评审时核对。
 ```
 
-**违规行为**: **fail-closed** — 未注册的配置键阻断 CI
+**违规行为**: 评审中发现的未登记配置键应在合入前登记或删除
 
 ### CFG-02: .env 加载一致性
 
@@ -486,7 +490,9 @@ pnpm --filter @nullius/hep-mcp test -- tests/contracts/jsonlStderrLogging.test.t
 
 ### ART-01: 命名规范
 
-**规则**: 所有 artifact 文件名必须符合以下正则：
+**适用范围**: 控制面写入 run 目录（`<project_root>/artifacts/runs/<run_id>/`）、且其格式由 `meta/schemas/` 定义的契约型 artifact。provider 工具写入调用方 `output_dir` 的研究输出不在此列：它们用各工具文档写明的固定名或调用方给定的名字（如 `inspire_search_export_<hash>.jsonl`、`zotero_map_v1.json`、`external_api/` 下的请求/响应记录）。其中 JSON 对象输出在顶层带 `version` 字段；逐行记录文件（`.jsonl`）与纯记录数组（JSON 格式的检索导出、`theoretical_debate_map_v1.json`）不带版本，由同一次调用写出的、带 `version` 的 meta 记录说明。
+
+**规则**: 适用范围内的 artifact 文件名必须符合以下正则：
 
 ```
 ^[a-z]+_[a-z_]+(_\d{3})?_v\d+\.(json|tex|jsonl)$
@@ -505,17 +511,19 @@ pnpm --filter @nullius/hep-mcp test -- tests/contracts/jsonlStderrLogging.test.t
 
 **CI 验证**:
 ```bash
-python3 meta/scripts/lint_artifact_names.py \
-  --pattern '^[a-z]+_[a-z_]+(_\d{3})?_v\d+\.(json|tex|jsonl)$'
+# 当前没有自动的命名 linter：原 lint 只扫描 hep-mcp 的 run 产物写入点，
+# 这些写入点已随 hep-mcp 自带 run 一并移除。新 artifact 的命名在评审时核对。
 ```
 
-**违规行为**: **fail-closed** — 不符合命名规范的新 artifact 阻断 CI
+**违规行为**: 评审中发现的不合规新 artifact 名应在合入前改正
 
-> **例外 (R4)**: 审批 markdown 产物 (`packet_short.md`, `packet.md`) 由 GATE-05 管辖，不受 ART-01 正则约束。lint 脚本中显式豁免。
+> **例外 (R4)**: 审批 markdown 产物 (`packet_short.md`, `packet.md`) 由 GATE-05 管辖，不受 ART-01 正则约束。
 
 ### ART-02: 版本化双标记
 
-**规则**: 所有持久化 artifact 必须同时使用：
+**适用范围**: 同 ART-01（provider 研究输出不在此列，其约定见 ART-01）。
+
+**规则**: 适用范围内的持久化 artifact 必须同时使用：
 1. 文件名 `_v{N}` 后缀
 2. JSON 内 `schema_version: N` 字段（顶层第一个字段）
 
@@ -523,43 +531,43 @@ python3 meta/scripts/lint_artifact_names.py \
 
 **CI 验证**:
 ```bash
-# 当前没有独立的 repo-local artifact-version linter。
-# 先由 codegen / artifact contract tests 保持该约束。
-make codegen-check
+# 当前没有检查 artifact 文件名与 schema_version 一致性的自动检查；
+# make codegen-check 只保证由 meta/schemas 生成的类型代码没有漂移。
+# 新 artifact 的版本双标记在评审时核对。
 ```
 
-**违规行为**: **fail-closed** — 版本不一致阻断 CI
+**违规行为**: 评审中发现的版本不一致应在合入前改正
 
 ### ART-03: 原子写入
 
-**规则**: 所有 artifact 写入必须使用原子操作：write `.tmp` → `fsync` → `rename`。禁止直接 `writeFile` 到最终路径。
+**规则**: 所有 artifact 写入必须是原子的：先完整写入暂存文件并 `fsync`，再赋予最终名字并 `fsync` 所在目录。禁止直接写到最终路径。赋名有两种方式：
+1. **替换式**：`rename` 到最终名，由 `@nullius/shared` 的持久写入原语完成（`writeBytesAtomicDurable`、`writeJsonAtomicDurable`、`commitStagedDurable` 等），用于允许覆盖的文件，例如控制面状态。
+2. **不替换式**：以硬链接（`link`）把暂存文件发布到最终名，遇到已有条目即失败、绝不替换，随后删除暂存名。用于 provider 工具写入调用方 `output_dir` 的研究输出（`packages/hep-mcp/src/core/outputDir.ts`）。一次调用的全部文件先暂存，再逐个发布，失败时撤回已发布的文件；撤回成功则全有或全无；若清理失败，错误会写明残留：已发布的文件删不掉时，错误为 UNSAFE_FS，写明输出不完整并在 `files_left` 中列出它们（残留的暂存文件列在 `staging_left`）；只有暂存文件删不掉时，保留原错误并附 `staging_left`；无法识别的暂存文件在 `staging_path` 中给出；删除之后若无法刷盘，错误为 UNSAFE_FS，说明清理可能经不起崩溃，并在 `unflushed_directories` 中列出相应目录。只有发布途中进程崩溃才可能留下未被报告的部分文件。之后点名这些文件的调用都会被拒绝。
 
 **CI 验证**:
 ```bash
-# lint: 检查 writeFile/open('w') 调用是否使用 atomicWrite 封装
-grep -rn 'writeFile\|writeFileSync' packages/hep-mcp/src/ \
-  | grep -v 'atomicWriteFile\|node_modules\|test' && exit 1 || exit 0
+# 拒绝生产代码中裸的 writeFile/rename/appendFile 调用（允许清单与理由见脚本）
+node scripts/check-atomic-write-anti-drift.mjs
 ```
+不替换式发布不经 `rename`，不在该脚本的禁止模式内，其行为由 `packages/hep-mcp/tests/core/outputDirContainment.test.ts` 与 `outputDirStaging.test.ts` 覆盖。
 
-**违规行为**: **fail-closed** — 非原子写入阻断 CI
-
-> **CI 升级路径**: 当前 grep 检查为临时实现。Phase 3 升级为 AST-based lint，精确匹配非 `atomicWriteFile` 封装的写入调用。
+**违规行为**: **fail-closed** — 裸写入阻断 CI
 
 ### ART-04: 载荷大小限制
 
-**规则**: MCP tool result 最大 100KB。超限必须溢出到 artifact + 返回 `{truncated: true, artifact_uri, summary}`。
+**规则**: 会产生大量记录的工具把完整结果写入调用方指定的位置（如 hep-mcp 的 `output_dir`），只返回路径与摘要。其余 tool result 文本超过 `HARD_CAP_RESULT_BYTES`（按 UTF-8 字节计）时在字符边界截断并附截断标记，在 `MAX_INLINE_RESULT_BYTES` 与 `HARD_CAP_RESULT_BYTES` 之间则原样返回。`STDIO_MAX_RESULT_BYTES`（100KB）是这组上限的上界常量；stdio 封装另加的转义开销不在上述字节数内，目前也没有单独的运行时拦截。
 
 **CI 验证**:
 ```bash
-# 契约测试: 超限 payload 必须转成 artifact/backpressure path
-pnpm --filter @nullius/hep-mcp test -- tests/contracts/payloadBackpressure.test.ts
+# 契约测试: 内联上限 < 截断上限 < stdio 上限 的层级，以及按 UTF-8 字节截断
+pnpm --filter @nullius/hep-mcp test -- tests/contracts/payloadBackpressure.test.ts tests/contracts/resultTruncation.test.ts
 ```
 
-**违规行为**: **fail-closed** — 超限未截断的 tool result 阻断（运行时拦截）
+**违规行为**: 超过截断上限而未截断的 tool result 属缺陷，须在合入前修正
 
 ### ART-05: 完整性验证
 
-**规则**: 质量关键步骤（写作流水线 submit_*）在消费 artifact 前必须验证 `ArtifactRefV1.sha256` + `size_bytes`。
+**规则**: 消费 `ArtifactRefV1` 的验证与审查步骤在读取 artifact 前必须核对 `sha256` 与 `size_bytes`（orchestrator 的 `loadVerifiedRunJson` / `resolveVerifiedRunArtifact`）。
 
 研究笔记正文审查复用 verification subject/check-run/verdict/coverage 与
 `ArtifactRef`，作为 supporting semantic check，不得冒充计算的 decisive validation。
@@ -583,8 +591,8 @@ reviewer 的模型、方法与输入独立性局限必须保留。
 
 **CI 验证**:
 ```bash
-# 契约测试: 篡改 artifact 内容 → 验证 submit 拒绝
-pnpm --filter @nullius/hep-mcp test -- tests/core/writingEvidence.test.ts
+# 契约测试: 篡改审查证据 → 拒绝而不是沿用旧的通过
+pnpm --filter @nullius/orchestrator test -- tests/notebook-content-review.test.ts
 ```
 
 **违规行为**: **fail-closed** — 完整性校验失败拒绝处理
@@ -608,12 +616,9 @@ pnpm --filter @nullius/orchestrator test -- tests/nullius-cli.test.ts
 
 **规则**: 解压/解析不可信内容 (archive, PDF, LaTeX) 必须强制：Zip Slip 防护、最大解压字节数 (500MB)、最大文件数 (10000)、单任务超时。
 
-**CI 验证**:
-```bash
-pnpm --filter @nullius/hep-mcp test -- tests/core/sandbox.test.ts
-```
+**CI 验证**: 目前没有自动检验。此前列出的 `tests/core/sandbox.test.ts` 检验的是一个从未接入任何摄入路径的 ZIP 解压器，已随该模块一并删除（2026-10-12）。当前在用的归档摄入路径是 arXiv 源码包解压（`packages/arxiv-mcp/src/source/tarExtractor.ts`）：拒绝越出目标目录的条目，只接收普通文件与目录；最大解压字节数与最大文件数尚未强制，越界拒绝也没有专门测试，两者仍待补充。
 
-**违规行为**: **fail-closed** — 未沙箱化的摄入路径阻断 CI
+**违规行为**: **fail-closed** — 未沙箱化的摄入路径阻断 CI（在上述检验补上之前，没有机制执行这一点）
 
 ### SEC-03: 工具风险分级与破坏性调用确认
 
@@ -857,7 +862,7 @@ if (internal.length) { console.error('PLUG-01:', internal); process.exit(1); }
 | **ERR** | ERR-01 统一错误信封 | fail-closed | lint: 裸 throw/raise 检查 |
 | | ERR-02 retryable 标记 | fail-closed | 错误码注册表完整性 |
 | | ERR-03 错误码保留 | fail-closed | 契约测试 |
-| | ERR-04 run_id 非 null | fail-open | 集成测试 |
+| | ERR-04 run 上下文错误带 run_id（仅拥有 run 的组件） | fail-open | 集成测试 |
 | **ID** | ID-01 Prefixed ID | fail-open | lint: ID 格式检查 |
 | | ID-02 跨组件引用模型 | fail-open | 契约测试 |
 | | ID-03 ArtifactRef V1 | fail-closed | 工具返回值检查 |
@@ -868,7 +873,7 @@ if (internal.length) { console.error('PLUG-01:', internal); process.exit(1); }
 | | SYNC-05 跨组件冒烟矩阵 | fail-closed | standard/full 冒烟测试 |
 | | SYNC-06 跨语言类型代码生成 | fail-closed | codegen diff 检查 |
 | | SYNC-07 新技能接线同步 | fail-open（review 阻断） | 验收清单 + market 依赖测试 |
-| **CFG** | CFG-01 配置键注册表 | fail-closed | lint: 未注册键检查 |
+| **CFG** | CFG-01 配置键注册表 | fail-open（review 阻断） | 评审核对 |
 | | CFG-02 .env 加载一致性 | fail-closed | 集成测试 |
 | | CFG-03 env 传播白名单 | fail-closed | 交叉验证 |
 | | CFG-04 配置回显 | fail-open | 冒烟测试 |
@@ -881,13 +886,13 @@ if (internal.length) { console.error('PLUG-01:', internal); process.exit(1); }
 | | LOG-02 trace_id 透传 | fail-open | 集成测试 |
 | | LOG-03 Ledger 事件枚举 | fail-closed | lint 检查 |
 | | LOG-04 日志脱敏 | fail-closed | secrets 模式 grep |
-| **ART** | ART-01 命名规范 | fail-closed | 正则 lint |
-| | ART-02 版本化双标记 | fail-closed | 一致性检查 |
-| | ART-03 原子写入 | fail-closed | lint: writeFile 检查 |
+| **ART** | ART-01 命名规范 | fail-open（review 阻断） | 评审核对 |
+| | ART-02 版本化双标记 | fail-open（review 阻断） | 评审核对 |
+| | ART-03 原子写入 | fail-closed | check-atomic-write-anti-drift |
 | | ART-04 载荷大小限制 | fail-closed | 集成测试 |
 | | ART-05 完整性验证 | fail-closed | 契约测试 |
 | **SEC** | SEC-01 执行适配器隔离 | fail-closed | 沙箱测试 |
-| | SEC-02 不可信内容摄入沙箱 | fail-closed | 解压/解析测试 |
+| | SEC-02 不可信内容摄入沙箱 | fail-closed | 解压/解析测试（待补） |
 | | SEC-03 工具风险分级 | staged fail-closed | risk_level 声明检查 |
 | **NET** | NET-01 出口域名白名单 | fail-closed | 白名单 lint |
 | **RES** | RES-01 重试/退避/取消契约 | fail-closed | 重试策略测试 |

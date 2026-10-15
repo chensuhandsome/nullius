@@ -8,9 +8,9 @@ with per-backend timeout and structured summary output.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
+import select
 import shutil
 import signal
 import subprocess
@@ -20,6 +20,97 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
+
+
+# After a timeout the child (run_multi_task) needs up to 2 s to stop its
+# runners' own process groups on SIGTERM; SIGKILL follows only after this.
+_STOP_GRACE_SECS = 5.0
+
+
+class _ChildReapingError(RuntimeError):
+    """The CLI is not, or may no longer be, kept unreaped until its group is
+    stopped. While SIGCHLD is ignored (an ignored SIGCHLD survives exec) the
+    kernel reaps an exited child itself, and the number of the group it led
+    may be reissued; nothing may be signalled by that number then."""
+
+
+def _sigchld_ignored() -> bool:
+    return signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN
+
+
+def _child_exited(pid: int, timeout: float) -> bool:
+    """Whether the child exited within timeout seconds; never reaps it.
+
+    An exited, unreaped child stays a zombie that keeps its pid, and with it
+    the number of the process group it leads. Raises _ChildReapingError when
+    the child may already have been reaped elsewhere.
+    """
+    if hasattr(select, "kqueue"):  # macOS CPython has no os.waitid
+        queue = select.kqueue()
+        try:
+            try:
+                queue.control([select.kevent(pid, select.KQ_FILTER_PROC,
+                                             select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                             select.KQ_NOTE_EXIT)], 0, 0)
+                exited = bool(queue.control(None, 1, timeout))
+            except ProcessLookupError:
+                exited = True  # a zombie, which the kernel refuses to watch, or a reaped pid
+        finally:
+            queue.close()
+        # ESRCH does not tell a zombie from a reaped pid; only an unignored
+        # SIGCHLD guarantees that an exited child is kept as a zombie.
+        if exited and _sigchld_ignored():
+            raise _ChildReapingError(f"CLI {pid} exited while SIGCHLD is ignored")
+        return exited
+    deadline = time.monotonic() + timeout
+    delay = 0.001
+    try:
+        while os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            time.sleep(min(delay, left))
+            delay = min(2 * delay, 0.05)
+    except ChildProcessError:  # ECHILD: not even a zombie is left
+        raise _ChildReapingError(f"CLI {pid} was reaped outside this supervisor") from None
+    return True
+
+
+def _signal_group(pgid: int, signum: int) -> bool:
+    try:
+        os.killpg(pgid, signum)
+    except (ProcessLookupError, PermissionError):
+        return False  # macOS: EPERM when only the zombie leader is left
+    return True
+
+
+def _group_has_live_member(pgid: int) -> bool:
+    """killpg(pgid, 0) answers on macOS (EPERM once only the zombie leader is
+    left); on Linux the zombie leader still counts there, so read /proc."""
+    if not sys.platform.startswith("linux"):
+        return _signal_group(pgid, 0)
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return _signal_group(pgid, 0)
+    for entry in entries:
+        if entry.isdigit():
+            try:
+                with open(f"/proc/{entry}/stat") as stream:
+                    fields = stream.read().rsplit(")", 1)[1].split()
+            except OSError:
+                continue
+            if int(fields[2]) == pgid and fields[0] not in "ZX":
+                return True
+    return False
+
+
+def _stop_group(pgid: int) -> None:
+    if _signal_group(pgid, signal.SIGTERM):
+        deadline = time.monotonic() + _STOP_GRACE_SECS
+        while _group_has_live_member(pgid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        _signal_group(pgid, signal.SIGKILL)
 
 
 @dataclass
@@ -32,34 +123,39 @@ class CmdResult:
 
 
 def _run_with_timeout(cmd: list[str], timeout_sec: int) -> CmdResult:
+    if _sigchld_ignored():  # main() sets it to its default at startup
+        raise _ChildReapingError(
+            "SIGCHLD is ignored in this process, so the kernel would reap the exited CLI and "
+            "its process-group number could be reissued before the group is stopped; "
+            "set SIGCHLD to SIG_DFL first")
     start = time.monotonic()
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
+    # Files, not pipes: communicate() would reap the CLI as soon as its pipes
+    # close, before its group (descendants may outlive it) could be stopped.
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(cmd, stdout=out, stderr=err, start_new_session=True)
+        reaped_elsewhere = False
+        try:
+            timed_out = not _child_exited(proc.pid, timeout_sec)
+        except _ChildReapingError:
+            reaped_elsewhere = True  # the pid no longer names the CLI's group
+            raise
+        finally:
+            # Unreaped, so the pid still names the CLI's group, on a normal
+            # exit and at the deadline alike; reap only after the stop.
+            if not reaped_elsewhere:
+                _stop_group(proc.pid)
+            returncode = proc.wait()
+        out.seek(0)
+        err.seek(0)
+        stdout = out.read().decode("utf-8", errors="replace")
+        stderr = err.read().decode("utf-8", errors="replace")
+    return CmdResult(
+        timed_out=timed_out,
+        exit_code=None if timed_out else returncode,
+        stdout=stdout,
+        stderr=stderr,
+        elapsed_sec=time.monotonic() - start,
     )
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout_sec)
-        return CmdResult(
-            timed_out=False,
-            exit_code=proc.returncode,
-            stdout=stdout,
-            stderr=stderr,
-            elapsed_sec=time.monotonic() - start,
-        )
-    except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        stdout, stderr = proc.communicate()
-        return CmdResult(
-            timed_out=True,
-            exit_code=None,
-            stdout=stdout,
-            stderr=stderr,
-            elapsed_sec=time.monotonic() - start,
-        )
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -185,6 +281,9 @@ def _print_summary(rows: list[dict[str, Any]], root: Path, summary_json: Path) -
 
 
 def main() -> int:
+    # Keep each exited CLI a zombie until it is reaped here: an ignored SIGCHLD
+    # survives exec and would let the kernel reap it at once.
+    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--backends",

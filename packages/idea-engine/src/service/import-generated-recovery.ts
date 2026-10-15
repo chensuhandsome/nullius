@@ -1,9 +1,9 @@
-import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { basename, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import type { IdeaEngineStore } from '../store/engine-store.js';
 import { canonicalJson, payloadHash } from '../hash/payload-hash.js';
-import { writeJsonFileAtomic } from '../store/file-io.js';
+import { writeJsonFileAtomic, writeTextFileAtomic } from '../store/file-io.js';
 import { exhaustedDimensions } from './budget-snapshot.js';
 import { RpcError } from './errors.js';
 import { NOVELTY_DELTA_CLAIM_DELIMITER } from './node-shared.js';
@@ -304,9 +304,7 @@ function updateNodeLogRefs(
   if (!changed) {
     return;
   }
-  const tempPath = `${logPath}.tmp`;
-  writeFileSync(tempPath, lines.join('\n'), 'utf8');
-  renameSync(tempPath, logPath);
+  writeTextFileAtomic(logPath, lines.join('\n'));
 }
 
 function legacyFileBasename(artifactRef: string): string | null {

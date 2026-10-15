@@ -243,7 +243,7 @@ describe('staged idea artifacts contract', () => {
     const hintsSnapshot = JSON.parse(fs.readFileSync(hintsSnapshotPath, 'utf-8')) as {
       source_handoff_uri: string;
     };
-    hintsSnapshot.source_handoff_uri = 'hep://runs/other-run/artifact/other_handoff.json';
+    hintsSnapshot.source_handoff_uri = 'provider://records/other-run/artifact/other_handoff.json';
     writeJson(hintsSnapshotPath, hintsSnapshot);
 
     expect(() => loadStagedIdeaSurfaceFromRunDir(runDir)).toThrow(

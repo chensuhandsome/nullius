@@ -43,7 +43,7 @@ function extractPayload(res: unknown): Record<string, unknown> {
 }
 
 function createFeedbackBridgeRun(runId: string, projectRoot: string) {
-  const runDir = path.join(projectRoot, runId);
+  const runDir = path.join(projectRoot, 'artifacts', 'runs', runId);
   fs.mkdirSync(runDir, { recursive: true });
   const executionPlan = compileExecutionPlan(runId, {
     outline_seed_path: 'artifacts/outline_seed_v1.json',
@@ -191,7 +191,8 @@ describe('orch_run_progress_followups', () => {
     const runId = 'run-progress-writing-review';
     registerCleanup(projectRoot);
 
-    const { runDir, manifestPath } = createWritingBridgeRun(runId, projectRoot);
+    // The progress tool works only in the run's own directory.
+    const { runDir, manifestPath } = createWritingBridgeRun(runId, projectRoot, path.join(projectRoot, 'artifacts', 'runs', runId));
     stageContextArtifact(runDir, 'section_output', 'draft-seed');
     stageContextArtifact(runDir, 'reviewer_report', 'review-seed');
     const manager = initRunState(projectRoot, runId);
@@ -215,6 +216,7 @@ describe('orch_run_progress_followups', () => {
     const reviewTask = computationResult.workspace_feedback.tasks.find(task => task.kind === 'review')!;
     const responseQueue = [
       toolUseResponse('tu_stage_draft', 'orch_run_stage_content', {
+        project_root: projectRoot,
         run_id: runId,
         run_dir: runDir,
         content_type: 'section_output',
@@ -224,6 +226,7 @@ describe('orch_run_progress_followups', () => {
       }),
       textResponse('draft follow-up complete'),
       toolUseResponse('tu_stage_review_report', 'orch_run_stage_content', {
+        project_root: projectRoot,
         run_id: runId,
         run_dir: runDir,
         content_type: 'reviewer_report',
@@ -232,6 +235,7 @@ describe('orch_run_progress_followups', () => {
         task_kind: 'review',
       }),
       toolUseResponse('tu_stage_review_decision', 'orch_run_stage_content', {
+        project_root: projectRoot,
         run_id: runId,
         run_dir: runDir,
         content_type: 'judge_decision',

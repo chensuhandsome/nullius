@@ -25,6 +25,6 @@ index 0000000..1111111 100644
 
 ## Artifact pointers
 
-- hep://runs/EXAMPLE/artifacts/paper_bundle.zip
-- hep://runs/EXAMPLE/artifacts/references.bib
-- hep://runs/EXAMPLE/artifacts/build_log.txt
+- /absolute/path/to/project/artifacts/runs/EXAMPLE/paper_bundle.zip
+- /absolute/path/to/project/artifacts/runs/EXAMPLE/references.bib
+- /absolute/path/to/project/artifacts/runs/EXAMPLE/build_log.txt

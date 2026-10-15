@@ -1,6 +1,6 @@
 import { expect } from 'vitest';
 
-export type ProofSurface = 'sem04' | 'sem05' | 'sem12';
+export type ProofSurface = 'sem04' | 'sem05';
 
 export type ProofInput =
   | {
@@ -20,14 +20,6 @@ export type ProofInput =
         paper: Record<string, unknown>;
         comments_exist?: boolean;
       };
-    }
-  | {
-      surface: 'sem12';
-      payload: {
-        paper: Record<string, unknown>;
-        candidates: Array<Record<string, unknown>>;
-        sampling_response: Record<string, unknown> | null;
-      };
     };
 
 export type ProofExpected = {
@@ -37,13 +29,13 @@ export type ProofExpected = {
 };
 
 export type ProofMetadata = {
-  quality_dimension: 'evidence_sufficiency' | 'provenance_sufficiency' | 'fail_closed';
+  quality_dimension: 'evidence_sufficiency' | 'fail_closed';
   why_this_is_proof: string;
   why_not_proxy: string;
   contamination_risk: 'low' | 'medium' | 'high';
   trace_expectation: 'baseline_locked_single_trace';
   rubric: {
-    dimension: 'evidence_sufficiency' | 'provenance_sufficiency' | 'fail_closed';
+    dimension: 'evidence_sufficiency' | 'fail_closed';
     expected_trace: ProofExpected;
     invariants: string[];
   };
@@ -59,14 +51,12 @@ export type ProofNormalizedActual = {
 
 export const PRIMARY_PROOF_TAG_BY_DIMENSION = {
   evidence_sufficiency: 'proof:evidence_sufficiency',
-  provenance_sufficiency: 'proof:provenance_sufficiency',
   fail_closed: 'proof:fail_closed',
 } as const;
 
 export const ALLOWED_PROOF_TAGS = [
   'proof:evidence_sufficiency',
   'proof:fail_closed',
-  'proof:provenance_sufficiency',
   'proof:trace_conformance',
 ] as const;
 
@@ -74,7 +64,6 @@ export const ALLOWED_AGGREGATE_METRICS = [
   'evidence_sufficiency',
   'fail_closed',
   'overall_gate_pass_rate',
-  'provenance_sufficiency',
   'trace_conformance',
 ] as const;
 
@@ -85,14 +74,6 @@ export const EXPECTED_PROOF_TAGS_BY_CASE = {
     'proof:trace_conformance',
   ],
   sem05_keyword_signal_stays_fail_closed: [
-    'proof:fail_closed',
-    'proof:trace_conformance',
-  ],
-  sem12_provenance_match_is_sufficient: [
-    'proof:provenance_sufficiency',
-    'proof:trace_conformance',
-  ],
-  sem12_missing_sampling_is_visible: [
     'proof:fail_closed',
     'proof:trace_conformance',
   ],
@@ -141,14 +122,6 @@ export function passesEvidenceSufficiency(actual: ProofNormalizedActual): boolea
     && actual.state.relation === 'unclear';
 }
 
-export function passesProvenanceSufficiency(actual: ProofNormalizedActual): boolean {
-  return actual.verdict === 'matched'
-    && actual.reason_code === 'semantic_content_match'
-    && actual.state.provenance_status === 'applied'
-    && typeof actual.state.matched_recid === 'string'
-    && String(actual.state.matched_recid).length > 0;
-}
-
 export function passesFailClosed(actual: ProofNormalizedActual): boolean {
   return (actual.verdict === 'unavailable' || actual.verdict === 'sampling_unavailable' || actual.verdict === 'abstained')
     && (actual.reason_code === 'sampling_required' || actual.reason_code === 'sampling_unavailable' || actual.reason_code === 'model_abstained')
@@ -167,16 +140,6 @@ export function evaluateInvariant(invariant: string, actual: ProofNormalizedActu
       return actual.verdict === 'unavailable' || actual.verdict === 'sampling_unavailable';
     case 'claim_words_must_not_create_semantic_authority':
       return actual.state.provenance_status === 'unavailable' && actual.state.paper_type === 'uncertain';
-    case 'matched_recid_must_be_present':
-      return typeof actual.state.matched_recid === 'string' && String(actual.state.matched_recid).length > 0;
-    case 'provenance_status_must_be_applied':
-      return actual.state.provenance_status === 'applied';
-    case 'semantic_match_cannot_be_prior_only':
-      return actual.reason_code === 'semantic_content_match';
-    case 'missing_sampling_must_not_guess_match':
-      return !('matched_recid' in actual.state) || actual.state.matched_recid === null;
-    case 'unavailable_status_must_be_explicit':
-      return actual.state.provenance_status === 'unavailable';
     default:
       return false;
   }
@@ -186,7 +149,6 @@ export function evaluateRubric(actual: ProofNormalizedActual, metadata: ProofMet
   const { dimension, expected_trace, invariants } = metadata.rubric;
   if (!matchesExpected(actual, expected_trace)) return false;
   if (dimension === 'evidence_sufficiency' && !passesEvidenceSufficiency(actual)) return false;
-  if (dimension === 'provenance_sufficiency' && !passesProvenanceSufficiency(actual)) return false;
   if (dimension === 'fail_closed' && !passesFailClosed(actual)) return false;
   return invariants.every(invariant => evaluateInvariant(invariant, actual));
 }
@@ -195,7 +157,6 @@ export function validateProofMetadata(metadata: unknown): asserts metadata is Pr
   expect(metadata).toBeTruthy();
   const record = metadata as Record<string, unknown>;
   expect(record.quality_dimension === 'evidence_sufficiency'
-    || record.quality_dimension === 'provenance_sufficiency'
     || record.quality_dimension === 'fail_closed').toBe(true);
   expect(typeof record.why_this_is_proof).toBe('string');
   expect(String(record.why_this_is_proof).length).toBeGreaterThan(20);

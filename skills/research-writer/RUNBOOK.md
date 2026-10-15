@@ -8,9 +8,9 @@
 bash scripts/bin/research_writer_scaffold.sh --project-root /path/to/project --tag M1-r1 --out paper/
 ```
 
-### 1b) Consume an MCP-exported `paper/` scaffold (deterministic publisher)
+### 1b) Consume an externally produced `paper/` scaffold (deterministic publisher)
 
-If a separate agent / `hep-mcp` / `@nullius/hep-mcp` already exported a `paper/` directory, `research-writer` can validate + apply deterministic hygiene + (optionally) compile it using a single entrypoint:
+If a separate agent or pipeline already exported a `paper/` directory, `research-writer` can validate + apply deterministic hygiene + (optionally) compile it using a single entrypoint:
 
 - Manifest entrypoint: `paper/paper_manifest.json`
 - Audit log: `paper/build_trace.jsonl`
@@ -211,116 +211,57 @@ Outputs are written under `<out-dir>/distill/`:
 Then (agent/human step): manually merge selected high-confidence patterns into:
 - `assets/style/physics_discussion_logic_playbook.md`
 
-### 9) Evidence-grounded writing via hep-mcp (detailed tool-call recipes)
+### 9) Evidence lookup via hep-mcp (detailed tool-call recipes)
 
-Full payloads for the four-step evidence-grounded workflow summarized in `SKILL.md`.
-Prereqs: a hep-mcp project with at least one paper's LaTeX source ingested, and a run
-with evidence artifacts (catalog + embeddings) built.
+Payloads for the three-step evidence lookup summarized in `SKILL.md`. Pass
+`project_root` on every call when the work belongs to an initialized Nullius
+project.
 
-**Step 1 — Build evidence corpus** (produces `latex_evidence_catalog.jsonl`, `latex_evidence_embeddings.jsonl`, `latex_evidence_enrichment.jsonl`):
+**Step 1 — Fetch each cited source** (LaTeX source preferred, PDF otherwise):
 
 ```
-hep_run_build_writing_evidence({
-  run_id: "<run_id>",
-  latex_sources: [
-    { identifier: "<arXiv_id_or_DOI>", include_inline_math: true, include_cross_refs: false }
-  ],
-  latex_types: ["paragraph", "equation", "figure", "table", "citation_context"],
-  max_evidence_items: 2000,
-  embedding_dim: 256,
-  continue_on_error: false
+arxiv_paper_source({
+  arxiv_id: "<arXiv_id>",
+  mode: "content",
+  prefer: "latex"
 })
 ```
 
-**Step 2 — Build citation mapping** (produces `citekey_to_inspire_v1.json`, used later by `hep_render_latex`):
+or, starting from an INSPIRE recid, arXiv id or DOI:
 
 ```
-hep_run_build_citation_mapping({
-  run_id: "<run_id>",
-  identifier: "<arXiv_id_or_DOI>",
-  allowed_citations_primary: [],
-  include_mapped_references: true
+inspire_paper_source({
+  identifier: "<recid_or_arXiv_id_or_DOI>",
+  mode: "content",
+  options: { prefer: "latex" }
 })
 ```
 
-**Step 3 — Section-by-section drafting with evidence retrieval.** For each outline section, before writing prose, query evidence (lexical or, for concept-level queries, semantic):
+**Step 2 — Read per section.** For each outline section, before writing prose,
+read in the fetched source the passages the section will rely on, and note
+where each one is (section, equation number, page).
+
+**Step 3 — Draft and cite.** Read the source and check that it supports the
+sentence before treating the sentence as supported. Cite with keys present in
+`paper/references.bib`; INSPIRE citekeys and BibTeX for recids come from:
 
 ```
-hep_project_query_evidence({
-  project_id: "<project_id>",
-  query: "<section topic keywords>",
-  mode: "lexical",         // or "semantic" (requires run_id)
-  run_id: "<run_id>",      // required for semantic mode
-  types: ["paragraph", "equation", "citation_context"],
-  limit: 10
+inspire_resolve_citekey({
+  recids: ["<recid>", "<recid>"]
 })
 ```
 
-```
-hep_project_query_evidence_semantic({
-  run_id: "<run_id>",
-  project_id: "<project_id>",
-  query: "<conceptual description of section content>",
-  types: ["paragraph", "equation"],
-  limit: 10
-})
-```
-
-Read the source and check that it supports the sentence before declaring `is_grounded: true`. Record `evidence_ids` (catalog items used) and `recids` (INSPIRE ids). Omit the flag while support is unknown, or use `false` when unsupported. The following SectionDraft assumes that its sentence has already been checked; the flag itself does not perform verification:
-
-```json
-{
-  "version": 1,
-  "title": "Section Title",
-  "paragraphs": [
-    {
-      "sentences": [
-        {
-          "sentence": "Plain text sentence.",
-          "sentence_latex": "LaTeX-formatted sentence with $\\alpha_s$.",
-          "type": "fact",
-          "is_grounded": true,
-          "claim_ids": [],
-          "evidence_ids": ["ev_abc123"],
-          "recids": ["1234567"]
-        }
-      ]
-    }
-  ]
-}
-```
-
-**Step 4 — Render + export.** Render the structured draft to LaTeX with citations, then export the research pack. Rendering does not check source support or enforce citation allowlists and produces no verification report. Export rejects missing BibTeX entries for cited keys:
-
-```
-hep_render_latex({
-  run_id: "<run_id>",
-  draft: <ReportDraft>,
-  cite_mapping: <citekey_to_inspire_v1.json contents>,
-  latex_artifact_name: "rendered_latex.tex",
-  section_output_artifact_name: "rendered_section_output.json"
-})
-```
-
-```
-hep_export_project({
-  run_id: "<run_id>",
-  rendered_latex_artifact_name: "rendered_latex.tex",
-  include_evidence_digests: true,
-  _confirm: true
-})
-```
-
-`hep_export_project` produces `master.bib`, `report.tex`, `report.md`, `research_pack.zip`, and NotebookLM-friendly chunks.
+Note, next to the draft, the passage locations and recids each claim-bearing
+sentence relies on. hep-mcp has no draft rendering or export step; the
+manuscript is written and compiled in `paper/` (sections 1–2).
 
 End-to-end flow:
 
 ```
-evidence catalog ──→ evidence query (per section) ──→ grounded draft ──→ render LaTeX ──→ export
-      ↑                                                     │
-      │                                                     ↓
-  source papers                                    citation mapping
-  (arXiv LaTeX)                                   (INSPIRE recids)
+source papers ──→ read passages (per section) ──→ checked draft in paper/
+(arXiv LaTeX / PDF)                                     │
+                                                        ↓
+                                     citekeys + BibTeX (INSPIRE recids)
 ```
 
 ## Debugging

@@ -37,7 +37,7 @@
  * ## KNOWN LIMITATIONS
  *
  * 1. Only backtick'd tokens are checked. SKILL.md prose like
- *    "hep_project_query_evidence returns ..." (no backticks) is invisible
+ *    "inspire_search returns ..." (no backticks) is invisible
  *    to the lint. Convention is to backtick all tool names in SKILL.md;
  *    review-time reviewers should call out missing backticks. Loosening
  *    to bare prose would require an exclusion list for parameter names
@@ -153,8 +153,8 @@ function extractRealTools(sourceRel) {
     const m = REAL_TOOL_DECL_RE.exec(line);
     if (!m) continue;
     const [, constName, value] = m;
-    // Filter out prefix sentinels: HEP_RUN_PREFIX = 'hep_run_' is a guard
-    // value, not a real tool.
+    // Filter out prefix sentinels (e.g. a `*_PREFIX = 'xyz_'` guard value):
+    // they are not real tools.
     if (constName.endsWith('_PREFIX')) continue;
     if (value.endsWith('_')) continue;
     tools.add(value);

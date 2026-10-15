@@ -4,13 +4,8 @@ import { getToolSpecs, getTools, handleToolCall } from '../src/tools/index.js';
 import { zodToMcpInputSchema } from '../src/tools/mcpSchema.js';
 import type { ToolExposureMode, ToolSpec } from '../src/tools/registry.js';
 import { HEP_TOOL_RISK_LEVELS, type ToolRiskLevel } from '../src/tool-risk.js';
-import * as T from '../src/tool-names.js';
 import { InspireSearchToolSchema } from '../src/tools/registry/inspireSchemas.js';
-import {
-  HepRunBuildMeasurementsToolSchema,
-  HepProjectQueryEvidenceToolSchema,
-  HepProjectCompareMeasurementsToolSchema,
-} from '../src/tools/registry/projectSchemas.js';
+import { HepImportFromZoteroToolSchema } from '../src/tools/registry/projectSchemas.js';
 
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') {
@@ -113,41 +108,32 @@ describe('Tool registry contracts (M2)', () => {
     expect((tool?.inputSchema as any).properties.identifier.description).toContain('size is tolerated and ignored');
   });
 
-  it('inspire_search falls back to defaults for invalid max_results budgets', () => {
-    const parsed = InspireSearchToolSchema.parse({
-      query: 'qcd',
-      max_results: -100,
-      page: '\r\t-5',
-    });
-    expect(parsed.max_results).toBe(100);
-    expect(parsed.page).toBe(1);
+  // The tools that write output files refuse a limit that is not a whole
+  // number in range instead of replacing it by the default; a digit string is
+  // still read as its number.
+  it('inspire_search refuses invalid max_results and page values instead of using defaults', () => {
+    expect(InspireSearchToolSchema.safeParse({ query: 'qcd', max_results: -100 }).success).toBe(false);
+    expect(InspireSearchToolSchema.safeParse({ query: 'qcd', page: '\r\t-5' }).success).toBe(false);
+    expect(InspireSearchToolSchema.safeParse({ query: 'qcd', size: 2000 }).success).toBe(false);
+    const parsed = InspireSearchToolSchema.parse({ query: 'qcd', max_results: ' 50 ', page: '2' });
+    expect(parsed.max_results).toBe(50);
+    expect(parsed.page).toBe(2);
   });
 
-  it('hep_run_build_measurements no longer clamps invalid max_results; it falls back to default', () => {
-    const parsed = HepRunBuildMeasurementsToolSchema.parse({
-      run_id: 'run-1',
-      max_results: 999999,
-    });
-    expect(parsed.max_results).toBe(500);
+  it('hep_import_from_zotero refuses an out-of-range concurrency instead of using the default', () => {
+    expect(HepImportFromZoteroToolSchema.safeParse({ output_dir: 'out', item_keys: ['ABCD1234'], concurrency: 999 }).success).toBe(false);
+    expect(HepImportFromZoteroToolSchema.parse({ output_dir: 'out', item_keys: ['ABCD1234'], concurrency: '8' }).concurrency).toBe(8);
   });
 
-  it('hep_project_query_evidence falls back to defaults for invalid concurrency/limit budgets', () => {
-    const parsed = HepProjectQueryEvidenceToolSchema.parse({
-      project_id: 'project-1',
-      query: 'beta function',
-      concurrency: -100,
-      limit: '\r\t999',
-    });
-    expect(parsed.concurrency).toBe(4);
-    expect(parsed.limit).toBe(10);
+  it('the strict limits keep publishing their bounds in the input schema', () => {
+    const tool = getTools('standard').find(t => t.name === 'inspire_search');
+    expect((tool?.inputSchema as any).properties.size).toMatchObject({ type: 'integer', minimum: 1, maximum: 1000, default: 25 });
   });
 
   it('non-budget numeric params remain fail-closed', () => {
-    expect(HepProjectCompareMeasurementsToolSchema.safeParse({
-      run_id: 'run-1',
-      input_runs: [{ run_id: 'run-a' }, { run_id: 'run-b' }],
-      min_tension_sigma: -1,
-    }).success).toBe(false);
+    const download = getToolSpecs('full').find(spec => spec.name === 'hepdata_download');
+    expect(download).toBeDefined();
+    expect(download!.zodSchema.safeParse({ hepdata_id: -1, _confirm: true }).success).toBe(false);
   });
 });
 
@@ -218,32 +204,33 @@ describe('Tool risk level contracts (H-11a)', () => {
     expect(Array.from(names).some(name => name.startsWith('orch_'))).toBe(false);
   });
 
-  it('hep-mcp tool surface keeps hep_run_* distinct without also exporting orch_*', () => {
-    const names = getTools('full').map(tool => tool.name);
-    const orchNames = names.filter(name => name.startsWith('orch_'));
-    const hepRunNames = new Set(names.filter(name => name.startsWith(T.HEP_RUN_PREFIX)));
-    expect(orchNames.length).toBe(0);
-    expect(orchNames.filter(name => hepRunNames.has(name))).toEqual([]);
+  it('hep-mcp keeps no run substrate of its own: no hep_run_* tools and no run_id parameter', () => {
+    const tools = getTools('full');
+    expect(tools.map(tool => tool.name).filter(name => name.startsWith('hep_run_'))).toEqual([]);
+    const withRunId = tools
+      .filter(tool => Object.prototype.hasOwnProperty.call((tool.inputSchema as any).properties ?? {}, 'run_id'))
+      .map(tool => tool.name);
+    expect(withRunId).toEqual([]);
   });
 });
 
 describe('Destructive tool confirmation gate (H-11a Phase 2)', () => {
   it('destructive tool without _confirm returns CONFIRMATION_REQUIRED', async () => {
-    // Use a destructive tool with minimal args (will fail validation but confirmation check is first)
-    const res = await handleToolCall('hep_export_project', { run_id: 'test-run' }, 'standard');
+    // A destructive tool with invalid args: the confirmation check comes before validation.
+    const res = await handleToolCall('hepdata_download', { hepdata_id: -1 }, 'standard');
     expect(res.isError).toBe(true);
     const payload = JSON.parse(res.content[0].text);
     expect(payload.error.code).toBe('CONFIRMATION_REQUIRED');
-    expect(payload.error.data.tool).toBe('hep_export_project');
+    expect(payload.error.data.tool).toBe('hepdata_download');
     expect(payload.error.data.risk_level).toBe('destructive');
     expect(payload.error.data.next_actions).toHaveLength(1);
     expect(payload.error.data.next_actions[0].args._confirm).toBe(true);
   });
 
   it('destructive tool with _confirm: true passes confirmation gate', async () => {
-    // With _confirm: true, it should pass the gate and hit the normal handler
-    // (which will fail for other reasons since test-run doesn't exist, but the error code should differ)
-    const res = await handleToolCall('hep_export_project', { run_id: 'nonexistent-run', _confirm: true }, 'standard');
+    // With _confirm: true it passes the gate and stops at argument validation
+    // (hepdata_id must be positive), before any network call.
+    const res = await handleToolCall('hepdata_download', { hepdata_id: -1, _confirm: true }, 'standard');
     expect(res.isError).toBe(true);
     const payload = JSON.parse(res.content[0].text);
     // Should NOT be CONFIRMATION_REQUIRED — it passed the gate

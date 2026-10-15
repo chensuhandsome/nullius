@@ -85,7 +85,9 @@ fail-closed，返回 `HARNESS_INVOCATION_REQUIRED`。
 - 纯只读 provider query（按每个 `*-mcp` 包的 audit-backed
   `state-touch-classification.ts` 分类）；
 - standalone 使用，`process.cwd()` 无 `.nullius/` 目录（无 lifecycle
-  context）。
+  context）；
+- `process.cwd()` 是家目录：家目录从来不是项目根（CLI 查找项目根时同样跳过它），
+  那里的 `~/.nullius/` 存放用户级数据（如 agent 名册），不是项目状态。
 
 实现见
 [`packages/shared/src/harness-invocation.ts`](../packages/shared/src/harness-invocation.ts)；

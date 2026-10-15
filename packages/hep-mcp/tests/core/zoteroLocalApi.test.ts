@@ -12,7 +12,7 @@ vi.mock('../../src/api/client.js', () => ({
 const api = await import('../../src/api/client.js');
 
 import { handleToolCall } from '../../src/tools/index.js';
-import { readHepUri } from '../../src/core/uriReader.js';
+import { makeProjectRoot, readProjectFile } from '../support/projectFiles.js';
 
 function readFixtureJson<T>(fileName: string): T {
   const fixtureDir = new URL('../fixtures/core/m8/', import.meta.url);
@@ -86,29 +86,25 @@ describe('vNext: Zotero integration', () => {
     });
     vi.stubGlobal('fetch', fetchStub as any);
 
-    const projectRes = await handleToolCall('hep_project_create', { name: 'M8 Zotero', description: 'm8' });
-    const project = JSON.parse(projectRes.content[0].text) as { project_id: string };
-
-    const runRes = await handleToolCall('hep_run_create', { project_id: project.project_id });
-    const run = JSON.parse(runRes.content[0].text) as { run_id: string };
-
+    const projectRoot = makeProjectRoot(dataDir);
     const res = await handleToolCall('hep_import_from_zotero', {
-      run_id: run.run_id,
+      project_root: projectRoot,
+      output_dir: 'literature/zotero',
       item_keys: ['ITEM1234'],
       concurrency: 2,
     });
 
     expect(res.isError).not.toBe(true);
     const payload = JSON.parse(res.content[0].text) as {
-      artifacts: Array<{ name: string; uri: string }>;
+      artifacts: Array<{ name: string; path: string }>;
       summary: { resolved_recids: number };
     };
     expect(payload.summary.resolved_recids).toBe(1);
 
-    const mapUri = payload.artifacts.find(a => a.name === 'zotero_map_v1.json')?.uri;
-    expect(mapUri).toBeTruthy();
+    const mapPath = payload.artifacts.find(a => a.name === 'zotero_map_v1.json')?.path;
+    expect(mapPath).toBe('literature/zotero/zotero_map_v1.json');
 
-    const map = JSON.parse((readHepUri(mapUri!) as any).text) as any;
+    const map = JSON.parse(readProjectFile(projectRoot, mapPath!)) as any;
     expect(map.items).toHaveLength(1);
     expect(map.source.concurrency).toBe(2);
     expect(map.items[0].zotero_item_key).toBe('ITEM1234');
@@ -120,6 +116,197 @@ describe('vNext: Zotero integration', () => {
 
     expect(vi.mocked(api.getByDoi)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(api.getByArxiv)).toHaveBeenCalledTimes(0);
+  });
+
+  function stubZoteroItem(): void {
+    const item = readFixtureJson<any>('zotero_item.min.json');
+    const children = readFixtureJson<any>('zotero_children.min.json');
+    vi.stubGlobal('fetch', vi.fn(async (input: any) => {
+      const u = new URL(typeof input === 'string' ? input : input?.url);
+      if (u.pathname === '/api/users/0/items/ITEM1234') {
+        return new Response(JSON.stringify(item), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (u.pathname === '/api/users/0/items/ITEM1234/children') {
+        return new Response(JSON.stringify(children), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('not found', { status: 404 });
+    }) as any);
+  }
+
+  it('hep_import_from_zotero does not count an INSPIRE record without a recid as resolved', async () => {
+    stubZoteroItem();
+    vi.mocked(api.getByDoi).mockResolvedValueOnce({} as any);
+    const projectRoot = makeProjectRoot(dataDir);
+    const res = await handleToolCall('hep_import_from_zotero', { project_root: projectRoot, output_dir: 'z', item_keys: ['ITEM1234'] });
+    expect(res.isError).not.toBe(true);
+    const payload = JSON.parse(res.content[0].text) as { summary: { resolved_recids: number } };
+    expect(payload.summary.resolved_recids).toBe(0);
+    const map = JSON.parse(readProjectFile(projectRoot, 'z/zotero_map_v1.json')) as any;
+    expect(map.items[0].resolve).toBeNull();
+  });
+
+  it('hep_import_from_zotero fails when INSPIRE returns something that is not a record', async () => {
+    stubZoteroItem();
+    vi.mocked(api.getByDoi).mockResolvedValueOnce(null as any);
+    const projectRoot = makeProjectRoot(dataDir);
+    const res = await handleToolCall('hep_import_from_zotero', { project_root: projectRoot, output_dir: 'z', item_keys: ['ITEM1234'] });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).error.message).toMatch(/non-object response/);
+  });
+
+  it('hep_import_from_zotero fails on a malformed recid instead of writing it into the mapping', async () => {
+    stubZoteroItem();
+    vi.mocked(api.getByDoi).mockResolvedValueOnce({ recid: {} } as any);
+    const projectRoot = makeProjectRoot(dataDir);
+    const res = await handleToolCall('hep_import_from_zotero', { project_root: projectRoot, output_dir: 'z', item_keys: ['ITEM1234'] });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).error.message).toMatch(/malformed recid/);
+    expect(fs.existsSync(path.join(projectRoot, 'z', 'zotero_map_v1.json'))).toBe(false);
+  });
+
+  function aliasedProjectRoot(): { projectRoot: string; alias: string } {
+    const projectRoot = makeProjectRoot(fs.realpathSync(dataDir));
+    const alias = path.join(dataDir, 'project-alias');
+    fs.symlinkSync(projectRoot, alias, 'dir');
+    return { projectRoot, alias };
+  }
+
+  function json(body: unknown): Response {
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+
+  it('hep_import_from_zotero waits for running items to settle after a failure, and nothing runs or is written after it returns', async () => {
+    const item = readFixtureJson<any>('zotero_item.min.json');
+    const children = readFixtureJson<any>('zotero_children.min.json');
+    const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    vi.stubGlobal('fetch', vi.fn(async (input: any) => {
+      const u = new URL(typeof input === 'string' ? input : input?.url);
+      if (u.pathname.startsWith('/api/users/0/items/FAIL0001')) return new Response('boom', { status: 500 });
+      if (u.pathname === '/api/users/0/items/SLOW0002') { await delay(80); return json(item); }
+      if (u.pathname === '/api/users/0/items/SLOW0002/children') { await delay(80); return json(children); }
+      return new Response('not found', { status: 404 });
+    }) as any);
+    vi.mocked(api.getByDoi).mockResolvedValue({ recid: '999' } as any);
+    const { projectRoot, alias } = aliasedProjectRoot();
+
+    const res = await handleToolCall('hep_import_from_zotero', {
+      project_root: alias, output_dir: 'z', item_keys: ['FAIL0001', 'SLOW0002'], concurrency: 2,
+    });
+    expect(res.isError).toBe(true);
+    // The slow item had finished its INSPIRE lookup before the call returned.
+    expect(vi.mocked(api.getByDoi)).toHaveBeenCalledTimes(1);
+    await delay(150);
+    expect(vi.mocked(api.getByDoi)).toHaveBeenCalledTimes(1);
+    const out = path.join(projectRoot, 'z');
+    const files = (fs.readdirSync(out, { recursive: true }) as string[]).filter(entry => fs.lstatSync(path.join(out, entry)).isFile());
+    expect(files).toEqual([]);
+  });
+
+  it('hep_import_from_zotero starts no further item once one has failed', async () => {
+    const fetchStub = vi.fn(async (input: any) => {
+      const u = new URL(typeof input === 'string' ? input : input?.url);
+      if (u.pathname.startsWith('/api/users/0/items/FAIL0001')) return new Response('boom', { status: 500 });
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchStub as any);
+    const { alias } = aliasedProjectRoot();
+
+    const res = await handleToolCall('hep_import_from_zotero', {
+      project_root: alias, output_dir: 'z', item_keys: ['FAIL0001', 'OTHR0002', 'OTHR0003'], concurrency: 1,
+    });
+    expect(res.isError).toBe(true);
+    const requested = fetchStub.mock.calls.map(call => String(typeof call[0] === 'string' ? call[0] : call[0]?.url));
+    expect(requested.some(url => url.includes('OTHR'))).toBe(false);
+  });
+
+  it('hep_import_from_zotero stops the queue as soon as one request fails, before its sibling request settles', async () => {
+    const item = readFixtureJson<any>('zotero_item.min.json');
+    const children = readFixtureJson<any>('zotero_children.min.json');
+    const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    const fetchStub = vi.fn(async (input: any) => {
+      const u = new URL(typeof input === 'string' ? input : input?.url);
+      if (u.pathname === '/api/users/0/items/FAIL0001') return new Response('boom', { status: 500 });
+      if (u.pathname === '/api/users/0/items/FAIL0001/children') { await delay(100); return json(children); }
+      if (u.pathname === '/api/users/0/items/FAST0002') return json(item);
+      if (u.pathname === '/api/users/0/items/FAST0002/children') return json(children);
+      if (u.pathname.startsWith('/api/users/0/items/LATE0003')) return json(item);
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchStub as any);
+    vi.mocked(api.getByDoi).mockResolvedValue({ recid: '999' } as any);
+    const { alias } = aliasedProjectRoot();
+
+    const res = await handleToolCall('hep_import_from_zotero', {
+      project_root: alias, output_dir: 'z', item_keys: ['FAIL0001', 'FAST0002', 'LATE0003'], concurrency: 2,
+    });
+    expect(res.isError).toBe(true);
+    const requested = fetchStub.mock.calls.map(call => String(typeof call[0] === 'string' ? call[0] : call[0]?.url));
+    expect(requested.some(url => url.includes('LATE0003'))).toBe(false);
+  });
+
+  it('hep_import_from_zotero makes, records and indexes a DOI lookup shared by two items once', async () => {
+    const item = readFixtureJson<any>('zotero_item.min.json');
+    const children = readFixtureJson<any>('zotero_children.min.json');
+    vi.stubGlobal('fetch', vi.fn(async (input: any) => {
+      const u = new URL(typeof input === 'string' ? input : input?.url);
+      if (/^\/api\/users\/0\/items\/(ITEM0001|ITEM0002)$/.test(u.pathname)) return json(item);
+      if (/^\/api\/users\/0\/items\/(ITEM0001|ITEM0002)\/children$/.test(u.pathname)) return json(children);
+      return new Response('not found', { status: 404 });
+    }) as any);
+    vi.mocked(api.getByDoi).mockImplementation(async () => {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      return { recid: '999' } as any;
+    });
+    const { projectRoot, alias } = aliasedProjectRoot();
+    const res = await handleToolCall('hep_import_from_zotero', {
+      project_root: alias, output_dir: 'z', item_keys: ['ITEM0001', 'ITEM0002'], concurrency: 2,
+    });
+    expect(res.isError).not.toBe(true);
+    expect(vi.mocked(api.getByDoi)).toHaveBeenCalledTimes(1);
+    const responses = fs.readdirSync(path.join(projectRoot, 'z', 'external_api')).filter(name => name.startsWith('external_api_response_'));
+    expect(responses).toHaveLength(1);
+    const index = JSON.parse(fs.readFileSync(path.join(projectRoot, 'z', 'external_api_calls_inspire_zotero_import_v1.json'), 'utf-8')) as { stats: { calls_total: number } };
+    expect(index.stats.calls_total).toBe(1);
+  });
+
+  it('hep_import_from_zotero refuses a child entry without an item key instead of skipping it', async () => {
+    const item = readFixtureJson<any>('zotero_item.min.json');
+    vi.stubGlobal('fetch', vi.fn(async (input: any) => {
+      const u = new URL(typeof input === 'string' ? input : input?.url);
+      if (u.pathname === '/api/users/0/items/ITEM1234') return json(item);
+      if (u.pathname === '/api/users/0/items/ITEM1234/children') return json([{ data: { itemType: 'attachment', filename: 'paper.pdf' } }]);
+      return new Response('not found', { status: 404 });
+    }) as any);
+    const { alias } = aliasedProjectRoot();
+    const res = await handleToolCall('hep_import_from_zotero', { project_root: alias, output_dir: 'z', item_keys: ['ITEM1234'] });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).error.message).toMatch(/entry 0 lacks an item key/);
+  });
+
+  it('hep_import_from_zotero refuses a collection listing that is not a list of items', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: any) => {
+      const u = new URL(typeof input === 'string' ? input : input?.url);
+      if (u.pathname === '/api/users/0/collections/COLL0001/items/top') return json({ unexpected: true });
+      return new Response('not found', { status: 404 });
+    }) as any);
+    const { alias } = aliasedProjectRoot();
+    const res = await handleToolCall('hep_import_from_zotero', { project_root: alias, output_dir: 'z', collection_key: 'COLL0001' });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).error.message).toMatch(/malformed collection listing/);
+  });
+
+  it('hep_import_from_zotero refuses a child-item listing that is not a list', async () => {
+    const item = readFixtureJson<any>('zotero_item.min.json');
+    vi.stubGlobal('fetch', vi.fn(async (input: any) => {
+      const u = new URL(typeof input === 'string' ? input : input?.url);
+      if (u.pathname === '/api/users/0/items/ITEM1234') return json(item);
+      if (u.pathname === '/api/users/0/items/ITEM1234/children') return json({ unexpected: true });
+      return new Response('not found', { status: 404 });
+    }) as any);
+    const { alias } = aliasedProjectRoot();
+    const res = await handleToolCall('hep_import_from_zotero', { project_root: alias, output_dir: 'z', item_keys: ['ITEM1234'] });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).error.message).toMatch(/malformed child-item listing/);
   });
 
   it('zotero_local(list_collections) is available (aggregated from zotero-mcp)', async () => {

@@ -1,12 +1,12 @@
 # 功能测试指南（front-door 当前真相）
 
-本指南面向手工验收当前 front-door truth。`nullius` 是 generic lifecycle + workflow-plan front door；`@nullius/hep-mcp` 是当前最成熟的 domain MCP front door，提供 Project/Run、evidence、writing/export、literature/data、Zotero、PDG 能力。本页重点覆盖两者的衔接，而不是把 `hep-mcp` 重新写成 root 产品身份。
+本指南面向手工验收当前 front-door truth。`nullius` 是 generic lifecycle + workflow-plan front door；`@nullius/hep-mcp` 是当前最成熟的 domain MCP front door，提供 literature/data、项目内研究输出、Zotero、PDG 能力。本页重点覆盖两者的衔接，而不是把 `hep-mcp` 重新写成 root 产品身份。
 
 > 说明
 >
-> - 返回值里的 `project_id`、`run_id`、时间戳、URI 等动态字段请按结构和不变量核对，不要逐字比对。
+> - 返回值里的时间戳、路径、URI 等动态字段请按结构和不变量核对，不要逐字比对。
 > - 下文 HEP 配置以 `packages/hep-mcp/dist/index.js` 为 domain MCP front door；个人插件另组合绑定项目的 `project-mcp` 叶层 adapter。
-> - 大对象默认落盘成 artifacts；验收时优先检查 tool result 摘要、文件路径，以及 `project_root` 解析出的 project artifacts 或 scratch `HEP_DATA_DIR` 下的实际文件。
+> - 大对象默认落盘成文件；验收时优先检查 tool result 摘要、返回的项目相对路径，以及 `project_root` 下的实际文件（下载与缓存位于 `artifacts/hep-mcp`，检索导出等研究输出工具写入调用方给定的 `output_dir`）或 scratch `HEP_DATA_DIR` 下的实际文件。
 
 ---
 
@@ -23,6 +23,18 @@ python3 -m pytest -q packages/project-contracts/tests/test_root_policy.py packag
 外部项目边界的验收还应覆盖：从另一处运行时拒绝开发仓、尚未创建的仓内后代与仓目录别名，并确认拒绝发生在任何项目文件写入之前；同父目录的正常外部研究项目仍应可初始化。
 
 ## 0. 一次性准备
+
+Julia 包的接口与生命周期规范见 [`julia-package`](../skills/julia-package/SKILL.md)，
+性能测量见 [`julia-perf`](../skills/julia-perf/SKILL.md)。包测试、数值结果验收和
+性能声明分别核验；benchmark 执行成功或阈值通过不单独构成速度声明的完整证据。
+
+性能测量工具的定向回归可运行：
+
+```bash
+julia --startup-file=no --project=skills/julia-perf/scripts skills/julia-perf/tests/runtests.jl
+```
+
+这检查测量、baseline、状态与监督入口，不计算研究结果或证明加速。
 
 ### 0.0 先确认 front-door 角色
 
@@ -60,12 +72,14 @@ pnpm --filter @nullius/hep-mcp docs:tool-counts:check
 pnpm --filter @nullius/orchestrator exec vitest run tests/run-manifest.test.ts tests/agent-runner.test.ts tests/agent-runner-manifest.test.ts tests/agent-runner-ops-b8-regression.test.ts tests/tool-execution-policy.test.ts tests/tool-dispatch-boundary.test.ts tests/mcp-client-process.test.ts tests/workflow-runtime.test.ts
 ```
 
+每次 vitest 运行把 `TMPDIR` 指向一个专属临时根 `<系统临时目录>/ntest-<uid>/<标签>-<进程号>-XXXXXX/`（标签取包目录名中的字母数字与 `._`，截取前 6 个字符；为空时用 `tests`）（`ntest-<uid>` 必须是本用户所有、权限 0700 的真实目录，被预先放置的符号链接或他人目录会被拒绝）（名字刻意短：测试工具会在 `TMPDIR` 下建本地套接字，macOS 上套接字路径超过约 104 字节就无法建立）：每个测试都跑完（通过、跳过或待办）、没有失败、运行没有被中断（如监视模式下按 Ctrl-C）、命令的退出状态仍为成功（如覆盖率门槛未达标会使其失败）、且监视模式下此前各次重跑都干净时才删除；失败或中断则保留供检查（空目录也保留；唯一的例外是未被中断、退出状态干净、一个测试都没跑且临时根也是空的命令，如 `vitest list`，静默删除），其中 7 天无任何改动、创建它的进程已结束、且带有创建时写入的来源标记文件 `.nullius-test-root`（内容与格式完全吻合的普通文件）的，由之后的运行清除，没有标记或标记不符的目录一律保留；设 `NULLIUS_KEEP_TEST_TMP=1` 时一律保留。各包 `vitest.config.ts` 的 `globalSetup` 接入 `scripts/lib/vitest-test-temp-root.mjs`；`scripts/tests/vitest-test-temp-root.test.mjs` 锁定接线，并用真实的 vitest 3 与 4 各跑一次通过、失败与只列不跑。
+
 #### 执行恢复与第三方 runner 契约
 
 ```bash
 pnpm --filter @nullius/orchestrator exec vitest run tests/cli-run-workflow-recovery.test.ts tests/agent-runner-history-compaction.test.ts tests/cli-run-workflow.test.ts tests/agent-runner.test.ts tests/workflow-runtime.test.ts tests/nullius-cli.test.ts
 pnpm --filter @nullius/hep-mcp exec vitest run tests/contracts/inspireLiteratureProjectRoot.test.ts tests/toolContracts.test.ts tests/docs/docToolDrift.test.ts
-python3 -m pytest -q skills/kimi-cli-runner/tests skills/opencode-cli-runner/tests skills/review-swarm/tests/test_seat_budget.py
+python3 -m pytest -q skills/kimi-cli-runner/tests skills/opencode-cli-runner/tests skills/review-swarm/tests/test_seat_budget.py skills/dsh-cli-runner/tests
 ```
 
 使用虚构工具与临时项目验证真正进程死亡、未知副作用停止、已提交响应回放、暂停和审批续接。压缩测试保留约束与完整工具配对，过长指令不通过删约束恢复。INSPIRE 七种模式的 catalog、parser 与 dispatch 接纳共同参数并拒绝错误模式参数。runner 测试使用虚构 CLI，验证空输出、异常退出、最终长度截断、总调用/时间预算及本地进程树清理；这不证明真实 provider 可用或科研结果正确。
@@ -74,7 +88,7 @@ Kimi/OpenCode 需要 Python 3.10 或更新版本；不满足时在调用模型�
 
 #### 本地个人插件与项目 MCP
 
-[`project-mcp`](../packages/project-mcp/README.md) 复用 canonical `handleToolCall` / `runCli`，目前暴露 16 个 `orch_*` 操作和 5 个 transport 工具，共 21 个。默认个人插件组合 project 21、HEP standard 75、idea 6，共 102 个不同工具名；非默认 HEP 模式或 provider 开关会改变 HEP 数量。[构建器](../packages/skills-market/docs/PERSONAL_PLUGIN.md) 生成不含本机路径的 Codex/Claude Code 清单，通过目标机器的 `nullius runtime mcp` 启动，不创建远端连接。普通 skills copy 安装同样不记录源机器目录。
+[`project-mcp`](../packages/project-mcp/README.md) 复用 canonical `handleToolCall` / `runCli`，目前暴露 16 个 `orch_*` 操作和 5 个 transport 工具，共 21 个。默认个人插件组合 project 21、HEP standard 52、idea 6，共 79 个不同工具名；非默认 HEP 模式或 provider 开关会改变 HEP 数量。[构建器](../packages/skills-market/docs/PERSONAL_PLUGIN.md) 生成不含本机路径的 Codex/Claude Code 清单，通过目标机器的 `nullius runtime mcp` 启动，不创建远端连接。普通 skills copy 安装同样不记录源机器目录。
 
 构建完成后运行以下针对性检查：
 
@@ -115,6 +129,7 @@ HEP_LIVE_SMOKE=1 pnpm -r test
 
 - `/Users/<you>/tmp/hep_data_test_001`
 - `project_root=/absolute/path/to/external-project` -> `/absolute/path/to/external-project/artifacts/hep-mcp`
+- `project_root` 按规范（解析掉符号链接后的）形式接纳，必须位于 nullius 开发仓之外；工具结果与报告里显示的是规范路径。本次调用实际使用的项目内目录必须经真实目录到达：工具调用使用 `artifacts/`、`artifacts/hep-mcp/` 与 `artifacts/hep-mcp/pdg/`，其中任何一级是符号链接（含悬空链接）时调用以 `UNSAFE_FS` 拒绝。
 
 ### 0.3 在 MCP 客户端里接入当前 domain MCP front door
 
@@ -133,8 +148,7 @@ HEP_LIVE_SMOKE=1 pnpm -r test
       "env": {
         "HEP_DATA_DIR": "~/.nullius/hep-mcp",
         "HEP_TOOL_MODE": "standard",
-        "HEP_DOWNLOAD_DIR": "~/.nullius/hep-mcp/downloads",
-        "WRITING_PROGRESS_DIR": "~/.nullius/hep-mcp/writing_progress"
+        "HEP_DOWNLOAD_DIR": "~/.nullius/hep-mcp/downloads"
       }
     }
   }
@@ -182,8 +196,8 @@ EOF
 
 **预期**
 
-- `standard` 模式工具数为 `75`
-- `full` 模式工具数为 `82`
+- `standard` 模式工具数为 `52`
+- `full` 模式工具数为 `58`
 - `bad` 为空数组
 
 ### 0.5 可选依赖：Zotero / PDG
@@ -211,261 +225,52 @@ EOF
 - 返回成功
 - 能看到当前工具模式、基础配置或健康摘要
 
-### 1.2 `hep_project_list`
+## 2. 项目内输出目录
+
+### 2.1 `hep_inspire_search_export`（写入项目内 `output_dir`）
+
+先在开发仓外的临时目录执行 `nullius init`，作为 `project_root`。
 
 **调用**
 
 ```json
-{}
+{
+  "project_root": "/absolute/path/to/external-project",
+  "output_dir": "artifacts/runs/<run_id>/literature",
+  "query": "pentaquark",
+  "max_results": 5
+}
 ```
 
 **预期**
 
-- 首次可能返回空列表
-- 返回结构中应包含 `projects`
+- `output_dir` 不存在时被创建
+- 返回的 `export_path` / `meta_path` 是项目相对路径，指向 `output_dir` 下真实存在的文件
+- `<output_dir>/external_api/` 下有本次调用的外部 API 请求/响应记录，`output_dir` 下另有 `inspire_search_export_<hash>_diagnostics.json`
+- 返回的文件位置都是项目相对路径，不含 `hep://` URI
+- 用同一 `output_dir` 原样再调用一次：被拒绝（提示文件已存在），且在任何 INSPIRE 请求之前；第一次写出的文件字节不变
+
+### 2.2 `output_dir` 拒绝条件
+
+分别用以下 `output_dir` 重复上一调用：
+
+- 不传 `project_root`
+- `output_dir` 等于 project root 本身（如 `"."`）
+- 位于 `.nullius/`、`team/runs/` 或 `artifacts/hep-mcp/` 之下
+- 路径中 project root 以下的某一级是符号链接（含悬空链接，无论指向何处）
+- 相对路径用 `..` 走出 project root
+
+**预期**
+
+- 每种情况都被拒绝，且拒绝前不在项目内写出任何输出文件
+- 调用中途失败（如 INSPIRE 返回畸形记录）时，`output_dir` 下不留下本次调用的任何文件（已建的目录可留下）；若清理失败，错误会写明残留：已发布的文件删不掉时，错误为 UNSAFE_FS，写明输出不完整并在 `files_left` 中列出它们（残留的暂存文件列在 `staging_left`）；只有暂存文件删不掉时，保留原错误并附 `staging_left`；无法识别的暂存文件在 `staging_path` 中给出；删除之后若无法刷盘，错误为 UNSAFE_FS 并列出 `unflushed_directories`
+- 经 project root 的别名（例如指向同一目录的上层符号链接）拼写的绝对 `output_dir` 仍被接受，返回的仍是项目相对路径
 
 ---
 
-## 2. Project / Run + Files
+## 3. 文献 / 数据工作流
 
-### 2.1 `hep_project_create`
-
-**调用**
-
-```json
-{ "name": "Manual Test Project", "description": "front-door acceptance" }
-```
-
-**预期**
-
-- 返回非空 `project_id`
-- 返回 project 摘要；必要时到 resolved data root 的 `projects/<project_id>/project.json` 对照完整 manifest
-
-### 2.2 `hep_project_get`
-
-**调用**
-
-```json
-{ "project_id": "<project_id>" }
-```
-
-**预期**
-
-- 名称与描述和创建时一致
-- 返回 project manifest 摘要
-
-### 2.3 `hep_run_create`
-
-**调用**
-
-```json
-{ "project_id": "<project_id>", "args_snapshot": { "purpose": "manual acceptance" } }
-```
-
-**预期**
-
-- 返回非空 `run_id`
-- 返回 run manifest 摘要
-- artifacts 中至少包含 `args_snapshot.json`
-
-### 2.4 检查 run manifest
-
-在 tool result 或磁盘上检查：
-
-**预期**
-
-- manifest 中的首个 step 是 `run_create`
-- manifest 会指向 run artifacts
-
-### 2.5 对照磁盘布局
-
-检查：
-
-```text
-<resolved-data-root>/projects/<project_id>/
-<resolved-data-root>/runs/<run_id>/manifest.json
-<resolved-data-root>/runs/<run_id>/artifacts/args_snapshot.json
-```
-
-**预期**
-
-- 传入 `project_root` 时，`<resolved-data-root>` 是 `<project_root>/artifacts/hep-mcp`
-- 路径真实存在
-- run manifest 与资源里读到的内容一致
-
----
-
-## 3. Evidence 构建与查询
-
-### 3.1 `hep_project_build_evidence`
-
-使用本仓库 fixture：
-
-- `packages/hep-mcp/tests/fixtures/latex/multifile/main.tex`
-
-**调用**
-
-```json
-{
-  "project_id": "<project_id>",
-  "main_tex_path": "/absolute/path/to/nullius/packages/hep-mcp/tests/fixtures/latex/multifile/main.tex",
-  "paper_id": "fixture-paper"
-}
-```
-
-**预期**
-
-- 返回或写入 evidence catalog
-- resolved data root 下的 `projects/<project_id>/papers/fixture-paper/evidence/catalog.jsonl` 存在且可读
-
-### 3.2 `hep_run_build_writing_evidence`
-
-**调用**
-
-```json
-{
-  "run_id": "<run_id>",
-  "latex_sources": [
-    {
-      "main_tex_path": "/absolute/path/to/nullius/packages/hep-mcp/tests/fixtures/latex/multifile/main.tex",
-      "include_cross_refs": true
-    }
-  ]
-}
-```
-
-**预期**
-
-- run artifacts 中出现 `latex_evidence_catalog.jsonl`
-- 同时生成 embeddings / enrichment / source status 相关 artifacts
-
-### 3.3 `hep_project_query_evidence`
-
-**调用**
-
-```json
-{
-  "project_id": "<project_id>",
-  "query": "Content from subfile",
-  "limit": 3
-}
-```
-
-**预期**
-
-- 返回 hits 或 query artifact URI + summary
-- 至少有一个命中与 fixture 文本相关
-
-### 3.4 `hep_project_playback_evidence`
-
-从上一节的 evidence locator 或 catalog item 里取一个 `evidence_id`：
-
-```json
-{
-  "project_id": "<project_id>",
-  "paper_id": "fixture-paper",
-  "evidence_id": "<evidence_id>"
-}
-```
-
-**预期**
-
-- 返回稳定 snippet
-- snippet 与 evidence catalog 中的原文本对得上
-
----
-
-## 4. 写作与导出
-
-### 4.1 `hep_run_build_citation_mapping`
-
-**调用**
-
-```json
-{
-  "run_id": "<run_id>",
-  "identifier": "arXiv:2001.00001"
-}
-```
-
-**预期**
-
-- run artifacts 中出现 citation mapping 相关 JSON artifacts
-
-### 4.2 `hep_render_latex`
-
-**调用**
-
-```json
-{
-  "run_id": "<run_id>",
-  "draft": "{... structured draft JSON ...}"
-}
-```
-
-**预期**
-
-- 成功时生成渲染后的 LaTeX artifacts
-- `is_grounded` 省略时，归属信息不添加该字段；明确的 `false` / `true` 原样保留
-- 非布尔 grounding 输入应在 manifest 和渲染产物写入前拒绝
-- 缺少 `recids` 的草稿也可渲染；渲染不执行来源支持、引用 allowlist 或手写引用归属检查，也不生成 `rendered_latex_verification.json`
-
-### 4.3 `hep_export_project`
-
-**调用**
-
-```json
-{
-  "_confirm": true,
-  "run_id": "<run_id>"
-}
-```
-
-**预期**
-
-- 生成 `master.bib`
-- 生成 `report.tex` / `report.md`
-- 生成 `research_pack.zip`
-- 缺少任一已用引用键的 BibTeX 时拒绝导出；补齐全部条目后可导出
-- BibTeX 完整性不代表正文论断已有来源支持
-
-### 4.4 `hep_export_paper_scaffold`
-
-**调用**
-
-```json
-{
-  "_confirm": true,
-  "run_id": "<run_id>"
-}
-```
-
-**预期**
-
-- 生成 `paper/` 脚手架
-- 生成 `paper_scaffold.zip`
-
-### 4.5 `hep_import_paper_bundle`
-
-在 `paper/` 下准备好最终论文文件后调用：
-
-```json
-{
-  "run_id": "<run_id>"
-}
-```
-
-**预期**
-
-- 生成 `paper_bundle.zip`
-- 生成 `paper_bundle_manifest.json`
-- 如有最终 PDF，可一并进入 run artifacts
-
----
-
-## 5. 文献 / 数据工作流
-
-### 5.1 `inspire_search`
+### 3.1 `inspire_search`
 
 **调用**
 
@@ -478,7 +283,7 @@ EOF
 - 返回受限数量的结果
 - 可拿到 `recid` 或标识符用于后续调用
 
-### 5.2 `inspire_literature`
+### 3.2 `inspire_literature`
 
 **调用**
 
@@ -493,7 +298,7 @@ EOF
 - `lookup_by_id` 语义上只传 `identifier`；agent 误带的 `size` 会被忽略，但不要主动附带
 - `get_author` 语义上只传 `identifier`；agent 误带的 `size` 会被忽略，但不要主动附带
 
-### 5.3 `inspire_topic_analysis`
+### 3.3 `inspire_topic_analysis`
 
 **调用**
 
@@ -505,7 +310,7 @@ EOF
 
 - 返回 timeline / evolution 相关摘要
 
-### 5.4 stateful literature workflow consumers
+### 3.4 stateful literature workflow consumers
 
 这部分不是 MCP 工具，而是当前真实存在的高层 workflow consumers：
 
@@ -547,9 +352,9 @@ nullius workflow-plan \
 
 ---
 
-## 6. 本地 reference providers
+## 4. 本地 reference providers
 
-### 6.1 `zotero_local`
+### 4.1 `zotero_local`
 
 **调用**
 
@@ -561,7 +366,7 @@ nullius workflow-plan \
 
 - 若 Zotero Local API 可用，应返回本地 collections
 
-### 6.2 `pdg_info`
+### 4.2 `pdg_info`
 
 **调用**
 
@@ -573,7 +378,7 @@ nullius workflow-plan \
 
 - 若 `PDG_DB_PATH` 已设置，应返回本地 DB 与 artifacts 目录信息
 
-### 6.3 `pdg_find_particle`
+### 4.3 `pdg_find_particle`
 
 **调用**
 
@@ -587,16 +392,16 @@ nullius workflow-plan \
 
 ---
 
-## 7. 常见排障
+## 5. 常见排障
 
 - 工具看不到：先做 `pnpm -r build`，再跑上面的 `listTools` sanity check
-- 找不到 manifest 或 artifact：先确认 tool call 是否传入 `project_root`。有 `project_root` 时检查 `<project_root>/artifacts/hep-mcp`；没有时检查本轮 `HEP_DATA_DIR` 或默认 scratch 根。`HEP_DOWNLOAD_DIR` 和 `WRITING_PROGRESS_DIR` 只对非 `project_root` scratch/override 模式生效，且必须位于 HEP data root 之内
+- 找不到输出文件：先确认 tool call 是否传入 `project_root`（写文件的工具还需 `output_dir`）。有 `project_root` 时，下载与缓存在 `<project_root>/artifacts/hep-mcp`，写文件的工具输出在 `output_dir`；没有时检查本轮 `HEP_DATA_DIR` 或默认 scratch 根。`HEP_DOWNLOAD_DIR` 只对非 `project_root` scratch/override 模式生效，且必须位于 HEP data root 之内
 - GUI 客户端找不到 Node：把 `command` 换成 Node 的绝对路径
 - 想看 generic lifecycle state：不要从 `hep-mcp` 猜，直接使用 `nullius status --project-root ...`
 
 ---
 
-## 8. 相关文档
+## 6. 相关文档
 
 - [`README.md`](../README.md)
 - [`docs/PROJECT_STATUS.md`](./PROJECT_STATUS.md)
@@ -709,3 +514,5 @@ The owning account can read the authority key, including code executed by a memb
 The configured token window is frozen before the original reviewer subprocess starts and bound into its authenticated runtime observation. Changing historical window metadata cannot admit that receipt. Older observations without this policy remain readable and require a fresh execution for capacity acceptance.
 
 Local directory links leave notebook dependency closure pending and prevent acceptance. The complete-original joint audit requires exact substantive original-byte anchors for every interval; a reasoning checkbox alone cannot supply coverage.
+
+Research storage fixtures cover semantic classifications, aggregate admission, bundle content detection, duplicate index objects, zero-write inspection and byte-exact restoration. Run `python3 -m pytest skills/research-harness/tests/test_run_storage.py` and `pnpm -C packages/orchestrator test tests/run-origin-foreign-paths.test.ts tests/validity-ledger.test.ts tests/traceability-stage3.test.ts`. See [Research output storage](RUN_STORAGE.md).

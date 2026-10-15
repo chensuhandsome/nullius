@@ -458,6 +458,7 @@ class TestScaffoldContract(unittest.TestCase):
             "`figure-hygiene`",
             "`physics-diagrams`",
             "`julia-perf`",
+            "`julia-package`",
             "`review-swarm`",
             "`research-integrity` M1-M7",
         ):

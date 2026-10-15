@@ -103,3 +103,4 @@ export * from './team-execution-view.js';
 export * from './team-unified-runtime.js';
 
 export { assertWritableRunId } from './run-paths.js';
+export { resolveUnderRoot } from './computation/path-safety.js';

@@ -13,7 +13,7 @@
  * ## The sequence (matches `run-manifest.ts:82-97`)
  *
  *   1. mkdirSync(dirname, recursive)
- *   2. fd = openSync(tmp, 'w', mode ?? 0o644)
+ *   2. fd = openSync(tmp, 'wx', mode ?? 0o644)   // fresh name, exclusive create
  *   3. writeFileSync(fd, bytes)          // full-write guarantee via fd path
  *   4. fchmodSync(fd, mode) if mode supplied   // close the umask-clip gap
  *   5. fsyncSync(fd)                     // file contents to disk
@@ -23,14 +23,18 @@
  *   9. fsyncSync(dirFd)                  // directory entry persisted
  *   10. closeSync(dirFd)
  *
- * On any error: partial tmp file is unlinked best-effort. The unlink is
- * intentionally best-effort because the caller has bigger problems if it
- * fires (the throw propagates up).
+ * On any error before the rename: the partial tmp file is unlinked
+ * best-effort, and only while the tmp name still holds the file created in
+ * step 2. The unlink is intentionally best-effort because the caller has
+ * bigger problems if it fires (the throw propagates up). Once the rename has
+ * returned, the tmp name is never touched again.
  *
  * ## Why ALL seven primitives?
  *
  * - {@link writeBytesAtomicDurable}: the generic byte / string write. Used
  *   for binary artifacts, executable scripts, text rollback restores.
+ * - {@link writeChunksAtomicDurable}: the same staging and commit for content
+ *   that arrives as a stream of chunks (a download, a decompression).
  * - {@link writeJsonAtomicDurable}: typed wrapper that handles JSON
  *   stringification. The default stringify is non-sorting; callers needing
  *   Python-`sort_keys=True` byte-equality pass `sortKeysRecursive`
@@ -49,7 +53,12 @@
  *   the rename to be persisted to the directory entry.
  * - {@link fsyncParentDirectoryDurable}: explicit directory-entry durability
  *   confirmation for recovery after a caller observed a post-rename error.
+ * - {@link fileIdentityOfFd} / {@link unlinkIfSameFile}: exact (bigint) file
+ *   identity and identity-checked removal, for callers that stage their own
+ *   file with an exclusive create and must clean it up without removing an
+ *   entry someone else put at that name.
  */
+import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -95,14 +104,44 @@ function audit(event: AtomicWriteAuditEvent): void {
 }
 
 /**
- * Generate a tmp-file path adjacent to the final path. Uses the process
- * PID so two concurrent processes don't collide on the same tmp slot.
+ * Generate a fresh tmp-file path adjacent to the final path: the process PID
+ * plus 64 random bits, so no other writer shares the slot and no entry can be
+ * planted at the name in advance.
  *
  * The tmp file lives in the SAME directory as the final path so the
  * subsequent `renameSync` is guaranteed-atomic (POSIX same-fs).
  */
 function makeTmpPath(filePath: string): string {
-  return `${filePath}.tmp.${process.pid}.${Date.now()}`;
+  return `${filePath}.tmp.${process.pid}.${randomBytes(8).toString('hex')}`;
+}
+
+/**
+ * Exact identity of a file: its device and inode numbers, read as bigint so
+ * that inode numbers above 2^53 are compared without rounding.
+ */
+export interface FileIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
+
+/** Identity of the file open at `fd`. */
+export function fileIdentityOfFd(fd: number): FileIdentity {
+  const { dev, ino } = fs.fstatSync(fd, { bigint: true });
+  return { dev, ino };
+}
+
+/**
+ * Best-effort removal of a staged file: unlinks `filePath` only while that
+ * name (not following a symlink) still holds the file with `identity`, so an
+ * entry someone else put at that name stays. Errors are swallowed; with no
+ * identity recorded nothing is removed.
+ */
+export function unlinkIfSameFile(filePath: string, identity: FileIdentity | undefined): void {
+  if (!identity) return;
+  try {
+    const current = fs.lstatSync(filePath, { bigint: true });
+    if (current.dev === identity.dev && current.ino === identity.ino) fs.unlinkSync(filePath);
+  } catch { /* best-effort */ }
 }
 
 /**
@@ -142,7 +181,10 @@ export function fsyncParentDirectoryDurable(filePath: string): void {
  * (defends against umask clipping AND closes the post-rename chmod race
  * that would let another process exec a partial file with the wrong mode).
  *
- * On error, the tmp file is unlinked best-effort.
+ * The tmp file is created exclusively ('wx' is O_CREAT|O_EXCL): the open
+ * fails on any existing entry at the tmp name, a symlink included, so the
+ * bytes can only land in a file created here. On error before the rename, the
+ * tmp file is unlinked best-effort while the tmp name still holds that file.
  *
  * `beforeRename`, when supplied, runs after the staged bytes have been
  * flushed and the temporary fd has closed, at the last userspace point before
@@ -164,7 +206,7 @@ export function writeBytesAtomicDurable(
   fs.mkdirSync(dir, { recursive: true });
   audit({ kind: 'mkdir', path: dir });
   const tmpPath = makeTmpPath(filePath);
-  const flags = 'w';
+  const flags = 'wx';
   // Pass mode to openSync so the file is created with the target mode
   // bits AT CREATE TIME, eliminating the window where another process
   // could observe a more-permissive file before chmod.
@@ -172,8 +214,13 @@ export function writeBytesAtomicDurable(
     ? fs.openSync(tmpPath, flags, mode)
     : fs.openSync(tmpPath, flags);
   audit({ kind: 'open', path: tmpPath, flags, mode, fd });
+  // Cleanup removes tmpPath only while it still names the file created here
+  // (same device and inode); an entry someone else put at that name stays.
+  let staged: FileIdentity | undefined;
+  const removeStaged = (): void => unlinkIfSameFile(tmpPath, staged);
   const byteLen = typeof bytes === 'string' ? Buffer.byteLength(bytes) : bytes.length;
   try {
+    staged = fileIdentityOfFd(fd);
     fs.writeFileSync(fd, bytes);
     audit({ kind: 'write', fd, bytes: byteLen });
     if (mode !== undefined) {
@@ -186,7 +233,7 @@ export function writeBytesAtomicDurable(
     audit({ kind: 'fsync', fd });
   } catch (err) {
     try { fs.closeSync(fd); audit({ kind: 'close', fd }); } catch { /* best-effort */ }
-    try { fs.unlinkSync(tmpPath); } catch { /* best-effort */ }
+    removeStaged();
     throw err;
   }
   try {
@@ -196,25 +243,88 @@ export function writeBytesAtomicDurable(
     // Extremely rare (EIO on flush-during-close). Best-effort cleanup of
     // the tmp file so it doesn't accumulate on disk, then surface the
     // original error.
-    try { fs.unlinkSync(tmpPath); } catch { /* best-effort */ }
+    removeStaged();
     throw closeErr;
   }
   if (beforeRename) {
     try {
       beforeRename();
     } catch (guardError) {
-      try { fs.unlinkSync(tmpPath); } catch { /* best-effort */ }
+      removeStaged();
       throw guardError;
     }
   }
+  // A tmp file whose rename failed is removed; once the rename has returned,
+  // the tmp name is never touched again, whatever the audit hook or the
+  // directory fsync does.
+  commitStagedDurable(tmpPath, filePath, removeStaged);
+}
+
+/**
+ * Primitive 1b: durable atomic streamed write.
+ *
+ * The same staging and commit as {@link writeBytesAtomicDurable}, for content
+ * that arrives as a sequence of chunks (a download, a decompression): each
+ * chunk is written to the exclusively created tmp file as it arrives, then the
+ * file is fsync'd, closed and renamed into place, and the parent directory is
+ * fsync'd. If iterating `chunks` throws (an upstream stream error) or any step
+ * before the rename fails, the tmp file is removed while the tmp name still
+ * holds the file created here, the error propagates, and `filePath` is left as
+ * it was.
+ *
+ * Returns the identity of the committed file, so a caller that later removes
+ * it can do so with {@link unlinkIfSameFile}.
+ *
+ * @example
+ * await pipeline(response, gunzip, (source) => writeChunksAtomicDurable(out, source));
+ */
+export async function writeChunksAtomicDurable(
+  filePath: string,
+  chunks: AsyncIterable<Uint8Array | string>,
+  mode?: number,
+): Promise<FileIdentity> {
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true });
+  audit({ kind: 'mkdir', path: dir });
+  const tmpPath = makeTmpPath(filePath);
+  const flags = 'wx';
+  const fd = mode !== undefined
+    ? fs.openSync(tmpPath, flags, mode)
+    : fs.openSync(tmpPath, flags);
+  audit({ kind: 'open', path: tmpPath, flags, mode, fd });
+  // Cleanup removes tmpPath only while it still names the file created here
+  // (same device and inode); an entry someone else put at that name stays.
+  let staged: FileIdentity | undefined;
+  const removeStaged = (): void => unlinkIfSameFile(tmpPath, staged);
   try {
-    fs.renameSync(tmpPath, filePath);
-    audit({ kind: 'rename', from: tmpPath, to: filePath });
+    staged = fileIdentityOfFd(fd);
+    for await (const chunk of chunks) {
+      const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+      // Each call writes the whole chunk at the current file position.
+      fs.writeFileSync(fd, bytes);
+      audit({ kind: 'write', fd, bytes: bytes.byteLength });
+    }
+    if (mode !== undefined) {
+      fs.fchmodSync(fd, mode);
+      audit({ kind: 'fchmod', fd, mode });
+    }
+    fs.fsyncSync(fd);
+    audit({ kind: 'fsync', fd });
   } catch (err) {
-    try { fs.unlinkSync(tmpPath); } catch { /* best-effort */ }
+    try { fs.closeSync(fd); audit({ kind: 'close', fd }); } catch { /* best-effort */ }
+    removeStaged();
     throw err;
   }
-  fsyncParentDirectoryDurable(filePath);
+  try {
+    fs.closeSync(fd);
+    audit({ kind: 'close', fd });
+  } catch (closeErr) {
+    removeStaged();
+    throw closeErr;
+  }
+  commitStagedDurable(tmpPath, filePath, removeStaged);
+  // Set before any byte was written; the commit kept the same file.
+  return staged as FileIdentity;
 }
 
 /**
@@ -337,6 +447,13 @@ export function writeExecutableAtomicDurable(
  *
  * Runtime guard: throws if `dirname(stagedPath) !== dirname(finalPath)`.
  *
+ * `onRenameFailed`, when supplied, runs when the commit throws before the
+ * rename has taken place (the guard above refused, or `renameSync` threw),
+ * and then the error propagates. It never runs once `renameSync` has
+ * returned, so a caller can use it to remove its staged file without ever
+ * touching the vacated staged name after a completed rename — whatever a
+ * later step (the directory fsync) does.
+ *
  * @example
  * writeJsonAtomicDurable(stagedPath, state);  // staged write
  * appendJsonlDurable(ledgerPath, event);       // ledger event
@@ -345,15 +462,21 @@ export function writeExecutableAtomicDurable(
 export function commitStagedDurable(
   stagedPath: string,
   finalPath: string,
+  onRenameFailed?: () => void,
 ): void {
-  const stagedDir = path.dirname(stagedPath);
-  const finalDir = path.dirname(finalPath);
-  if (stagedDir !== finalDir) {
-    throw new Error(
-      `commitStagedDurable: stagedPath and finalPath must share the same parent directory; staged=${stagedDir} final=${finalDir}`,
-    );
+  try {
+    const stagedDir = path.dirname(stagedPath);
+    const finalDir = path.dirname(finalPath);
+    if (stagedDir !== finalDir) {
+      throw new Error(
+        `commitStagedDurable: stagedPath and finalPath must share the same parent directory; staged=${stagedDir} final=${finalDir}`,
+      );
+    }
+    fs.renameSync(stagedPath, finalPath);
+  } catch (err) {
+    onRenameFailed?.();
+    throw err;
   }
-  fs.renameSync(stagedPath, finalPath);
   audit({ kind: 'rename', from: stagedPath, to: finalPath });
   fsyncParentDirectoryDurable(finalPath);
 }

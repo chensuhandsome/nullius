@@ -15,7 +15,7 @@ import { invalidParams, writeBytesAtomicDurable } from '@nullius/shared';
 import { z } from 'zod';
 import { createRunArtifactRef } from '../computation/artifact-refs.js';
 import { writeJsonAtomic } from '../computation/io.js';
-import { assertNoSymlinkComponents, respellUnderRoot } from '../computation/path-safety.js';
+import { assertNoSymlinkComponents, escapesBase, resolveUnderRoot } from '../computation/path-safety.js';
 import { assertNativeRuntimeIdentityLive } from '../computation/runtime-identity.js';
 import { recordVerificationToMemoryGraph } from '../computation/memory-graph-hookup.js';
 import { attachVerificationBoundaryToWorkspaceFeedback } from '../computation/workspace-feedback-boundaries.js';
@@ -36,17 +36,10 @@ type VerificationStatus = z.output<typeof OrchRunRecordVerificationSchema>['stat
 
 function resolveWithinRunDir(runDir: string, candidatePath: string, field: string): string {
   const resolvedRunDir = path.resolve(runDir);
-  const lexical = path.isAbsolute(candidatePath)
-    ? path.resolve(candidatePath)
-    : path.resolve(resolvedRunDir, candidatePath);
-  const relative = path.relative(resolvedRunDir, lexical);
-  let resolved: string | null = lexical;
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    // The run directory derives from the admitted (canonical) project root,
-    // so an absolute caller path may name it through an alias above it, such
-    // as the un-canonicalized project root the caller passed in.
-    resolved = path.isAbsolute(candidatePath) ? respellUnderRoot(resolvedRunDir, lexical) : null;
-  }
+  // The run directory derives from the admitted (canonical) project root,
+  // so an absolute caller path may name it through an alias above it, such
+  // as the un-canonicalized project root the caller passed in.
+  const resolved = resolveUnderRoot(resolvedRunDir, candidatePath);
   if (resolved === null) {
     throw invalidParams(`${field} must stay within the run directory`, {
       field,
@@ -58,8 +51,7 @@ function resolveWithinRunDir(runDir: string, candidatePath: string, field: strin
   if (fs.existsSync(resolved)) {
     const canonicalRunDir = fs.realpathSync.native(resolvedRunDir);
     const canonicalPath = fs.realpathSync.native(resolved);
-    const canonicalRelative = path.relative(canonicalRunDir, canonicalPath);
-    if (canonicalRelative.startsWith('..') || path.isAbsolute(canonicalRelative)) {
+    if (escapesBase(path.relative(canonicalRunDir, canonicalPath))) {
       throw invalidParams(`${field} resolves outside the run directory`, {
         field,
         canonical_path: canonicalPath,

@@ -16,7 +16,6 @@ class Action(StrEnum):
     analyze_paper_connections = "analyze.paper_connections"
     analyze_provenance_trace = "analyze.provenance_trace"
     analyze_paper_set_critical_review = "analyze.paper_set_critical_review"
-    materialize_evidence_build = "materialize.evidence_build"
 
 
 class DependsOnItem(RootModel[str]):

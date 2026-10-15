@@ -101,7 +101,9 @@ Code's `FileEditTool` mtime check — no clock TTL). Skipped for:
 - pure read-only provider queries (per the audit-backed
   `state-touch-classification.ts` in each `*-mcp` package);
 - standalone use where `process.cwd()` has no `.nullius/`
-  directory (no lifecycle context).
+  directory (no lifecycle context);
+- `process.cwd()` being the home directory, which is never a project root
+  (`~/.nullius/` there holds user-level data such as the agent roster).
 
 Implementation:
 [`packages/shared/src/harness-invocation.ts`](../packages/shared/src/harness-invocation.ts);

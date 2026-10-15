@@ -54,7 +54,7 @@ Then (optional build):
 cd paper && latexmk -pdf main.tex
 ```
 
-## Optional: consume an MCP-exported `paper/` scaffold (deterministic)
+## Optional: consume an externally produced `paper/` scaffold (deterministic)
 
 If a separate pipeline exported a `paper/` directory with `paper/paper_manifest.json`:
 

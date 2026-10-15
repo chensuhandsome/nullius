@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { invalidParams, sortKeysRecursive, type ComputationManifestV1, type ExecutionPlanV1 } from '@nullius/shared';
 import { utcNowIso } from '../util.js';
-import { sanitizeRelativePath } from './path-safety.js';
+import { assertNoSymlinkComponents, sanitizeRelativePath } from './path-safety.js';
 import { ensureDir, toPosixRelative, writeJsonAtomic, writeTextAtomic } from './io.js';
 import { assertComputationManifestValid } from './manifest.js';
 
@@ -71,9 +71,20 @@ function sanitizeWorkspacePath(relativePath: string, label: string): string {
   return sanitizeRelativePath(relativePath.replace(/\\/g, '/'), label);
 }
 
-function writeProviderFiles(computationDir: string, files: ProviderMethodSpecFile[]): void {
-  for (const file of files) {
+/**
+ * Write the method's files under `computationDir`. Every target is checked
+ * before the first write, as the manifest's own paths are checked when it is
+ * prepared: it stays within the run directory, and no existing component from
+ * the run directory down is a symbolic link, so a link left in the run
+ * directory cannot carry a file elsewhere.
+ */
+function writeProviderFiles(runDir: string, computationDir: string, files: ProviderMethodSpecFile[]): void {
+  const targets = files.map((file, index) => {
     const filePath = path.join(computationDir, file.path);
+    assertNoSymlinkComponents(runDir, filePath, `method_spec.files[${index}].path`, { allowMissingLeaf: true });
+    return { file, filePath };
+  });
+  for (const { file, filePath } of targets) {
     ensureDir(path.dirname(filePath));
     writeTextAtomic(filePath, file.content);
     if (file.executable) {
@@ -248,7 +259,12 @@ function materializeProviderBackedManifest(
   bundle: ProviderBackedMethodBundle,
 ): MaterializedExecutionPlan {
   const computationDir = path.join(runDir, 'computation');
-  writeProviderFiles(computationDir, bundle.files);
+  const manifestPath = path.join(computationDir, 'manifest.json');
+  // Checked before the first write, like the method's files: the manifest is
+  // neither read nor written through a link in the run directory, also when
+  // the method has no files.
+  assertNoSymlinkComponents(runDir, manifestPath, 'computation/manifest.json', { allowMissingLeaf: true });
+  writeProviderFiles(runDir, computationDir, bundle.files);
   const tools = new Set(bundle.phases.map(phase => phase.tool));
   const fresh = assertComputationManifestValid({
     schema_version: 1,
@@ -289,7 +305,6 @@ function materializeProviderBackedManifest(
     outputs: [...new Set(bundle.phases.flatMap(phase => phase.outputs))],
     created_at: utcNowIso(),
   });
-  const manifestPath = path.join(computationDir, 'manifest.json');
   const manifest = keepStagedCreatedAt(manifestPath, fresh);
   writeJsonAtomic(manifestPath, manifest);
   return { manifestPath, manifest };

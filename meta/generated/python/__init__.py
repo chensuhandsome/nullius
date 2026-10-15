@@ -6,14 +6,12 @@ from .analysis_types_v1 import *  # noqa: F401,F403
 from .approval_packet_v1 import *  # noqa: F401,F403
 from .artifact_ref_v1 import *  # noqa: F401,F403
 from .capsule_v1 import *  # noqa: F401,F403
-from .computation_evidence_catalog_item_v1 import *  # noqa: F401,F403
 from .computation_manifest_v1 import *  # noqa: F401,F403
 from .computation_result_v1 import *  # noqa: F401,F403
 from .convergence_gate_result_v1 import *  # noqa: F401,F403
 from .delegation_budget_gate_result_v1 import *  # noqa: F401,F403
 from .display_gate_result_v1 import *  # noqa: F401,F403
 from .domain_pack_manifest_v1 import *  # noqa: F401,F403
-from .evidence_catalog_item_v1 import *  # noqa: F401,F403
 from .execution_plan_v1 import *  # noqa: F401,F403
 from .external_dependency_snapshot_entry_v1 import *  # noqa: F401,F403
 from .final_conclusions_v1 import *  # noqa: F401,F403

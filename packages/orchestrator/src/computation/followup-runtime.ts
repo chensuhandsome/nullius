@@ -21,7 +21,9 @@ export function followupRuntimeToolsForTaskKind(taskKind: 'literature' | 'idea' 
 }
 
 export function buildFollowupRuntimePrompt(params: {
+  projectRoot: string;
   runId: string;
+  runDir: string;
   taskId: string;
   taskKind: 'literature' | 'idea' | 'draft_update' | 'review';
   taskTitle: string;
@@ -34,7 +36,9 @@ export function buildFollowupRuntimePrompt(params: {
 }): string {
   const lines = [
     'Continue exactly one computation-generated delegated follow-up.',
+    `project_root: ${params.projectRoot}`,
     `run_id: ${params.runId}`,
+    `run_dir: ${params.runDir}`,
     `task_id: ${params.taskId}`,
     `task_kind: ${params.taskKind}`,
     `task_title: ${params.taskTitle}`,

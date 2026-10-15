@@ -12,7 +12,6 @@ export type {
 export * from "./approval-packet-v1.js";
 export type { ArtifactRefV1 } from "./artifact-ref-v1.js";
 export * from "./capsule-v1.js";
-export * from "./computation-evidence-catalog-item-v1.js";
 export * from "./computation-manifest-v1.js";
 export type {
   ComputationResultV1,
@@ -27,12 +26,6 @@ export * from "./convergence-gate-result-v1.js";
 export * from "./delegation-budget-gate-result-v1.js";
 export * from "./display-gate-result-v1.js";
 export * from "./domain-pack-manifest-v1.js";
-export type {
-  EvidenceType,
-  EvidenceCatalogItemV1,
-  LatexLocatorV1,
-  PdfLocatorV1,
-} from "./evidence-catalog-item-v1.js";
 export * from "./execution-plan-v1.js";
 export type { ExternalDependencySnapshotEntryV1 } from "./external-dependency-snapshot-entry-v1.js";
 export type { FinalConclusionsV1 } from "./final-conclusions-v1.js";

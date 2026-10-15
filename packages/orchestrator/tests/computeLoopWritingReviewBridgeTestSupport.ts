@@ -7,8 +7,7 @@ import { executionPlanArtifactPath, materializeExecutionPlan } from '../src/comp
 import { stageContentInRunDir } from '../src/computation/staged-content.js';
 import { writeJson } from './executeManifestTestUtils.js';
 
-export function createBridgeRun(runId: string, projectRoot: string) {
-  const runDir = path.join(projectRoot, runId);
+export function createBridgeRun(runId: string, projectRoot: string, runDir = path.join(projectRoot, runId)) {
   fs.mkdirSync(runDir, { recursive: true });
   const executionPlan = compileExecutionPlan(runId, {
     outline_seed_path: 'artifacts/outline_seed_v1.json',

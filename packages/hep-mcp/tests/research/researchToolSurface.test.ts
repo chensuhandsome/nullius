@@ -63,9 +63,9 @@ describe('INSPIRE research public surface (M-25)', () => {
       'max_claim_candidates_per_paper',
       'max_llm_requests',
       'max_papers',
+      'output_dir',
       'prompt_version',
       'recids',
-      'run_id',
       'stable_sort',
       'subject_entity',
     ]);
@@ -102,7 +102,7 @@ describe('INSPIRE research public surface (M-25)', () => {
     }).success).toBe(false);
 
     expect(getStandardSpec('inspire_theoretical_conflicts').zodSchema.safeParse({
-      run_id: 'run1',
+      output_dir: 'out',
       recids: ['1', '2'],
       llm_mode: 'internal',
     }).success).toBe(false);

@@ -2,13 +2,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
 import { pathToFileURL } from 'url';
-import { invalidParams, writeBytesAtomicDurable } from '@nullius/shared';
+import { invalidParams, McpError, unsafeFs, upstreamError, writeBytesAtomicDurable } from '@nullius/shared';
 
 import { ensureDir, getCacheDir } from '../../data/dataDir.js';
-import { getRun, type RunArtifactRef } from '../runs.js';
 import { assertSafePathSegment } from '../paths.js';
-import { writeRunJsonArtifact } from '../citations.js';
-import { HEP_RUN_READ_ARTIFACT_CHUNK } from '../../tool-names.js';
+import { EXTERNAL_API_SUBDIR, outputArtifactRef, type OutputArtifactRef, type OutputBatch } from '../outputDir.js';
 
 type ExternalApiCacheEntryV1 = {
   version: 1;
@@ -22,6 +20,25 @@ type ExternalApiCacheEntryV1 = {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/**
+ * A provider answer, as its client returns it, that cannot be used: not in
+ * the expected form, or contradicting itself. It is a provider failure (UPSTREAM_ERROR), not the
+ * caller's, but it aborts the whole call instead of being recorded against
+ * one item, since data that cannot be read cannot be attributed. Callers that
+ * report provider failures per item recognize it by the
+ * `invalid_provider_answer` field of its data (`isInvalidProviderAnswer`).
+ */
+export function invalidProviderAnswer(message: string, data: Record<string, unknown>): McpError {
+  return upstreamError(message, { ...data, invalid_provider_answer: true });
+}
+
+export function isInvalidProviderAnswer(error: unknown): boolean {
+  return error instanceof McpError
+    && error.code === 'UPSTREAM_ERROR'
+    && isRecord(error.data)
+    && error.data.invalid_provider_answer === true;
 }
 
 function stableStringify(value: unknown): string {
@@ -81,65 +98,145 @@ function externalApiCacheEntryPath(params: { namespace: string; operation: strin
 
   const cacheRoot = getCacheDir();
   ensureDir(cacheRoot);
-  const dir = path.join(cacheRoot, 'external_api_v1', namespace, operation, hash.slice(0, 2).toLowerCase());
+  const dir = externalApiCacheDir(cacheRoot, namespace, operation, hash);
   ensureDir(dir);
   return path.join(dir, `${hash}.json`);
+}
+
+function externalApiCacheDir(cacheRoot: string, namespace: string, operation: string, hash: string): string {
+  return path.join(cacheRoot, 'external_api_v1', namespace, operation, hash.slice(0, 2).toLowerCase());
 }
 
 function defaultArtifactName(prefix: string, params: { namespace: string; operation: string; request_hash: string }): string {
   const namespace = safeCacheSegment(params.namespace, 'namespace');
   const operation = safeCacheSegment(params.operation, 'operation');
-  return `${prefix}_${namespace}_${operation}_${params.request_hash}.json`;
+  return `${EXTERNAL_API_SUBDIR}/${prefix}_${namespace}_${operation}_${params.request_hash}.json`;
 }
 
-export async function cachedExternalApiJsonCall<T>(params: {
-  run_id: string;
+/**
+ * The identity of one external API request: its hash and the output names
+ * of its request and response records.
+ */
+export function describeExternalApiRequest(params: { namespace: string; operation: string; request: unknown }): {
   namespace: string;
   operation: string;
-  request: unknown;
-  fetch: () => Promise<T>;
-  request_artifact_name?: string;
-  response_artifact_name?: string;
-  tool?: { name: string; args: Record<string, unknown> };
-}): Promise<{
-  run_id: string;
   request_hash: string;
-  cache_hit: boolean;
-  cached_response_uri: string;
-  artifacts: RunArtifactRef[];
-  response: T;
-}> {
-  const runId = params.run_id;
-  getRun(runId);
-
+  request_name: string;
+  response_name: string;
+} {
   const namespace = safeCacheSegment(params.namespace, 'namespace');
   const operation = safeCacheSegment(params.operation, 'operation');
-
-  const requestEnvelope = {
+  const requestHash = sha256Hex(stableStringify({
     version: 1,
     namespace,
     operation,
     request: params.request ?? null,
+  }));
+  return {
+    namespace,
+    operation,
+    request_hash: requestHash,
+    request_name: defaultArtifactName('external_api_request', { namespace, operation, request_hash: requestHash }),
+    response_name: defaultArtifactName('external_api_response', { namespace, operation, request_hash: requestHash }),
   };
-  const requestHash = sha256Hex(stableStringify(requestEnvelope));
+}
 
-  const requestArtifactName = params.request_artifact_name?.trim()
-    ? params.request_artifact_name.trim()
-    : defaultArtifactName('external_api_request', { namespace, operation, request_hash: requestHash });
-  const responseArtifactName = params.response_artifact_name?.trim()
-    ? params.response_artifact_name.trim()
-    : defaultArtifactName('external_api_response', { namespace, operation, request_hash: requestHash });
+/** The system error code of a file-system failure, as its own field. */
+function errnoOf(error: unknown): { errno?: string } {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return typeof code === 'string' ? { errno: code } : {};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * One external API call through the shared response cache. The request and
+ * the response INSPIRE (or the cache) returned are recorded in the caller's
+ * output batch under `external_api/`; the response record keeps the raw
+ * response, not the caller's reading of it. A request repeated within one
+ * call, concurrently or not, is made, validated and recorded once, and
+ * every repeat shares the outcome.
+ *
+ * `validate` checks the response for the fields the caller uses and returns
+ * what the caller needs from it. A fresh response is validated before it
+ * enters the cache, so a malformed one is never cached; a cached response
+ * that fails validation, or a cache entry that is not a well-formed entry for
+ * exactly this request, aborts the call with an error naming the cache entry
+ * to remove. Both record names are checked before the cache is read or the
+ * provider is asked.
+ */
+export async function cachedExternalApiJsonCall<T>(params: {
+  batch: OutputBatch;
+  namespace: string;
+  operation: string;
+  request: unknown;
+  fetch: () => Promise<unknown>;
+  validate: (response: unknown) => T;
+  tool?: { name: string; args: Record<string, unknown> };
+}): Promise<{
+  request_hash: string;
+  cache_hit: boolean;
+  cached_response_uri: string;
+  artifacts: OutputArtifactRef[];
+  response: T;
+}> {
+  const described = describeExternalApiRequest(params);
+  return params.batch.once(
+    `external_api:${described.namespace}:${described.operation}:${described.request_hash}`,
+    () => performCachedCall(params, described),
+  );
+}
+
+async function performCachedCall<T>(
+  params: {
+    batch: OutputBatch;
+    request: unknown;
+    fetch: () => Promise<unknown>;
+    validate: (response: unknown) => T;
+    tool?: { name: string; args: Record<string, unknown> };
+  },
+  described: ReturnType<typeof describeExternalApiRequest>,
+): Promise<{
+  request_hash: string;
+  cache_hit: boolean;
+  cached_response_uri: string;
+  artifacts: OutputArtifactRef[];
+  response: T;
+}> {
+  const batch = params.batch;
+  const output = batch.out;
+  const { namespace, operation, request_hash: requestHash, request_name: requestArtifactName, response_name: responseArtifactName } = described;
+  const request = params.request ?? null;
+  const retryAfterRemoving = params.tool
+    ? [{ tool: params.tool.name, args: params.tool.args, reason: 'Retry after removing the corrupted cache entry (manual) (fail-fast).' }]
+    : [];
+
+  batch.assertFree(requestArtifactName);
+  batch.assertFree(responseArtifactName);
 
   const cachePath = (() => {
     try {
       return externalApiCacheEntryPath({ namespace, operation, request_hash: requestHash });
     } catch (err) {
-      throw invalidParams('Failed to resolve external API cache path (fail-fast)', {
-        run_id: runId,
+      // A refusal keeps its own code; a file-system failure is the environment's.
+      if (err instanceof McpError) throw err;
+      const cacheDir = (() => {
+        try {
+          return externalApiCacheDir(getCacheDir(), namespace, operation, requestHash);
+        } catch {
+          return undefined;
+        }
+      })();
+      throw unsafeFs('Failed to resolve external API cache path (fail-fast)', {
+        output_dir: output.relative,
         namespace,
         operation,
         request_hash: requestHash,
+        ...(cacheDir === undefined ? {} : { cache_dir: cacheDir }),
         error: err instanceof Error ? err.message : String(err),
+        ...errnoOf(err),
         next_actions: [
           ...(params.tool ? [{ tool: params.tool.name, args: params.tool.args, reason: 'Retry after fixing cache directory permissions/disk space (fail-fast).' }] : []),
         ],
@@ -147,92 +244,87 @@ export async function cachedExternalApiJsonCall<T>(params: {
     }
   })();
   const cachedResponseUri = pathToFileURL(cachePath).toString();
-
-  const requestRef = writeRunJsonArtifact(runId, requestArtifactName, {
-    version: 1,
-    generated_at: nowIso(),
-    run_id: runId,
+  // The local cache is in a state this call cannot use: an environment
+  // failure, not the caller's.
+  const corrupted = (message: string, error?: unknown): McpError => unsafeFs(message, {
+    output_dir: output.relative,
     namespace,
     operation,
     request_hash: requestHash,
-    request: params.request ?? null,
+    cached_response_uri: cachedResponseUri,
+    cache_path: cachePath,
+    ...(error === undefined ? {} : { error: error instanceof Error ? error.message : String(error), ...errnoOf(error) }),
+    next_actions: retryAfterRemoving,
   });
 
+  batch.json(requestArtifactName, {
+    version: 1,
+    generated_at: nowIso(),
+    namespace,
+    operation,
+    request_hash: requestHash,
+    request,
+  });
+  const requestRef = outputArtifactRef(output, requestArtifactName, 'application/json');
+
   let cacheHit = false;
+  let raw: unknown;
   let response: T;
 
   if (fs.existsSync(cachePath)) {
-    let cached: ExternalApiCacheEntryV1;
+    let text: string;
     try {
-      cached = JSON.parse(await fs.promises.readFile(cachePath, 'utf-8')) as ExternalApiCacheEntryV1;
+      text = await fs.promises.readFile(cachePath, 'utf-8');
     } catch (err) {
-      const parseErrRef = writeRunJsonArtifact(runId, `external_api_cache_parse_error_${namespace}_${operation}_${requestHash}.json`, {
-        version: 1,
-        generated_at: nowIso(),
-        run_id: runId,
-        namespace,
-        operation,
-        request_hash: requestHash,
-        cached_response_uri: cachedResponseUri,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      throw invalidParams('External API cache entry is not valid JSON (fail-fast)', {
-        run_id: runId,
-        namespace,
-        operation,
-        request_hash: requestHash,
-        cached_response_uri: cachedResponseUri,
-        cache_path: cachePath,
-        parse_error_uri: parseErrRef.uri,
-        parse_error_artifact: parseErrRef.name,
-        next_actions: [
-          { tool: HEP_RUN_READ_ARTIFACT_CHUNK, args: { run_id: runId, artifact_name: parseErrRef.name, offset: 0, length: 2048 }, reason: 'Inspect the cache parse error artifact.' },
-          ...(params.tool ? [{ tool: params.tool.name, args: params.tool.args, reason: 'Retry after removing the corrupted cache entry (manual) (fail-fast).' }] : []),
-        ],
-      });
+      throw corrupted('Failed to read external API cache entry (fail-fast)', err);
+    }
+    let cached: unknown;
+    try {
+      cached = JSON.parse(text);
+    } catch (err) {
+      throw corrupted('External API cache entry is not valid JSON (fail-fast)', err);
     }
 
+    // The entry must be for exactly this request: its recorded request is
+    // compared, not only the hash field it carries.
     if (
-      cached.version !== 1
+      !isRecord(cached)
+      || cached.version !== 1
       || cached.request_hash !== requestHash
       || cached.namespace !== namespace
       || cached.operation !== operation
+      || !Object.prototype.hasOwnProperty.call(cached, 'request')
+      || stableStringify(cached.request) !== stableStringify(request)
+      || !Object.prototype.hasOwnProperty.call(cached, 'response')
     ) {
-      const mismatchRef = writeRunJsonArtifact(runId, `external_api_cache_mismatch_${namespace}_${operation}_${requestHash}.json`, {
-        version: 1,
-        generated_at: nowIso(),
-        run_id: runId,
+      throw corrupted('External API cache entry is not an entry for this request (fail-fast)');
+    }
+
+    raw = cached.response;
+    try {
+      response = params.validate(raw);
+    } catch (err) {
+      throw corrupted('Cached external API response is malformed (fail-fast)', err);
+    }
+    cacheHit = true;
+  } else {
+    try {
+      raw = await params.fetch();
+    } catch (err) {
+      // The provider boundary: whatever the remote call raised is a provider
+      // failure. Callers may report these per item; any other error (a
+      // refused output write, a corrupted cache entry, a programming fault)
+      // keeps its own type and aborts the call.
+      if (err instanceof McpError) throw err;
+      throw upstreamError(`${namespace}.${operation} request failed: ${err instanceof Error ? err.message : String(err)}`, {
         namespace,
         operation,
         request_hash: requestHash,
-        cached_response_uri: cachedResponseUri,
-        cached: {
-          version: cached.version ?? null,
-          request_hash: (cached as any)?.request_hash ?? null,
-          namespace: (cached as any)?.namespace ?? null,
-          operation: (cached as any)?.operation ?? null,
-        },
-      });
-      throw invalidParams('External API cache entry mismatches request (fail-fast)', {
-        run_id: runId,
-        namespace,
-        operation,
-        request_hash: requestHash,
-        cached_response_uri: cachedResponseUri,
-        cache_path: cachePath,
-        mismatch_uri: mismatchRef.uri,
-        mismatch_artifact: mismatchRef.name,
-        next_actions: [
-          { tool: HEP_RUN_READ_ARTIFACT_CHUNK, args: { run_id: runId, artifact_name: mismatchRef.name, offset: 0, length: 2048 }, reason: 'Inspect the cache mismatch artifact and remove the corrupted cache entry manually if needed.' },
-          ...(params.tool ? [{ tool: params.tool.name, args: params.tool.args, reason: 'Retry after removing the corrupted cache entry (manual) (fail-fast).' }] : []),
-        ],
       });
     }
 
-    cacheHit = true;
-    response = cached.response as T;
-  } else {
-    response = await params.fetch();
+    // A malformed response aborts the call before it is cached.
+    response = params.validate(raw);
 
     const entry: ExternalApiCacheEntryV1 = {
       version: 1,
@@ -240,55 +332,43 @@ export async function cachedExternalApiJsonCall<T>(params: {
       namespace,
       operation,
       request_hash: requestHash,
-      request: params.request ?? null,
-      response,
+      request,
+      response: raw ?? null,
     };
 
     try {
       await atomicWriteFile({ file_path: cachePath, bytes: Buffer.from(JSON.stringify(entry, null, 2), 'utf-8') });
     } catch (err) {
-      const ioErrRef = writeRunJsonArtifact(runId, `external_api_cache_io_error_${namespace}_${operation}_${requestHash}.json`, {
-        version: 1,
-        generated_at: nowIso(),
-        run_id: runId,
-        namespace,
-        operation,
-        request_hash: requestHash,
-        cached_response_uri: cachedResponseUri,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      throw invalidParams('External API cache write failed (fail-fast)', {
-        run_id: runId,
+      throw unsafeFs('External API cache write failed (fail-fast)', {
+        output_dir: output.relative,
         namespace,
         operation,
         request_hash: requestHash,
         cached_response_uri: cachedResponseUri,
         cache_path: cachePath,
-        cache_error_uri: ioErrRef.uri,
-        cache_error_artifact: ioErrRef.name,
+        error: err instanceof Error ? err.message : String(err),
+        ...errnoOf(err),
         next_actions: [
-          { tool: HEP_RUN_READ_ARTIFACT_CHUNK, args: { run_id: runId, artifact_name: ioErrRef.name, offset: 0, length: 2048 }, reason: 'Inspect the cache IO error artifact (disk/permission issues are fatal by design).' },
           ...(params.tool ? [{ tool: params.tool.name, args: params.tool.args, reason: 'Retry after resolving cache directory IO failures (fail-fast).' }] : []),
         ],
       });
     }
   }
 
-  const responseRef = writeRunJsonArtifact(runId, responseArtifactName, {
+  batch.json(responseArtifactName, {
     version: 1,
     generated_at: nowIso(),
-    run_id: runId,
     namespace,
     operation,
     request_hash: requestHash,
-    request_uri: requestRef.uri,
+    request_path: requestRef.path,
     cache_hit: cacheHit,
     cached_response_uri: cachedResponseUri,
-    response,
+    response: raw ?? null,
   });
+  const responseRef = outputArtifactRef(output, responseArtifactName, 'application/json');
 
   return {
-    run_id: runId,
     request_hash: requestHash,
     cache_hit: cacheHit,
     cached_response_uri: cachedResponseUri,

@@ -544,7 +544,7 @@ export async function executeWorkflowRuntimeRequest(
       ? 'malformed_mcp_env'
       : message.includes('requires a configured MCP tool server')
         ? 'no_mcp_tool_server'
-        : /McpClient|MCP process|No stdout|not initialized|timed out/i.test(message)
+        : /McpClient|MCP process|MCP transport failed|No stdout|not initialized|timed out/i.test(message)
           ? 'mcp_server_unavailable'
           : /unsupported|not available|not found/i.test(message)
             ? 'unsupported_tool'

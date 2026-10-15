@@ -35,7 +35,6 @@ export const WorkflowActionIdSchema = z.enum([
   'analyze.paper_connections',
   'analyze.provenance_trace',
   'analyze.paper_set_critical_review',
-  'materialize.evidence_build',
 ]);
 
 export const WorkflowDegradeModeSchema = z.enum([

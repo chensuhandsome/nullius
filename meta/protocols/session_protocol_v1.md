@@ -58,7 +58,6 @@ A research session progresses through these stages:
 **Recommended workflow authority**:
 - `literature_landscape` recipe — build a curated reading list and anchor-map
 - `literature_gap_analysis` recipe — inspect tensions, omissions, and open seams
-- `literature_to_evidence` recipe — turn a curated paper set into evidence-ready artifacts
 
 **Recommended atomic tools**:
 - `inspire_search` / `inspire_search_next` — targeted queries
@@ -103,19 +102,16 @@ A research session progresses through these stages:
 **Preconditions**: Results from Stage 3 (or Stage 2 for review papers).
 
 **Recommended tools**:
-- `hep_run_create` → create a writing run
-- `research-writer` skill — writing-oriented consumer of evidence artifacts
-- `hep_project_query_evidence` / `hep_project_query_evidence_semantic` — section-level evidence retrieval
-- `hep_render_latex` — LaTeX compilation
-- `hep_export_project` — export for arXiv submission
+- `research-writer` skill — paper scaffold, section drafting, and LaTeX hygiene/compile checks
+- `arxiv_paper_source` / `inspire_paper_source` — LaTeX source or PDF of a cited paper, to read claims against
+- `claim-grounding` skill — check that each cited source actually supports the claim it is cited for
+- `inspire_resolve_citekey` — INSPIRE citekeys and BibTeX for cited recids
 
 **Typical flow**:
-1. Create a project and run
-2. Build or query evidence artifacts from the curated paper set / results
-3. Generate outline candidates → judge → select
-4. Write sections with explicit evidence grounding
-5. Integrate sections → compile LaTeX
-6. Export project
+1. Read the sources of the curated paper set and record the passages (section, equation, page) each claim rests on
+2. Generate outline candidates → judge → select
+3. Write sections with explicit evidence grounding
+4. Integrate sections → compile LaTeX
 
 **Exit criterion**: A compilable LaTeX draft.
 
@@ -124,10 +120,6 @@ A research session progresses through these stages:
 **Preconditions**: A draft from Stage 4.
 
 **Recommended tools**:
-- `hep_run_writing_submit_review` — submit referee report
-- `hep_run_writing_create_revision_plan_packet_v1` — plan revisions
-- `hep_run_writing_submit_revision_plan_v1` — execute revision plan
-- `hep_run_writing_refinement_orchestrator_v1` — automated refinement
 - `referee-review` skill — generate mock referee report
 - `paper-reviser` skill — content-first revision
 

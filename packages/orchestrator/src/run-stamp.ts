@@ -1,5 +1,6 @@
 import { assertWritableRunId } from './run-paths.js';
 import { RUNS_ROOT_RELATIVE } from './run-paths.js';
+import { resolveUnderRoot } from './computation/path-safety.js';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -176,8 +177,8 @@ export type ExistingStampGrade =
  *  - different_tree: the tracked code itself changed — the honest
  *    response is a fresh run id, never a silent rebind.
  *
- *  The probe is read-only apart from a git stat-cache refresh
- *  (pin:false — no ref is created). */
+ *  The identity probe refreshes the git stat cache and may create
+ *  dangling snapshot objects (pin:false — no ref is created). */
 export function gradeExistingStamp(
   projectRoot: string,
   runId: string,
@@ -247,14 +248,19 @@ function resolveContainedRunDirectory(
   target: string,
   verb: string,
 ): ContainedRunDir {
-  const targetRelative = path.relative(projectRoot, resolveStampTarget(projectRoot, target)).split(path.sep).join('/');
+  // The caller may spell the run directory through the alias it used for the
+  // project root; respell it under the admitted root so every later relative
+  // reading (the historical-root check, the tracked-file listing) sees it.
+  const spelled = resolveStampTarget(projectRoot, target);
+  const contained = resolveUnderRoot(projectRoot, spelled);
+  const runDir = contained ?? spelled;
+  const targetRelative = path.relative(projectRoot, runDir).split(path.sep).join('/');
   if (targetRelative === 'team/runs' || targetRelative.startsWith('team/runs/')) {
     return { kind: 'rejected', message: `${verb}: team/runs is historical read-only evidence; use a distinct run id under artifacts/runs for new execution.` };
   }
-  try { assertWritableRunId(projectRoot, path.basename(resolveStampTarget(projectRoot, target))); } catch (error) {
+  try { assertWritableRunId(projectRoot, path.basename(runDir)); } catch (error) {
     return { kind: 'rejected', message: `${verb}: ${error instanceof Error ? error.message : String(error)}` };
   }
-  const runDir = resolveStampTarget(projectRoot, target);
   if (!fs.existsSync(runDir) || !fs.statSync(runDir).isDirectory()) {
     return { kind: 'rejected', message: `${verb}: run directory not found: ${runDir}` };
   }
@@ -264,7 +270,20 @@ function resolveContainedRunDirectory(
       message: `${verb}: ${target} is a symlink; run directories must be real directories under a run root`,
     };
   }
-  if (!isInsideStampableRoot(projectRoot, runDir)) {
+  // Every directory between the project root and the run must be real as
+  // well: the run inventory never follows an alias inside a run root, so a
+  // run reached through one would be stamped where no reader looks.
+  let cursor = path.resolve(projectRoot);
+  for (const segment of contained === null ? [] : path.relative(cursor, contained).split(path.sep)) {
+    cursor = path.join(cursor, segment);
+    if (fs.lstatSync(cursor).isSymbolicLink()) {
+      return {
+        kind: 'rejected',
+        message: `${verb}: ${target} passes through the symlink ${cursor}; run directories must be real directories under a run root`,
+      };
+    }
+  }
+  if (contained === null || !isInsideStampableRoot(projectRoot, runDir)) {
     return {
       kind: 'rejected',
       message: `${verb}: run directories live directly under artifacts/runs/; `
@@ -684,8 +703,9 @@ function manifestInputPaths(workspace: ComputationWorkspace): Set<string> {
  *  answer. */
 function trackedPathsUnder(projectRoot: string, runDir: string): Set<string> {
   const tracked = new Set<string>();
-  const rel = path.relative(projectRoot, runDir);
-  if (rel.startsWith('..')) return tracked;
+  const contained = resolveUnderRoot(projectRoot, runDir);
+  if (contained === null) return tracked;
+  const rel = path.relative(path.resolve(projectRoot), contained);
   try {
     const output = execFileSync(
       'git',

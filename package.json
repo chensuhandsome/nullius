@@ -29,7 +29,8 @@
     "check:rendered-field-continuity-anti-drift": "node scripts/check-rendered-field-continuity-anti-drift.mjs",
     "check:knob-threading-anti-drift": "node scripts/check-knob-threading-anti-drift.mjs",
     "check:optimization-equivalence-anti-drift": "node scripts/check-optimization-equivalence-anti-drift.mjs",
-    "check:post-correction-recomputation-anti-drift": "node scripts/check-post-correction-recomputation-anti-drift.mjs"
+    "check:post-correction-recomputation-anti-drift": "node scripts/check-post-correction-recomputation-anti-drift.mjs",
+    "check:unreachable-modules": "node --test scripts/tests/check-unreachable-modules.test.mjs && node scripts/check-unreachable-modules.mjs"
   },
   "author": "Feng-Kun Guo",
   "license": "MIT",

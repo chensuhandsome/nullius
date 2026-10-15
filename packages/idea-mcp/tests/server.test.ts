@@ -1,9 +1,23 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { assertNoLegacyIdeaEnv, createIdeaRpcClient, parseAndCleanToolArgs, resolveIdeaDataDir } from '../src/server.js';
+import {
+  assertNoLegacyIdeaEnv,
+  createIdeaRpcClient,
+  isWithinRepoRoot,
+  parseAndCleanToolArgs,
+  resolveIdeaDataDir,
+} from '../src/server.js';
 import { IDEA_TOOLS } from '../src/tool-registry.js';
+
+const REPO_ROOT = resolve(import.meta.dirname, '../../..');
+
+/** The repo spelled with swapped letter case when the filesystem folds case, else null. */
+const CASE_FOLDING_REPO_SPELLING = (() => {
+  const swapped = REPO_ROOT.replace(/[A-Za-z]/g, (c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()));
+  return swapped !== REPO_ROOT && existsSync(swapped) ? swapped : null;
+})();
 
 function getTool(name: string) {
   const tool = IDEA_TOOLS.find(t => t.name === name);
@@ -58,6 +72,74 @@ describe('idea-mcp server configuration', () => {
     expect(() => resolveIdeaDataDir({
       IDEA_MCP_DATA_DIR: resolve(import.meta.dirname, '../../idea-engine/runs'),
     })).toThrow('idea-mcp requires IDEA_MCP_DATA_DIR outside the dev repo:');
+  });
+
+  it('rejects a repo-local data dir whose name begins with two dots', () => {
+    // `<repo>/..data` is inside the repo; a prefix test on '..' reads it as outside.
+    expect(() => resolveIdeaDataDir({ IDEA_MCP_DATA_DIR: join(REPO_ROOT, '..idea-data') })).toThrow(
+      'idea-mcp requires IDEA_MCP_DATA_DIR outside the dev repo:',
+    );
+  });
+
+  it('rejects a data dir that reaches the repo through a symlinked alias', () => {
+    // The alias is built explicitly, so this discriminates even where the
+    // temp directory itself is not reached through a symlink (Linux /tmp).
+    const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'idea-mcp-alias-')));
+    tempDirs.push(outside);
+    symlinkSync(REPO_ROOT, join(outside, 'repo-alias'), 'dir');
+    symlinkSync(join(REPO_ROOT, 'packages'), join(outside, 'packages-alias'), 'dir');
+
+    for (const dataDir of [
+      join(outside, 'repo-alias'),
+      join(outside, 'repo-alias', 'idea-data'),
+      join(outside, 'packages-alias', 'idea-engine', 'runs'),
+    ]) {
+      expect(() => resolveIdeaDataDir({ IDEA_MCP_DATA_DIR: dataDir })).toThrow(
+        'idea-mcp requires IDEA_MCP_DATA_DIR outside the dev repo:',
+      );
+    }
+  });
+
+  it('accepts data dirs that really are outside the repo, including two-dot names and outward symlinks', () => {
+    const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'idea-mcp-outside-')));
+    tempDirs.push(outside);
+    mkdirSync(join(outside, 'elsewhere'));
+    symlinkSync(join(outside, 'elsewhere'), join(outside, 'elsewhere-alias'), 'dir');
+
+    expect(resolveIdeaDataDir({ IDEA_MCP_DATA_DIR: join(outside, '..idea-data') })).toBe(join(outside, '..idea-data'));
+    expect(resolveIdeaDataDir({ IDEA_MCP_DATA_DIR: join(outside, 'elsewhere-alias', 'idea-data') }))
+      .toBe(join(outside, 'elsewhere-alias', 'idea-data'));
+  });
+
+  it('judges a stand-in repo root under both readings: as spelled and where the path really lands', () => {
+    const repo = realpathSync.native(mkdtempSync(join(tmpdir(), 'idea-mcp-standin-repo-')));
+    const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'idea-mcp-standin-outside-')));
+    tempDirs.push(repo, outside);
+    // Spelled inside through a two-dot name that is a symlink leading out of the repo.
+    symlinkSync(outside, join(repo, '..linked'), 'dir');
+    // Spelled outside through an alias that leads into the repo.
+    symlinkSync(repo, join(outside, 'repo-alias'), 'dir');
+
+    expect(isWithinRepoRoot(join(repo, '..linked', 'idea-data'), repo)).toBe(true);
+    expect(isWithinRepoRoot(join(outside, 'repo-alias', 'idea-data'), repo)).toBe(true);
+    expect(isWithinRepoRoot(join(outside, '..idea-data'), repo)).toBe(false);
+    expect(isWithinRepoRoot(join(repo, '..', 'sibling', 'idea-data'), repo)).toBe(false);
+  });
+
+  it('refuses a data dir whose real location cannot be determined (dangling symlink)', () => {
+    const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'idea-mcp-dangling-')));
+    tempDirs.push(outside);
+    symlinkSync(join(outside, 'missing-target'), join(outside, 'dangling'), 'dir');
+
+    expect(() => resolveIdeaDataDir({ IDEA_MCP_DATA_DIR: join(outside, 'dangling', 'idea-data') })).toThrow(
+      /cannot determine where .* lands/,
+    );
+  });
+
+  it.skipIf(!CASE_FOLDING_REPO_SPELLING)('rejects another letter-case spelling of the repo on a case-insensitive filesystem', () => {
+    expect(() => resolveIdeaDataDir({ IDEA_MCP_DATA_DIR: join(CASE_FOLDING_REPO_SPELLING!, 'idea-data') })).toThrow(
+      'idea-mcp requires IDEA_MCP_DATA_DIR outside the dev repo:',
+    );
   });
 
   it('fails closed when legacy backend envs are present', () => {

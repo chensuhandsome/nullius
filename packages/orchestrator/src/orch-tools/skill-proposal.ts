@@ -1,6 +1,6 @@
 import { resolveEvidencePath } from '../run-directories.js';
+import { resolveUnderRoot } from '../computation/path-safety.js';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import type { RunState } from '../types.js';
 import type { SkillProposalV2 } from '@nullius/shared';
 import { invalidParams } from '@nullius/shared';
@@ -12,10 +12,8 @@ function readSkillProposalPointer(state: RunState): string | null {
 }
 
 function resolveSkillProposalPath(projectRoot: string, pointer: string): string {
-  const resolvedRoot = path.resolve(projectRoot);
-  const resolved = path.resolve(projectRoot, pointer);
-  const relative = path.relative(resolvedRoot, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+  const resolved = resolveUnderRoot(projectRoot, pointer);
+  if (resolved === null) {
     throw invalidParams('skill proposal pointer escapes project root.', {
       project_root: projectRoot,
       pointer,

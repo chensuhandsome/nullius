@@ -4,7 +4,7 @@
   "repo": "nullius/nullius",
   "channel": "beta",
   "version": "0.6.0",
-  "summary": "HEP MCP server stack for research, evidence, and export workflows.",
+  "summary": "HEP MCP server stack for literature research and evidence tools.",
   "platforms": ["claude_code", "codex", "opencode"],
   "install": {
     "claude_code": "Configure MCP server command/env in client config.",

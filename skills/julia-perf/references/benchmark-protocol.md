@@ -1,142 +1,141 @@
-# Benchmark Protocol
+# Benchmark protocol
 
-This protocol defines how `julia-perf` produces reproducible performance evidence.
+The runner collects warmed kernel measurements with `BenchmarkTools.Trial`. It
+does not measure package load time, first-call latency, inference quality,
+implementation equivalence, or statistical significance. A threshold `PASS`
+means only that the declared descriptive regression limits passed.
 
-## Run Classes
+## Workload definition
 
-- Interactive diagnosis:
-  - Use `@btime` and ad-hoc profiling to locate bottlenecks quickly.
-  - Do not use interactive output as final gate evidence.
-- Gate-producing runs:
-  - Use `BenchmarkTools` with explicit, fixed parameters.
-  - Emit machine-readable artifacts (`benchmarks.json`, `summary.json`, `manifest.json`).
-
-## Suite Contract
-
-`suite_file` must define one of:
-
-1. `JULIA_PERF_BENCHMARKS`:
-   - vector of `name => zero_arg_function` pairs, or
-2. `julia_perf_benchmarks()`:
-   - function returning the same vector shape.
-
-Example:
+Define `JULIA_PERF_BENCHMARKS` or `julia_perf_benchmarks()` returning a nonempty
+vector/dictionary of `name => Benchmark` pairs. Names must be unique. Suites are
+loaded in their own module in a fresh supervised Julia process.
 
 ```julia
+using BenchmarkTools, Random
+const input = rand(MersenneTwister(17), 256)
+kernel!(y, x) = (@. y = sin(x) + 3 * x)
 const JULIA_PERF_BENCHMARKS = [
-  "kernel-a" => (() -> begin
-    x = rand(1000)
-    sum(@. sin(x) + 3x)
-  end),
+    "kernel" => @benchmarkable(kernel!(y, $input),
+        setup=(y=similar($input)), evals=1),
 ]
 ```
 
-## Session Constraint
+Interpolate fixed inputs. Put reset/allocation of mutable fixtures in `setup`;
+setup executes once per sample, so mutating workloads normally require
+`evals=1`. Declare whether data generation, copying, factorization, and output
+allocation belong inside the measured operation. Reject benchmarks whose work
+can be constant-folded or eliminated. Seed stochastic input generation, and
+hash external data through `benchmark.input_files`.
 
-The suite file is included into `Main` at run time.
-Run one gate invocation per Julia process to avoid symbol shadowing from previous suite definitions.
+Declare the outputs the consumer requires: selected components, endpoints,
+sampled history, event-side values, queryable interpolation or a materialized
+adapter/rendering result, as applicable. Compare implementations delivering the
+same requirements, tolerances, event semantics and effective backend. Include
+actual output consumption where lazy work would otherwise be omitted. Less
+saving may reduce memory/time without removing internally needed interpolation
+or event work. A changed consumer requirement is a workload change, not by
+itself an equivalent-computation speedup.
 
-## Gate-Run Defaults
+For reusable state, distinguish a fresh construction from a documented restart.
+Reset history, schedules, callback state and diagnostics as well as visible
+arrays; verify the reused case against a fresh case after relevant prior exit
+states. The runner does not inspect these semantic requirements automatically.
 
-For gate-producing runs:
+Record effective specialization policy and the variety/frequency of callable,
+parameter and size types in the intended use. Measure fresh-process first calls
+separately when latency matters, including any extension loading required by
+the consumer. Precompile directives do not establish lower latency by themselves.
+This runner supplies warmed trials only; cold/precompile measurements need a
+separate protocol. See [ecosystem-patterns.md](../../julia-package/references/ecosystem-patterns.md).
 
-```julia
-using BenchmarkTools
-BenchmarkTools.DEFAULT_PARAMETERS.samples = 100
-BenchmarkTools.DEFAULT_PARAMETERS.seconds = 30
-```
+For asynchronous/device/task workloads, a benchmarkable operation must wait for
+the claimed work to complete. Include transfers and result materialization when
+required by the consumer. Record backend/device and the effective completion
+boundary separately; the runner's environment fingerprint does not inspect an
+accelerator's identity or enforce waits. See
+[structured-and-device-work.md](structured-and-device-work.md).
 
-Set `evals` explicitly per benchmark case:
-- runtime < 1us: `evals = 1000`
-- runtime < 1ms: `evals = 10`
-- runtime >= 1ms: `evals = 1`
+Pure zero-argument functions are also supported with `policy="fixed"`.
+For per-case parameters use `policy="suite"` and explicitly declare `evals`
+on every `Benchmark`. The runner never tunes `evals` independently for baseline
+and candidate. Samples and seconds come from the config, with `gctrial=true`,
+`gcsample=false`, and zero overhead correction.
 
-Do not rely on implicit auto-tuned `evals` for final gate decisions.
+## Capture and compare
 
-## Metrics to Capture
+1. Run unchanged reference code with `--save-baseline`. Keep its `baseline.json`
+   with its source and input evidence. This creates a baseline; it does not
+   validate a speedup or pass a regression check.
+2. Point `benchmark.baseline_file` at that `baseline.json`.
+3. Benchmark candidate code with the same suite, input files, actual evals,
+   protocol, Julia binary/options, threads, BLAS, machine/CPU, and dependency
+   environment. Candidate source hashes may differ. Declared path dependencies
+   are hashed; the candidate package's source is recorded separately.
+4. Declare project-justified limits in `[regression]`. Supported limits are
+   `max_time_ratio`, `max_memory_ratio`, `max_memory_bytes`, and
+   `max_allocations`. Ratio means current / baseline; absolute limits apply to
+   current metrics. No universal regression tolerance is supplied.
 
-Each benchmark case should include at minimum:
-- `name`
-- `baseline_median_ns` and `current_median_ns` (when baseline exists)
-- `ratio` (`current / baseline`)
-- `allocations` delta
-- `memory_bytes` delta
-- sample count
-- evaluation count
+Missing, corrupt, empty, duplicate, unmatched, or incomparable baselines fail.
+The embedded manifest must retain well-formed schema/tool, timestamp, config,
+source-root/file hashes, Git evidence, output and limitation fields as well as
+the comparison signature. Source/config hashes can differ between reference
+and candidate; their absence is not a supported way to make a comparison pass.
+Format checks do not authenticate a caller-supplied record or prove undeclared
+inputs were captured.
+Historical arrays lacking provenance remain readable as historical evidence;
+they cannot authorize a new comparison. Absolute allocation/memory metrics
+must be present; historical deltas never substitute for them. No thresholds
+means `UNVERIFIED` even if execution completes successfully. A missing resolved
+`Manifest.toml` also prevents a comparison `PASS`.
 
-Allocation metric note:
-- `memory_bytes` is sampled via one warm-up invocation followed by one `@allocated` invocation.
+For a speedup claim, separately supply numerical/behavioral equivalence,
+appropriate type/hotspot diagnosis, and repeated/interleaved or independently
+replicated timing evidence with an uncertainty analysis suited to the noise.
+These checks are external to this runner. A single median ratio does not
+establish significance. See the [BenchmarkTools manual](https://juliaci.github.io/BenchmarkTools.jl/stable/manual/)
+for interpolation, setup, explicit evals, and Trial semantics.
 
-## Output Schemas
+## Artifacts and status
 
-### `benchmarks.json`
+- `benchmarks.json`: raw per-evaluation `sample_times_ns`/`sample_gc_times_ns`,
+  median/minimum time, actual samples/evals, real Trial `allocations` and
+  `memory_bytes`, and comparison ratios/deltas when available. Trial allocation
+  count/memory are minimum per-evaluation metrics observed across samples;
+  they are not Boolean flags or a separate `@allocated` probe.
+- `manifest.json`: config/suite/runner SHA256, declared source/input hashes,
+  git revision and dirty-state/diff hashes, dependency/environment fingerprint,
+  protocol, actual evals, and explicit measurement limitations.
+- `summary.json`: verdict, exit code, `thresholds_passed`, `claim_verified=false`,
+  `statistical_analysis="not_performed"`, and
+  `equivalence_check="external_required"`.
+- `baseline.json`: created only by successful baseline initialization; embeds
+  the provenance manifest and complete raw rows.
 
-Array of objects, one per benchmark case:
+Exit 0 is `BASELINE_CREATED` or a declared-threshold `PASS`; inspect the verdict.
+Exit 1 is failure; exit 2 is `UNVERIFIED`; exit 3 is configuration/usage error.
+No automatic type-inference/JET diagnostics report is produced.
 
-```json
-[
-  {
-    "name": "hotpath1",
-    "baseline_median_ns": 1200.0,
-    "current_median_ns": 1100.0,
-    "ratio": 0.9167,
-    "allocations_delta": -2,
-    "memory_bytes_delta": -1024,
-    "samples": 100,
-    "evals": 1
-  }
-]
-```
+## Bounded execution and source preservation
 
-### `summary.json`
+`timeout_seconds` is a supervisor deadline covering child startup, suite
+loading, compilation, warmup, and sampling. It starts after the supervisor's
+own imports/configuration. A timed-out child is killed, a `FAIL` summary is
+written, and complete case rows already written are retained. This bounds the
+worker Julia process; workloads that start external processes must manage
+their own process lifecycle. The runner writes only its output artifacts;
+user-supplied suite code remains responsible for its own side effects.
 
-```json
-{
-  "verdict": "PASS",
-  "exit_code": 0,
-  "hard_failures": [],
-  "soft_warnings": [],
-  "timestamp_utc": "2026-02-14T00:00:00Z"
-}
-```
+Output artifact writes are atomic. An existing output with result artifacts is
+rejected to prevent stale verdicts. `latest` may be replaced only when it is a
+symlink; an existing real directory is preserved. Source/input/environment
+hashes are checked again after sampling to detect changes during a run.
+Directories published through `latest` persist after the Julia process exits,
+including failed-run summaries; they are evidence outputs, not temporary storage
+registered for process-exit cleanup.
 
-Exit code mapping:
-- `0`: pass
-- `1`: hard fail
-- `2`: soft warn only
-- `3`: usage or configuration error
-
-## Statistical Guidance
-
-- Default significance guidance: non-parametric comparison (for example Mann-Whitney U) with `alpha = 0.05`.
-- If no significance test is run, mark result as uncertain and emit soft warning.
-
-## Required Diagnostics
-
-At least one diagnostic entry per hotpath function:
-
-```julia
-# supplemental human-readable type output
-@code_warntype target_function(args...)
-
-# benchmark evidence (macro-free pseudocode)
-median_ns = measure_hotpath(target_function, args; samples=100, evals=1)
-```
-
-Recommended programmatic checks:
-
-```julia
-using JET
-JET.report_opt(target_function, Tuple{ArgType1, ArgType2})
-```
-
-## Manifest Requirements
-
-`manifest.json` should capture:
-- Julia version
-- OS and CPU
-- thread count (`Threads.nthreads()`)
-- UTC timestamp
-- git revision (if repository available)
-- `Manifest.toml` SHA256 hash (or explicit statement that no manifest file was found)
-- tool versions (`BenchmarkTools`, `JET` when available)
+Declare source files explicitly, including code loaded outside `src`; git
+revision alone does not identify dirty/untracked source bytes. Input/source
+declarations cannot capture unlisted external data, environment variables,
+power state, background load, or thermal effects. Document those separately.

@@ -25,6 +25,7 @@ import itertools
 import json
 import os
 import re
+import select
 import signal
 import shutil
 import subprocess
@@ -45,6 +46,13 @@ _TRACE_LOCK = threading.Lock()
 _PROCESS_LOCK = threading.RLock()
 _ACTIVE_PROCESSES: set[subprocess.Popen] = set()
 _STOP_REQUESTED = threading.Event()
+# The main thread is between Popen() and registering the new runner; a stop
+# signal arriving there is deferred until the runner is registered.
+_MAIN_SPAWNING = False
+_DEFERRED_STOP: list[int] = []
+# A stop is in progress on the main thread; signals arriving while it sleeps
+# through the grace period must not start another one inside it.
+_STOPPING = False
 _RE_MODEL_SLUG = re.compile(r"[^A-Za-z0-9._-]+")
 _EXIT_NEEDS_USER_DECISION = 4
 _DEFAULT_TIMEOUT_SECS = 0
@@ -893,52 +901,260 @@ def _resolve_gemini_review_profile(
     return str(home_root), profile
 
 
-def _signal_group(proc: subprocess.Popen, signum: int) -> None:
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(proc.pid, signum)
+class _ChildReapingError(RuntimeError):
+    """A runner is not, or may no longer be, kept unreaped until its group is
+    stopped. While SIGCHLD is ignored (an ignored SIGCHLD survives exec) the
+    kernel reaps an exited child itself, and the number of the group it led
+    may be reissued; nothing may be signalled by that number then."""
 
 
-def _stop_and_collect(proc: subprocess.Popen) -> tuple[str, str]:
-    # Runner supervisors own separate CLI groups. Give their TERM handlers a
-    # bounded cleanup allowance before escalating, so descendants are stopped.
-    _signal_group(proc, signal.SIGTERM)
+def _sigchld_ignored() -> bool:
+    return signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN
+
+
+def _child_exited(pid: int, timeout: float | None) -> bool:
+    """Whether the child has exited, waiting up to timeout seconds (None: no limit).
+
+    Never reaps: an exited, unreaped child stays a zombie that keeps its pid,
+    and with it the number of the process group it leads. Raises
+    _ChildReapingError when the child may already have been reaped elsewhere.
+    """
+    if hasattr(select, "kqueue"):  # macOS CPython has no os.waitid
+        queue = select.kqueue()
+        try:
+            try:
+                queue.control([select.kevent(pid, select.KQ_FILTER_PROC,
+                                             select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                             select.KQ_NOTE_EXIT)], 0, 0)
+                exited = bool(queue.control(None, 1, timeout))
+            except ProcessLookupError:
+                exited = True  # a zombie, which the kernel refuses to watch, or a reaped pid
+        finally:
+            queue.close()
+        # ESRCH does not tell a zombie from a reaped pid; only an unignored
+        # SIGCHLD guarantees that an exited child is kept as a zombie.
+        if exited and _sigchld_ignored():
+            raise _ChildReapingError(f"runner {pid} exited while SIGCHLD is ignored")
+        return exited
+    flags = os.WEXITED | os.WNOWAIT
     try:
-        return proc.communicate(timeout=2)
-    except subprocess.TimeoutExpired:
+        if timeout is None:
+            os.waitid(os.P_PID, pid, flags)
+            return True
+        deadline = time.monotonic() + timeout
+        delay = 0.001
+        while os.waitid(os.P_PID, pid, flags | os.WNOHANG) is None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            time.sleep(min(delay, left))
+            delay = min(2 * delay, 0.05)
+    except ChildProcessError:  # ECHILD: not even a zombie is left
+        raise _ChildReapingError(f"runner {pid} was reaped outside this supervisor") from None
+    return True
+
+
+def _signal_group(proc: subprocess.Popen, signum: int) -> bool:
+    """Signal a runner's process group; False when nothing is left to signal.
+
+    The group number is the runner's pid and names its group provably only
+    while the runner is unreaped. A process leaves _ACTIVE_PROCESSES, under
+    _PROCESS_LOCK, before anything reaps it, so a process found registered
+    under that lock is unreaped. The standard library cannot break this:
+    subprocess.Popen() runs subprocess._cleanup(), which polls only Popen
+    objects that were garbage collected while their child still ran (they
+    reach subprocess._active through Popen.__del__); a registered runner is
+    referenced from _ACTIVE_PROCESSES, so it is never on that list. macOS
+    answers EPERM for a group whose members have all exited while its leader
+    is an unreaped zombie (Linux answers 0).
+    """
+    with _PROCESS_LOCK:
+        if proc not in _ACTIVE_PROCESSES:
+            return False
+        try:
+            os.killpg(proc.pid, signum)
+        except (ProcessLookupError, PermissionError):
+            return False
+        return True
+
+
+# Runner supervisors own separate CLI groups. Their TERM handlers get this
+# long to stop those before SIGKILL; it ends early once nothing is left.
+_STOP_GRACE_SECS = 2.0
+
+
+def _group_has_live_member(proc: subprocess.Popen) -> bool:
+    """Whether a registered runner's group has anything left to signal.
+    killpg(pgid, 0) says so on macOS (EPERM once only the zombie leader is
+    left); on Linux the zombie leader still counts there, so read /proc."""
+    if not sys.platform.startswith("linux"):
+        return _signal_group(proc, 0)
+    with _PROCESS_LOCK:
+        if proc not in _ACTIVE_PROCESSES:
+            return False
+        try:
+            entries = os.listdir("/proc")
+        except OSError:
+            return _signal_group(proc, 0)
+        for entry in entries:
+            if entry.isdigit():
+                try:
+                    with open(f"/proc/{entry}/stat") as stream:
+                        fields = stream.read().rsplit(")", 1)[1].split()
+                except OSError:
+                    continue
+                if int(fields[2]) == proc.pid and fields[0] not in "ZX":
+                    return True
+        return False
+
+
+def _stop_groups(processes: tuple[subprocess.Popen, ...]) -> None:
+    """SIGTERM the runners' groups, wait until nothing in them is left to
+    signal or _STOP_GRACE_SECS, then SIGKILL."""
+    for proc in processes:
+        _signal_group(proc, signal.SIGTERM)
+    deadline = time.monotonic() + _STOP_GRACE_SECS
+    while any(_group_has_live_member(proc) for proc in processes) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    for proc in processes:
         _signal_group(proc, signal.SIGKILL)
-        return proc.communicate()
+
+
+def _stop_runners(signum: int) -> None:
+    """Stop every registered runner's group, then exit with 128 + signum.
+
+    Runs on the main thread only (the signal handler, or the deferred stop
+    after a spawn); a repeated signal returns at once and lets the stop it
+    interrupted finish."""
+    global _STOPPING
+    if _STOPPING:
+        return
+    _STOPPING = True
+    _STOP_REQUESTED.set()
+    # Hold the lock throughout: workers leave the registry under it before
+    # reaping, so no process signalled here can be reaped meanwhile.
+    with _PROCESS_LOCK:
+        _stop_groups(tuple(_ACTIVE_PROCESSES))
+    raise SystemExit(128 + signum)
+
+
+def _reap(proc: subprocess.Popen) -> None:
+    # Stop the group (descendants may outlive the runner), then leave the
+    # registry: from then on nothing signals this group. Then reap.
+    _stop_groups((proc,))
+    with _PROCESS_LOCK:
+        _ACTIVE_PROCESSES.discard(proc)
+    proc.wait()
+
+
+class _PipeReader:
+    """Read a runner's stdout and stderr to end of file on helper threads.
+
+    communicate() would reap the runner as soon as both pipes close, while the
+    stop handler may still signal its group; reading here leaves the reap to
+    _reap().
+    """
+
+    def __init__(self, proc: subprocess.Popen):
+        self._text: dict[str, Any] = {}
+        self._threads = [threading.Thread(target=self._read, args=(name, stream), daemon=True)
+                         for name, stream in (("stdout", proc.stdout), ("stderr", proc.stderr))]
+        for thread in self._threads:
+            thread.start()
+
+    def _read(self, name: str, stream: Any) -> None:
+        with stream:
+            try:
+                self._text[name] = stream.read()
+            except BaseException as exc:
+                self._text[name] = exc
+
+    def join(self, timeout: Optional[float]) -> bool:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        for thread in self._threads:
+            thread.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
+        return not any(thread.is_alive() for thread in self._threads)
+
+    def result(self) -> tuple[str, str]:
+        for value in self._text.values():
+            if isinstance(value, BaseException):
+                raise value
+        return self._text["stdout"], self._text["stderr"]
+
+
+def _stop_and_collect(proc: subprocess.Popen, reader: Optional[_PipeReader]) -> tuple[str, str]:
+    # Known limit: a descendant that escaped the runner's group (setsid) but kept
+    # stdout or stderr open is not reached by the group stop; the final reader join
+    # then waits for its end of file (pre-existing on the timeout path).
+    _reap(proc)  # stops the group first
+    if reader is None:  # the reader threads could not start; nothing was read
+        return "", ""
+    reader.join(None)
+    return reader.result()
 
 
 def _run_with_timeout(cmd: list[str], *, timeout_secs: float, context_tokens: Optional[int] = None) -> dict[str, Any]:
+    global _MAIN_SPAWNING
     observation = runtime_capture_observation._prepare(cmd, context_tokens=context_tokens)
+    on_main_thread = threading.current_thread() is threading.main_thread()
+    if _sigchld_ignored():
+        # main() sets SIGCHLD to its default on the main thread; a caller that
+        # cannot (another thread) must do so before running reviews.
+        raise _ChildReapingError(
+            "SIGCHLD is ignored in this process, so the kernel would reap an exited runner "
+            "and its process-group number could be reissued before the group is stopped; "
+            "set SIGCHLD to SIG_DFL first")
     with _PROCESS_LOCK:
         if _STOP_REQUESTED.is_set():
             raise RuntimeError("Review execution interrupted")
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, start_new_session=True,
-        )
-        runtime_capture_observation._bind(observation, proc)
-        _ACTIVE_PROCESSES.add(proc)
+        # Worker threads need no deferral: the handler waits for this lock.
+        _MAIN_SPAWNING = on_main_thread
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, start_new_session=True,
+            )
+            runtime_capture_observation._bind(observation, proc)
+            _ACTIVE_PROCESSES.add(proc)
+        finally:
+            _MAIN_SPAWNING = False
+            if on_main_thread and _DEFERRED_STOP:
+                _stop_runners(_DEFERRED_STOP[0])
+    reader = None
     try:
-        stdout, stderr = proc.communicate(timeout=timeout_secs if timeout_secs > 0 else None)
-        runtime_capture_observation._finish(observation, proc)
-        return {
-            "timed_out": False,
-            "exit_code": proc.returncode,
-            "stdout": stdout,
-            "stderr": stderr,
-        }
-    except subprocess.TimeoutExpired:
-        stdout, stderr = _stop_and_collect(proc)
+        reader = _PipeReader(proc)
+        deadline = time.monotonic() + timeout_secs if timeout_secs > 0 else None
+
+        def left() -> Optional[float]:
+            return None if deadline is None else max(0.0, deadline - time.monotonic())
+
+        if _child_exited(proc.pid, left()):
+            # Stop the group and reap now, while the readers keep draining:
+            # a same-group descendant that inherited stdout or stderr holds
+            # the pipes open until it is stopped.
+            stdout, stderr = _stop_and_collect(proc, reader)
+            runtime_capture_observation._finish(observation, proc)
+            return {
+                "timed_out": False,
+                "exit_code": proc.returncode,
+                "stdout": stdout,
+                "stderr": stderr,
+            }
+        stdout, stderr = _stop_and_collect(proc, reader)
         return {
             "timed_out": True,
             "exit_code": None,
             "stdout": stdout,
             "stderr": stderr,
         }
+    except _ChildReapingError:
+        # The pid no longer names the runner's group: leave the registry so
+        # that nothing, the stop handler included, signals by that number.
+        with _PROCESS_LOCK:
+            _ACTIVE_PROCESSES.discard(proc)
+        raise
     except BaseException:
-        _stop_and_collect(proc)
+        _stop_and_collect(proc, reader)
         raise
     finally:
         runtime_capture_observation._discard(observation)
@@ -2464,29 +2680,38 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     """Own temporary authentication until every worker has stopped."""
+    global _STOPPING
     old_handlers: dict[int, Any] = {}
     _STOP_REQUESTED.clear()
+    _DEFERRED_STOP.clear()
+    _STOPPING = False
 
     def stop(signum: int, _frame: Any) -> None:
-        _STOP_REQUESTED.set()
-        with _PROCESS_LOCK:
-            processes = tuple(_ACTIVE_PROCESSES)
-        for proc in processes:
-            _signal_group(proc, signal.SIGTERM)
-        grace_deadline = time.monotonic() + 2
-        while any(proc.poll() is None for proc in processes) and time.monotonic() < grace_deadline:
-            time.sleep(0.02)
-        for proc in processes:
-            _signal_group(proc, signal.SIGKILL)
-        raise SystemExit(128 + signum)
+        if _MAIN_SPAWNING:
+            _STOP_REQUESTED.set()
+            _DEFERRED_STOP.append(signum)
+            return
+        _stop_runners(signum)
 
+    old_sigchld = None
     try:
         if threading.current_thread() is threading.main_thread():
+            # Keep every exited runner a zombie until it is reaped here: an
+            # ignored SIGCHLD survives exec and would let the kernel reap it at
+            # once. The caller's disposition comes back only once no runner is
+            # registered any more: a runner left registered by a stop stays
+            # unreaped, so its group number stays protected, until this process
+            # exits.
+            old_sigchld = signal.signal(signal.SIGCHLD, signal.SIG_DFL)
             for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                 old_handlers[signum] = signal.signal(signum, stop)
         with contextlib.ExitStack() as home_stack:
             return _main(home_stack)
     finally:
+        if old_sigchld is not None:
+            with _PROCESS_LOCK:
+                if not _ACTIVE_PROCESSES:
+                    signal.signal(signal.SIGCHLD, old_sigchld)
         for signum, handler in old_handlers.items():
             signal.signal(signum, handler)
 

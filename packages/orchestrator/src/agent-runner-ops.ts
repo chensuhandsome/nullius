@@ -25,6 +25,7 @@ import {
   type ToolAttemptClassification,
   type ToolAttemptIdentity,
 } from './run-manifest.js';
+import { resolveUnderRoot } from './computation/path-safety.js';
 import type { SpanCollector } from './tracing.js';
 import { parseRunGateApprovalRequest, type RunGateApprovalRequest } from './tool-approval-envelope.js';
 import type { ToolPermissionView } from './tool-execution-policy.js';
@@ -406,9 +407,13 @@ function prepareToolUses(params: {
         `Approval-producing tool ${frozen.toolUse.name} must target root run ${params.approvalRunId}.`,
       );
     }
+    // The runtime's root is admitted in canonical form, while the agent may
+    // spell the same directory through an alias; any other directory,
+    // including one inside the root, is a different target.
     const requestedProjectRoot = frozen.toolUse.input['project_root'];
+    const approvalProjectRoot = normalizedProjectRoot(params.approvalProjectRoot);
     if (typeof requestedProjectRoot !== 'string'
-      || normalizedProjectRoot(requestedProjectRoot) !== normalizedProjectRoot(params.approvalProjectRoot)) {
+      || resolveUnderRoot(approvalProjectRoot, normalizedProjectRoot(requestedProjectRoot)) !== approvalProjectRoot) {
       throw internalError(
         `Approval-producing tool ${frozen.toolUse.name} must target the delegated runtime project root.`,
       );

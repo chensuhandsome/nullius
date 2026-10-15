@@ -54,7 +54,7 @@ bash scripts/bin/research_writer_draft_sections.sh \
 cd paper && latexmk -pdf main.tex
 ```
 
-## 可选：consume MCP 导出的 `paper/`（确定性）
+## 可选：consume 外部产出的 `paper/`（确定性）
 
 若外部流水线已导出 `paper/` 且包含 `paper/paper_manifest.json`：
 

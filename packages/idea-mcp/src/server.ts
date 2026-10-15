@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import * as fs from 'fs';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { z } from 'zod';
@@ -50,9 +51,71 @@ export function parseAndCleanToolArgs(
 
 const IDEA_MCP_REPO_ROOT = path.resolve(import.meta.dirname, '../../..');
 
-function isWithinRepoRoot(targetPath: string, repoRoot: string = IDEA_MCP_REPO_ROOT): boolean {
-  const relative = path.relative(repoRoot, targetPath);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+/**
+ * True when `relative`, as `path.relative` returns it, leaves its base: the
+ * parent itself, a path through the parent, or another root. A name that
+ * merely begins with two dots (`..data`) stays inside.
+ */
+function escapesBase(relative: string): boolean {
+  return relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+}
+
+function entryExists(filePath: string): boolean {
+  try {
+    fs.lstatSync(filePath);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+    throw error;
+  }
+}
+
+/**
+ * Where `targetPath` really is: its deepest existing entry resolved through
+ * every symlink, with the components that do not exist yet appended. A
+ * dangling symlink on the way leaves the location undetermined and throws.
+ */
+function realLocation(targetPath: string): string {
+  const target = path.resolve(targetPath);
+  let existing = target;
+  while (!entryExists(existing) && path.dirname(existing) !== existing) existing = path.dirname(existing);
+  let real: string;
+  try {
+    real = fs.realpathSync.native(existing);
+  } catch (error) {
+    throw new Error(
+      `idea-mcp cannot determine where ${target} lands: ${existing} does not resolve (a dangling symlink?)`,
+      { cause: error },
+    );
+  }
+  return path.join(real, path.relative(existing, target));
+}
+
+/**
+ * Whether `targetPath` names the repo or a location inside it under either
+ * reading: as spelled, or where it really is. Keeping the data dir OUT of the
+ * repo is a guard where a missed overlap is the unsafe direction, so the repo
+ * is recognized by directory identity among the ancestors of the real
+ * location: no alias above it, symlink into it, or other spelling of it
+ * (letter case on a case-insensitive filesystem included) hides an overlap.
+ * The spelled reading counts on its own even when a symlink inside the repo
+ * leads out: the engine derives its project root and records artifact paths
+ * from the spelling, and that link is repo-tree state that can later be
+ * replaced by a real directory.
+ *
+ * Exported for direct unit testing against a stand-in repo root.
+ */
+export function isWithinRepoRoot(targetPath: string, repoRoot: string = IDEA_MCP_REPO_ROOT): boolean {
+  if (!escapesBase(path.relative(repoRoot, targetPath))) return true;
+  const identity = fs.statSync(repoRoot);
+  for (let cursor = realLocation(targetPath); ; cursor = path.dirname(cursor)) {
+    if (fs.existsSync(cursor)) {
+      const actual = fs.statSync(cursor);
+      if (actual.dev === identity.dev && actual.ino === identity.ino) return true;
+    }
+    if (path.dirname(cursor) === cursor) return false;
+  }
 }
 
 export function assertNoLegacyIdeaEnv(env: NodeJS.ProcessEnv = process.env): void {

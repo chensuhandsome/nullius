@@ -1685,26 +1685,33 @@ def reflog_only_commits(path: Path) -> "list[str]":
 
 
 def exact_patch_ids(path: Path, revs: "list[str]") -> "dict[str, str] | None":
-    """Commit -> patch id for the non-merge commits `git log revs` lists, with
-    the id taken over the patch byte for byte (`git patch-id --verbatim` over
-    full binary diffs: whitespace, file modes and binary content all count;
-    `git cherry`'s default ids ignore whitespace). A commit whose patch is
-    empty gets no id. None when git fails."""
-    log = git(["log", "--no-merges", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "-p",
-               "--binary", "--full-index", "--format=commit %H", *revs, "--"], path, check=False)
-    if log.returncode != 0:
+    """Commit -> digest of its patch text, byte for byte, for the non-merge
+    commits `git rev-list revs` lists: whitespace, file modes, binary content
+    and the hunk positions all count (`git patch-id`, even with --verbatim,
+    discards hunk positions, so two commits making the same textual change at
+    different places in a file would share an id). A rewritten commit whose
+    hunks moved is therefore not credited: the worktree is kept, which is the
+    safe side. A commit whose patch is empty gets no id. None when git fails."""
+    listing = git(["rev-list", "--no-merges", *revs, "--"], path, check=False)
+    if listing.returncode != 0:
         return None
-    ids = git(["patch-id", "--verbatim"], path, check=False, input_bytes=log.stdout)
-    if ids.returncode != 0:
-        return None
-    return {commit: pid for pid, commit in (line.split() for line in ids.stdout.decode().splitlines() if line.strip())}
+    ids: "dict[str, str]" = {}
+    for commit in listing.stdout.decode().split():
+        patch = git(["diff-tree", "--no-commit-id", "-p", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames",
+                     "--binary", "--full-index", "-r", commit, "--"], path, check=False)
+        if patch.returncode != 0:
+            return None
+        if patch.stdout.strip():
+            ids[commit] = hashlib.sha256(patch.stdout).hexdigest()
+    return ids
 
 
 def rewritten_copy_on_base(path: Path, base: str, obj: str) -> bool:
     """A commit only this worktree remembers whose changes are all on the base
     branch: no merge lies between the merge base and it, and every commit of
-    that stretch has a byte-identical patch among the base's own commits since
-    the merge base. This is what an amended or rebased commit leaves in a
+    that stretch has a byte-identical patch text (hunk positions included)
+    among the base's own commits since the merge base. This is what an amended
+    or rebased commit leaves in a
     reflog; its content is reconstructible from base, so removing the worktree
     loses nothing."""
     if git(["cat-file", "-t", obj], path, check=False).stdout.decode().strip() != "commit":

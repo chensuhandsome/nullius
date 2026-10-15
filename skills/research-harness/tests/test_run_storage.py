@@ -2320,6 +2320,36 @@ def test_worktree_check_credits_rewritten_commits_only_when_every_change_is_on_b
         assert rc == rs.EXIT_FINDINGS and v["verdict"] == "keep" and second in v["reflog_only_commits"]
 
 
+def test_worktree_check_does_not_credit_the_same_change_made_at_another_place(tmp_path, monkeypatch, capsys):
+    """Two patches that differ only in where their hunks sit (the same textual change applied to
+    the first block on base and to the second, identical block in the worktree) change different
+    things. git patch-id discards hunk positions and would call them the same patch; the check
+    compares the patch text itself, so the worktree's commit is not credited and the worktree is kept."""
+    repo = make_repo(tmp_path)
+    # Three unchanged lines on each side of the changed one: the hunk bodies (context included)
+    # come out identical for both places, and only the @@ positions differ.
+    block = "x\nx\nx\nold\ny\ny\ny\n"
+    changed = block.replace("old", "new")
+    (repo / "blocks.txt").write_text(block * 2)
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "two identical blocks", cwd=repo)
+    wt = tmp_path / "lane"
+    sh("git", "worktree", "add", "-q", "--detach", str(wt), "main", cwd=repo)
+    (wt / "blocks.txt").write_text(block + changed)  # the worktree changes the second block
+    sh("git", "add", "-A", cwd=wt)
+    sh("git", "commit", "-q", "-m", "change the second block", cwd=wt)
+    orphan = sh("git", "rev-parse", "HEAD", cwd=wt).stdout.strip()
+    (repo / "blocks.txt").write_text(changed + block)  # base changes the first block
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "change the first block", cwd=repo)
+    sh("git", "reset", "-q", "--hard", "main", cwd=wt)  # the worktree's commit survives only in its reflog
+    capsys.readouterr()
+    rc = run_main(["worktree-check", str(wt), "--json"], repo, monkeypatch)
+    v = _verdicts(capsys)["lane"]
+    assert rc == rs.EXIT_FINDINGS and v["verdict"] == "keep"
+    assert orphan in v["reflog_only_commits"] and v["rewritten_copies_on_base"] == []
+
+
 # ----------------------------------------------------------------- report
 
 def test_report_counts_reclaimable_bytes(tmp_path, monkeypatch, capsys):

@@ -1805,6 +1805,30 @@ def test_worktree_check_keeps_hidden_mode_and_type_changes_and_submodules(tmp_pa
     assert v["subm"]["verdict"] == "keep" and any("submodules" in r for r in v["subm"]["reasons"])
 
 
+@pytest.mark.parametrize("hidden", [False, True])
+def test_worktree_check_keeps_a_changed_executable_bit_even_when_core_filemode_is_off(tmp_path, monkeypatch,
+                                                                                        capsys, hidden):
+    """With core.filemode off, git records no mode change and `git status` shows none; removing the
+    worktree would lose the bit all the same. A worktree with the setting but no such change stays safe."""
+    repo = make_repo(tmp_path)
+    (repo / "tool.sh").write_text("echo hi\n")
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", "files", cwd=repo)
+    changed = _worktree(repo, tmp_path, "changed")
+    sh("git", "config", "core.filemode", "false", cwd=changed)
+    os.chmod(changed / "tool.sh", 0o755)  # same bytes, new executable bit
+    if hidden:
+        sh("git", "update-index", "--assume-unchanged", "tool.sh", cwd=changed)
+    assert sh("git", "status", "--porcelain", cwd=changed).stdout == "", "control: git itself shows nothing"
+    plain = _worktree(repo, tmp_path, "plain")
+    sh("git", "config", "core.filemode", "false", cwd=plain)
+    capsys.readouterr()
+    run_main(["worktree-check", "--all", "--json"], repo, monkeypatch)
+    v = _verdicts(capsys)
+    assert v["changed"]["verdict"] == "keep" and v["changed"]["tracked_changes"] == ["tool.sh"]
+    assert v["plain"]["verdict"] == "safe_to_remove", "control: the setting alone keeps nothing"
+
+
 def test_hidden_change_check_handles_line_breaks_in_names(tmp_path, monkeypatch, capsys):
     repo = make_repo(tmp_path)
     (repo / "x\ny").write_text("same\n")
@@ -2476,7 +2500,8 @@ def test_report_counts_reclaimable_bytes(tmp_path, monkeypatch, capsys):
     assert rc == rs.EXIT_OK
     doc = json.loads(capsys.readouterr().out)
     assert doc["summary_bytes"]["duplicate_content"] == len(dup)
-    assert doc["summary_bytes"]["regenerable_directories"] == 1000, "overlapping roots are counted once"
+    assert doc["summary_bytes"]["regenerable_directories"] == rs.on_disk(
+        os.lstat(scratch / "a" / "node_modules" / "x" / "f.js")), "overlapping roots are counted once"
     bundles = {Path(b["path"]).name: b["contained_in_reference"] for b in doc["bundles"]}
     assert bundles == {"contained.bundle": True, "extra.bundle": False, "dangling.bundle": False}
     stores = {(Path(g["path"]).parent.name if Path(g["path"]).name == ".git" else Path(g["path"]).name):
@@ -2671,16 +2696,43 @@ def test_report_counts_what_a_sparse_file_occupies_not_its_length(tmp_path, monk
         with open(scratch / "a" / name, "wb") as f:
             f.write(b"head")
             f.truncate(length)
-    st = os.lstat(scratch / "a" / "s1.bin")
-    allocated = min(st.st_size, st.st_blocks * 512)
-    if allocated >= length:
+    allocated = [os.lstat(scratch / "a" / name).st_blocks * 512 for name in ("s1.bin", "s2.bin")]
+    if max(allocated) >= length:
+        pytest.skip("this file system does not store sparse files sparsely")
+    assert 0 < min(allocated), "the written head occupies at least one block"
+    capsys.readouterr()
+    assert run_main(["report", str(scratch), "--repo", str(repo), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    [dup] = doc["duplicates"]
+    assert dup["copies"] == 2 and dup["size"] == length, "size is the content length that made them a group"
+    assert sorted(dup["occupied"]) == sorted(allocated)
+    assert dup["reclaimable"] == max(allocated), "the copy occupying the least stays; the other may go"
+    assert doc["summary_bytes"]["duplicate_content"] == dup["reclaimable"]
+
+
+def test_report_sums_what_each_removable_copy_occupies(tmp_path, monkeypatch, capsys):
+    """Three identical copies of unequal occupation: one sparse, one full, one full with another hard
+    link. The multi-linked copy stays whatever happens, so both single-linked copies may go, and the
+    bytes freed are what those two hold, not three times the smallest."""
+    repo = make_repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    (scratch / "a").mkdir(parents=True)
+    length = 8 * 1024 * 1024
+    with open(scratch / "a" / "sparse.bin", "wb") as f:
+        f.truncate(length)
+    full = bytes(length)  # the same content, written out
+    (scratch / "a" / "full.bin").write_bytes(full)
+    (scratch / "a" / "linked.bin").write_bytes(full)
+    os.link(scratch / "a" / "linked.bin", tmp_path / "linked-elsewhere.bin")
+    occupied = {name: os.lstat(scratch / "a" / name).st_blocks * 512 for name in ("sparse.bin", "full.bin", "linked.bin")}
+    if occupied["sparse.bin"] >= occupied["full.bin"]:
         pytest.skip("this file system does not store sparse files sparsely")
     capsys.readouterr()
     assert run_main(["report", str(scratch), "--repo", str(repo), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
     doc = json.loads(capsys.readouterr().out)
     [dup] = doc["duplicates"]
-    assert dup["copies"] == 2 and dup["size"] == length
-    assert 0 < dup["reclaimable"] <= allocated, "freed bytes are what one copy occupies"
+    assert dup["copies"] == 3 and dict(zip((Path(p).name for p in dup["paths"]), dup["occupied"])) == occupied
+    assert dup["reclaimable"] == occupied["sparse.bin"] + occupied["full.bin"]
     assert doc["summary_bytes"]["duplicate_content"] == dup["reclaimable"]
 
 
@@ -2739,8 +2791,10 @@ def test_report_does_not_count_hard_linked_objects_as_reclaimable(tmp_path, monk
     if not any(p.is_file() and p.stat().st_nlink > 1 for p in packs):
         pytest.skip("this file system made git copy instead of hard-linking the local clone")
     assert stores["linked.git"]["contained_in_reference"] and stores["copied.git"]["contained_in_reference"]
-    assert stores["copied.git"]["reclaimable_bytes"] == stores["copied.git"]["bytes"]
-    assert stores["linked.git"]["bytes"] > 200_000 and stores["linked.git"]["reclaimable_bytes"] < 100_000
+    for store in stores.values():  # what containment verified is the objects; the rest is not counted
+        assert store["object_bytes"] + store["other_bytes"] == store["bytes"] and store["other_bytes"] > 0
+    assert stores["copied.git"]["reclaimable_bytes"] == stores["copied.git"]["object_bytes"]
+    assert stores["linked.git"]["object_bytes"] > 200_000 and stores["linked.git"]["reclaimable_bytes"] < 100_000
     assert doc["summary_bytes"]["history_copies_contained_in_reference"] == sum(
         g["reclaimable_bytes"] for g in stores.values())
 

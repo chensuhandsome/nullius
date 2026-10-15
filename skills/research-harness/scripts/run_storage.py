@@ -1782,7 +1782,6 @@ def hidden_tracked_changes(path: Path) -> "list[str]":
             flagged.append(rel)
     if not flagged:
         return []
-    filemode = git(["config", "--bool", "core.filemode"], path, check=False).stdout.decode().strip() != "false"
     index = {}
     for item in git_z_paths(["ls-files", "-s", "-z"], flagged, path):
         meta, _, rel = item.partition("\t")
@@ -1809,7 +1808,9 @@ def hidden_tracked_changes(path: Path) -> "list[str]":
         if not stat.S_ISREG(st.st_mode):
             changed.append(rel)
             continue
-        if filemode and bool(st.st_mode & stat.S_IXUSR) != (mode == "100755"):
+        # Compared whatever core.filemode says: with it off, git does not record a changed
+        # executable bit, but removing the worktree would still lose it.
+        if bool(st.st_mode & stat.S_IXUSR) != (mode == "100755"):
             changed.append(rel)
             continue
         regular.append(rel)
@@ -2113,6 +2114,12 @@ def check_one_worktree(path: Path, base: str, main_root: "Path | None", store: P
     # skip-worktree; `git worktree remove` would discard them silently.
     hidden = hidden_tracked_changes(path)
     changed += [rel for rel in hidden if rel not in changed]
+    # With core.filemode off, `git status` also hides a changed executable bit on every
+    # tracked file; the bit is compared regardless, since removal would lose it.
+    if git(["config", "--bool", "core.filemode"], path, check=False).stdout.decode().strip() == "false":
+        modes = git_z(["-c", "core.filemode=true", "diff", "--no-renames", "--name-only", "-z",
+                       "--ignore-submodules=all"], path)
+        changed += [rel for rel in modes if rel not in changed]
     report["tracked_changes"] = changed
     report["untracked"] = untracked
     gitlinks = [item for item in git_z(["ls-files", "-z", "--stage"], path) if item.startswith("160000 ")]
@@ -2246,11 +2253,12 @@ ALREADY_COMPRESSED_SUFFIXES = frozenset({
 
 
 def on_disk(st: os.stat_result) -> int:
-    """Bytes a file occupies: the allocated blocks, never more than its length
-    (a sparse file counts what it holds; a copy-on-write clone still counts
-    in full, so totals stay upper bounds)."""
+    """Bytes a file occupies: its allocated blocks (a one-byte file holds a
+    whole block, a sparse file only the blocks written; a copy-on-write clone
+    still counts in full, so totals stay upper bounds). Its length, where the
+    platform reports no block count."""
     blocks = getattr(st, "st_blocks", None)
-    return st.st_size if blocks is None else min(st.st_size, blocks * 512)
+    return st.st_size if blocks is None else blocks * 512
 
 
 def dir_size(path: Path, unreadable: "list[str]") -> "tuple[int, int, float, bool, int]":
@@ -2442,8 +2450,12 @@ def cmd_report(args) -> int:
                                         "reclaimable_bytes": size - linked})
                     dirnames.remove(name)
                 elif (name == ".git" or name.endswith(".git")) and is_git_store(full):
-                    size, count, _, _, linked = dir_size(full, unreadable)
-                    record = {"path": str(full), "bytes": size, "reclaimable_bytes": size - linked,
+                    size, count, _, _, _ = dir_size(full, unreadable)
+                    # Containment is verified for the objects (and the refs that name them); the
+                    # rest of the git directory (config, hooks, index, logs, info) is not compared.
+                    objects, _, _, _, linked = dir_size(full / "objects", unreadable)
+                    record = {"path": str(full), "bytes": size, "object_bytes": objects,
+                              "other_bytes": size - objects, "reclaimable_bytes": objects - linked,
                               "kind": "git object store"}
                     if reference is not None and full.resolve() != (reference / ".git").resolve() \
                             and full.resolve() != reference:
@@ -2509,15 +2521,16 @@ def cmd_report(args) -> int:
                 if any(isinstance(n, str) for n in counts):
                     continue
                 unique_large.append((same[0], size))
-                # Removing a copy that has other hard links frees nothing: keep one copy, count the rest
-                # that are single-linked.
-                single = sum(1 for n in counts if n == 1)
-                freeable = min(single, len(same) - 1)
-                # Freed bytes are what the removable copies occupy: the smallest on-disk size among
-                # the copies times the number that may go (a sparse copy frees only what it holds).
-                per_copy = min(occupied[p] for p in same)
+                # Removing a copy that has other hard links frees nothing, so only single-linked
+                # copies may go; one copy stays, the one occupying the least when all are single-linked
+                # (a multi-linked copy stays anyway). Freed bytes are what the removable copies occupy.
+                removable = sorted((p for p, n in zip(same, counts) if n == 1), key=lambda p: occupied[p])
+                if len(removable) == len(same):
+                    removable = removable[1:]
                 duplicates.append({"sha256": sha, "size": size, "copies": len(same),
-                                   "reclaimable": per_copy * freeable, "paths": [str(p) for p in same]})
+                                   "occupied": [occupied[p] for p in same],
+                                   "reclaimable": sum(occupied[p] for p in removable),
+                                   "paths": [str(p) for p in same]})
     duplicates.sort(key=lambda d: -d["reclaimable"])
     unique_large.sort(key=lambda item: -item[1])
     candidates = [(p, s) for p, s in unique_large if p.suffix.lower() not in ALREADY_COMPRESSED_SUFFIXES]
@@ -2582,6 +2595,12 @@ def cmd_report(args) -> int:
         "notes": [
             "Read-only: nothing was changed.",
             "Duplicate bytes are an upper bound: copy-on-write clones share blocks but look like separate files.",
+            "In a duplicate group, `size` is the content length (what made the copies a group); `occupied` lists "
+            "the bytes each copy holds on disk, in `paths` order; `reclaimable` sums the single-linked copies "
+            "that may go, keeping the copy that occupies the least when every copy is single-linked.",
+            "For a git copy, `reclaimable_bytes` counts its objects directory net of hard links (what the "
+            "containment check verified); `other_bytes` (config, hooks, index, logs, refs, info) is not compared "
+            "with the reference and not counted.",
             "Categories can overlap (a stale root may contain duplicates or regenerable directories).",
             "Stale temporary roots are judged by age alone (the newest file or directory time; a root with any "
             "unreadable part is not listed); check that nothing still uses them before removing.",
@@ -2596,7 +2615,7 @@ def cmd_report(args) -> int:
     labels = {
         "duplicate_content": "identical content stored more than once",
         "regenerable_directories": "regenerable directories (dependency trees, caches)",
-        "history_copies_contained_in_reference": "separate git object stores already contained in --repo",
+        "history_copies_contained_in_reference": "objects of separate git stores already contained in --repo",
         "bundles_contained_in_reference": "git bundles already contained in --repo",
         "stale_temporary_roots": f"temporary roots unchanged for {args.older_than_days} days "
                                  "(age only: whether a process still uses them is not checked)",

@@ -2245,6 +2245,14 @@ ALREADY_COMPRESSED_SUFFIXES = frozenset({
 })
 
 
+def on_disk(st: os.stat_result) -> int:
+    """Bytes a file occupies: the allocated blocks, never more than its length
+    (a sparse file counts what it holds; a copy-on-write clone still counts
+    in full, so totals stay upper bounds)."""
+    blocks = getattr(st, "st_blocks", None)
+    return st.st_size if blocks is None else min(st.st_size, blocks * 512)
+
+
 def dir_size(path: Path, unreadable: "list[str]") -> "tuple[int, int, float, bool, int]":
     """Bytes and files under `path`; the newest modification time of any file
     or directory in it (removing a file changes only its directory's time);
@@ -2270,10 +2278,10 @@ def dir_size(path: Path, unreadable: "list[str]") -> "tuple[int, int, float, boo
             newest = max(newest, st.st_mtime)
             if entry == dirpath or not stat.S_ISREG(st.st_mode) and not stat.S_ISLNK(st.st_mode):
                 continue
-            total += st.st_size
+            total += on_disk(st)
             count += 1
             if st.st_nlink > 1:
-                linked += st.st_size
+                linked += on_disk(st)
     return total, count, newest, complete, linked
 
 
@@ -2452,8 +2460,8 @@ def cmd_report(args) -> int:
                 if not stat.S_ISREG(st.st_mode):
                     continue
                 if name.endswith(".bundle"):
-                    record = {"path": str(full), "bytes": st.st_size,
-                              "reclaimable_bytes": st.st_size if st.st_nlink == 1 else 0}
+                    record = {"path": str(full), "bytes": on_disk(st),
+                              "reclaimable_bytes": on_disk(st) if st.st_nlink == 1 else 0}
                     if reference is not None:
                         heads = git(["bundle", "list-heads", str(full)], reference, check=False)
                         shas = [line.split()[0] for line in heads.stdout.decode().splitlines() if line.strip()]
@@ -2462,7 +2470,7 @@ def cmd_report(args) -> int:
                     bundles.append(record)
                 if st.st_size >= args.min_size and (st.st_dev, st.st_ino) not in seen_inodes:
                     seen_inodes.add((st.st_dev, st.st_ino))
-                    files.setdefault(st.st_size, []).append((full, file_identity(st)))
+                    files.setdefault(st.st_size, []).append((full, file_identity(st), on_disk(st)))
     duplicates = []
     unique_large: "list[tuple[Path, int]]" = []
     for size, group in files.items():
@@ -2470,8 +2478,9 @@ def cmd_report(args) -> int:
             unique_large.append((group[0][0], size))
             continue
         by_prefix: "dict[str, list[Path]]" = {}
-        identity = {path: ident for path, ident in group}
-        for path, _ in group:
+        identity = {path: ident for path, ident, _ in group}
+        occupied = {path: disk for path, _, disk in group}
+        for path, _, _ in group:
             try:
                 by_prefix.setdefault(hash_prefix(path), []).append(path)
             except OSError:
@@ -2504,8 +2513,11 @@ def cmd_report(args) -> int:
                 # that are single-linked.
                 single = sum(1 for n in counts if n == 1)
                 freeable = min(single, len(same) - 1)
+                # Freed bytes are what the removable copies occupy: the smallest on-disk size among
+                # the copies times the number that may go (a sparse copy frees only what it holds).
+                per_copy = min(occupied[p] for p in same)
                 duplicates.append({"sha256": sha, "size": size, "copies": len(same),
-                                   "reclaimable": size * freeable, "paths": [str(p) for p in same]})
+                                   "reclaimable": per_copy * freeable, "paths": [str(p) for p in same]})
     duplicates.sort(key=lambda d: -d["reclaimable"])
     unique_large.sort(key=lambda item: -item[1])
     candidates = [(p, s) for p, s in unique_large if p.suffix.lower() not in ALREADY_COMPRESSED_SUFFIXES]
@@ -2543,8 +2555,8 @@ def cmd_report(args) -> int:
             if stat.S_ISDIR(st.st_mode):
                 size, count, newest, complete, linked = dir_size(child, unreadable)
             else:
-                size, count, newest, complete = st.st_size, 1, st.st_mtime, True
-                linked = st.st_size if st.st_nlink > 1 else 0
+                size, count, newest, complete = on_disk(st), 1, st.st_mtime, True
+                linked = on_disk(st) if st.st_nlink > 1 else 0
             # Age is known only when every part of the root could be examined.
             if complete and newest < cutoff:
                 stale.append({"path": str(child), "bytes": size, "files": count, "reclaimable_bytes": size - linked,

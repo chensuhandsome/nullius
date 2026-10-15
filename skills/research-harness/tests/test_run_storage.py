@@ -2660,6 +2660,30 @@ def test_report_does_not_count_a_duplicate_group_when_a_copy_was_replaced_after_
     assert str(replaced) in doc["changed_since_scan"] and str(replaced) not in doc["unreadable"]
 
 
+def test_report_counts_what_a_sparse_file_occupies_not_its_length(tmp_path, monkeypatch, capsys):
+    """Two identical sparse copies: 8 MiB long, a few blocks allocated. Removing one frees what it
+    occupies, not its length; the report must not promise megabytes that were never written."""
+    repo = make_repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    (scratch / "a").mkdir(parents=True)
+    length = 8 * 1024 * 1024
+    for name in ("s1.bin", "s2.bin"):
+        with open(scratch / "a" / name, "wb") as f:
+            f.write(b"head")
+            f.truncate(length)
+    st = os.lstat(scratch / "a" / "s1.bin")
+    allocated = min(st.st_size, st.st_blocks * 512)
+    if allocated >= length:
+        pytest.skip("this file system does not store sparse files sparsely")
+    capsys.readouterr()
+    assert run_main(["report", str(scratch), "--repo", str(repo), "--json"], tmp_path, monkeypatch) == rs.EXIT_OK
+    doc = json.loads(capsys.readouterr().out)
+    [dup] = doc["duplicates"]
+    assert dup["copies"] == 2 and dup["size"] == length
+    assert 0 < dup["reclaimable"] <= allocated, "freed bytes are what one copy occupies"
+    assert doc["summary_bytes"]["duplicate_content"] == dup["reclaimable"]
+
+
 def test_report_counts_a_bundle_against_a_partial_clone_as_not_assessed_even_with_a_missing_tip(tmp_path, monkeypatch,
                                                                                                capsys):
     repo = make_repo(tmp_path)

@@ -24,7 +24,7 @@ const RunIdSchema = z
 const HandoffPathSchema = z
   .string()
   .min(1)
-  .describe('Absolute local filesystem path to an IdeaHandoffC2 JSON artifact.');
+  .describe('Absolute local filesystem path to an IdeaHandoffC2 JSON artifact (a relative path is refused).');
 const HandoffUriSchema = z
   .string()
   .min(1)

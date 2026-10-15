@@ -31,7 +31,7 @@ import type {
 import { resolveProjectContainedPath, resolveUnderRoot } from '../computation/path-safety.js';
 import { utcNowIso } from '../util.js';
 import { resolveProjectRoot } from './common.js';
-import { runDirFor } from '../run-paths.js';
+import { runDirFor, HISTORICAL_RUN_UNAVAILABLE_PREFIX } from '../run-paths.js';
 
 function resolvePathWithinParent(parentDir: string, candidatePath: string, field: string): string {
   const resolvedParent = path.resolve(parentDir);
@@ -56,7 +56,9 @@ function resolvePathWithinParent(parentDir: string, candidatePath: string, field
 // misplaced file is refused here rather than failing a later write.
 const RUN_DIRECTORY_DIRECTORIES = ['artifacts', 'attempts', 'approvals', 'computation'];
 const RUN_DIRECTORY_FILES = ['run_origin.json'];
-// Below computation/, the entries the computation code manages itself.
+// Below computation/, the entries the computation code manages itself (the
+// runtime creates them in computation/runner.ts; a new managed subtree must be
+// added here, or links inside it would be admitted as method workspace files).
 const COMPUTATION_MANAGED_DIRECTORIES = ['logs'];
 
 function lstatIfPresent(entry: string, runDir: string): fs.Stats | null {
@@ -172,7 +174,7 @@ function admitProjectRun(params: { project_root: string; run_id: string; run_dir
     // a historical run that cannot be inspected is the environment's.
     if (error instanceof McpError) throw error;
     const message = error instanceof Error ? error.message : String(error);
-    if (message.startsWith('HISTORICAL_RUN_UNAVAILABLE')) throw unsafeFs(message, { project_root: projectRoot, run_id: params.run_id });
+    if (message.startsWith(HISTORICAL_RUN_UNAVAILABLE_PREFIX)) throw unsafeFs(message, { project_root: projectRoot, run_id: params.run_id });
     throw invalidParams(message, { project_root: projectRoot, run_id: params.run_id });
   }
   if (runDir !== ownRunDir) {

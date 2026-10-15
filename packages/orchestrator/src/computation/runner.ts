@@ -258,6 +258,8 @@ export async function runPreparedManifest(
   if (admissionApproval) return admissionApproval;
   if (!expired) assertPreparedExecutionBinding(prepared);
   const stateManager = new StateManager(projectRoot);
+  // A runtime-managed subtree below computation/: listed in COMPUTATION_MANAGED_DIRECTORIES
+  // (orch-tools/bridge-tools.ts) so bridge admission walks it for links.
   const logsDir = path.join(prepared.workspaceDir, 'logs');
   const statusPath = path.join(prepared.workspaceDir, 'execution_status.json');
   const previous = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, 'utf-8')) as ExecutionStatusFile : null;

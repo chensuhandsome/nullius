@@ -7,6 +7,9 @@ import * as fs from 'node:fs';
  *  read model and receives its automatic launch stamp. */
 export const RUNS_ROOT_RELATIVE = path.join('artifacts', 'runs');
 
+/** Prefix of the error a bridge tool maps to an environment (unsafe_fs) failure rather than a caller error. */
+export const HISTORICAL_RUN_UNAVAILABLE_PREFIX = 'HISTORICAL_RUN_UNAVAILABLE';
+
 /** Execution admission, including identity collisions with read-only history. */
 export function assertWritableRunId(projectRoot: string, runId: string): void {
   if (!runId || path.basename(runId) !== runId || runId === '.' || runId === '..') throw new Error('RUN_ID_INVALID: run_id must be one path segment');
@@ -15,7 +18,7 @@ export function assertWritableRunId(projectRoot: string, runId: string): void {
     fs.lstatSync(historical);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-    throw new Error(`HISTORICAL_RUN_UNAVAILABLE: cannot inspect ${historical}: ${String(error)}`);
+    throw new Error(`${HISTORICAL_RUN_UNAVAILABLE_PREFIX}: cannot inspect ${historical}: ${String(error)}`);
   }
   throw new Error(`HISTORICAL_RUN_READ_ONLY: ${historical} already owns run id ${runId}; use a distinct id for new execution.`);
 }

@@ -482,7 +482,7 @@ requireAll('skills/research-team/tests/test_delegation_budget_runner_integration
   read('skills/research-team/tests/test_delegation_budget_runner_integration.py'), [
     ['exploration no-downgrade brake test', 'test_bad_contract_fails_preflight_even_in_exploration'],
     ['full-cycle brake test (non --preflight-only)', 'test_bad_contract_brakes_full_cycle_before_any_runner'],
-    ['symlinked-config target-tree brake test', 'test_symlinked_config_brakes_on_target_tree_contract'],
+    ['symlinked-config project-root regression test', 'test_symlinked_config_does_not_relocate_the_project_root'],
     ['required-contract brake test', 'test_required_with_no_contract_fails_preflight'],
     ['positive control', 'test_complete_contract_passes_preflight'],
   ]);

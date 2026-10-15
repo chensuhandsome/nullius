@@ -1,11 +1,15 @@
 """Tests for the opt-in independent reproduction check (fresh-checkout rerun)."""
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
+import shlex
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 _MOD = Path(__file__).resolve().parent.parent / "scripts" / "independent_reproduction_check.py"
@@ -265,6 +269,120 @@ def test_timeout_is_incomplete_and_kills_the_entry(tmp_path):
     assert report["entry"]["timed_out"] is True
     assert report["entry"]["exit_code"] is None
     assert report["entry"]["duration_seconds"] < 10
+
+
+def _is_zombie(pid: int) -> bool:
+    if sys.platform.startswith("linux"):
+        try:
+            text = Path(f"/proc/{pid}/stat").read_text()
+        except FileNotFoundError:
+            return False
+        return text[text.rindex(")") + 2] == "Z"
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
+    return state.strip().startswith("Z")
+
+
+def _wait_gone(pid: int, timeout: float = 10) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        if _is_zombie(pid):
+            return True
+        time.sleep(0.02)
+    return False
+
+
+DESCENDANT = """\
+import os, signal, sys, time
+log = sys.argv[1]
+def on_term(signum, frame):
+    with open(log, "a") as stream:
+        stream.write("TERM\\n")
+signal.signal(signal.SIGTERM, on_term)
+with open(log, "a") as stream:
+    stream.write("ready\\n")
+while True:
+    time.sleep(0.05)
+"""
+
+
+def _straggler_entry(tmp_path, then: str = ""):
+    script = tmp_path / "descendant.py"
+    script.write_text(DESCENDANT)
+    log, pidfile = tmp_path / "descendant.log", tmp_path / "descendant.pid"
+    q = shlex.quote
+    entry = (f"{q(sys.executable)} {q(str(script))} {q(str(log))} & "
+             f"echo $! > {q(str(pidfile))}; "
+             f"while ! grep -q ready {q(str(log))} 2>/dev/null; do sleep 0.01; done{then}")
+    return entry, log, pidfile
+
+
+def _assert_stopped_with_sigterm_first(log, pidfile):
+    descendant = int(pidfile.read_text())
+    try:
+        assert _wait_gone(descendant), "the entry's descendant survived"
+        assert "TERM" in log.read_text(), "the descendant got no SIGTERM before SIGKILL"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(descendant, signal.SIGKILL)
+
+
+def test_entry_that_exits_leaving_a_descendant_gets_its_group_stopped(tmp_path, monkeypatch):
+    # The shell exits normally while a background descendant, which records
+    # SIGTERM and ignores it, still runs in its group.
+    monkeypatch.setattr(irc, "ENTRY_STOP_GRACE_SECONDS", 0.5, raising=False)
+    entry, log, pidfile = _straggler_entry(tmp_path)
+    result = irc.run_entry(entry, tmp_path, 60, tmp_path / "entry.out", tmp_path / "entry.err")
+    assert result["timed_out"] is False
+    assert result["exit_code"] == 0
+    _assert_stopped_with_sigterm_first(log, pidfile)
+
+
+def test_timeout_stops_the_entry_group_with_sigterm_first(tmp_path, monkeypatch):
+    monkeypatch.setattr(irc, "ENTRY_STOP_GRACE_SECONDS", 0.5, raising=False)
+    entry, log, pidfile = _straggler_entry(tmp_path, then="; sleep 60")
+    real_child_exited = getattr(irc, "_child_exited", None)
+
+    def child_exited(pid, timeout):
+        # The deadline falls due once the descendant is ready; the shell is
+        # still running then, as it would be at any real deadline.
+        deadline = time.monotonic() + 10
+        while not (log.exists() and "ready" in log.read_text()):
+            assert time.monotonic() < deadline, "descendant did not start"
+            time.sleep(0.01)
+        assert not real_child_exited(pid, 0)
+        return False
+
+    monkeypatch.setattr(irc, "_child_exited", child_exited, raising=False)
+    result = irc.run_entry(entry, tmp_path, 10, tmp_path / "entry.out", tmp_path / "entry.err")
+    assert result["timed_out"] is True
+    assert result["exit_code"] is None
+    _assert_stopped_with_sigterm_first(log, pidfile)
+
+
+def test_run_entry_refuses_to_spawn_while_sigchld_is_ignored(tmp_path):
+    # Called as a library, run_entry does not own the process-wide SIGCHLD
+    # disposition. Ignored, the kernel would reap the exited shell and its
+    # group number could be reissued before the group stop: refuse, spawn nothing.
+    marker = tmp_path / "spawned"
+    previous = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+    try:
+        try:
+            irc.run_entry(f"touch {shlex.quote(str(marker))}", tmp_path, 60,
+                          tmp_path / "entry.out", tmp_path / "entry.err")
+        except Exception as exc:
+            refusal = exc
+        else:
+            refusal = None
+    finally:
+        signal.signal(signal.SIGCHLD, previous)
+    assert type(refusal).__name__ == "ChildReapingError", repr(refusal)
+    assert "SIGCHLD is ignored" in str(refusal)
+    # run_entry waits for any shell it spawns, so a spawned entry would have left the marker
+    assert not marker.exists(), "the entry was spawned although SIGCHLD is ignored"
 
 
 def test_manifest_validation_failure_is_environment_failed(tmp_path):

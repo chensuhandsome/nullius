@@ -227,6 +227,8 @@ describe('the computation bridge tools work only in a run directory inside the a
     ['artifacts is a file', 'artifacts', 'run_dir/artifacts must be a directory'],
     ['the launch stamp mirror is a directory', 'run_origin.json', 'run_dir/run_origin.json must be a regular file'],
     ['the launch stamp mirror is a FIFO', 'run_origin.json:fifo', 'run_dir/run_origin.json must be a regular file'],
+    ['the execution status is a FIFO', 'computation/execution_status.json:fifo', 'run_dir/computation/execution_status.json must be a regular file or a directory'],
+    ['an artifact is a FIFO', 'artifacts/result.json:fifo', 'run_dir/artifacts/result.json must be a regular file or a directory'],
   ])('refuses a run directory where %s, before any write', async (_label, entry, message) => {
     const { root, alias, handoffPath } = projectWithHandoff();
     const runDir = path.join(root, 'artifacts', 'runs', 'r1');
@@ -235,9 +237,10 @@ describe('the computation bridge tools work only in a run directory inside the a
       fs.writeFileSync(runDir, 'x\n');
     } else if (entry === 'run_origin.json') {
       fs.mkdirSync(path.join(runDir, entry), { recursive: true });
-    } else if (entry === 'run_origin.json:fifo') {
-      fs.mkdirSync(runDir, { recursive: true });
-      execFileSync('mkfifo', [path.join(runDir, 'run_origin.json')]);
+    } else if (entry.endsWith(':fifo')) {
+      const rel = entry.slice(0, -':fifo'.length);
+      fs.mkdirSync(path.dirname(path.join(runDir, rel)), { recursive: true });
+      execFileSync('mkfifo', [path.join(runDir, rel)]);
     } else {
       fs.mkdirSync(runDir, { recursive: true });
       fs.writeFileSync(path.join(runDir, entry), 'x\n');

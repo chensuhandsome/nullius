@@ -88,6 +88,10 @@ function listDirectory(dir: string, runDir: string): string[] {
   }
 }
 
+function refuseSpecialFile(entry: string, runDir: string): never {
+  throw unsafeFs(`run_dir/${path.relative(runDir, entry)} must be a regular file or a directory`, { run_dir: runDir, path: entry });
+}
+
 function refuseLink(entry: string, runDir: string): never {
   throw unsafeFs(`run_dir/${path.relative(runDir, entry).split(path.sep).join('/')} must not be a symbolic link`, {
     run_dir: runDir,
@@ -103,6 +107,7 @@ function assertNoLinksBelow(dir: string, runDir: string): void {
     if (stat === null) continue;
     if (stat.isSymbolicLink()) refuseLink(entry, runDir);
     if (stat.isDirectory()) assertNoLinksBelow(entry, runDir);
+    else if (!stat.isFile()) refuseSpecialFile(entry, runDir);
   }
 }
 
@@ -127,7 +132,10 @@ function assertRunDirectoryIsReal(runDir: string): void {
     const stat = lstatIfPresent(entry, runDir);
     if (stat === null) continue;
     if (stat.isSymbolicLink()) refuseLink(entry, runDir);
-    if (!stat.isDirectory()) continue;
+    if (!stat.isDirectory()) {
+      if (!stat.isFile()) refuseSpecialFile(entry, runDir);
+      continue;
+    }
     if (name !== 'computation') {
       assertNoLinksBelow(entry, runDir);
       continue;
@@ -140,6 +148,7 @@ function assertRunDirectoryIsReal(runDir: string): void {
       const innerStat = lstatIfPresent(innerEntry, runDir);
       if (innerStat === null) continue;
       if (innerStat.isSymbolicLink()) refuseLink(innerEntry, runDir);
+      if (!innerStat.isDirectory() && !innerStat.isFile()) refuseSpecialFile(innerEntry, runDir);
       if (innerStat.isDirectory() && COMPUTATION_MANAGED_DIRECTORIES.includes(inner)) assertNoLinksBelow(innerEntry, runDir);
     }
   }
@@ -156,8 +165,8 @@ function assertRunDirectoryIsReal(runDir: string): void {
  * anywhere in the run directory, including every entry directly under
  * computation/; only entries nested below the method's own real workspace
  * directories are left to the manifest checks
- * (the walk is assertRunDirectoryIsReal; the manifest checks run at
- * materialization and preparation). Everything the tool writes, reads or executes
+ * (the walk is assertRunDirectoryIsReal, a pathname check at call time; the
+ * manifest checks at materialization and preparation re-verify declared paths). Everything the tool writes, reads or executes
  * then derives from the admitted run directory.
  */
 function admitProjectRun(params: { project_root: string; run_id: string; run_dir: string }): { projectRoot: string; runDir: string } {

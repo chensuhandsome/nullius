@@ -18,9 +18,10 @@ a machine-enforced closeout discipline for notebooks and results, fail-closed re
 and delegation contracts, and consolidated run authority under one canonical
 `artifacts/runs/<run_id>/` layout.
 ### Removed
-- **hep-mcp modules no entry reaches.** Thirty-five source modules (the removed
-  discovery, preprocessing, survey and research pipelines and their contracts in
-  `@nullius/shared`) that no declared entry or launcher imported are deleted.
+- **hep-mcp modules no entry reaches.** The hep-mcp source modules that no
+  declared entry or launcher imported (the removed discovery, preprocessing,
+  survey and research pipelines, with their discovery contracts in
+  `@nullius/shared`) are deleted.
 - **hep-mcp keeps no runs of its own.** Runs, approvals and lifecycle belong to
   the orchestrator (`<project_root>/artifacts/runs/<run_id>/`). Removed tools:
   `hep_run_create`, `hep_run_read_artifact_chunk`, `hep_run_clear_manifest_lock`,
@@ -67,24 +68,26 @@ and delegation contracts, and consolidated run authority under one canonical
   ignored files, per-worktree refs, commits only its own records remember unless
   their patch text is byte-identical to a base commit, private git state it
   does not understand) and prints the removal command only when it does not;
-  `report` estimates reclaimable bytes (duplicate content by allocated blocks,
-  regenerable directories, git copies and bundles whose reachable objects a
-  reference repository already holds, stale temporary roots) and lists every
-  path it could not examine.
+  `report` estimates the bytes removal may free (duplicate content by allocated
+  blocks, regenerable directories, git copies and bundles whose reachable
+  objects a reference repository already holds, with unreachable objects in a
+  copy counted but not compared, stale temporary roots) and lists every path it
+  could not examine.
 - **Per-package test temp roots.** Every vitest package runs in a private temp
   root that is removed on a clean pass, kept on failure or interruption, and swept
   only when it carries the package's own marker.
 - **Julia package and performance standards.** The `julia-package` skill covers
   modules and extensions, public APIs, numerical contracts, dependencies,
-  concurrency, tests, documentation and release readiness; `julia-perf` gains a
-  benchmark protocol, environment and structured/device-work references, a
-  `run_perf.jl` driver with a suite template and config, and benchmark evidence
-  whose baseline origin is validated; the optimization-equivalence lock covers them.
+  concurrency, tests, documentation and release readiness; `julia-perf` reworks
+  its benchmark protocol and environment references, adds a structured/device-work
+  reference and a test suite, rewrites the `run_perf.jl` driver with its suite
+  template and config, and keeps benchmark evidence whose baseline origin is
+  validated; the optimization-equivalence lock pins the skill's new error-budget wording.
 - **Final display semantics gate for figures and tables.** `figure-hygiene` checks
   the final rendered output after overrides, conversions, rounding and
-  translations (`check_display_acceptance.py` with the `display_semantics.py`
-  helper and a reference on reader selection and quantity identity); a lock
-  ties the gate's coverage to the skill text.
+  translations (extending `check_display_acceptance.py` with the
+  `display_semantics.py` helper and a reference on reader selection and quantity
+  identity); a lock ties the gate's coverage to the skill text.
 - **DeepSeek Harness task runner.** `dsh-cli-runner` dispatches a bounded
   file-prompt task through the installed `dsh` headless CLI to an explicitly
   selected provider/model, captures the raw session, rejects incomplete output,
@@ -367,8 +370,7 @@ and delegation contracts, and consolidated run authority under one canonical
   recognises import-bound write calls, and excuses the remaining sites line by
   line. Path containment at the remaining two-dot sites (idea-mcp, idea-engine,
   openalex-mcp, hep-mcp) uses the exact escape test; openalex-mcp compares real
-  candidate with real parent, and a cached LaTeX `main_path` must name a regular
-  file inside the extracted tree as spelled and where it really lands.
+  candidate with real parent.
 - **The home directory is never a project root.** The shared harness-invocation
   verifier skips it (its `~/.nullius/` holds user-level data, not project state),
   and the CLI project-root search compares real paths so an alias of the home

@@ -73,7 +73,7 @@ def signal_group(pgid: int, signum: int) -> bool:
 
 def group_has_live_member(pgid: int) -> bool:
     """Whether anything in the group is left to signal. killpg(pgid, 0) says
-    so on macOS (EPERM once only the zombie leader is left); on Linux the
+    so on macOS (EPERM once only the zombie leader is left — same-user CLIs only; a descendant that changed credentials would answer EPERM too); on Linux the
     zombie leader still counts there, so /proc is read instead."""
     if sys.platform.startswith('linux'):
         try:

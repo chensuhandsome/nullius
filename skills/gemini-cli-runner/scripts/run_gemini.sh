@@ -107,7 +107,8 @@ import os, select, signal, subprocess, sys, time
 received = []
 def record(signum, frame):
     received.append(signum)
-for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+for signum in SIGNALS:
     signal.signal(signum, record)
 def exited(pid, timeout):
     if hasattr(select, "kqueue"):  # macOS CPython has no os.waitid
@@ -132,7 +133,7 @@ def signal_group(pgid, signum):
     try:
         os.killpg(pgid, signum)
     except (ProcessLookupError, PermissionError):
-        return False  # macOS: EPERM when only the zombie CLI is left in its group
+        return False  # macOS: EPERM when only the zombie CLI is left in its group — same-user CLIs only; a descendant that changed credentials would answer EPERM too and is outside this model
     return True
 def group_has_live_member(pgid):
     if not sys.platform.startswith("linux"):
@@ -156,8 +157,10 @@ if signal_group(proc.pid, signal.SIGTERM):
         time.sleep(0.01)
     signal_group(proc.pid, signal.SIGKILL)
 proc.wait()
-# Leave without interpreter shutdown, which restores default handlers: a late
-# signal would then replace the exit status.
+# Block the recorded signals before choosing the exit status: a signal arriving
+# between reading `received` and os._exit would otherwise be recorded but not
+# reported. Leave without interpreter shutdown, which restores default handlers.
+signal.pthread_sigmask(signal.SIG_BLOCK, set(SIGNALS))
 os._exit(128 + received[0] if received else proc.returncode & 0xFF)
 ' env "GEMINI_CLI_HOME=${GEMINI_CLI_HOME_OVERRIDE}" gemini "$@" <&0 &
   elif [[ -n "${GEMINI_CLI_HOME_OVERRIDE}" ]]; then

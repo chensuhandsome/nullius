@@ -1058,6 +1058,9 @@ class _PipeReader:
 
 
 def _stop_and_collect(proc: subprocess.Popen, reader: Optional[_PipeReader]) -> tuple[str, str]:
+    # Known limit: a descendant that escaped the runner's group (setsid) but kept
+    # stdout or stderr open is not reached by the group stop; the final reader join
+    # then waits for its end of file (pre-existing on the timeout path).
     _reap(proc)  # stops the group first
     if reader is None:  # the reader threads could not start; nothing was read
         return "", ""

@@ -29,10 +29,6 @@ vi.mock('../src/tools/research/topicAnalysis.js', () => ({
   analyzeTopicUnified: vi.fn(),
 }));
 
-vi.mock('../src/tools/research/discoverPapers.js', () => ({
-  discoverPapers: vi.fn(),
-}));
-
 vi.mock('../src/tools/research/networkAnalysis.js', () => ({
   analyzeNetwork: vi.fn(),
 }));
@@ -108,7 +104,6 @@ const api = await import('../src/api/client.js');
 
 // Import mocked modules
 const topicAnalysis = await import('../src/tools/research/topicAnalysis.js');
-const discoverPapers = await import('../src/tools/research/discoverPapers.js');
 const networkAnalysis = await import('../src/tools/research/networkAnalysis.js');
 const evidenceGrading = await import('../src/tools/research/evidenceGrading.js');
 const conflictDetector = await import('../src/tools/research/conflictDetector.js');
@@ -124,7 +119,7 @@ const stance = await import('../src/tools/research/stance/index.js');
 const cleanupDownloads = await import('../src/tools/research/cleanupDownloads.js');
 const validateBibliography = await import('../src/tools/research/validateBibliography.js');
 const paperClassifier = await import('../src/tools/research/paperClassifier.js');
-const { makeProjectRoot, readProjectFile } = await import('./support/hepProjectUri.js');
+const { makeProjectRoot, readProjectFile } = await import('./support/projectFiles.js');
 
 function getBibtexEntryKey(bibtex: string): string | null {
   const cleaned = bibtex.replace(/^\uFEFF/, '').trim();

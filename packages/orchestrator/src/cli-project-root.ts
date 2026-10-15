@@ -25,11 +25,22 @@ function looksLikeProjectRoot(candidate: string): boolean {
   return false;
 }
 
+function realOrResolved(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
 export function findLifecycleProjectRoot(cwd: string): string | null {
   let current = path.resolve(cwd);
-  const home = path.resolve(os.homedir());
+  // The home directory is never a lifecycle project root, also when it is
+  // reached through a symbolic-link alias: compare real paths, as the shared
+  // harness-invocation verifier does.
+  const home = realOrResolved(os.homedir());
   for (let depth = 0; depth < 50; depth += 1) {
-    if (current !== home && looksLikeProjectRoot(current)) {
+    if (realOrResolved(current) !== home && looksLikeProjectRoot(current)) {
       return current;
     }
     const parent = path.dirname(current);

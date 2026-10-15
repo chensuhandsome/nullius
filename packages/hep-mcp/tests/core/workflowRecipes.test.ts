@@ -3,7 +3,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 
-import { zodToPortableJsonSchema } from '../../src/core/contracts/jsonSchema.js';
+import { zodToPortableJsonSchema } from '../support/portableJsonSchema.js';
 import { z } from 'zod';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -140,7 +140,6 @@ describe('workflow recipe schema and fixtures', () => {
               'analyze.paper_connections',
               'analyze.provenance_trace',
               'analyze.paper_set_critical_review',
-              'materialize.evidence_build',
             ]).optional(),
             purpose: z.string().min(1),
             depends_on: z.array(z.string().min(1)).optional(),
@@ -177,7 +176,6 @@ describe('workflow recipe schema and fixtures', () => {
     expect(recipeFiles.map(filePath => path.basename(filePath))).toEqual([
       'literature_gap_analysis.json',
       'literature_landscape.json',
-      'literature_to_evidence.json',
       'research_brainstorm.json',
     ]);
 

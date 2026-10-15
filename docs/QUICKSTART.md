@@ -2,7 +2,7 @@
 
 本指南提供两段最常用路径：
 - **Generic First-Touch**：初始化外部研究项目并取得生命周期状态。
-- **HEP 证据路径**：在项目内建立论文 evidence catalog、检索并回读原文，把检索导出写入项目文件。
+- **HEP 文献路径**：把检索导出、标识符映射等研究输出写入项目文件，并取得论文源码按原文阅读。
 
 本页面向当前最成熟的 domain pack 上手路径，而不是重新定义 root 产品身份。generic lifecycle + workflow-plan front door 仍是 `nullius`；这里的 `hep_*` 路径只是在此基础上进入 HEP 文献与证据工具。
 
@@ -131,8 +131,8 @@ via: nullius decision list) until resolved.
 
 恢复 `nullius run` 时，未知副作用会停止等待核对，已提交响应可回放而不重调。暂停阻止下一步；审批请求保留未完成步骤，必须由宿主实际批准后才能继续。不要把未知结果的中断当作普通失败反复重派。
 
-3) `nullius workflow-plan --recipe literature_to_evidence`
-- 如需高层 literature planning front door，可先完成这一步；随后再按下方 HEP 证据路径使用 domain-pack 工具。
+3) `nullius workflow-plan --recipe literature_landscape`
+- 如需高层 literature planning front door，可先完成这一步；随后再按下方 HEP 文献路径使用 domain-pack 工具。
 
 如果你只想先把一个研究题目收敛成后续 handoff contract，而不启动重流程，可以使用 `research_brainstorm` durable harness：
 
@@ -146,25 +146,18 @@ nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-
 
 `research-team` 的新 team/draft cycle 使用 `artifacts/runs/<run_id>/research_team/` 保存 packet、日志、检查点与成员工作区；来源记录盖章在父 run 上。它们可被证据引用，但完整结论仍须写入新的不可变报告，并通过 `project_index.md#Main research report` 切换入口。
 
-## HEP 证据路径
+## HEP 文献路径
 
-先在外部研究项目执行 `nullius init` 和 `nullius status --json`，并在每次持久 HEP 调用中传入其绝对 `project_root`。HEP project 是论文与 evidence catalog 的领域目录；run、审批与通用生命周期只由 orchestrator 管理（`artifacts/runs/<run_id>/`），`hep-mcp` 没有自己的 run。
+先在外部研究项目执行 `nullius init` 和 `nullius status --json`，并在每次持久 HEP 调用中传入其绝对 `project_root`。run、审批与通用生命周期只由 orchestrator 管理（`artifacts/runs/<run_id>/`）；`hep-mcp` 没有自己的 run，也不建项目或 evidence catalog。
 
-1) `hep_project_create`
-- 关键参数：`name`（必填），`description`（可选）
-
-2) `hep_project_build_evidence`
-- 关键参数：`project_id`（必填）+ `identifier` 或 `main_tex_path`（二选一必填），`paper_id`（可选）
-- 为一篇论文的 LaTeX 源建立 evidence catalog。
-
-3) `hep_project_query_evidence` → `hep_project_playback_evidence`
-- 词法检索定位段落（`mode` 只接受 `lexical`），再按 `evidence_id` 回读原文片段；论断是否得到支持仍需对照原文核对。
-
-4) 把检索结果导出成项目文件：`hep_inspire_search_export`（或带 `output_dir` 的 `inspire_search`）、`hep_inspire_resolve_identifiers`
+1) 把检索结果导出成项目文件：`hep_inspire_search_export`（或带 `output_dir` 的 `inspire_search`）、`hep_inspire_resolve_identifiers`
 - 关键参数：`project_root` + `output_dir`。`output_dir` 相对 `project_root` 或写成绝对路径，不存在时创建；不得经过 project root 以下的符号链接，不得位于 `.nullius/`、`team/runs/`、`artifacts/hep-mcp/` 之下，也不能是 project root 本身。通常取当前 orchestrator run 目录下的子目录，例如 `artifacts/runs/<run_id>/literature/`。
 - 返回项目相对路径（`export_path`、`meta_path`、`mapping_path` 等）；导出所用的每次 INSPIRE 请求/响应记录在 `<output_dir>/external_api/`。`inspire_parse_latex`、`inspire_theoretical_conflicts` 与 `hep_import_from_zotero` 同样写入 `output_dir`。
 
-5) `nullius workflow-plan --recipe literature_to_evidence`
+2) 读论文原文：`arxiv_paper_source` / `inspire_paper_source`（`mode=content`）取得 LaTeX 源码或 PDF
+- 论断是否得到支持须对照原文核对；把核对所用的位置（章节、公式号、页码）记入项目笔记。
+
+3) `nullius workflow-plan --recipe literature_landscape`
 - 先在目标外部 project root 执行 `nullius init`，然后在该 root 内或通过 `--project-root` 调用；这是一个公开的 stateful front door，会直接通过 `@nullius/literature-workflows` 解析 checked-in workflow authority，并写入 `.nullius/state.json#/plan` / `.nullius/plan.md`。对受限论文集分析使用 `inspire_critical_analysis`、`inspire_classify_reviews`、`inspire_theoretical_conflicts` 等 bounded operators。
 
 > 说明：较底层的 checked-in Python `workflow-plan` consumer 与 internal regression/parser-residue 路径见 `docs/TESTING_GUIDE.md`；不要把它们当成新的 quickstart 默认入口。
@@ -174,6 +167,11 @@ nullius workflow-plan --recipe research_brainstorm --run-id 20260502T023000Z-m0-
 hep-mcp 不提供草稿渲染、项目导出或论文打包工具；稿件在项目内另行编写与编译（例如用 `research-writer` skill 搭建 RevTeX 稿件）。旧版本留下的 HEP run 目录（`<project_root>/artifacts/hep-mcp/runs/<run_id>/` 等）是历史证据，原位读取，不被任何工具创建或改写；`hep://runs/...` 引用的人工解析规则见 [`docs/URI_REGISTRY.md`](./URI_REGISTRY.md)。
 
 ## 常见提示
+
+开发 Julia 计算程序包时，使用 [`julia-package`](../skills/julia-package/SKILL.md)
+检查接口、依赖、数值状态、测试和文档，并为计算内核组合
+[`julia-perf`](../skills/julia-perf/SKILL.md)。两者可以独立于研究状态系统使用。
+已有外部项目的常驻指令不会随模板自动更新；需要时显式添加这条路由。
 
 - 若提示 `output_dir requires project_root`：同时传入已初始化项目的绝对 `project_root`。
 - 若提示输出文件已存在（`already exists`）：工具从不覆盖已有输出；换一个新的 `output_dir`（或新的文件名）再调用，旧结果保持原样。调用失败时会撤回本次已发布的文件；若清理失败，错误会写明残留：已发布的文件删不掉时，错误为 UNSAFE_FS，写明输出不完整并在 `files_left` 中列出它们（残留的暂存文件列在 `staging_left`）；只有暂存文件删不掉时，保留原错误并附 `staging_left`；无法识别的暂存文件在 `staging_path` 中给出；删除之后若无法刷盘，错误为 UNSAFE_FS，说明清理可能经不起崩溃，并在 `unflushed_directories` 中列出相应目录。只有在发布途中服务进程崩溃，才可能留下未被报告的不完整文件。这两种情况下，删除这些文件或换新的 `output_dir` 即可。
@@ -267,3 +265,5 @@ The owning account can read the authority key, including code executed by a memb
 The configured token window is frozen before the original reviewer subprocess starts and bound into its authenticated runtime observation. Changing historical window metadata cannot admit that receipt. Older observations without this policy remain readable and require a fresh execution for capacity acceptance.
 
 Local directory links leave notebook dependency closure pending and prevent acceptance. The complete-original joint audit requires exact substantive original-byte anchors for every interval; a reasoning checkbox alone cannot supply coverage.
+
+Research output preservation, path classification, read-only inventory, commit checks and automatic origin-snapshot admission are described in [Research output storage](RUN_STORAGE.md). No storage command deletes data, rewrites history or expires recovery records.

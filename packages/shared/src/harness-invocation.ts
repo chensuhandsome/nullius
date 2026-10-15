@@ -28,9 +28,13 @@
  *
  *   1. `NULLIUS_HARNESS_VERIFY=skip` or `NODE_ENV=test` → skip
  *      (escape hatches; test default keeps suites green).
- *   2. `process.cwd()` has no `.nullius/` directory → skip
+ *   2. `process.cwd()` is the user's home directory → skip. The home
+ *      directory is never a lifecycle project root (the CLI's project-root
+ *      search skips it as well); its `~/.nullius/` holds user-level data
+ *      such as the agent roster and provider data, not project state.
+ *   3. `process.cwd()` has no `.nullius/` directory → skip
  *      (standalone provider use; no lifecycle context to drift from).
- *   3. Caller (dispatcher) signals `toolIsStateTouching=false` for pure
+ *   4. Caller (dispatcher) signals `toolIsStateTouching=false` for pure
  *      read-only provider queries → skip even with a `.nullius/` dir
  *      present (classification per dispatcher per audit; see each *-mcp
  *      dispatcher source).
@@ -55,6 +59,7 @@
  * ignored. `nullius status` writes v2 going forward.
  */
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { McpError, type ErrorCode } from './errors.js';
 import { writeJsonAtomicDurable } from './atomic-write.js';
@@ -127,6 +132,11 @@ export type VerifyOptions = {
    * an explicit env so they don't have to mutate `process.env`.
    */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Override the home directory (default `os.homedir()`). Tests pass a
+   * temporary directory so they never touch the real home.
+   */
+  homeDir?: string;
 };
 
 export type WriteOptions = {
@@ -277,9 +287,11 @@ export function writeHarnessInvocationMarker(
  * Skip layers (in order):
  *   1. Test / explicit-skip env (`NULLIUS_HARNESS_VERIFY=skip` or
  *      `NODE_ENV=test` without explicit `on`).
- *   2. `cwd` has no `.nullius/` directory (B — standalone provider
+ *   2. `cwd` is the home directory (never a lifecycle project root;
+ *      `~/.nullius/` there is user-level data, not a project).
+ *   3. `cwd` has no `.nullius/` directory (B — standalone provider
  *      use; no lifecycle context to drift from).
- *   3. Caller passed `toolIsStateTouching=false` (C — read-only provider
+ *   4. Caller passed `toolIsStateTouching=false` (C — read-only provider
  *      queries do not need to anchor against project state).
  *
  * If none of those apply, verify:
@@ -298,7 +310,13 @@ export function verifyHarnessInvocationMarker(
   // Skip 1: test / explicit skip.
   if (isHarnessVerifySkipped(env)) return;
 
-  // Skip 2: no nullius *directory* at cwd → treat as "no lifecycle
+  // Skip 2: the home directory is never a lifecycle project root (the CLI's
+  // project-root search skips it too); `~/.nullius/` holds user-level data
+  // such as the agent roster, so its presence there says nothing about a
+  // project to anchor against.
+  if (normalizeProjectRoot(cwd) === normalizeProjectRoot(opts.homeDir ?? os.homedir())) return;
+
+  // Skip 3: no nullius *directory* at cwd → treat as "no lifecycle
   // context" and skip verification. A non-directory `.nullius`
   // (regular file, broken symlink, EACCES, etc.) is not a valid
   // lifecycle root either, so we skip in those cases too — the user's
@@ -316,7 +334,7 @@ export function verifyHarnessInvocationMarker(
     return;
   }
 
-  // Skip 3: dispatcher told us this specific tool doesn't touch project state.
+  // Skip 4: dispatcher told us this specific tool doesn't touch project state.
   if (opts.toolIsStateTouching === false) return;
 
   const markerPath = harnessInvocationMarkerPath(cwd);

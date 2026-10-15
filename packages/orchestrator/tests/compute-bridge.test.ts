@@ -40,7 +40,7 @@ function stagedIdeaSurface() {
       thesis: 'Bridge staged hypotheses into a provider-neutral execution plan before any compute approval.',
       claims: [{ claim_text: 'Claim A' }],
       hypotheses: ['Hypothesis A', 'Hypothesis B'],
-      source_handoff_uri: 'hep://runs/source-run/artifact/idea_handoff_c2_v1.json',
+      source_handoff_uri: 'provider://records/source-run/artifact/idea_handoff_c2_v1.json',
     },
     hints: {
       campaign_id: 'cccccc01',

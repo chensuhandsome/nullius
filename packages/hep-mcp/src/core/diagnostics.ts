@@ -1,10 +1,4 @@
-import { writeJsonAtomicDurable, type RunArtifactRef } from '@nullius/shared';
-import { getProjectArtifactPath } from './paths.js';
 import type { OutputArtifactRef, OutputBatch } from './outputDir.js';
-
-// hep-mcp legacy JSON convention: no trailing newline; preserve byte-equality.
-const stringifyNoTrailingNewline = (payload: unknown): string =>
-  JSON.stringify(payload, null, 2);
 
 export type BudgetDimensionV1 = 'breadth' | 'depth' | 'budget';
 export type BudgetSourceKindV1 = 'tool_args' | 'env' | 'default';
@@ -200,49 +194,4 @@ export function writeOutputDiagnosticsArtifact(params: {
     warnings: params.warnings,
   };
   return { ref: params.batch.json(params.artifact_name, payload), payload };
-}
-
-export interface ProjectDiagnosticsArtifactV1 {
-  version: 1;
-  generated_at: string;
-  project_id: string;
-  operation: string;
-  budgets: BudgetEntryV1[];
-  hits: BudgetHitV1[];
-  warnings: HepWarningV1[];
-  artifacts: {
-    project_diagnostics_uri: string;
-  };
-  meta?: Record<string, unknown>;
-}
-
-export function writeProjectDiagnosticsArtifact(params: {
-  project_id: string;
-  operation: string;
-  artifact_name: string;
-  budgets: BudgetEntryV1[];
-  hits: BudgetHitV1[];
-  warnings: HepWarningV1[];
-  meta?: Record<string, unknown>;
-}): { project: RunArtifactRef; payload: ProjectDiagnosticsArtifactV1 } {
-  const projectUri =
-    `hep://projects/${encodeURIComponent(params.project_id)}/artifact/${encodeURIComponent(params.artifact_name)}`;
-
-  const payload: ProjectDiagnosticsArtifactV1 = {
-    version: 1,
-    generated_at: nowIso(),
-    project_id: params.project_id,
-    operation: params.operation,
-    budgets: params.budgets,
-    hits: params.hits,
-    warnings: params.warnings,
-    artifacts: { project_diagnostics_uri: projectUri },
-    meta: params.meta,
-  };
-
-  writeJsonAtomicDurable(getProjectArtifactPath(params.project_id, params.artifact_name), payload, stringifyNoTrailingNewline);
-  return {
-    project: { name: params.artifact_name, uri: projectUri, mimeType: 'application/json' },
-    payload,
-  };
 }

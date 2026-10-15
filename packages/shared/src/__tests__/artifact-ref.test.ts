@@ -97,14 +97,14 @@ describe('createArtifactRefV1', () => {
 
 describe('isScopedArtifactUri', () => {
   it('accepts valid scoped artifact URIs', () => {
-    expect(isScopedArtifactUri('hep://runs/myrun/artifact/data.json', { scheme: 'hep', scope: 'runs' })).toBe(true);
+    expect(isScopedArtifactUri('example://records/item1/artifact/data.json', { scheme: 'example', scope: 'records' })).toBe(true);
     expect(isScopedArtifactUri('openalex://works/W123/artifact/file%2B.json', { scheme: 'openalex', scope: 'works' })).toBe(true);
   });
 
   it('rejects non-matching URIs', () => {
-    expect(isScopedArtifactUri('http://example.com', { scheme: 'hep', scope: 'runs' })).toBe(false);
-    expect(isScopedArtifactUri('hep://projects/p1', { scheme: 'hep', scope: 'runs' })).toBe(false);
-    expect(isScopedArtifactUri('', { scheme: 'hep', scope: 'runs' })).toBe(false);
+    expect(isScopedArtifactUri('http://example.com', { scheme: 'example', scope: 'records' })).toBe(false);
+    expect(isScopedArtifactUri('example://collections/c1', { scheme: 'example', scope: 'records' })).toBe(false);
+    expect(isScopedArtifactUri('', { scheme: 'example', scope: 'records' })).toBe(false);
   });
 });
 
@@ -118,16 +118,16 @@ describe('parseScopedArtifactUri', () => {
   });
 
   it('decodes percent-encoded components', () => {
-    const result = parseScopedArtifactUri('hep://runs/run%20id/artifact/file%2B.json', { scheme: 'hep', scope: 'runs' });
-    expect(result).toEqual({ scheme: 'hep', scope: 'runs', scopeId: 'run id', artifactName: 'file+.json' });
+    const result = parseScopedArtifactUri('example://records/item%20id/artifact/file%2B.json', { scheme: 'example', scope: 'records' });
+    expect(result).toEqual({ scheme: 'example', scope: 'records', scopeId: 'item id', artifactName: 'file+.json' });
   });
 
   it('returns null for invalid URIs', () => {
-    expect(parseScopedArtifactUri('not-a-uri', { scheme: 'hep', scope: 'runs' })).toBeNull();
-    expect(parseScopedArtifactUri('hep://projects/p1', { scheme: 'hep', scope: 'runs' })).toBeNull();
+    expect(parseScopedArtifactUri('not-a-uri', { scheme: 'example', scope: 'records' })).toBeNull();
+    expect(parseScopedArtifactUri('example://collections/c1', { scheme: 'example', scope: 'records' })).toBeNull();
   });
 
   it('returns null for malformed percent-encoding', () => {
-    expect(parseScopedArtifactUri('hep://runs/%E0%A4%A/artifact/data.json', { scheme: 'hep', scope: 'runs' })).toBeNull();
+    expect(parseScopedArtifactUri('example://records/%E0%A4%A/artifact/data.json', { scheme: 'example', scope: 'records' })).toBeNull();
   });
 });

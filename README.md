@@ -32,7 +32,7 @@ Native computation binds an enabled A3 approval to the current manifest, scripts
 | Stateful literature planning | `nullius workflow-plan` | Checked-in workflow authority resolved via `@nullius/literature-workflows`, persisted to `.nullius/state.json#/plan`, and rendered to `.nullius/plan.md` |
 | Agent research project harness skill | `research-harness` | Thin client skill for Codex / Claude Code / OpenCode to recover external project state, route work to `nullius`, `research-team`, `markdown-hygiene`, and `hep-mcp`, and fold results back into durable project artifacts |
 | Experimental idea runtime bridge | `node /absolute/path/to/nullius/packages/idea-mcp/dist/server.js` | TS-hosted campaign lifecycle bridge for `idea_campaign_*` on explicit external data roots; posterior-based rank/promote, node posterior/lifecycle/grounding-audit/card-revision updates, provenance correction, and generation-pack import (`node.import_generated`) remain `idea-engine` runtime-contract truth, not a root front door |
-| Current most mature domain MCP front door | `node /absolute/path/to/nullius/packages/hep-mcp/dist/index.js` | HEP domain MCP server for literature research, paper evidence catalogs, and provider-local composition; its research-output tools write their files into a caller-chosen `output_dir` inside the project |
+| Current most mature domain MCP front door | `node /absolute/path/to/nullius/packages/hep-mcp/dist/index.js` | HEP domain MCP server for literature research and provider-local composition; its research-output tools write their files into a caller-chosen `output_dir` inside the project |
 | Bounded provider MCP operators | `@nullius/openalex-mcp`, `@nullius/arxiv-mcp`, `@nullius/hepdata-mcp`, `@nullius/pdg-mcp`, `@nullius/zotero-mcp` | Atomic literature, data, reference, and evidence operators that stay MCP-first |
 
 The live HEP tool inventory is code-owned and mode-filtered by `HEP_TOOL_MODE`; keep exact counts in the generated category/status docs rather than this README.
@@ -54,6 +54,7 @@ Within project-local truth, `research_plan.md#Current Status` is the human statu
 Skill source and distribution are separate surfaces:
 
 - `skills/` holds checked-in skill source and manuals.
+- For Julia computational libraries, [`julia-package`](skills/julia-package/SKILL.md) covers APIs, numerical contracts and package lifecycle; [`julia-perf`](skills/julia-perf/SKILL.md) covers kernel discipline and reproducible performance evidence.
 - `packages/skills-market` is the installer/distribution control plane; it does not mean those skills are preinstalled in a client runtime.
 - `research-harness` is the market-listed thin entry skill for external research projects. It intentionally has no hard package dependency on `research-team`, `markdown-hygiene`, or `hep-mcp`; those remain separate capabilities that the host client may already provide or install independently.
 
@@ -69,17 +70,11 @@ For the project's non-surface guarantees — what Nullius is *not*, which agent 
 <resolved HEP data root>/
   cache/
   downloads/
-  projects/<project_id>/
-    project.json
-    artifacts/
-    papers/<paper_id>/
-      paper.json
-      evidence/
+  pdg/
 ```
 
-- Project roots are created under `projects/<project_id>/...`.
-- `hep-mcp` keeps no runs of its own: runs, approvals, and lifecycle belong to the orchestrator under `<project_root>/artifacts/runs/<run_id>/`. The HEP research-output tools (search exports, identifier mappings, Zotero mappings, LaTeX parses, conflict maps) write their files into a caller-chosen `output_dir` inside the project root, typically a subdirectory of the current run directory, and return project-relative paths. `output_dir` requires `project_root`, may not be the project root itself or traverse a symbolic link below it, and may not lie under `.nullius/`, `team/runs/`, or `artifacts/hep-mcp/` (compared ignoring letter case); a call never replaces an existing file. Downloads made by `inspire_paper_source`, caches, PDG data and hep paper/evidence projects stay in hep-mcp's data root (`<project_root>/artifacts/hep-mcp` or `HEP_DATA_DIR`).
-- Historical HEP run directories (`runs/<run_id>/` under the HEP data root) from earlier versions are evidence: they stay readable in place and no tool creates or rewrites them. [`docs/URI_REGISTRY.md`](./docs/URI_REGISTRY.md) gives the reading rule for historical `hep://runs/...` references.
+- `hep-mcp` keeps no runs of its own: runs, approvals, and lifecycle belong to the orchestrator under `<project_root>/artifacts/runs/<run_id>/`. The HEP research-output tools (search exports, identifier mappings, Zotero mappings, LaTeX parses, conflict maps) write their files into a caller-chosen `output_dir` inside the project root, typically a subdirectory of the current run directory, and return project-relative paths. `output_dir` requires `project_root`, may not be the project root itself or traverse a symbolic link below it, and may not lie under `.nullius/`, `team/runs/`, or `artifacts/hep-mcp/` (compared ignoring letter case); a call never replaces an existing file. Downloads made by `inspire_paper_source`, caches and PDG data stay in hep-mcp's data root (`<project_root>/artifacts/hep-mcp` or `HEP_DATA_DIR`).
+- Historical HEP run directories (`runs/<run_id>/` under the HEP data root) and paper/evidence project directories (`projects/<project_id>/`, including evidence catalogs) from earlier versions are evidence: they stay readable in place and no tool creates or rewrites them. [`docs/URI_REGISTRY.md`](./docs/URI_REGISTRY.md) gives the reading rules for historical `hep://runs/...` and `hep://projects/...` references.
 - `PDG_DATA_DIR` is the PDG-local companion root. If unset, it follows the resolved HEP data root at `<resolved HEP data root>/pdg`.
 - Text and binary artifacts remain on disk under package-owned artifact roots; tool results stay compact and point back to project artifacts instead of inlining large payloads.
 - Paper originals, extracted text, arXiv source tarballs, and source trees are ordinary local files. If they are only needed during the current check, keep them in a local temporary directory; if later verification or continuation needs them, place them under the external project root in the appropriate project/run artifact directory.
@@ -145,7 +140,7 @@ Universal MCP config pattern:
 Notes:
 
 - Build first: `pnpm -r build`.
-- MCP environment paths are filesystem roots, not URI/protocol settings. For durable nullius project work, pass the initialized `project_root` in HEP tool calls so HEP project data goes under `<project_root>/artifacts/hep-mcp` and file outputs go into the `output_dir` you name inside the project. Keep `HEP_DATA_DIR` as a scratch fallback or explicit override for one-off checks, CI, and migrations.
+- MCP environment paths are filesystem roots, not URI/protocol settings. For durable nullius project work, pass the initialized `project_root` in HEP tool calls so hep-mcp's downloads, caches and PDG data go under `<project_root>/artifacts/hep-mcp` and file outputs go into the `output_dir` you name inside the project. Keep `HEP_DATA_DIR` as a scratch fallback or explicit override for one-off checks, CI, and migrations.
 - If `nullius` is not on `PATH`, create a local wrapper after building:
 
 ```bash
@@ -271,11 +266,9 @@ If you want the current strongest domain-pack smoke path next, connect your MCP 
 
 1. Call `hep_health`.
 1. For durable project work, pass `project_root=/absolute/path/to/external-project` on each HEP tool call.
-1. Call `hep_project_create`.
-1. Call `hep_project_build_evidence` for one paper, then `hep_project_query_evidence` (lexical) and `hep_project_playback_evidence` to locate and reread a passage.
 1. Call `hep_inspire_search_export` with `project_root` and an `output_dir` such as `artifacts/runs/<run_id>/literature`; inspect the returned project-relative `export_path` / `meta_path` and the per-call external API records under `<output_dir>/external_api/`.
 
-HEP projects catalog papers and evidence; runs, generic lifecycle, and approval remain orchestrator-owned. `hep-mcp` provides no draft rendering, project export, or paper bundling tools.
+Runs, generic lifecycle, and approval remain orchestrator-owned. `hep-mcp` provides no project or evidence catalog, draft rendering, project export, or paper bundling tools; read paper sources with `arxiv_paper_source` / `inspire_paper_source` and record what you check against them in the project's own notes.
 
 ## Documentation
 
@@ -364,3 +357,5 @@ Runtime observations bind the actual report location, so copying signed capture 
 Member origin trusts the configured runner and owning host runtime: the complete runner bytes are recorded, but no runner allowlist or provider attestation is claimed. Offline or injected host execution establishes a local process/callable observation; actual provider capacity evidence requires the corresponding CLI capture. The canonical team cycle performs a postflight source assessment and a separate fresh assessment at the final consumer; both use the configured assessor request/execution budgets.
 
 Local directory links leave notebook dependency closure pending and prevent acceptance. The complete-original joint audit requires exact substantive original-byte anchors for every interval; a reasoning checkbox alone cannot supply coverage.
+
+Research output preservation, path classification, read-only inventory, commit checks and automatic origin-snapshot admission are described in [Research output storage](docs/RUN_STORAGE.md). No storage command deletes data, rewrites history or expires recovery records.

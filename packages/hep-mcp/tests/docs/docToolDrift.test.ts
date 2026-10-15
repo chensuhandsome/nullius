@@ -268,7 +268,8 @@ describe('Docs tool drift guard', () => {
     assertContainsAll({
       text: md,
       snippets: [
-        'The current emitted/resolved URI schemes covered by this registry are `hep://`, `pdg://`, `orch://`, `rep://`, `hepdata://`, `openalex://`, `zotero://`, `file://`, and `project://`.',
+        'The current emitted/resolved URI schemes covered by this registry are `pdg://`, `orch://`, `rep://`, `hepdata://`, `openalex://`, `zotero://`, `file://`, and `project://`. `hep://` identifiers are historical only: no current tool emits or resolves them',
+        '| `hep://projects/<project_id>/papers/<paper_id>/evidence/catalog` | `<HEP data root>/projects/<project_id>/papers/<paper_id>/evidence/catalog.jsonl` |',
         '`orch://runs/{run_id}/artifact/{artifact_path}`',
         '`rep://runs/{run_id}/artifact/{artifact_path}`',
         '`hepdata://artifacts/submissions/{hepdata_id}/hepdata_submission.zip`',
@@ -286,7 +287,7 @@ describe('Docs tool drift guard', () => {
     });
     assertContainsNone({
       text: md,
-      snippets: ['| `hep://corpora` | Live |', '`handoff`/`ranking` refs are consumed by the orchestrator computation and feedback owners.', 'emit via `pathToFileURL(...).href`', "The fragment pins the referenced content's exact bytes."],
+      snippets: ['| `hep://corpora` | Live |', '| `hep://` | `@nullius/hep-mcp` |', '`handoff`/`ranking` refs are consumed by the orchestrator computation and feedback owners.', 'emit via `pathToFileURL(...).href`', "The fragment pins the referenced content's exact bytes."],
       label: 'docs/URI_REGISTRY.md',
     });
   });

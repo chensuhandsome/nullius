@@ -90,30 +90,30 @@ describe('M-21 R2: compactPapersInResult raw array handling', () => {
 
 describe('M-21 R2: inferMimeType (production function)', () => {
   it('JSON artifacts → application/json', () => {
-    expect(inferMimeType('hep://runs/r1/artifact/evidence_catalog_v1.json')).toBe('application/json');
+    expect(inferMimeType('provider://records/r1/artifact/evidence_catalog_v1.json')).toBe('application/json');
   });
 
   it('JSONL artifacts → application/x-ndjson', () => {
-    expect(inferMimeType('hep://runs/r1/artifact/spans.jsonl')).toBe('application/x-ndjson');
+    expect(inferMimeType('provider://records/r1/artifact/spans.jsonl')).toBe('application/x-ndjson');
   });
 
   it('Markdown artifacts → text/markdown', () => {
-    expect(inferMimeType('hep://runs/r1/artifact/packet.md')).toBe('text/markdown');
+    expect(inferMimeType('provider://records/r1/artifact/packet.md')).toBe('text/markdown');
   });
 
   it('LaTeX artifacts → text/x-latex', () => {
-    expect(inferMimeType('hep://runs/r1/artifact/paper.tex')).toBe('text/x-latex');
+    expect(inferMimeType('provider://records/r1/artifact/paper.tex')).toBe('text/x-latex');
   });
 
   it('unknown extension → application/octet-stream', () => {
-    expect(inferMimeType('hep://runs/r1/artifact/data.bin')).toBe('application/octet-stream');
+    expect(inferMimeType('provider://records/r1/artifact/data.bin')).toBe('application/octet-stream');
   });
 
   it('no extension → application/octet-stream', () => {
-    expect(inferMimeType('hep://runs/r1/artifact/somefile')).toBe('application/octet-stream');
+    expect(inferMimeType('provider://records/r1/artifact/somefile')).toBe('application/octet-stream');
   });
 
   it('handles URI-encoded names', () => {
-    expect(inferMimeType('hep://runs/r1/artifact/my%20paper.tex')).toBe('text/x-latex');
+    expect(inferMimeType('provider://records/r1/artifact/my%20paper.tex')).toBe('text/x-latex');
   });
 });

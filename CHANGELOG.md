@@ -24,6 +24,21 @@ version is the lockstep number below.
   every hep-mcp tool. Historical hep run directories stay readable in place;
   `docs/URI_REGISTRY.md` gives the rule for resolving historical `hep://runs/...`
   references to files.
+- **hep-mcp keeps no paper/evidence projects, evidence catalogs or papers cache.**
+  Removed tools: `hep_project_create`, `hep_project_get`, `hep_project_list`,
+  `hep_project_build_evidence`, `hep_project_query_evidence`,
+  `hep_project_playback_evidence`, `hep_admin_import_paper`,
+  `hep_admin_migrate_papers_cache`, `hep_admin_prune_paper_cache` and
+  `hep_admin_link_kb_notes` (with their command-line entry points), the
+  user-global papers cache, the `hep://projects/...` identifiers, the
+  `literature_to_evidence` workflow recipe with its `materialize.evidence_build`
+  action, the `evidence_catalog_item_v1` schema and the
+  `HEP_BUDGET_EVIDENCE_MAX_PARAGRAPH_LENGTH` setting. Paper sources are read with
+  `arxiv_paper_source` / `inspire_paper_source`; `literature_landscape` takes the
+  recipe's place in the documented literature entry point. Historical project
+  directories and evidence catalogs stay readable in place; `docs/URI_REGISTRY.md`
+  gives the rule for resolving historical `hep://projects/...` references to files
+  and where to read the catalog item format.
 
 ### Changed
 - **hep-mcp research-output tools take a caller-chosen `output_dir`.**
@@ -37,11 +52,35 @@ version is the lockstep number below.
   (published files in `files_left` with an "outputs are incomplete" error, staging
   files in `staging_left` or `staging_path`, unflushed removals in
   `unflushed_directories`), and only a crash during publication
-  can leave part of a set unreported (later calls naming those files are refused). These tools and the lexical `hep_project_query_evidence` refuse a
+  can leave part of a set unreported (later calls naming those files are refused). These tools refuse a
   numeric limit that is not a whole number in range instead of using the default.
-  `hep_project_query_evidence` is lexical only.
 - Oversized hep-mcp tool results are truncated by UTF-8 bytes on a character
   boundary.
+- **The computation bridge tools work only in the run's own directory.**
+  `orch_run_stage_idea`, `orch_run_stage_content`, `orch_run_plan_computation`,
+  `orch_run_execute_manifest` and `orch_run_progress_followups` admit
+  `project_root` as every other front door does and require `run_dir` to be
+  `<project_root>/artifacts/runs/<run_id>`, where the run's approval packets,
+  proposals and team state are kept, so a run's records are never split; it may
+  be spelled through an alias above the root, while a symbolic link below the
+  root is refused, and so is one anywhere in the run directory, including every
+  entry directly under `computation/`; only entries nested below the method's
+  own real workspace directories under `computation/` are left to the manifest
+  checks at materialization and preparation. The two staging tools
+  take a required `project_root`. Workspace paths in manifests and method specs are
+  refused for a `..` segment rather than for any two dots, so names such as
+  `..data.csv` are accepted, and a method's files are never written through a
+  symbolic link in the run directory.
+- **hep-mcp reports failures that are not the caller's under their own codes.**
+  A file-system failure while writing outputs or using the INSPIRE response
+  cache (a full or read-only disk, a name too long, an unusable cache entry) is
+  `UNSAFE_FS`; an INSPIRE answer that fails the checks of the search export or
+  identifier resolution (a malformed page or record as the INSPIRE client returns
+  it, a malformed recid, inconsistent pagination) is `UPSTREAM_ERROR`, marked
+  `invalid_provider_answer`, and still ends the whole call instead of being
+  recorded for one identifier. A
+  search export that does not export every reported record gives one warning for
+  the cause: `max_results` stopped it, or INSPIRE's pages ended before its total.
 
 ### Added
 - **Idea-engine: grounding-audit write path and scoped provenance correction**

@@ -9,7 +9,7 @@
  * test suite only exercises the inputs someone thought of — so a fast path
  * can replace a reference one and silently change the answer on the
  * configurations nobody benchmarked. The countermeasure is an identity
- * check against the verbatim reference, to near machine precision, over the
+ * check against the verbatim reference, under a declared numerical error budget, over the
  * full domain of intended use including the edge configurations the fast
  * path was not designed around, with the measured agreement stated. This
  * lock fails the build when any leg of that gate is removed or renamed:
@@ -95,15 +95,17 @@ requireAll(
     ['restructuring vocabulary', 'accelerated, reorganized, batched, cached, or otherwise restructured implementation'],
     ['replacement trigger', 'may replace a reference one'],
     ['identity requirement', '**identity against the verbatim reference**'],
-    ['near-machine-precision requirement', 'to near machine precision'],
+    ['declared error budget', 'precision- and conditioning-aware error budget'],
     ['stated agreement requirement', '**state the measured agreement**'],
-    ['agreement metric', 'worst relative deviation over the compared set'],
+    ['agreement metric', 'worst absolute and scaled relative deviations over the compared set'],
     ['green-suite is not evidence', '"It is faster and the suite is green" is not that evidence'],
     ['full-domain requirement', '**full domain of intended use**'],
     ['benchmark inputs are not the domain', 'not merely the typical inputs used for benchmarking'],
     ['edge-configuration requirement', '**edge configurations the fast path was not designed around**'],
-    ['measured agreement from the recorded case', '~1e-16'],
-    ['later-use consequence', 'would have left the later use unverified'],
+    ['finite tests are not a proof', 'Finite tests alone do not prove an identity on an infinite domain'],
+    ['predeclared tolerance', 'Fix the error budget before comparison'],
+    ['zero-aware error', 'near-zero values need an absolute criterion'],
+    ['no tolerance laundering', 'Do not relax it to make a failed optimization pass'],
     ['re-run on change', 'Re-run the identity when either implementation changes'],
     ['scope boundary', 'This gate covers only the identity between the two implementations'],
     ['correctness cross-reference', '[`numerical-reliability-gate`](../numerical-reliability-gate/SKILL.md)'],

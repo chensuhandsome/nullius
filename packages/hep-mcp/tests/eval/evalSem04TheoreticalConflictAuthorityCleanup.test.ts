@@ -4,7 +4,7 @@ import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { runEvalSet, type EvalResult } from '../../src/eval/index.js';
-import { makeProjectRoot } from '../support/hepProjectUri.js';
+import { makeProjectRoot } from '../support/projectFiles.js';
 import { readEvalSetFixture } from './evalSnapshots.js';
 
 vi.mock('../../src/api/client.js', () => ({

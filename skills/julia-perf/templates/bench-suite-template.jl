@@ -1,21 +1,18 @@
 # Example benchmark suite for julia-perf.
 #
 # Contract:
-# - Define JULIA_PERF_BENCHMARKS as a vector of name => zero-arg function pairs
-#   OR define julia_perf_benchmarks() returning the same shape.
+# - Define JULIA_PERF_BENCHMARKS or julia_perf_benchmarks() returning
+#   name => Benchmark pairs. Pure zero-arg functions are supported with
+#   config policy="fixed"; setup/teardown belongs in Benchmark objects.
+
+using BenchmarkTools, Random
+
+# Local fixed input; random generation is excluded from the timed kernel.
+const input = rand(MersenneTwister(17), 256)
+transform!(y, x) = (@. y = sin(x) + 3 * x)
 
 const JULIA_PERF_BENCHMARKS = [
-    "scalar-loop" => (() -> begin
-        s = 0.0
-        @inbounds for i in 1:10_000
-            s += i
-        end
-        s
-    end),
-    "broadcast-kernel" => (() -> begin
-        x = rand(256)
-        y = @. sin(x) + 3 * x
-        sum(y)
-    end),
+    "reduction" => @benchmarkable(sum($input), evals=1),
+    "broadcast-kernel" => @benchmarkable(transform!(y, $input), setup=(y=similar($input)), evals=1),
 ]
 

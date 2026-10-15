@@ -1,0 +1,4 @@
+interface:
+  display_name: "DSH CLI Runner"
+  short_description: "Dispatch bounded tasks through DeepSeek Harness."
+  default_prompt: "Use $dsh-cli-runner to dispatch this file-prompt task to the explicitly selected model and save its complete final response."

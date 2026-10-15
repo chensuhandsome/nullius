@@ -4,6 +4,7 @@ import { prepareManifest } from './manifest.js';
 import { compileExecutionPlan, type StagedIdeaSurface } from './execution-plan.js';
 import { executionPlanArtifactPath, executionPlanRelativePath, keepStagedCreatedAt, materializeExecutionPlan } from './materialize-execution-plan.js';
 import { sha256File, toPosixRelative, writeJsonAtomic } from './io.js';
+import { assertNoSymlinkComponents } from './path-safety.js';
 import { type ExecuteComputationManifestResult, type PlannedExecutionResult, type PreparedManifest } from './types.js';
 import { StateManager } from '../state-manager.js';
 
@@ -75,10 +76,12 @@ export async function bridgeStagedIdeaToComputation(
     throw new Error('paused native computation: continuation in place is unsupported');
   }
   const executionPlan = compileExecutionPlan(input.runId, input.stagedIdea);
+  const planPath = executionPlanArtifactPath(input.runDir);
+  // Neither read nor written through a link, checked before anything is written.
+  assertNoSymlinkComponents(input.runDir, planPath, 'computation/execution_plan_v1.json', { allowMissingLeaf: true });
   const { manifestPath } = materializeExecutionPlan(input.runDir, executionPlan, {
     methodSpec: input.stagedIdea.hints?.method_spec ?? null,
   });
-  const planPath = executionPlanArtifactPath(input.runDir);
   writeJsonAtomic(planPath, keepStagedCreatedAt(planPath, executionPlan));
   const prepared = prepareManifest({
     dryRun: input.dryRun,

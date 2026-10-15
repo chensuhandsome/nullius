@@ -135,6 +135,12 @@ jobs:
         if: ${{ matrix.node-version == 22 }}
         run: node scripts/check-post-correction-recomputation-anti-drift.mjs
 
+      - name: Check unreachable source modules (every module reached from a declared package entry)
+        if: ${{ matrix.node-version == 22 }}
+        run: |
+          node --test scripts/tests/check-unreachable-modules.test.mjs
+          node scripts/check-unreachable-modules.mjs
+
       - name: Check codegen drift (meta/schemas ↔ generated)
         if: ${{ matrix.node-version == 22 }}
         run: pnpm codegen:check
@@ -202,6 +208,14 @@ jobs:
 
       - name: Python tests (delegation-budget gate behavior)
         run: python -m pytest skills/research-team/tests/test_delegation_budget_gate.py -q
+
+      - name: Python tests (supervisors signal a CLI's process group only before reaping it)
+        run: |
+          python -m pytest \
+            skills/review-swarm/tests/test_runner_group_signals.py \
+            skills/research-harness/tests/test_independent_reproduction_check.py::test_entry_that_exits_leaving_a_descendant_gets_its_group_stopped \
+            skills/research-harness/tests/test_independent_reproduction_check.py::test_timeout_stops_the_entry_group_with_sigterm_first \
+            -q
 
       - name: Python tests (ported gate and fixer characterization locks)
         run: |

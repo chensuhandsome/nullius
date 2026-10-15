@@ -16,8 +16,10 @@
  * IMPORTANT: `hep_health` is **no-state-touch** per the audit-backed
  * classifier (`packages/hep-mcp/src/tools/state-touch-classification.ts`),
  * so it takes skip layer C and is NOT a valid test subject for the
- * rejection path. We use `hep_project_list` instead — it is
- * `ALWAYS_STATE_TOUCHING` (lists `<hep_data_root>/projects/`).
+ * rejection path. We use `hep_inspire_resolve_identifiers` instead — it is
+ * `ALWAYS_STATE_TOUCHING` (writes into the caller's output_dir). Called with
+ * no arguments it never reaches the network: once the gate admits it, argument
+ * validation refuses it (output_dir is required).
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -59,8 +61,8 @@ describe('Contract: dispatcher harness-invocation anchor gate', () => {
   it('rejects state-touching tool with MARKER_MISSING when no marker', async () => {
     expect(fs.existsSync(path.join(project, HARNESS_INVOCATION_FILE))).toBe(false);
 
-    // hep_project_list is ALWAYS_STATE_TOUCHING per audit.
-    const result = await handleToolCall('hep_project_list', {});
+    // hep_inspire_resolve_identifiers is ALWAYS_STATE_TOUCHING per audit.
+    const result = await handleToolCall('hep_inspire_resolve_identifiers', {});
     expect(result.isError).toBe(true);
     const payload = JSON.parse(result.content[0]?.text ?? '{}');
     expect(payload.error?.code).toBe('HARNESS_INVOCATION_REQUIRED');
@@ -79,7 +81,7 @@ describe('Contract: dispatcher harness-invocation anchor gate', () => {
     const futureStateTime = new Date('2026-05-22T09:00:00Z');
     fs.utimesSync(statePath, futureStateTime.getTime() / 1000, futureStateTime.getTime() / 1000);
 
-    const result = await handleToolCall('hep_project_list', {});
+    const result = await handleToolCall('hep_inspire_resolve_identifiers', {});
     expect(result.isError).toBe(true);
     const payload = JSON.parse(result.content[0]?.text ?? '{}');
     expect(payload.error?.code).toBe('HARNESS_INVOCATION_REQUIRED');
@@ -90,11 +92,12 @@ describe('Contract: dispatcher harness-invocation anchor gate', () => {
   it('admits state-touching tool when marker is fresh against state', async () => {
     writeHarnessInvocationMarker(project);
 
-    const result = await handleToolCall('hep_project_list', {});
-    // Tool may return an empty list or other benign payload; what matters
-    // here is that the harness gate did not reject the call.
+    const result = await handleToolCall('hep_inspire_resolve_identifiers', {});
+    // The gate admits the call, so it reaches argument validation, which
+    // refuses the missing output_dir.
     const payload = JSON.parse(result.content[0]?.text ?? '{}');
     expect(payload.error?.code).not.toBe('HARNESS_INVOCATION_REQUIRED');
+    expect(payload.error?.code).toBe('INVALID_PARAMS');
   });
 
   it('admits no-state-touch tool (hep_health) even without marker (skip layer C)', async () => {

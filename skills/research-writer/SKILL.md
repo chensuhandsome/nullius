@@ -21,7 +21,7 @@ Default paper style:
 
 - **Scaffold a new paper** from a research-team project → `research_writer_scaffold.sh` (Quick start below).
 - **Draft/revise section prose** (writer → auditor, evidence-gated) → `research_writer_draft_sections.sh` (opt-in).
-- **Ground every claim in ingested sources** (when hep-mcp is available) → the evidence lookup workflow.
+- **Ground every claim in the cited sources** (read through hep-mcp when available) → the evidence lookup workflow.
 - **Publish an externally produced `paper/`** (validate + hygiene + optional compile) → `research_writer_consume_paper_manifest.sh`.
 - **Check a draft before delivery** → the deterministic hygiene tools (math, cross-refs/citations, evidence gate, result-traceability, arXiv packaging).
 - **Tracked-change revision / response-to-referee** on a finished LaTeX manuscript → the sibling `paper-reviser` skill (this skill scaffolds + checks; it does not own the revise/resubmit cycle).
@@ -107,14 +107,14 @@ Advanced flags (optional; see `--help` for full surface):
 
 ## Evidence lookup via hep-mcp (recommended when available)
 
-When hep-mcp is available, ground claim-bearing sentences in ingested source material before drafting — this greatly reduces hallucinated claims and improves citation accuracy. Prereq: a hep-mcp project into which the LaTeX source of each cited paper has been ingested.
+When hep-mcp is available, ground claim-bearing sentences in the cited sources before drafting — this greatly reduces hallucinated claims and improves citation accuracy.
 
 The workflow is a three-step loop:
-1. **Build the evidence catalog** — `hep_project_build_evidence` for each cited paper (writes that paper's evidence `catalog.jsonl` in the hep-mcp project).
-2. **Retrieve evidence per section** — before writing prose, `hep_project_query_evidence` (lexical search) to locate passages, then `hep_project_playback_evidence` to reread each located passage in context.
-3. **Draft and cite** — write each claim-bearing sentence against the passages actually read, cite it with a key present in `paper/references.bib` (`inspire_resolve_citekey` returns INSPIRE citekeys and BibTeX for recids), and note the `evidence_id`s and recids each sentence relies on.
+1. **Fetch each cited source** — `arxiv_paper_source` or `inspire_paper_source` with `mode: "content"` returns the paper's LaTeX source (or PDF).
+2. **Read per section** — before writing prose, read in that source the passages the section will rely on, and note where each one is (section, equation number, page).
+3. **Draft and cite** — write each claim-bearing sentence against the passages actually read, cite it with a key present in `paper/references.bib` (`inspire_resolve_citekey` returns INSPIRE citekeys and BibTeX for recids), and note the passage locations and recids each sentence relies on.
 
-**Grounding rule:** check that the cited source actually supports each specific claim before treating the sentence as supported. Unchecked draft text must not be presented as a verified result. Complete BibTeX entries are a separate requirement from source support.
+**Grounding rule:** check that the cited source actually supports each specific claim before treating the sentence as supported (the `claim-grounding` skill records this check per cited claim). Unchecked draft text must not be presented as a verified result. Complete BibTeX entries are a separate requirement from source support.
 
 hep-mcp provides no draft rendering, project export, or paper bundling tools; the manuscript itself lives in the `paper/` folder produced by the scaffold path. Full tool-call payloads: see `RUNBOOK.md` section 9 ("Evidence lookup via hep-mcp — detailed tool-call recipes").
 
@@ -123,7 +123,7 @@ hep-mcp provides no draft rendering, project export, or paper bundling tools; th
 The evidence lookup workflow complements the existing scaffold and draft-sections paths:
 
 - **Scaffold path** (`research_writer_scaffold.sh`): Use for initial `paper/` directory creation from a research-team project; use the evidence lookup above while writing its sections.
-- **Draft-sections path** (`research_writer_draft_sections.sh`): The `--run-models` writer/auditor pair can consume evidence query results as additional context. Pass evidence hits as part of the writer system prompt.
+- **Draft-sections path** (`research_writer_draft_sections.sh`): The `--run-models` writer/auditor pair can consume the passages read in step 2 as additional context. Pass them, with their locations, as part of the writer system prompt.
 - **Consume path** (`research_writer_consume_paper_manifest.sh`): Use when another pipeline has produced a `paper/` directory with `paper/paper_manifest.json`, to validate and compile it.
 
 ## Consume an externally produced paper scaffold (deterministic publisher)

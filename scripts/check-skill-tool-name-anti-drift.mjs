@@ -37,7 +37,7 @@
  * ## KNOWN LIMITATIONS
  *
  * 1. Only backtick'd tokens are checked. SKILL.md prose like
- *    "hep_project_query_evidence returns ..." (no backticks) is invisible
+ *    "inspire_search returns ..." (no backticks) is invisible
  *    to the lint. Convention is to backtick all tool names in SKILL.md;
  *    review-time reviewers should call out missing backticks. Loosening
  *    to bare prose would require an exclusion list for parameter names

@@ -3,8 +3,8 @@ import * as os from 'os';
 import * as path from 'path';
 import { AsyncLocalStorage } from 'async_hooks';
 import { fileURLToPath } from 'url';
-import { assertExternalProjectRoot, invalidParams, respellUnderDirectory, unsafeFs } from '@nullius/shared';
-import { isPathInside, resolvePathWithinParent } from './pathGuard.js';
+import { assertExternalProjectRoot, invalidParams, unsafeFs } from '@nullius/shared';
+import { resolvePathWithinParent } from './pathGuard.js';
 
 export const HEP_DATA_DIR_ENV = 'HEP_DATA_DIR';
 export const HEP_DOWNLOAD_DIR_ENV = 'HEP_DOWNLOAD_DIR';
@@ -111,29 +111,6 @@ export function projectHepDataDir(projectRoot: string): string {
 /** PDG data directory of an admitted project root. */
 export function projectPdgDataDir(projectRoot: string): string {
   return projectContainedDir(projectRoot, PROJECT_LOCAL_PDG_DIR, 'PDG data dir');
-}
-
-/**
- * HEP data directory for an admin tool: the project's own unless the caller
- * overrides it. An override naming a location inside the project, spelled
- * directly or through an alias of the root, is a project directory like the
- * derived one: re-spelled under the canonical root and reached through real
- * directories only. An override outside the project is an independent data
- * root chosen explicitly by the caller, as `HEP_DATA_DIR` is.
- */
-export function resolveAdminHepDataRoot(projectRoot: string, override?: string): string {
-  if (override === undefined) return projectHepDataDir(projectRoot);
-  // An explicit override, blank included, must name a directory; it never
-  // falls back to the project's own data root.
-  const expanded = expandTilde(override);
-  if (!path.isAbsolute(expanded)) {
-    throw invalidParams('hep_data_root must be an absolute path or tilde-prefixed path', { hep_data_root: override });
-  }
-  const resolved = path.resolve(expanded);
-  const underRoot = isPathInside(projectRoot, resolved) ? resolved : respellUnderDirectory(projectRoot, resolved);
-  if (underRoot === null) return resolved;
-  const relative = path.relative(projectRoot, underRoot);
-  return projectContainedDir(projectRoot, relative === '' ? [] : relative.split(path.sep), 'hep_data_root');
 }
 
 function normalizeProjectRoot(rawProjectRoot: unknown): string | undefined {

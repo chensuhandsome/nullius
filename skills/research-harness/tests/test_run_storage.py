@@ -1883,6 +1883,24 @@ def test_worktree_check_ignores_an_empty_private_directory_but_not_a_populated_o
     assert v["fresh"]["verdict"] == "keep" and "scratch/" in v["fresh"]["unassessed_git_state"]
 
 
+def test_worktree_check_treats_an_unreadable_private_directory_as_state(tmp_path, monkeypatch, capsys):
+    """An unknown private directory that cannot be read may hold anything: it is state, not empty."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads unreadable directories")
+    repo = make_repo(tmp_path)
+    _worktree(repo, tmp_path, "fresh")
+    private = repo / ".git" / "worktrees" / "fresh"
+    (private / "scratch" / "hidden").mkdir(parents=True)
+    (private / "scratch" / "hidden").chmod(0)
+    try:
+        capsys.readouterr()
+        assert run_main(["worktree-check", "--all", "--json"], repo, monkeypatch) == rs.EXIT_FINDINGS
+        v = _verdicts(capsys)
+        assert v["fresh"]["verdict"] == "keep" and "scratch/" in v["fresh"]["unassessed_git_state"]
+    finally:
+        (private / "scratch" / "hidden").chmod(0o755)
+
+
 @pytest.mark.parametrize("state", ["private_ref_reflog", "merge_in_progress", "lock_file", "custom_worktree_config",
                                    "foreign_hooks_path", "private_info_exclude", "cone_sparse_patterns",
                                    "own_sparse_patterns", "locked_by_git_worktree_lock"])

@@ -1572,10 +1572,14 @@ def benign_worktree_setting(key: str, value: str, common_dir: Path) -> bool:
 
 
 def directory_is_empty(path: Path) -> bool:
-    """True when nothing at all lives below `path` (no files, links or subdirectories);
-    an unreadable directory counts as not empty."""
+    """True when no file or link lives anywhere below `path` (nested directories that
+    are themselves empty still count as empty); a directory that cannot be read, at
+    any depth, counts as not empty. os.walk swallows scan errors unless told
+    otherwise, so they are raised here on purpose."""
+    def raise_error(error: OSError) -> None:
+        raise error
     try:
-        for _dirpath, dirnames, filenames in os.walk(path, followlinks=False):
+        for _dirpath, dirnames, filenames in os.walk(path, followlinks=False, onerror=raise_error):
             if filenames or any((Path(_dirpath) / d).is_symlink() for d in dirnames):
                 return False
         return True

@@ -21,9 +21,16 @@ vi.mock('node:os', async (importOriginal) => {
 });
 
 import { findLifecycleProjectRoot } from '../src/cli-project-root.js';
-import { verifyHarnessInvocationMarker } from '@nullius/shared';
+import { McpError, verifyHarnessInvocationMarker } from '@nullius/shared';
 
 const FORCE_ON_ENV = { NULLIUS_HARNESS_VERIFY: 'on' } as NodeJS.ProcessEnv;
+
+function expectHarnessRefusal(run: () => void): void {
+  let thrown: unknown;
+  try { run(); } catch (error) { thrown = error; }
+  expect(thrown).toBeInstanceOf(McpError);
+  expect((thrown as McpError).code).toBe('HARNESS_INVOCATION_REQUIRED');
+}
 
 function writeProjectLikeFiles(root: string): void {
   fs.mkdirSync(path.join(root, '.nullius'), { recursive: true });
@@ -52,13 +59,24 @@ describe('the home directory is never a lifecycle project root', () => {
 
   it('shared verifier: the same home directory is skipped, the project below it is verified', () => {
     expect(() => verifyHarnessInvocationMarker(home, { env: FORCE_ON_ENV, homeDir: home })).not.toThrow();
-    expect(() => verifyHarnessInvocationMarker(path.join(home, 'project'), { env: FORCE_ON_ENV, homeDir: home }))
-      .toThrow();
+    expectHarnessRefusal(() => verifyHarnessInvocationMarker(path.join(home, 'project'), { env: FORCE_ON_ENV, homeDir: home }));
+  });
+
+  it('both recognize the home directory through a symbolic-link alias', () => {
+    const alias = `${home}-alias`;
+    fs.symlinkSync(home, alias);
+    try {
+      expect(findLifecycleProjectRoot(alias)).toBeNull();
+      expect(findLifecycleProjectRoot(path.join(alias, 'project'))).toBe(path.join(alias, 'project'));
+      expect(() => verifyHarnessInvocationMarker(alias, { env: FORCE_ON_ENV, homeDir: home })).not.toThrow();
+    } finally {
+      fs.unlinkSync(alias);
+    }
   });
 
   it('control: the same directory counts as a project root once it is not the home directory', () => {
     mocked.home = path.join(home, 'elsewhere');
     expect(findLifecycleProjectRoot(home)).toBe(home);
-    expect(() => verifyHarnessInvocationMarker(home, { env: FORCE_ON_ENV, homeDir: mocked.home })).toThrow();
+    expectHarnessRefusal(() => verifyHarnessInvocationMarker(home, { env: FORCE_ON_ENV, homeDir: mocked.home }));
   });
 });

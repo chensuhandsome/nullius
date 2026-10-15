@@ -280,6 +280,12 @@ function watchServerExit(proc: ChildProcess, anchored: boolean): Promise<ServerE
   });
 }
 
+// A fresh error for each later call, carrying the recorded transport failure
+// (and through it the pipe error) as its cause.
+function transportFailureError(failure: Error): Error {
+  return new Error(failure.message, { cause: failure });
+}
+
 export class McpClient {
   private proc: ChildProcess | null = null;
   private readonly serverExits = new WeakMap<ChildProcess, Promise<ServerExit>>();
@@ -371,6 +377,9 @@ export class McpClient {
     if (anchored) (proc.stdio[3] as NodeJS.WritableStream).write(`${JSON.stringify(env)}\n`);
     const serverExit = watchServerExit(proc, anchored);
     this.serverExits.set(proc, serverExit);
+    // stderr is drained, never read: a failure on it carries nothing about
+    // the JSON-RPC connection and must not escape as an uncaught exception.
+    proc.stderr?.on('error', () => {});
     proc.stderr?.resume();
     // A failed write or read on the JSON-RPC pipes (EPIPE once nothing reads
     // the server's stdin) ends the connection instead of escaping as an
@@ -467,7 +476,7 @@ export class McpClient {
 
   async request(method: string, params?: Record<string, unknown>, timeoutMs = 60_000): Promise<Record<string, unknown>> {
     if (this.closed || this.unusable || !this.proc?.stdin?.writable) {
-      if (this.transportFailure) throw new Error(this.transportFailure.message, { cause: this.transportFailure });
+      if (this.transportFailure) throw transportFailureError(this.transportFailure);
       throw new Error('McpClient is not usable');
     }
     const id = this.nextId++;
@@ -493,9 +502,7 @@ export class McpClient {
   }
 
   private async requestToolCall(toolName: string, args: Record<string, unknown>, timeoutMs?: number): Promise<McpToolResult> {
-    if (!this.initialized) {
-      throw new Error('McpClient not initialized — call start() first');
-    }
+    this.assertInitialized();
     return toMcpToolResult(await this.request('tools/call', { name: toolName, arguments: args }, timeoutMs));
   }
 
@@ -509,11 +516,19 @@ export class McpClient {
     permissionView: ToolPermissionView,
     timeoutMs?: number,
   ): Promise<McpToolResult> {
-    if (!this.initialized) {
-      throw new Error('McpClient not initialized — call start() first');
-    }
+    this.assertInitialized();
     assertToolCallAllowed(toolName, permissionView);
     return this.requestToolCall(toolName, args, timeoutMs);
+  }
+
+  // A client whose transport failed reports that failure on every later call,
+  // also where initialization is checked first. Any other uninitialized client
+  // (never started, or between a server exit and its reconnect) is reported
+  // as not initialized.
+  private assertInitialized(): void {
+    if (this.initialized) return;
+    if (this.transportFailure) throw transportFailureError(this.transportFailure);
+    throw new Error('McpClient not initialized — call start() first');
   }
 
   async close(): Promise<void> {

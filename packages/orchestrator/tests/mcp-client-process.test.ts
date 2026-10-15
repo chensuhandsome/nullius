@@ -5,6 +5,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { McpClient } from '../src/mcp-client.js';
+import { buildDirectRuntimePermissionProfile } from '../src/runtime-permission-profile.js';
+import { buildRuntimeToolPermissionView } from '../src/tool-execution-policy.js';
+import { executeWorkflowRuntimeRequest } from '../src/workflow-runtime.js';
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-client-process-'));
@@ -493,7 +496,9 @@ describe('McpClient subprocess containment', () => {
       expect(uncaught).toEqual([]);
       expect(outcome?.message).toMatch(/^MCP transport failed on stdin: /);
       expect(['EPIPE', 'ECONNRESET']).toContain((outcome?.cause as NodeJS.ErrnoException | undefined)?.code);
-      await expect(client.request('test/again', {}, 5_000)).rejects.toThrow(/^MCP transport failed on stdin: /);
+      const later = await client.request('test/again', {}, 5_000).then(() => null, (error: Error) => error);
+      expect(later?.message).toBe(outcome?.message);
+      expect(later?.cause).toBe(outcome);
     } finally {
       process.off('uncaughtException', recordUncaught);
       await client.close();
@@ -518,11 +523,83 @@ describe('McpClient subprocess containment', () => {
       const outcome = await pending.then(() => null, (error: Error) => error);
       expect(uncaught).toEqual([]);
       expect(outcome?.message).toBe('MCP transport failed on stdout: read ECONNRESET; client is unusable');
-      await expect(client.request('test/again', {}, 5_000)).rejects.toThrow(/^MCP transport failed on stdout: /);
+      const later = await client.request('test/again', {}, 5_000).then(() => null, (error: Error) => error);
+      expect(later?.message).toBe(outcome?.message);
+      expect(later?.cause).toBe(outcome);
+      expect((later?.cause as Error | undefined)?.cause).toMatchObject({ message: 'read ECONNRESET', code: 'ECONNRESET' });
     } finally {
       process.off('uncaughtException', recordUncaught);
       await client.close();
     }
+  });
+
+  it('reports a transport failure that arrived while idle on every later tool call, also through the workflow gateway', async () => {
+    if (process.platform === 'win32') return;
+    const tmpDir = makeTmpDir();
+    tmpDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, 'server.mjs');
+    writeServer(scriptPath, INITIALIZE_REPLY);
+    const client = new McpClient({ shutdownGraceMs: 20, killGraceMs: 20 });
+    const uncaught: unknown[] = [];
+    const recordUncaught = (error: unknown) => { uncaught.push(error); };
+    process.on('uncaughtException', recordUncaught);
+    try {
+      await client.start(process.execPath, [scriptPath], { cwd: tmpDir });
+      // No request is pending, so nothing receives the failure when it
+      // happens. The client attached its listener at start, so this one runs
+      // after the client has recorded the failure.
+      const stdout = serverProcess(client).stdout!;
+      const failed = new Promise(resolve => stdout.once('error', resolve));
+      stdout.destroy(Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }));
+      await failed;
+      expect(uncaught).toEqual([]);
+      expect(client.isConnected).toBe(false);
+
+      const transportMessage = 'MCP transport failed on stdout: read ECONNRESET; client is unusable';
+      const expectTransportFailure = (error: Error | null) => {
+        expect(error?.message).toBe(transportMessage);
+        const recorded = error?.cause as Error | undefined;
+        expect(recorded?.message).toBe(transportMessage);
+        expect(recorded?.cause).toMatchObject({ message: 'read ECONNRESET', code: 'ECONNRESET' });
+      };
+      expectTransportFailure(await client.callTool('after_failure', {}).then(() => null, (error: Error) => error));
+      const permissionView = buildRuntimeToolPermissionView(buildDirectRuntimePermissionProfile({
+        tools: [{ name: 'after_failure', input_schema: {} }],
+      }));
+      expectTransportFailure(await client.callToolWithPermissionView('after_failure', {}, permissionView)
+        .then(() => null, (error: Error) => error));
+
+      // The production consumer reaches the client only through
+      // ToolCaller.callTool; the failure stays an unavailable server there,
+      // never a skippable tool failure.
+      const result = await executeWorkflowRuntimeRequest({
+        project_root: tmpDir,
+        workflow_id: 'transport_failure',
+        run_id: 'RUN-1',
+        step_id: 'after_failure',
+        description: 'Tool call after an idle transport failure',
+        tool: 'after_failure',
+        provider: 'test',
+        action: 'test.after_failure',
+        params: {},
+        depends_on: [],
+        required_capabilities: [],
+        degrade_mode: 'skip_with_reason',
+        artifact_key: 'transport_failure',
+        project_required: false,
+        run_required: false,
+      }, { workflowToolCaller: client });
+      expect(result.status).toBe('failed');
+      expect(result.diagnostics).toEqual([{ code: 'mcp_server_unavailable', message: transportMessage }]);
+    } finally {
+      process.off('uncaughtException', recordUncaught);
+      await client.close();
+    }
+  });
+
+  it('keeps reporting a client that was never started as not initialized', async () => {
+    const client = new McpClient();
+    await expect(client.callTool('any', {})).rejects.toThrow('McpClient not initialized — call start() first');
   });
 
   it('closes cleanly when the server has exited but nothing is reaped yet as its grace period ends', async () => {

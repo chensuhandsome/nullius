@@ -2175,6 +2175,7 @@ def cmd_report(args) -> int:
                     # since it was hashed) may already be gone, so the group is not counted at all rather
                     # than risk naming the last remaining copy as reclaimable.
                     counts = [link_count(p) for p in same]
+                    unreadable += [str(p) for p, n in zip(same, counts) if n is None]  # listed, as every skipped path is
                     single = sum(1 for n in counts if n == 1)
                     freeable = 0 if any(n is None for n in counts) else min(single, len(same) - 1)
                     duplicates.append({"sha256": sha, "size": size, "copies": len(same),

@@ -2528,6 +2528,7 @@ def test_report_does_not_count_a_duplicate_group_when_a_copy_vanished_after_hash
     assert [(d["copies"], d["reclaimable"]) for d in doc["duplicates"]] == [(2, 0)], \
         "a copy that cannot be examined may already be gone: the group must not name the survivor as reclaimable"
     assert doc["summary_bytes"]["duplicate_content"] == 0
+    assert str(gone) in doc["unreadable"], "a skipped path is listed, not silently dropped"
 
 
 def test_report_counts_a_bundle_against_a_partial_clone_as_not_assessed_even_with_a_missing_tip(tmp_path, monkeypatch,

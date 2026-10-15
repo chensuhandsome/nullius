@@ -960,8 +960,13 @@ def _signal_group(proc: subprocess.Popen, signum: int) -> bool:
     The group number is the runner's pid and names its group provably only
     while the runner is unreaped. A process leaves _ACTIVE_PROCESSES, under
     _PROCESS_LOCK, before anything reaps it, so a process found registered
-    under that lock is unreaped. macOS answers EPERM for a group whose members
-    have all exited while its leader is an unreaped zombie (Linux answers 0).
+    under that lock is unreaped. The standard library cannot break this:
+    subprocess.Popen() runs subprocess._cleanup(), which polls only Popen
+    objects that were garbage collected while their child still ran (they
+    reach subprocess._active through Popen.__del__); a registered runner is
+    referenced from _ACTIVE_PROCESSES, so it is never on that list. macOS
+    answers EPERM for a group whose members have all exited while its leader
+    is an unreaped zombie (Linux answers 0).
     """
     with _PROCESS_LOCK:
         if proc not in _ACTIVE_PROCESSES:

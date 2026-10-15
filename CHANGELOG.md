@@ -49,9 +49,10 @@ version is the lockstep number below.
   `<project_root>/artifacts/runs/<run_id>`, where the run's approval packets,
   proposals and team state are kept, so a run's records are never split; it may
   be spelled through an alias above the root, while a symbolic link below the
-  root is refused, and so is one anywhere in the run directory except among the
-  method's own workspace files below `computation/`, whose declared paths are
-  checked when the manifest is materialized and prepared. The two staging tools
+  root is refused, and so is one anywhere in the run directory, including every
+  entry directly under `computation/`; only entries nested below the method's
+  own real workspace directories under `computation/` are left to the manifest
+  checks at materialization and preparation. The two staging tools
   take a required `project_root`. Workspace paths in manifests and method specs are
   refused for a `..` segment rather than for any two dots, so names such as
   `..data.csv` are accepted, and a method's files are never written through a

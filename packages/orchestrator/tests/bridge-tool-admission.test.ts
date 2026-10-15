@@ -193,6 +193,7 @@ describe('the computation bridge tools work only in a run directory inside the a
 
   it.each([
     ['approvals', 'dir'], ['approvals/A3-0001', 'dir'], ['computation/logs', 'dir'], ['computation/logs/task_001', 'dir'],
+    ['computation/scripts', 'dir'], ['computation/outputs', 'dir'],
     ['computation/execution_status.json', 'file'], ['artifacts/nested/deep.json', 'file'], ['team-execution-state.json', 'file'],
   ])('refuses a run directory with a symbolic link at %s, for every tool, before any work', async (rel, kind) => {
     const { parent, root, alias, handoffPath } = projectWithHandoff();

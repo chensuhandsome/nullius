@@ -130,8 +130,9 @@ function assertRunDirectoryIsReal(runDir: string): void {
       assertNoLinksBelow(entry, runDir);
       continue;
     }
-    // The computation directory: its own entries, and the subtrees the
-    // computation code manages, but not the method's workspace files.
+    // The computation directory: every direct entry, and everything below the
+    // subtrees the computation code manages; entries nested below the method's
+    // own real workspace directories are the manifest checks' business.
     for (const inner of listDirectory(entry, runDir)) {
       const innerEntry = path.join(entry, inner);
       const innerStat = lstatIfPresent(innerEntry, runDir);
@@ -150,7 +151,9 @@ function assertRunDirectoryIsReal(runDir: string): void {
  * proposals and team state are kept by run id, so a run's records are never
  * split between two directories; it may be spelled through an alias above
  * the root, while a symbolic link below the root is refused, and so is one
- * anywhere in the run directory outside the method's own workspace files
+ * anywhere in the run directory, including every entry directly under
+ * computation/; only entries nested below the method's own real workspace
+ * directories are left to the manifest checks
  * (assertRunDirectoryIsReal). Everything the tool writes, reads or executes
  * then derives from the admitted run directory.
  */

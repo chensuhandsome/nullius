@@ -1182,7 +1182,7 @@ describe('round-5 argument, name and response checks', () => {
     expect(diagnostics.warnings.map(w => w.code)).toEqual(['provider_pages_ended_early']);
     expect(meta.next_url).toBeUndefined();
     expect(summary.warnings).toEqual([
-      'INSPIRE reported total=5, but its pages ended after 2 records (its last page said no more follow); rerunning the export will not reach the rest.',
+      'INSPIRE reported total=5, but its pages ended after 2 records (its last page said no more follow); the remaining records were not returned by this export, and a later export may see a different set.',
     ]);
   });
 
@@ -1208,7 +1208,7 @@ describe('round-5 argument, name and response checks', () => {
     const { summary } = await exportResult({ output_dir: 'grow-short' });
     expect(summary).toMatchObject({ total: 5, exported: 2, has_more: true });
     expect(summary.warnings).toEqual([
-      'INSPIRE reported total=5, but its pages ended after 2 records (its last page said no more follow); rerunning the export will not reach the rest.',
+      'INSPIRE reported total=5, but its pages ended after 2 records (its last page said no more follow); the remaining records were not returned by this export, and a later export may see a different set.',
     ]);
   });
 

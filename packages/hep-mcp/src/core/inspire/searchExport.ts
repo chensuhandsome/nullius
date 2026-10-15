@@ -324,7 +324,7 @@ export async function hepInspireSearchExport(params: {
         data: { total, exported, truncated_mid_page: truncatedMidPage },
       });
     } else if (hasMore) {
-      const msg = `INSPIRE reported total=${total}, but its pages ended after ${exported} records (its last page said no more follow); rerunning the export will not reach the rest.`;
+      const msg = `INSPIRE reported total=${total}, but its pages ended after ${exported} records (its last page said no more follow); the remaining records were not returned by this export, and a later export may see a different set.`;
       warnings.unshift(msg);
       budget.warn({ severity: 'warning', code: 'provider_pages_ended_early', message: msg, data: { total, exported } });
     }

@@ -198,6 +198,32 @@ test('only roots carrying an exact, regular origin marker are ever swept', t => 
   }
 });
 
+test('a half-finished removal puts the marker back so a later sweep tries again', t => {
+  const parent = scratch(t);
+  const root = path.join(parent, 'orches-999999999-HaLfRm');
+  fs.mkdirSync(path.join(root, 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'sub', 'data'), 'x');
+  mark(root, RETENTION_DAYS + 2);
+  age(path.join(root, 'sub', 'data'), RETENTION_DAYS + 2);
+  age(path.join(root, 'sub'), RETENTION_DAYS + 2);
+  age(root, RETENTION_DAYS + 2);
+  const real = fs.rmSync;
+  t.mock.method(fs, 'rmSync', target => {
+    if (target === root) {  // the marker goes, then the removal fails
+      real(path.join(root, ROOT_MARKER), { force: true });
+      throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+    }
+    return real(target);
+  });
+  assert.deepEqual(sweepStaleRoots(parent, { isAlive: () => false }), []);
+  t.mock.restoreAll();
+  assert.equal(fs.readFileSync(path.join(root, ROOT_MARKER), 'utf-8'), 'nullius test temp root\npid 999999999\n');
+  for (const p of [path.join(root, ROOT_MARKER), path.join(root, 'sub', 'data'), path.join(root, 'sub'), root]) {
+    age(p, RETENTION_DAYS + 1);  // unchanged for the retention window again
+  }
+  assert.deepEqual(sweepStaleRoots(parent, { isAlive: () => false }), [root], 'a later sweep finishes the job');
+});
+
 test('the retention window is the documented number of days', t => {
   const parent = scratch(t);
   const dead = 999_999_999;
@@ -281,7 +307,7 @@ test('the per-user parent must be a private directory of this user', t => {
   fs.mkdirSync(planted);
   const parent = testRunsParent(base);
   fs.symlinkSync(planted, parent);  // a planted symlink is refused, never followed
-  assert.throws(() => ensurePrivateParent(parent), /not a directory owned by this user/);
+  assert.throws(() => ensurePrivateParent(parent), /not a directory owned by this user.*chown/);
   fs.unlinkSync(parent);
   fs.mkdirSync(parent, { mode: 0o777 });
   fs.chmodSync(parent, 0o777);
@@ -292,7 +318,7 @@ test('the per-user parent must be a private directory of this user', t => {
     const stat = real(target);
     return target === parent ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid: stat.uid + 1 }) : stat;
   });
-  assert.throws(() => ensurePrivateParent(parent), /not a directory owned by this user/);
+  assert.throws(() => ensurePrivateParent(parent), /not a directory owned by this user.*chown/);
 });
 
 test('removeTree restores write permission on read-only directories', t => {
@@ -389,6 +415,11 @@ test('probe', () => {
   const roots = fs.existsSync(parent) ? fs.readdirSync(parent).filter(name => name !== 'README.txt') : [];
   return { result, parent, roots };
 }
+
+test('in CI at least one real vitest host is installed', { skip: !process.env.CI && 'not running in CI' }, () => {
+  assert.ok(VITEST_HOSTS.some(([, bin]) => fs.existsSync(bin)),
+    'the real-runner checks would all be skipped: install the workspace dependencies first');
+});
 
 for (const [label, bin] of VITEST_HOSTS) {
   test(`${label}: a passing run removes its root`, { skip: !fs.existsSync(bin) && `${bin} not installed` }, t => {

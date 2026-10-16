@@ -492,12 +492,14 @@ A **source-extraction / transcription note** — a deep-read / knowledge-base no
 equations, numeric values, source locators, and term-by-term mappings onto a consuming artifact from a
 primary source — is a **valid gate target**, not a gate-exempt "reading task." Its primary observable is
 **fidelity to the source**, so the review is a different shape from a code/design review: at least **one
-cross-model-family reviewer must do a LITERAL, line-by-line comparison of the note against the primary
-source with "do not trust the note."** Loose semantic agreement is insufficient — transcription drift (a
-flipped sign, a dropped magnitude factor, a transposed digit, a stale locator, or a stale mapping to the
-consuming artifact) reads as plausible and is caught only by literal comparison. Reviewer model-family
-diversity materially strengthens this gate: a same-family looser read tends to pass exactly the defects it
-is meant to catch.
+reviewer must do a LITERAL, line-by-line comparison of the note against the primary source with "do not
+trust the note."** Loose semantic agreement is insufficient — transcription drift (a flipped sign, a
+dropped magnitude factor, a transposed digit, a stale locator, or a stale mapping to the consuming
+artifact) reads as plausible and is caught only by literal comparison. Draw that reviewer from another
+model family when the machine has one (preferred: two families rarely share a transcription habit, and a
+same-family looser read tends to pass exactly the defects it is meant to catch); when it has only one, the
+literal comparison is done by a fresh same-family reader after a candidate-withheld extraction, and the
+gate is recorded as single-family — a degraded gate, never relabeled.
 
 Give that reviewer the **persisted primary source** (the exact text that was transcribed), not the note
 alone, plus the transcription/extraction failure checklist (`research-integrity` → *Extraction /

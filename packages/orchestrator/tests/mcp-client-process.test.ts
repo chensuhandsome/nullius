@@ -738,9 +738,13 @@ describe('McpClient subprocess containment', () => {
   // unrelated leader fails the test on any attempt, and the test passes only once
   // an attempt where the moment really occurred has been checked. If it never
   // occurs the test fails, since nothing was verified, rather than passing or
-  // skipping. Each attempt takes well under a second; the timeout below leaves room.
+  // skipping. An attempt normally takes a fraction of a second, but its internal
+  // waits (up to 10 s for the children to become zombies, 5 s per child to be
+  // reaped) could add up, so attempts stop at a time budget as well as at a
+  // count, and the test timeout leaves one full worst-case attempt beyond the budget.
   const REAP_PASS_ATTEMPTS = 24;
-  const REAP_PASS_TEST_TIMEOUT_MS = 90_000;
+  const REAP_PASS_TIME_BUDGET_MS = 60_000;
+  const REAP_PASS_TEST_TIMEOUT_MS = REAP_PASS_TIME_BUDGET_MS + 30_000;
 
   // Resolves once the child has exited and its exit callback has run (the handle
   // is then reaped and no longer part of any later reaping pass).
@@ -774,6 +778,7 @@ describe('McpClient subprocess containment', () => {
     const client = new McpClient(clientOptions);
     let leader: ChildProcess | null = null;
     let bodyFailed = false;
+    let bodyError: unknown;
     try {
       await client.start(process.execPath, [scriptPath], { cwd: tmpDir });
       leader = serverProcess(client);
@@ -805,6 +810,7 @@ describe('McpClient subprocess containment', () => {
       return { observed: leaderReapedWithCallbackPending, lateSignals, unrelatedUnreaped: isUnreaped(unrelated) };
     } catch (error) {
       bodyFailed = true;
+      bodyError = error;
       throw error;
     } finally {
       // Every child of this attempt is exited and reaped before the next attempt
@@ -816,8 +822,11 @@ describe('McpClient subprocess containment', () => {
       if (leader && isUnreaped(leader)) leader.kill('SIGKILL');
       const waits = await Promise.allSettled([awaitExit(unrelated), awaitExit(neighbour), leader ? awaitExit(leader) : Promise.resolve()]);
       vi.restoreAllMocks();
-      const stuck = waits.find((w): w is PromiseRejectedResult => w.status === 'rejected');
-      if (stuck && !bodyFailed) throw stuck.reason;
+      const stuck = waits.filter((w): w is PromiseRejectedResult => w.status === 'rejected').map(w => w.reason);
+      if (stuck.length && !bodyFailed) throw stuck[0];
+      if (stuck.length && bodyError !== undefined) {
+        throw new AggregateError([bodyError, ...stuck], 'the attempt failed and a child of it did not exit');
+      }
     }
   }
 
@@ -826,7 +835,10 @@ describe('McpClient subprocess containment', () => {
     clientOptions: ConstructorParameters<typeof McpClient>[0],
     arm: (client: McpClient) => Promise<void>,
   ): Promise<void> {
-    for (let attempt = 1; attempt <= REAP_PASS_ATTEMPTS; attempt++) {
+    const deadline = Date.now() + REAP_PASS_TIME_BUDGET_MS;
+    let attempt = 0;
+    while (attempt < REAP_PASS_ATTEMPTS && Date.now() < deadline) {
+      attempt++;
       const result = await observeReapPass(serverBody, clientOptions, arm);
       // A late signal is a defect whether or not this attempt hit the moment: the
       // spy decides synchronously and reaping happens only between event-loop turns.
@@ -837,7 +849,7 @@ describe('McpClient subprocess containment', () => {
         return;
       }
     }
-    throw new Error(`a reaping pass that had reaped the leader with its callback pending did not occur in ${REAP_PASS_ATTEMPTS} attempts: nothing was verified`);
+    throw new Error(`a reaping pass that had reaped the leader with its callback pending did not occur in ${attempt} attempts (${REAP_PASS_TIME_BUDGET_MS} ms budget): nothing was verified`);
   }
 
   it('does not signal from inside a reaping pass that has already reaped the group leader', async () => {

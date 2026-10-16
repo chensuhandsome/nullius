@@ -26,10 +26,13 @@ Single reviewer, one command — no hand-written prompt files. Its verdict is
 advisory, and its model family remains unknown until supported by identity
 evidence. Cross-family review is preferred, not required: a result-bearing /
 public-surface / irreversible artifact wants a second seat, from another
-model family when the machine has one, otherwise a fresh same-family reader
-without the first seat's report or any prior verdict, with the round recorded
-as single-family — a degraded round, never relabeled (scoping in SKILL.md;
-internal implementation variants close single-family either way):
+model family when the machine has one, otherwise same-family — a
+candidate-withheld route (source-extraction, derivation-verify, independent
+reproduction) where the claim admits one, else a fresh reader without the
+first seat's report, any prior verdict or the author's framing beyond the
+artifact, its input axis recorded as candidate-visible — with the round
+recorded as single-family, a degraded round, never relabeled (scoping in
+SKILL.md; internal implementation variants close single-family either way):
 
 ```bash
 python3 scripts/bin/review_one.py \

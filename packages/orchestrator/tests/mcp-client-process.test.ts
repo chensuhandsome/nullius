@@ -790,7 +790,9 @@ describe('McpClient subprocess containment', () => {
       const closed = new Promise<void>((resolve, reject) => {
         neighbour.once('exit', () => {
           leaderReapedWithCallbackPending = isUnreaped(leader!) && !processExists(groupNumber);
-          closing = client.close();
+          // The one close of this attempt: if the scene already failed and the
+          // cleanup below closed first, this callback joins that close.
+          closing ??= client.close();
           closing.then(resolve, reject);
         });
       });

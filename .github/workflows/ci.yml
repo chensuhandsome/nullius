@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [windows-support]
   pull_request:
-    branches: [main]
+    branches: [windows-support]
 
 jobs:
   windows:

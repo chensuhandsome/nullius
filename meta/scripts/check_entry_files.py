@@ -10,7 +10,7 @@ Checks that new/modified files don't use prohibited "god-file" names:
 
 Usage:
     python check_entry_files.py [--files FILE ...]
-    git diff --name-only origin/main...HEAD | python meta/scripts/check_entry_files.py
+    git diff --name-only origin/HEAD...HEAD | python meta/scripts/check_entry_files.py
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # NEW-R02: Diff-scoped `as any` / `.catch(() => {})` gate.
 #
-# Checks that new code (staged or vs main) does not introduce:
+# Checks that new code (staged or vs the remote default) does not introduce:
 #   - `as any` casts
 #   - `.catch(() => {})` swallowed errors
 #
@@ -9,24 +9,26 @@
 #
 # Usage:
 #   bash meta/scripts/check_as_any.sh              # Check staged changes
-#   bash meta/scripts/check_as_any.sh --vs-main    # Check branch vs main
+#   bash meta/scripts/check_as_any.sh --vs-default # Check branch vs origin/HEAD
 #   bash meta/scripts/check_as_any.sh --staged     # Check staged (default)
 
 set -euo pipefail
 
-MODE="staged"
-if [[ "${1:-}" == "--vs-main" ]]; then
-  MODE="vs-main"
-fi
+case "${1:-}" in
+  ""|--staged) MODE="staged" ;;
+  --vs-default) MODE="vs-default" ;;
+  *) echo 'Usage: check_as_any.sh [--staged|--vs-default]' >&2; exit 2 ;;
+esac
 
-if [[ "$MODE" == "vs-main" ]]; then
-  DIFF_CMD="git diff origin/main...HEAD"
+if [[ "$MODE" == "vs-default" ]]; then
+  DIFF_CMD="git diff origin/HEAD...HEAD"
 else
   DIFF_CMD="git diff --cached"
 fi
 
 # Extract only added lines (^+) from .ts/.tsx files, excluding test files.
-ADDED_LINES=$($DIFF_CMD -- '*.ts' '*.tsx' ':!*.test.ts' ':!*.test.tsx' | grep '^\+[^+]' || true)
+DIFF=$($DIFF_CMD -- '*.ts' '*.tsx' ':!*.test.ts' ':!*.test.tsx')
+ADDED_LINES=$(printf '%s\n' "$DIFF" | grep '^\+[^+]' || true)
 
 if [[ -z "$ADDED_LINES" ]]; then
   echo "NEW-R02 PASS: no new TS lines to check"

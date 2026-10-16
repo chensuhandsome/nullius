@@ -9,7 +9,7 @@ Usage:
     echo "file1.py\\nfile2.py" | python check_loc.py
 
 Without ``--files``, reads from stdin (one path per line), suitable for:
-    git diff --name-only origin/main...HEAD | python meta/scripts/check_loc.py
+    git diff --name-only origin/HEAD...HEAD | python meta/scripts/check_loc.py
 """
 
 from __future__ import annotations

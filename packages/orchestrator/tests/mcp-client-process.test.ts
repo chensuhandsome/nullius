@@ -732,12 +732,25 @@ describe('McpClient subprocess containment', () => {
   // The two tests below guard a narrow moment: libuv has reaped the server (the
   // group leader) in a reaping pass but has not yet run the client's exit
   // callback, and another handle's callback in that same pass makes the client
-  // close. Whether one pass reaps both children depends on the platform and the
-  // Node release (on Linux under Node 20 the two exits are often handled in
-  // separate passes), so each test sets the scene several times and asserts on
-  // the first attempt where the moment really occurred; a platform on which it
-  // never occurs cannot exhibit the hazard, and the test is skipped with that reason.
-  const REAP_PASS_ATTEMPTS = 8;
+  // close. Whether one pass reaps both children is a matter of scheduling (on
+  // Linux under Node 20 the two exits are handled in separate passes about half
+  // the time), so each test sets the scene repeatedly; a late signal or a touched
+  // unrelated leader fails the test on any attempt, and the test passes only once
+  // an attempt where the moment really occurred has been checked. If it never
+  // occurs the test fails, since nothing was verified, rather than passing or
+  // skipping. Each attempt takes well under a second; the timeout below leaves room.
+  const REAP_PASS_ATTEMPTS = 24;
+  const REAP_PASS_TEST_TIMEOUT_MS = 90_000;
+
+  // Resolves once the child has exited and its exit callback has run (the handle
+  // is then reaped and no longer part of any later reaping pass).
+  async function awaitExit(child: ChildProcess, timeoutMs = 5_000): Promise<void> {
+    if (!isUnreaped(child)) return;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`pid ${child.pid} did not exit within ${timeoutMs} ms`)), timeoutMs);
+      child.once('exit', () => { clearTimeout(timer); resolve(); });
+    });
+  }
 
   type ReapPassObservation = { observed: boolean; lateSignals: string[]; unrelatedUnreaped: boolean };
 
@@ -783,44 +796,50 @@ describe('McpClient subprocess containment', () => {
         }
       }));
       await closed;
-      return { observed: leaderReapedWithCallbackPending, lateSignals, unrelatedUnreaped: isUnreaped(unrelated) };
+      const observation = { observed: leaderReapedWithCallbackPending, lateSignals, unrelatedUnreaped: isUnreaped(unrelated) };
+      // Every child of this attempt is exited and reaped before the next attempt
+      // starts, so no exit callback of this attempt can land in a later pass.
+      await awaitExit(leader);
+      return observation;
     } finally {
       unrelated.kill('SIGKILL');
       neighbour.kill('SIGKILL');
+      // A child that will not go away is reported by the next attempt or by the
+      // test timeout; it must not hide the exception that brought us here.
+      await awaitExit(unrelated).catch(() => {});
+      await awaitExit(neighbour).catch(() => {});
       vi.restoreAllMocks();
     }
   }
 
   async function assertNoSignalFromReapPass(
-    ctx: { skip: (note?: string) => void },
     serverBody: string,
     clientOptions: ConstructorParameters<typeof McpClient>[0],
     arm: (client: McpClient) => Promise<void>,
   ): Promise<void> {
     for (let attempt = 1; attempt <= REAP_PASS_ATTEMPTS; attempt++) {
       const result = await observeReapPass(serverBody, clientOptions, arm);
-      if (!result.observed) continue;
+      // A late signal is a defect whether or not this attempt hit the moment: the
+      // spy decides synchronously and reaping happens only between event-loop turns.
       expect(result.lateSignals).toEqual([]);
       expect(result.unrelatedUnreaped).toBe(true);
-      return;
+      if (result.observed) return;
     }
-    ctx.skip(`a reaping pass that had reaped the leader with its callback pending did not occur in ${REAP_PASS_ATTEMPTS} attempts on this platform`);
+    throw new Error(`a reaping pass that had reaped the leader with its callback pending did not occur in ${REAP_PASS_ATTEMPTS} attempts: nothing was verified`);
   }
 
-  it('does not signal from inside a reaping pass that has already reaped the group leader', async (ctx) => {
+  it('does not signal from inside a reaping pass that has already reaped the group leader', async () => {
     if (process.platform === 'win32') return;
     await assertNoSignalFromReapPass(
-      ctx,
       INITIALIZE_REPLY,
       { shutdownGraceMs: 20, killGraceMs: 20, maxReconnects: 0 },
       async () => {},
     );
-  });
+  }, REAP_PASS_TEST_TIMEOUT_MS);
 
-  it('does not signal from inside a reaping pass when the server exit was already handled', async (ctx) => {
+  it('does not signal from inside a reaping pass when the server exit was already handled', async () => {
     if (process.platform === 'win32') return;
     await assertNoSignalFromReapPass(
-      ctx,
       `${INITIALIZE_REPLY}
       if (msg.method === 'test/exit') process.exit(0);
     `,
@@ -835,7 +854,7 @@ describe('McpClient subprocess containment', () => {
         await expect(client.request('test/exit', {}, 5_000)).rejects.toThrow('MCP process exited');
       },
     );
-  });
+  }, REAP_PASS_TEST_TIMEOUT_MS);
 
   it('stops descendants that ignore SIGTERM, after SIGTERM, when the server exits on its own', async () => {
     if (process.platform === 'win32') return;

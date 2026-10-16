@@ -8,10 +8,12 @@ per-backend read-only tool modes, process-group timeouts, trace.jsonl/meta.json
 artifacts and contract checking are inherited from the one launcher — there is
 no second orchestration path.
 
-A single reviewer cannot supply cross-family quorum; its family evidence may be unknown. Whether a final verdict additionally
-requires cross-family review depends on the artifact's scoping (see SKILL.md):
-result-bearing / public-surface / irreversible artifacts do; internal
-implementation variants may close single-family, labeled as such.
+A single reviewer cannot supply cross-family quorum; its family evidence may be unknown. Cross-family
+review is preferred, not required (see SKILL.md): for a result-bearing / public-surface /
+irreversible artifact, add a second seat from another model family when one is available; when
+only one family is available, add a second independent seat of that family (fresh reader, the
+author's conclusions withheld, a different method where the artifact allows one) and record the
+round as single-family. Internal implementation variants close single-family either way.
 
 Examples:
     python3 review_one.py --model codex/default --artifact notes.md
@@ -69,7 +71,7 @@ _SOURCE_TEXT_ORIGINS = (
     "visually-verified-transcription",
 )
 
-ADVISORY_BANNER = "single-reviewer advisory — named model family is unknown until evidenced; whether a final verdict additionally requires cross-family review depends on the artifact's scoping (result-bearing / public-surface / irreversible artifacts do; internal implementation variants may close single-family, labeled as such)"
+ADVISORY_BANNER = "single-reviewer advisory — named model family is unknown until evidenced; a final verdict on a result-bearing / public-surface / irreversible artifact wants a second independent seat: from another model family when one is available (preferred), otherwise from the same family with the author's conclusions withheld, recorded as single-family; internal implementation variants close single-family either way"
 STALE_ACCEPTANCE_EXIT_CODE = 86
 
 _PACKET_FRAMING = """\

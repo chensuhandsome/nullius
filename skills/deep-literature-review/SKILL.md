@@ -388,8 +388,10 @@ value, (c) wrong / stale locator, (d) stale / wrong mapping to the consuming art
 
 For a note that will anchor a central claim, enter a close-prior matrix, or be folded into a durable artifact, the gate is
 **independent** (a fresh reader / subagent, not the note's author) and at least one reviewer
-**must** be **cross-model-family** doing a literal comparison — loose semantic agreement is
-insufficient for transcription fidelity. Before that candidate-visible comparison, obtain
+does a **literal** comparison — loose semantic agreement is insufficient for transcription
+fidelity. Draw that reviewer from another model family when the machine has one (preferred:
+two families rarely share a transcription habit); when it has only one, use a fresh same-family
+reader with the candidate note withheld and record the gate as single-family. Before that candidate-visible comparison, obtain
 at least one **candidate-withheld extraction**: give a fresh reader the persisted source and
 a neutral locator/question list, but not the candidate note, prior verdict, expected
 classification, or proposed corrected expression. This separates model-family independence

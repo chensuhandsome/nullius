@@ -112,19 +112,25 @@ sandbox, so unrestricted browsing cannot attest isolation of private capture fil
 
 For one reviewer, `review_one.py` assembles the whole packet for you (no
 hand-written prompt files). Its model family remains unknown until evidenced;
-treat its verdict as **advisory only** for artifacts that
-require cross-family review (the packet itself carries that caveat as its first
-line). **Which artifacts require cross-family review is a scoping decision, not
-a blanket rule**: cross-family panels are for result-bearing, public-surface,
-or irreversible artifacts — headline claims and the derivations/numbers they
-rest on, cross-package contracts, default-entry behavior (the same scoping the
-two-phase formal review section uses). Internal implementation variants —
-writers, fixtures, launchers, schema plumbing — may close on a single-family
-review plus local tests (an implementation never closes on its author's own
-tests alone), with the independence level labeled honestly. Reviewer
-investment scales with the artifact's stakes the same way reasoning effort
-does; spending the cross-family ceiling on every internal diff is the recorded
-waste pattern, not the safe default.
+treat its verdict as **advisory only** for artifacts that warrant a second
+seat (the packet itself carries that caveat as its first line). **Cross-family
+review is preferred, not required**, and which artifacts warrant a second seat
+at all is a scoping decision, not a blanket rule: a second seat is for
+result-bearing, public-surface, or irreversible artifacts — headline claims and
+the derivations/numbers they rest on, cross-package contracts, default-entry
+behavior (the same scoping the two-phase formal review section uses). Take that
+seat from another model family when the machine has one (the agents file says
+which exist); when it has only one, take it from the same family and make it
+independent on the other two axes instead — a fresh reader who gets the
+artifact and the question but not the author's conclusions or the first
+reviewer's report, and a different method or representation where the artifact
+allows one — and record the round as `single_family` (the launcher's
+independence record does this; never relabel it). Internal implementation
+variants — writers, fixtures, launchers, schema plumbing — close on a
+single-family review plus local tests either way (an implementation never
+closes on its author's own tests alone). Reviewer investment scales with the
+artifact's stakes the same way reasoning effort does; spending a cross-family
+panel on every internal diff is the recorded waste pattern, not the safe default.
 
 ```bash
 python3 scripts/bin/review_one.py \

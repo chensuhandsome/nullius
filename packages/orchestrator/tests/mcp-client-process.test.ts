@@ -779,6 +779,7 @@ describe('McpClient subprocess containment', () => {
     let leader: ChildProcess | null = null;
     let bodyFailed = false;
     let bodyError: unknown;
+    let closing: Promise<void> | null = null;
     try {
       await client.start(process.execPath, [scriptPath], { cwd: tmpDir });
       leader = serverProcess(client);
@@ -788,8 +789,9 @@ describe('McpClient subprocess containment', () => {
       let leaderReapedWithCallbackPending = false;
       const closed = new Promise<void>((resolve, reject) => {
         neighbour.once('exit', () => {
-          leaderReapedWithCallbackPending = isUnreaped(leader) && !processExists(groupNumber);
-          client.close().then(resolve, reject);
+          leaderReapedWithCallbackPending = isUnreaped(leader!) && !processExists(groupNumber);
+          closing = client.close();
+          closing.then(resolve, reject);
         });
       });
       await new Promise<void>((resolve, reject) => setImmediate(() => {
@@ -814,18 +816,21 @@ describe('McpClient subprocess containment', () => {
       throw error;
     } finally {
       // Every child of this attempt is exited and reaped before the next attempt
-      // starts, so no exit callback of this attempt can land in a later pass. A
-      // child that will not go away fails the attempt, unless the attempt already
-      // failed, in which case that exception is the one to report.
+      // starts, so no exit callback of this attempt can land in a later pass. The
+      // client is closed once: the close the scene started is awaited again, and a
+      // scene that failed before closing closes here. A child that will not go away
+      // fails the attempt; when the attempt body already failed, both are reported.
+      if (closing === null) closing = client.close();
+      await closing.catch(() => {});
       unrelated.kill('SIGKILL');
       neighbour.kill('SIGKILL');
       if (leader && isUnreaped(leader)) leader.kill('SIGKILL');
       const waits = await Promise.allSettled([awaitExit(unrelated), awaitExit(neighbour), leader ? awaitExit(leader) : Promise.resolve()]);
       vi.restoreAllMocks();
       const stuck = waits.filter((w): w is PromiseRejectedResult => w.status === 'rejected').map(w => w.reason);
-      if (stuck.length && !bodyFailed) throw stuck[0];
-      if (stuck.length && bodyError !== undefined) {
-        throw new AggregateError([bodyError, ...stuck], 'the attempt failed and a child of it did not exit');
+      if (stuck.length) {
+        throw new AggregateError(bodyFailed ? [bodyError, ...stuck] : stuck,
+          bodyFailed ? 'the attempt failed and a child of it did not exit' : 'a child of the attempt did not exit');
       }
     }
   }

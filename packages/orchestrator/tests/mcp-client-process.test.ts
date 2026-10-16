@@ -747,8 +747,12 @@ describe('McpClient subprocess containment', () => {
   async function awaitExit(child: ChildProcess, timeoutMs = 5_000): Promise<void> {
     if (!isUnreaped(child)) return;
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`pid ${child.pid} did not exit within ${timeoutMs} ms`)), timeoutMs);
-      child.once('exit', () => { clearTimeout(timer); resolve(); });
+      const onExit = () => { clearTimeout(timer); resolve(); };
+      const timer = setTimeout(() => {
+        child.off('exit', onExit);
+        reject(new Error(`pid ${child.pid} did not exit within ${timeoutMs} ms`));
+      }, timeoutMs);
+      child.once('exit', onExit);
     });
   }
 
@@ -768,9 +772,11 @@ describe('McpClient subprocess containment', () => {
     // reaps both and runs this one's exit callback first.
     const neighbour = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1_000)'], { stdio: 'ignore' });
     const client = new McpClient(clientOptions);
+    let leader: ChildProcess | null = null;
+    let bodyFailed = false;
     try {
       await client.start(process.execPath, [scriptPath], { cwd: tmpDir });
-      const leader = serverProcess(client);
+      leader = serverProcess(client);
       const groupNumber = leader.pid!;
       const lateSignals = redirectSignalsAfterReap(groupNumber, unrelated);
       await arm(client);
@@ -796,19 +802,22 @@ describe('McpClient subprocess containment', () => {
         }
       }));
       await closed;
-      const observation = { observed: leaderReapedWithCallbackPending, lateSignals, unrelatedUnreaped: isUnreaped(unrelated) };
-      // Every child of this attempt is exited and reaped before the next attempt
-      // starts, so no exit callback of this attempt can land in a later pass.
-      await awaitExit(leader);
-      return observation;
+      return { observed: leaderReapedWithCallbackPending, lateSignals, unrelatedUnreaped: isUnreaped(unrelated) };
+    } catch (error) {
+      bodyFailed = true;
+      throw error;
     } finally {
+      // Every child of this attempt is exited and reaped before the next attempt
+      // starts, so no exit callback of this attempt can land in a later pass. A
+      // child that will not go away fails the attempt, unless the attempt already
+      // failed, in which case that exception is the one to report.
       unrelated.kill('SIGKILL');
       neighbour.kill('SIGKILL');
-      // A child that will not go away is reported by the next attempt or by the
-      // test timeout; it must not hide the exception that brought us here.
-      await awaitExit(unrelated).catch(() => {});
-      await awaitExit(neighbour).catch(() => {});
+      if (leader && isUnreaped(leader)) leader.kill('SIGKILL');
+      const waits = await Promise.allSettled([awaitExit(unrelated), awaitExit(neighbour), leader ? awaitExit(leader) : Promise.resolve()]);
       vi.restoreAllMocks();
+      const stuck = waits.find((w): w is PromiseRejectedResult => w.status === 'rejected');
+      if (stuck && !bodyFailed) throw stuck.reason;
     }
   }
 
@@ -823,7 +832,10 @@ describe('McpClient subprocess containment', () => {
       // spy decides synchronously and reaping happens only between event-loop turns.
       expect(result.lateSignals).toEqual([]);
       expect(result.unrelatedUnreaped).toBe(true);
-      if (result.observed) return;
+      if (result.observed) {
+        console.info(`[reap-pass] the moment occurred on attempt ${attempt} of ${REAP_PASS_ATTEMPTS}`);
+        return;
+      }
     }
     throw new Error(`a reaping pass that had reaped the leader with its callback pending did not occur in ${REAP_PASS_ATTEMPTS} attempts: nothing was verified`);
   }

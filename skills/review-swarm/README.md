@@ -25,11 +25,11 @@ runs, and you can run them yourself for reproducibility and debugging.
 Single reviewer, one command — no hand-written prompt files. Its verdict is
 advisory, and its model family remains unknown until supported by identity
 evidence. Cross-family review is preferred, not required: a result-bearing /
-public-surface / irreversible artifact wants a second independent seat, from
-another model family when the machine has one, otherwise from the same family
-with the author's conclusions withheld and the round recorded as single-family
-(scoping in SKILL.md; internal implementation variants close single-family
-either way):
+public-surface / irreversible artifact wants a second seat, from another
+model family when the machine has one, otherwise a fresh same-family reader
+without the first seat's report or any prior verdict, with the round recorded
+as single-family — a degraded round, never relabeled (scoping in SKILL.md;
+internal implementation variants close single-family either way):
 
 ```bash
 python3 scripts/bin/review_one.py \

@@ -11,9 +11,10 @@ no second orchestration path.
 A single reviewer cannot supply cross-family quorum; its family evidence may be unknown. Cross-family
 review is preferred, not required (see SKILL.md): for a result-bearing / public-surface /
 irreversible artifact, add a second seat from another model family when one is available; when
-only one family is available, add a second independent seat of that family (fresh reader, the
-author's conclusions withheld, a different method where the artifact allows one) and record the
-round as single-family. Internal implementation variants close single-family either way.
+only one family is available, add a second seat of that family — a fresh reader without the first
+seat's report or any prior verdict, or a candidate-withheld route where the claim admits one — and
+record the round as single-family (a degraded round, never relabeled). Internal implementation
+variants close single-family either way.
 
 Examples:
     python3 review_one.py --model codex/default --artifact notes.md
@@ -71,7 +72,7 @@ _SOURCE_TEXT_ORIGINS = (
     "visually-verified-transcription",
 )
 
-ADVISORY_BANNER = "single-reviewer advisory — named model family is unknown until evidenced; a final verdict on a result-bearing / public-surface / irreversible artifact wants a second independent seat: from another model family when one is available (preferred), otherwise from the same family with the author's conclusions withheld, recorded as single-family; internal implementation variants close single-family either way"
+ADVISORY_BANNER = "single-reviewer advisory — named model family is unknown until evidenced; a final verdict on a result-bearing / public-surface / irreversible artifact wants a second seat: from another model family when one is available (preferred), otherwise a fresh same-family reader without this report or any prior verdict, recorded as single-family (a degraded round); internal implementation variants close single-family either way"
 STALE_ACCEPTANCE_EXIT_CODE = 86
 
 _PACKET_FRAMING = """\

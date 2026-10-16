@@ -6,7 +6,7 @@ Use it as the starting point when hand-writing a packet for a multi-reviewer
 EMBED everything they are expected to judge — never reference paths and hope.
 
 ```markdown
-single-family review — one model family; cross-family review is preferred, not required: a result-bearing / public-surface / irreversible artifact wants a second independent seat (another family when available, otherwise the same family with the author's conclusions withheld, recorded as single-family); internal implementation variants close single-family either way
+single-family review — one model family; cross-family review is preferred, not required: a result-bearing / public-surface / irreversible artifact wants a second seat (another family when available, otherwise a fresh same-family reader without this report or any prior verdict, recorded as single-family — a degraded round); internal implementation variants close single-family either way
 
 Candidate-commit: <id — required when the review target is a committed candidate; exactly one commit on this line, bookkeeping/registration commits labeled separately or omitted>
 

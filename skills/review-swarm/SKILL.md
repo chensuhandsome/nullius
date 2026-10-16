@@ -120,17 +120,26 @@ result-bearing, public-surface, or irreversible artifacts — headline claims an
 the derivations/numbers they rest on, cross-package contracts, default-entry
 behavior (the same scoping the two-phase formal review section uses). Take that
 seat from another model family when the machine has one (the agents file says
-which exist); when it has only one, take it from the same family and make it
-independent on the other two axes instead — a fresh reader who gets the
-artifact and the question but not the author's conclusions or the first
-reviewer's report, and a different method or representation where the artifact
-allows one — and record the round as `single_family` (the launcher's
-independence record does this; never relabel it). Internal implementation
-variants — writers, fixtures, launchers, schema plumbing — close on a
-single-family review plus local tests either way (an implementation never
-closes on its author's own tests alone). Reviewer investment scales with the
-artifact's stakes the same way reasoning effort does; spending a cross-family
-panel on every internal diff is the recorded waste pattern, not the safe default.
+which exist). When it has only one, the second seat comes from the same family:
+it cannot establish model-family independence, so the round is a degraded one
+and is recorded as `single_family` (the launcher's independence record does
+this; never relabel it) — and the other two independence axes are then the
+only ones left, so keep them clean: the second seat is a fresh reader that
+receives the artifact and the question but not the first seat's report, any
+prior verdict, or the author's framing beyond the artifact itself; and where
+the claim admits a candidate-withheld route (`--role source-extraction` for a
+transcription, `derivation-verify` for a derivation, an independent
+reproduction for a number), that route — raw inputs and a neutral question,
+the candidate withheld — is the second seat, with the candidate-visible
+comparison only afterwards. A degraded round closes the artifact under this
+policy because the alternative on a one-family machine is no second seat at
+all, not because the label makes it equivalent to a cross-family one. Internal
+implementation variants — writers, fixtures, launchers, schema plumbing —
+close on a single-family review plus local tests either way (an implementation
+never closes on its author's own tests alone). Reviewer investment scales with
+the artifact's stakes the same way reasoning effort does; spending a
+cross-family panel on every internal diff is the recorded waste pattern, not
+the safe default.
 
 ```bash
 python3 scripts/bin/review_one.py \

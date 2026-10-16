@@ -390,8 +390,9 @@ For a note that will anchor a central claim, enter a close-prior matrix, or be f
 **independent** (a fresh reader / subagent, not the note's author) and at least one reviewer
 does a **literal** comparison — loose semantic agreement is insufficient for transcription
 fidelity. Draw that reviewer from another model family when the machine has one (preferred:
-two families rarely share a transcription habit); when it has only one, use a fresh same-family
-reader with the candidate note withheld and record the gate as single-family. Before that candidate-visible comparison, obtain
+two families rarely share a transcription habit); when it has only one, the candidate-withheld
+extraction below is done by a fresh same-family reader and the gate is recorded as
+single-family — a degraded gate, never relabeled. Before that candidate-visible comparison, obtain
 at least one **candidate-withheld extraction**: give a fresh reader the persisted source and
 a neutral locator/question list, but not the candidate note, prior verdict, expected
 classification, or proposed corrected expression. This separates model-family independence

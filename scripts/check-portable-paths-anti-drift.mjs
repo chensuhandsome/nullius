@@ -3,8 +3,8 @@
 // Scan the Git-visible surface, including tests, this script, and unignored new
 // files. This bounded guard cannot identify every personal detail in prose.
 // Diagnostics contain locations and rule names, never matched contents.
-import { execFileSync } from 'node:child_process';
-import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { lstatSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -73,9 +73,47 @@ export function scanContent(file, content) {
 }
 
 export function visibleFiles(root) {
-  return [...new Set(execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {
+  const cached = new Set(execFileSync('git', ['ls-files', '--cached', '-z'], {
     cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
-  }).split('\0').filter(Boolean))].sort();
+  }).split('\0').filter(Boolean));
+  const listed = [...cached, ...execFileSync('git', ['ls-files', '--others', '--exclude-standard', '--directory', '-z'], {
+    cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
+  }).split('\0').filter(Boolean)];
+  const files = new Set();
+  const visited = new Set();
+  const visit = file => {
+    file = file.replace(/\/$/, '');
+    if (visited.has(file)) return;
+    visited.add(file);
+    // Git for Windows descends through junctions when listing untracked
+    // files. Collapse directories above, then inspect every ancestor before
+    // enumerating children or reading bytes, including tracked descendants.
+    const components = file.split('/');
+    let stat;
+    for (let index = 1; index <= components.length; index += 1) {
+      const prefix = components.slice(0, index).join('/');
+      try { stat = lstatSync(path.join(root, prefix)); }
+      catch { files.add(file); return; } // scanRepository reports unreadable/deleted entries.
+      if (stat.isSymbolicLink()) { files.add(prefix); return; }
+    }
+    if (!stat.isDirectory()) { files.add(file); return; }
+    if (cached.has(file)) { files.add(file); return; }
+    // A gitlink or embedded repository is a single entry in this repository,
+    // with independent ignore rules and authority. Preserve that boundary.
+    try { lstatSync(path.join(root, file, '.git')); files.add(file); return; }
+    catch (error) { if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error; }
+    const children = readdirSync(path.join(root, file)).filter(name => name !== '.git')
+      .map(name => `${file}/${name}`);
+    if (children.length === 0) return;
+    const ignored = spawnSync('git', ['check-ignore', '--stdin', '-z'], {
+      cwd: root, input: children.join('\0') + '\0', encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
+    });
+    if (ignored.error || (ignored.status !== 0 && ignored.status !== 1)) throw new Error('could not apply Git ignore rules');
+    const excluded = new Set(ignored.stdout.split('\0').filter(Boolean));
+    for (const child of children) if (!excluded.has(child)) visit(child);
+  };
+  for (const file of listed) visit(file);
+  return [...files].sort();
 }
 
 export function scanRepository(root) {

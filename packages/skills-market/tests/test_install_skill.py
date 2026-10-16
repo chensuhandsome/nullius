@@ -254,16 +254,12 @@ def test_moved_research_team_copy_uses_current_runtime(monkeypatch, tmp_path: pa
             assert kwargs["timeout"] == 10
             return SimpleNamespace(returncode=0, stdout=str(destination_runtime) + "\n", stderr="")
         cwd, input = kwargs["cwd"], kwargs["input"]
-        capture_output, text, check = kwargs["capture_output"], kwargs["text"], kwargs["check"]
         captured["command"] = command
         captured["cwd"] = cwd
         captured["input"] = input
-        captured["capture_output"] = capture_output
-        captured["text"] = text
-        captured["check"] = check
         return SimpleNamespace(returncode=0, stdout='{"entry_tool":"literature_workflows.resolve"}\n', stderr="")
 
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module, "_run_runtime_command", fake_run)
     payload = module.resolve_workflow_plan(
         recipe_id="literature_landscape",
         phase="prework",
@@ -312,8 +308,8 @@ def test_copy_installer_rejects_sensitive_selected_payload(tmp_path, capsys, rel
     catalog_file.write_text(json.dumps(catalog))
     target = source / "skills/unsafe-skill" / relative
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(payload)
-    (source / ".gitignore").write_text(str(target.relative_to(source)) + "\n")
+    target.write_text(payload, encoding="utf-8")
+    (source / ".gitignore").write_text(target.relative_to(source).as_posix() + "\n")
     subprocess.run(["git", "init", "-q", str(source)], check=True)
     assert subprocess.run(["git", "-C", str(source), "check-ignore", "--quiet", str(target)]).returncode == 0
     output = tmp_path / "installed"
@@ -333,7 +329,11 @@ def test_payload_gate_respects_excludes_and_allows_generic_examples(tmp_path):
     assert collect_payload_files(source, ["**/*"], ["oauth_creds.json"]) == [source / "SKILL.md"]
     outside = tmp_path / "outside-directory"
     outside.mkdir()
-    (source / "linked-directory").symlink_to(outside, target_is_directory=True)
+    if sys.platform == "win32":
+        script = "require('node:fs').symlinkSync(process.argv[1],process.argv[2],'junction')"
+        subprocess.run(["node", "-e", script, str(outside), str(source / "linked-directory")], check=True)
+    else:
+        (source / "linked-directory").symlink_to(outside, target_is_directory=True)
     with pytest.raises(RuntimeError, match="outside source root"):
         collect_payload_files(source, ["**/*"], ["oauth_creds.json"])
 

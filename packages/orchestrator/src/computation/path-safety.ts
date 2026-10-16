@@ -179,11 +179,18 @@ export function resolveProjectContainedPath(rootPath: string, targetPath: string
   const boundary = rootAliasAncestor(root, target);
   if (boundary === null) throw unsafeFs(`${label} must stay within ${root}`, { label, target_path: target });
   const relative = path.relative(boundary, target);
+  const segments = relative.split(path.sep).filter(Boolean);
   let cursor = boundary;
-  for (const segment of relative.split(path.sep).filter(Boolean)) {
+  for (const [index, segment] of segments.entries()) {
     cursor = path.join(cursor, segment);
     try {
-      if (fs.lstatSync(cursor).isSymbolicLink()) throw unsafeFs(`${label} must not traverse a symbolic link`, { label, symlink_path: cursor });
+      const metadata = fs.lstatSync(cursor);
+      if (metadata.isSymbolicLink()) throw unsafeFs(`${label} must not traverse a symbolic link`, { label, symlink_path: cursor });
+      // Win32 can report ENOENT for children below an existing file, so the
+      // ancestor itself must establish directory traversal before descending.
+      if (index < segments.length - 1 && !metadata.isDirectory()) {
+        throw unsafeFs(`${label} passes through something that is not a directory`, { label, path: cursor });
+      }
     } catch (error) {
       if (error instanceof McpError) throw error;
       const code = (error as NodeJS.ErrnoException).code;

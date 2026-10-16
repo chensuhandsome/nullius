@@ -77,8 +77,9 @@ describe('arXiv source download and extraction stage their writes', () => {
     const victimArchive = path.join(outside, 'victim.tar.gz');
     fs.writeFileSync(victim, 'ORIGINAL');
     fs.writeFileSync(victimArchive, 'ORIGINAL');
-    fs.symlinkSync(victim, path.join(destDir, 'extracted_content'));
-    fs.symlinkSync(victimArchive, path.join(destDir, 'source.tar.gz'));
+    const plantLink = process.platform === 'win32' ? fs.linkSync : fs.symlinkSync;
+    plantLink(victim, path.join(destDir, 'extracted_content'));
+    plantLink(victimArchive, path.join(destDir, 'source.tar.gz'));
     serve(zlib.gzipSync(MAIN_TEX));
 
     const result = await getPaperContent({ identifier: ARXIV_ID, output_dir: base, prefer: 'latex' });
@@ -89,7 +90,11 @@ describe('arXiv source download and extraction stage their writes', () => {
     expect(fs.lstatSync(path.join(destDir, 'main.tex')).isFile()).toBe(true);
     expect(fs.readFileSync(path.join(destDir, 'main.tex'), 'utf-8')).toBe(MAIN_TEX);
     expect(fs.lstatSync(path.join(destDir, 'source.tar.gz')).isFile()).toBe(true);
-    expect(fs.readlinkSync(path.join(destDir, 'extracted_content'))).toBe(victim);
+    if (process.platform === 'win32') {
+      expect(fs.statSync(path.join(destDir, 'extracted_content')).ino).toBe(fs.statSync(victim).ino);
+    } else {
+      expect(fs.readlinkSync(path.join(destDir, 'extracted_content'))).toBe(victim);
+    }
   });
 
   it('keeps the previous download and leaves no staging file when a download is aborted', async () => {

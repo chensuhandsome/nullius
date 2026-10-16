@@ -118,17 +118,19 @@ describe('native pause and deadline',()=>{
     expect(fs.readFileSync(f.manager.ledgerPath,'utf8')).not.toContain('execution_completed');
     expect(fs.readFileSync(path.join(f.run,'computation/outputs/step1.txt'),'utf8')).toBe('done');
   });
-  it('restores the first local status after its rename succeeds but directory fsync throws',async()=>{
+  it('restores the first local status after a post-rename publication failure',async()=>{
     const f=fixture('publication-io');let renamed=false;let injected=false;
-    // The shared audit seam throws at directory durability confirmation,
-    // after real rename, exercising the writer's commit-uncertain return.
+    // POSIX faults directory fsync; native Node has no such syscall, so it
+    // faults the completed rename audit instead. Both have real target bytes
+    // visible and exercise the writer's commit-uncertain return.
     const restore=_setAtomicWriteAuditHook(event=>{
       if(event.kind==='rename' && event.to===path.join(f.run,'computation/execution_status.json') && JSON.parse(fs.readFileSync(event.to,'utf8')).status==='completed')renamed=true;
-      if(renamed && !injected && event.kind==='fsync' && fs.fstatSync(event.fd).isDirectory()){
-        injected=true;throw Object.assign(new Error('injected directory fsync failure'),{code:'EIO'});
+      const confirmation=process.platform==='win32' ? event.kind==='rename' : event.kind==='fsync' && fs.fstatSync(event.fd).isDirectory();
+      if(renamed && !injected && confirmation){
+        injected=true;throw Object.assign(new Error('injected publication confirmation failure'),{code:'EIO'});
       }
     });
-    try{await expect(executeComputationManifest(f.input)).rejects.toThrow(/fsync failure/);}finally{restore();}
+    try{await expect(executeComputationManifest(f.input)).rejects.toThrow(/confirmation failure/);}finally{restore();}
     expect(injected).toBe(true);expect(f.manager.readState().run_status).toBe('running');
     expect(JSON.parse(fs.readFileSync(path.join(f.run,'computation/execution_status.json'),'utf8')).status).toBe('running');
     expect(fs.existsSync(path.join(f.run,'artifacts/computation_result_v1.json'))).toBe(false);
@@ -204,8 +206,10 @@ describe('native pause and deadline',()=>{
   });
   it('shows requested pause while the direct child is still executing',async()=>{
     const f=fixture('visible-pause');const cli=path.resolve(import.meta.dirname,'../dist/cli.js');
-    createPythonStep(f.run,'scripts/step1.py',`import subprocess\nfrom pathlib import Path\nPath(${JSON.stringify(path.join(f.root,'.pause'))}).write_text('pause')\nresult=subprocess.run([${JSON.stringify(process.execPath)},${JSON.stringify(cli)},'--project-root',${JSON.stringify(f.root)},'status','--json'],check=True,capture_output=True,text=True)\nPath('outputs').mkdir()\nPath('outputs/step1.txt').write_text(result.stdout)\n`);
+    createPythonStep(f.run,'scripts/step1.py',`import subprocess\nfrom pathlib import Path\nPath(${JSON.stringify(path.join(f.root,'.pause'))}).write_text('pause')\nresult=subprocess.run([${JSON.stringify(process.execPath)},${JSON.stringify(cli)},'--project-root',${JSON.stringify(f.root)},'status','--json'],check=True,capture_output=True,text=True,encoding='utf-8')\nPath('outputs').mkdir()\nPath('outputs/step1.txt').write_text(result.stdout,encoding='utf-8')\n`);
     expect((await executeComputationManifest(f.input)).status).toBe('paused');
+    expect(fs.existsSync(path.join(f.run,'computation/outputs/step1.txt')),
+      fs.readFileSync(path.join(f.run,'computation/logs/step1/stderr.txt'),'utf8')).toBe(true);
     const observed=JSON.parse(fs.readFileSync(path.join(f.run,'computation/outputs/step1.txt'),'utf8'));
     expect(observed.native_execution.message).toBe('Pause requested; last recorded step was executing. Current liveness is unverified.');
     expect(observed.native_execution.active_child).toEqual({kind:'step',id:'step1'});
@@ -286,8 +290,9 @@ describe('content-bound approval',()=>{
     const f=fixture();requireApproval(f);
     const external=fs.mkdtempSync(path.join(os.tmpdir(),'approved-runtime-'));roots.push(external);
     const real=(await import('../src/computation/manifest.js')).prepareManifest(f.input).steps[0]!.runtimeIdentity.canonical_path;
-    const runtime=path.join(external,'python3');fs.copyFileSync(real,runtime);fs.chmodSync(runtime,0o755);
+    const runtime=path.join(external,process.platform === 'win32' ? 'python3.exe' : 'python3');fs.copyFileSync(real,runtime);fs.chmodSync(runtime,0o755);
     vi.stubEnv('PATH',`${external}${path.delimiter}${process.env.PATH}`);
+    if (process.platform === 'win32') vi.stubEnv('NULLIUS_PYTHON',runtime);
     const first=await executeComputationManifest(f.input);await approve(f,first);fs.appendFileSync(runtime,Buffer.from([0]));
     const next=await executeComputationManifest(f.input);expect(next.status).toBe('requires_approval');
     expect(fs.existsSync(path.join(f.run,'computation/execution_status.json'))).toBe(false);
@@ -312,17 +317,17 @@ describe('external root admission',()=>{
   it('normalizes an outer project alias but refuses links below the project boundary',()=>{
     const root=fs.mkdtempSync(path.join(os.tmpdir(),'contained-alias-'));roots.push(root);
     const project=path.join(root,'project');fs.mkdirSync(project);
-    const alias=path.join(root,'alias');fs.symlinkSync(project,alias,'dir');
+    const alias=path.join(root,'alias');fs.symlinkSync(project,alias, process.platform === 'win32' ? 'junction' : 'dir');
     const canonical=fs.realpathSync.native(project);
     expect(resolveProjectContainedPath(canonical,path.join(alias,'artifacts/runs/new'),'run dir')).toBe(path.join(canonical,'artifacts/runs/new'));
-    fs.symlinkSync(project,path.join(project,'inner'),'dir');
+    fs.symlinkSync(project,path.join(project,'inner'), process.platform === 'win32' ? 'junction' : 'dir');
     expect(()=>resolveProjectContainedPath(canonical,path.join(project,'inner'),'run dir')).toThrow(/symbolic link/);
     expect(()=>resolveProjectContainedPath(canonical,path.join(alias,'inner/run'),'run dir')).toThrow(/symbolic link/);
     expect(()=>resolveProjectContainedPath(canonical,path.join(root,'outside'),'run dir')).toThrow(/stay within/);
   });
   it('rejects checkout symlinks, uncreated descendants and ancestors in shared live entrypoints',()=>{
     const fixtureRoot=fs.mkdtempSync(path.join(os.tmpdir(),'root-policy-'));roots.push(fixtureRoot);
-    const checkout=path.resolve(import.meta.dirname,'../../..');const alias=path.join(fixtureRoot,'alias');fs.symlinkSync(checkout,alias,'dir');
+    const checkout=path.resolve(import.meta.dirname,'../../..');const alias=path.join(fixtureRoot,'alias');fs.symlinkSync(checkout,alias, process.platform === 'win32' ? 'junction' : 'dir');
     for(const bad of [checkout,alias,path.join(alias,'uncreated'),path.dirname(checkout),path.parse(checkout).root]){
       expect(()=>assertProjectRootAllowed(bad)).toThrow();
       if(fs.existsSync(bad))expect(()=>boundProjectRoot(bad)).toThrow();

@@ -1,19 +1,27 @@
 import * as fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { spawnWindowsJobProcess } from '@nullius/orchestrator';
 import { commitDelivery, readRequest } from './delivery.js';
 import { releaseExecution } from './execution-lock.js';
 import type { Result } from './result.js';
 
 const filename = process.argv[2]!;
 const request = readRequest(filename);
-const child = spawn(process.execPath, [fileURLToPath(new URL('./worker.js', import.meta.url)), filename], {
+const worker = fileURLToPath(new URL('./worker.js', import.meta.url));
+const child = process.platform === 'win32'
+  ? spawnWindowsJobProcess(process.execPath, [worker, filename], { cwd: request.root, env: process.env, mode: 'run', shutdownGraceMs: 0 })
+  : spawn(process.execPath, [worker, filename], {
   cwd: request.root, stdio: 'ignore', detached: true, env: process.env,
 });
 let timedOut = false;
 const timer = setTimeout(() => {
   if (child.exitCode !== null) return;
   timedOut = true;
+  if (process.platform === 'win32') {
+    child.stdin?.end();
+    return;
+  }
   if (child.pid) {
     try { process.kill(-child.pid, 'SIGKILL'); } catch { /* A concurrently exited process has no result yet. */ }
   }

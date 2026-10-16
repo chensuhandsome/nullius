@@ -1,8 +1,8 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { StateManager } from '../src/state-manager.js';
 import type { RunState } from '../src/types.js';
 import { runCli } from '../src/cli.js';
@@ -10,6 +10,12 @@ import { findLifecycleProjectRoot } from '../src/cli-project-root.js';
 import { assertProjectRootAllowed } from '../src/project-policy.js';
 import { readProjectLocalNulliusLauncherHealth } from '../src/project-local-nullius.js';
 import { ensureProjectScaffold } from '../src/project-scaffold.js';
+import { EMPTY_COMMAND_PATH, PROJECT_LAUNCHER, PROJECT_STATUS_COMMAND, execProjectLauncher, replaceBakedCli, writePathCandidate } from './helpers/platform-launcher.js';
+
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {...actual, spawnSync:vi.fn(actual.spawnSync)};
+});
 
 const CANONICAL_SCAFFOLD_FILES = [
   'AGENTS.md',
@@ -114,7 +120,7 @@ describe('nullius CLI init/export', () => {
     fs.writeFileSync(path.join(checkout, 'packages/orchestrator/package.json'), JSON.stringify({ name: '@nullius/orchestrator' }));
     fs.writeFileSync(path.join(checkout, 'packages/shared/package.json'), JSON.stringify({ name: '@nullius/shared' }));
     const alias = path.join(parent, 'source-alias');
-    fs.symlinkSync(checkout, alias, 'dir');
+    fs.symlinkSync(checkout, alias, process.platform === 'win32' ? 'junction' : 'dir');
     try {
       for (const target of [checkout, path.join(checkout, 'not-created'), path.join(alias, 'not-created')]) {
         for (const flags of [[], ['--runtime-only']]) {
@@ -165,7 +171,7 @@ describe('nullius CLI init/export', () => {
     fs.mkdirSync(checkout);
     fs.writeFileSync(path.join(checkout, 'package.json'), JSON.stringify({ name: 'nullius' }));
     fs.writeFileSync(path.join(checkout, 'pnpm-workspace.yaml'), 'packages: [packages/*]\n');
-    fs.symlinkSync('packages', path.join(checkout, 'packages'), 'dir');
+    fs.symlinkSync(process.platform === 'win32' ? path.join(checkout, 'packages') : 'packages', path.join(checkout, 'packages'), process.platform === 'win32' ? 'junction' : 'dir');
     try {
       await expect(runCli(['--project-root', checkout, 'init', '--runtime-only', '--no-git'], makeIo(parent).io))
         .rejects.toThrow('ambiguous development-checkout metadata');
@@ -176,7 +182,11 @@ describe('nullius CLI init/export', () => {
         fs.writeFileSync(path.join(checkout, 'packages', name, 'package.json'), JSON.stringify({ name: `@nullius/${name}` }));
       }
       fs.unlinkSync(path.join(checkout, 'package.json'));
-      fs.symlinkSync('missing-package.json', path.join(checkout, 'package.json'));
+      if (process.platform === 'win32') {
+        // A dangling junction gives the same unreadable marker boundary without
+        // requiring Developer Mode or file-symlink privileges.
+        fs.symlinkSync(path.join(checkout, 'missing-package'), path.join(checkout, 'package.json'), 'junction');
+      } else fs.symlinkSync('missing-package.json', path.join(checkout, 'package.json'));
       await expect(runCli(['--project-root', checkout, 'init', '--runtime-only', '--no-git'], makeIo(parent).io))
         .rejects.toThrow('ambiguous development-checkout metadata');
       expect(fs.existsSync(path.join(checkout, '.nullius'))).toBe(false);
@@ -190,13 +200,17 @@ describe('nullius CLI init/export', () => {
     fs.mkdirSync(packages, { recursive: true });
     fs.writeFileSync(path.join(checkout, 'package.json'), JSON.stringify({ name: 'nullius' }));
     fs.writeFileSync(path.join(checkout, 'pnpm-workspace.yaml'), 'packages: [packages/*]\n');
-    fs.chmodSync(packages, 0);
+    const sid = process.platform === 'win32' ? execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      '[Security.Principal.WindowsIdentity]::GetCurrent().User.Value'], {encoding:'utf8'}).trim() : null;
+    if (sid) execFileSync('icacls.exe', [packages, '/deny', `*${sid}:(OI)(CI)(RD)`, '/Q']);
+    else fs.chmodSync(packages, 0);
     try {
       await expect(runCli(['--project-root', checkout, 'init', '--runtime-only', '--no-git'], makeIo(parent).io))
         .rejects.toThrow('ambiguous development-checkout metadata');
       expect(fs.existsSync(path.join(checkout, '.nullius'))).toBe(false);
     } finally {
-      fs.chmodSync(packages, 0o755);
+      if (sid) execFileSync('icacls.exe', [packages, '/remove:d', `*${sid}`, '/Q']);
+      else fs.chmodSync(packages, 0o755);
       fs.rmSync(parent, { recursive: true, force: true });
     }
   });
@@ -266,15 +280,15 @@ describe('nullius CLI init/export', () => {
       schema_version: 1,
       kind: 'nullius_project_harness',
       status_receipt_required: true,
-      project_local_status_command: '.nullius/bin/nullius status --json',
+      project_local_status_command: PROJECT_STATUS_COMMAND,
       fallback_status_command: 'nullius status --json',
       host_skill: 'research-harness',
       lifecycle_authority: 'nullius',
       milestone_executor: 'research-team',
     });
-    const launcherPath = path.join(projectRoot, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(projectRoot, '.nullius', 'bin', PROJECT_LAUNCHER);
     expect(fs.existsSync(launcherPath)).toBe(true);
-    expect((fs.statSync(launcherPath).mode & 0o111) !== 0).toBe(true);
+    expect(process.platform === 'win32' ? readProjectLocalNulliusLauncherHealth(projectRoot).executable : (fs.statSync(launcherPath).mode & 0o111) !== 0).toBe(true);
     for (const rel of CANONICAL_SCAFFOLD_FILES) {
       expect(fs.existsSync(path.join(projectRoot, rel))).toBe(true);
     }
@@ -289,12 +303,12 @@ describe('nullius CLI init/export', () => {
       expect(generatedText).not.toContain(token);
     }
 
-    const statusJson = execFileSync(launcherPath, ['status', '--json'], {
+    const statusJson = execProjectLauncher(launcherPath, ['status', '--json'], {
       cwd: projectRoot,
       encoding: 'utf-8',
       env: {
         ...process.env,
-        PATH: '/usr/bin:/bin',
+        PATH: EMPTY_COMMAND_PATH,
       },
     });
     expect(JSON.parse(statusJson)).toMatchObject({
@@ -302,8 +316,8 @@ describe('nullius CLI init/export', () => {
       recovery_context: {
         status_commands: {
           canonical: 'nullius status --json',
-          project_local_fallback: '.nullius/bin/nullius status --json',
-          harness_entrypoint: '.nullius/bin/nullius status --json',
+          project_local_fallback: PROJECT_STATUS_COMMAND,
+          harness_entrypoint: PROJECT_STATUS_COMMAND,
         },
         control_files: {
           harness: {
@@ -326,33 +340,15 @@ describe('nullius CLI init/export', () => {
   it('calls the project-contracts scaffold authority without a variant argument', () => {
     const parentDir = makeTempDir('nullius-scaffold-spawn-');
     const projectRoot = path.join(parentDir, 'project-root');
-    const argvLog = path.join(parentDir, 'argv.log');
-    const fakePython = path.join(parentDir, 'fake-python.sh');
-    fs.writeFileSync(
-      fakePython,
-      [
-        '#!/bin/sh',
-        `printf '%s\\n' "$@" > ${JSON.stringify(argvLog)}`,
-        'printf \'{"created":[],"skipped":[]}\\n\'',
-      ].join('\n') + '\n',
-      'utf-8',
-    );
-    fs.chmodSync(fakePython, 0o755);
-    const previous = process.env.NULLIUS_PYTHON;
-    process.env.NULLIUS_PYTHON = fakePython;
-    try {
-      ensureProjectScaffold(projectRoot);
-    } finally {
-      if (previous === undefined) {
-        delete process.env.NULLIUS_PYTHON;
-      } else {
-        process.env.NULLIUS_PYTHON = previous;
-      }
-    }
-
-    const argv = fs.readFileSync(argvLog, 'utf-8').trim().split('\n');
+    let argv: readonly string[] = [];
+    vi.mocked(spawnSync).mockImplementationOnce((_command, args) => {
+      argv = args as string[];
+      return {pid:1, status:0, signal:null, output:[null, '', ''], stderr:'', stdout:'{"created":[],"skipped":[]}'} as ReturnType<typeof spawnSync>;
+    });
+    ensureProjectScaffold(projectRoot);
     expect(argv).not.toContain('--' + 'variant');
     expect(argv).not.toContain('minimal');
+    expect(argv).toContain('project_contracts.project_scaffold_cli');
   });
 
   it('writes the project-local fallback launcher even for runtime-only init', async () => {
@@ -363,28 +359,35 @@ describe('nullius CLI init/export', () => {
     const code = await runCli([`--project-root=${projectRoot}`, 'init', '--runtime-only'], io);
 
     expect(code).toBe(0);
-    const launcherPath = path.join(projectRoot, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(projectRoot, '.nullius', 'bin', PROJECT_LAUNCHER);
     expect(fs.existsSync(launcherPath)).toBe(true);
     const harnessPath = path.join(projectRoot, '.nullius', 'HARNESS');
     expect(fs.existsSync(harnessPath)).toBe(true);
     const launcherScript = fs.readFileSync(launcherPath, 'utf-8');
     // Portable launcher: self-derives the project root and prefers an nullius
     // on PATH — but never itself — so the project works on another machine.
+    if (process.platform === 'win32') {
+      expect(launcherScript).toContain("const root = path.resolve(__dirname, '../..')");
+      expect(launcherScript).toContain('if (!path.isAbsolute(directory)) continue');
+      expect(launcherScript).toContain('sameFile(candidate, __filename)');
+      expect(launcherScript).toContain("GENERATION, '--project-root', root");
+    } else {
     expect(launcherScript).toContain('PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)');
     expect(launcherScript).toContain('case "$_nullius_dir" in /*) ;; *) continue;; esac');
     expect(launcherScript).toContain('-ef "$0"');
     expect(launcherScript).toContain('exec "$RESOLVED_NULLIUS" --launcher-generation=2 --project-root "$PROJECT_ROOT" "$@"');
+    }
     expect(launcherScript).toContain('--launcher-protocol');
     expect(launcherScript).not.toContain("PROJECT_ROOT='");
     expect(launcherScript).toContain('nullius init --runtime-only');
     expect(fs.existsSync(path.join(projectRoot, 'project_charter.md'))).toBe(false);
 
-    const statusJson = execFileSync(launcherPath, ['status', '--json'], {
+    const statusJson = execProjectLauncher(launcherPath, ['status', '--json'], {
       cwd: projectRoot,
       encoding: 'utf-8',
       env: {
         ...process.env,
-        PATH: '/usr/bin:/bin',
+        PATH: EMPTY_COMMAND_PATH,
       },
     });
     const payload = JSON.parse(statusJson);
@@ -393,8 +396,8 @@ describe('nullius CLI init/export', () => {
       recovery_context: {
         status_commands: {
           canonical: 'nullius status --json',
-          project_local_fallback: '.nullius/bin/nullius status --json',
-          harness_entrypoint: '.nullius/bin/nullius status --json',
+          project_local_fallback: PROJECT_STATUS_COMMAND,
+          harness_entrypoint: PROJECT_STATUS_COMMAND,
         },
         control_files: {
           harness: {
@@ -421,7 +424,7 @@ describe('nullius CLI init/export', () => {
     const parentDir = makeTempDir('nullius-cli-protocol-');
     const projectRoot = path.join(parentDir, 'project-root');
     expect(await runCli([`--project-root=${projectRoot}`, 'init', '--runtime-only'], makeIo(parentDir).io)).toBe(0);
-    const launcherPath = path.join(projectRoot, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(projectRoot, '.nullius', 'bin', PROJECT_LAUNCHER);
 
     // An impostor on PATH that answers commands but NOT the handshake (the
     // shape of an older-generation CLI whose root handling differs). It logs
@@ -429,17 +432,14 @@ describe('nullius CLI init/export', () => {
     const impostorDir = path.join(parentDir, 'impostorbin');
     fs.mkdirSync(impostorDir, { recursive: true });
     const impostorLog = path.join(parentDir, 'impostor-argv.log');
-    fs.writeFileSync(
-      path.join(impostorDir, 'nullius'),
+    writePathCandidate(impostorDir,
       `#!/bin/sh\nprintf '%s\\n' "$@" >> ${impostorLog}\nexit 0\n`,
-      'utf-8',
-    );
-    fs.chmodSync(path.join(impostorDir, 'nullius'), 0o755);
+      `require('node:fs').appendFileSync(${JSON.stringify(impostorLog)}, process.argv.slice(2).join('\\n')+'\\n');`);
     const pathWithImpostor = `${impostorDir}${path.delimiter}/usr/bin:/bin`;
 
     // 1) Baked target present: the launcher execs the baked CLI and never
     //    consults the impostor at all.
-    const statusJson = execFileSync(launcherPath, ['status', '--json'], {
+    const statusJson = execProjectLauncher(launcherPath, ['status', '--json'], {
       cwd: projectRoot,
       encoding: 'utf-8',
       timeout: 20000,
@@ -451,13 +451,11 @@ describe('nullius CLI init/export', () => {
     // 2) Baked target unavailable + non-protocol PATH candidate: the launcher
     //    refuses (exit 127) instead of executing a parser whose root handling
     //    it cannot trust — no cross-root write is possible.
-    const script = fs.readFileSync(launcherPath, 'utf-8');
-    const brokenScript = script.replaceAll('/dist/cli.js', '/dist/cli.js.gone');
-    fs.writeFileSync(launcherPath, brokenScript, 'utf-8');
+    replaceBakedCli(launcherPath);
     fs.chmodSync(launcherPath, 0o755);
     let failed: { status: number | null } | null = null;
     try {
-      execFileSync(launcherPath, ['status', '--json'], {
+      execProjectLauncher(launcherPath, ['status', '--json'], {
         cwd: projectRoot,
         encoding: 'utf-8',
         timeout: 20000,
@@ -475,9 +473,8 @@ describe('nullius CLI init/export', () => {
     // 3) Baked target unavailable + protocol-answering PATH candidate: used,
     //    with the trusted root PREPENDED before user args.
     const argvLog = path.join(parentDir, 'protocol-argv.log');
-    fs.writeFileSync(
-      path.join(impostorDir, 'nullius'),
-      [
+    writePathCandidate(impostorDir,
+[
         '#!/bin/sh',
         'if [ "${2:-}" = "--launcher-protocol" ] || [ "${1:-}" = "--launcher-protocol" ]; then',
         "  printf '%s\\n' 'nullius-launcher-protocol 2'",
@@ -486,10 +483,8 @@ describe('nullius CLI init/export', () => {
         `printf '%s\\n' "$@" > ${argvLog}`,
         'exit 0',
       ].join('\n') + '\n',
-      'utf-8',
-    );
-    fs.chmodSync(path.join(impostorDir, 'nullius'), 0o755);
-    execFileSync(launcherPath, ['status', '--json'], {
+      `if (process.argv.includes('--launcher-protocol')) console.log('nullius-launcher-protocol 2'); else require('node:fs').writeFileSync(${JSON.stringify(argvLog)},process.argv.slice(2).join('\\n')+'\\n');`);
+    execProjectLauncher(launcherPath, ['status', '--json'], {
       cwd: projectRoot,
       encoding: 'utf-8',
       timeout: 20000,
@@ -506,7 +501,7 @@ describe('nullius CLI init/export', () => {
     const parentDir = makeTempDir('nullius-cli-genswap-');
     const projectRoot = path.join(parentDir, 'project-root');
     expect(await runCli([`--project-root=${projectRoot}`, 'init', '--runtime-only'], makeIo(parentDir).io)).toBe(0);
-    const launcherPath = path.join(projectRoot, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(projectRoot, '.nullius', 'bin', PROJECT_LAUNCHER);
 
     // The swap-after-probe / mixed-build shape: the target ANSWERS the
     // protocol probe, but its actual parser is an older generation that does
@@ -520,19 +515,16 @@ describe('nullius CLI init/export', () => {
       "if (process.argv.some(arg => arg.startsWith('--launcher-generation='))) { console.error('unknown argument: --launcher-generation=2'); process.exit(2); }",
       'process.exit(0);',
     ].join('\n') + '\n', 'utf-8');
-    const script = fs.readFileSync(launcherPath, 'utf-8');
-    const cliMatch = script.match(/'(\/[^']*dist\/cli\.js)'/u);
-    expect(cliMatch).not.toBeNull();
-    fs.writeFileSync(launcherPath, script.replaceAll(cliMatch![1]!, trickCli), 'utf-8');
+    replaceBakedCli(launcherPath, trickCli);
     fs.chmodSync(launcherPath, 0o755);
 
     let failed: { status: number | null } | null = null;
     try {
-      execFileSync(launcherPath, ['status', '--json'], {
+      execProjectLauncher(launcherPath, ['status', '--json'], {
         cwd: projectRoot,
         encoding: 'utf-8',
         timeout: 20000,
-        env: { ...process.env, PATH: '/usr/bin:/bin' },
+        env: { ...process.env, PATH: EMPTY_COMMAND_PATH },
       });
     } catch (error) {
       failed = error as { status: number | null };
@@ -562,7 +554,7 @@ describe('nullius CLI init/export', () => {
     const parentDir = makeTempDir('nullius-cli-stale-baked-');
     const projectRoot = path.join(parentDir, 'project-root');
     expect(await runCli([`--project-root=${projectRoot}`, 'init', '--runtime-only'], makeIo(parentDir).io)).toBe(0);
-    const launcherPath = path.join(projectRoot, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(projectRoot, '.nullius', 'bin', PROJECT_LAUNCHER);
 
     // A baked target that EXISTS and answers commands, but speaks the WRONG
     // protocol generation (the shape of a checkout rebuilt to an older
@@ -575,19 +567,16 @@ describe('nullius CLI init/export', () => {
       "if (process.argv.includes('--launcher-protocol')) { console.log('nullius-launcher-protocol 1'); process.exit(0); }",
       'process.exit(0);',
     ].join('\n') + '\n', 'utf-8');
-    const script = fs.readFileSync(launcherPath, 'utf-8');
-    const cliMatch = script.match(/'(\/[^']*dist\/cli\.js)'/u);
-    expect(cliMatch).not.toBeNull();
-    fs.writeFileSync(launcherPath, script.replaceAll(cliMatch![1]!, staleCli), 'utf-8');
+    replaceBakedCli(launcherPath, staleCli);
     fs.chmodSync(launcherPath, 0o755);
 
     let failed: { status: number | null } | null = null;
     try {
-      execFileSync(launcherPath, ['status', '--json'], {
+      execProjectLauncher(launcherPath, ['status', '--json'], {
         cwd: projectRoot,
         encoding: 'utf-8',
         timeout: 20000,
-        env: { ...process.env, PATH: '/usr/bin:/bin' },
+        env: { ...process.env, PATH: EMPTY_COMMAND_PATH },
       });
     } catch (error) {
       failed = error as { status: number | null };
@@ -603,7 +592,7 @@ describe('nullius CLI init/export', () => {
     const parentDir = makeTempDir('nullius-cli-mixed-health-');
     const projectRoot = path.join(parentDir, 'project-root');
     expect(await runCli([`--project-root=${projectRoot}`, 'init', '--runtime-only'], makeIo(parentDir).io)).toBe(0);
-    const launcherPath = path.join(projectRoot, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(projectRoot, '.nullius', 'bin', PROJECT_LAUNCHER);
 
     // Old-parser shape: it errors on the generation token BEFORE anything
     // else — exactly what a stale cli-args module does. The token-carrying
@@ -614,14 +603,11 @@ describe('nullius CLI init/export', () => {
       "if (process.argv.includes('--launcher-protocol')) { console.log('nullius-launcher-protocol 2'); process.exit(0); }",
       'process.exit(0);',
     ].join('\n') + '\n', 'utf-8');
-    const script = fs.readFileSync(launcherPath, 'utf-8');
-    const cliMatch = script.match(/'(\/[^']*dist\/cli\.js)'/u);
-    expect(cliMatch).not.toBeNull();
-    fs.writeFileSync(launcherPath, script.replaceAll(cliMatch![1]!, oldParserCli), 'utf-8');
+    replaceBakedCli(launcherPath, oldParserCli);
     fs.chmodSync(launcherPath, 0o755);
 
     const prevPath = process.env.PATH;
-    process.env.PATH = '/usr/bin:/bin';
+    process.env.PATH = EMPTY_COMMAND_PATH;
     try {
       const health = readProjectLocalNulliusLauncherHealth(projectRoot);
       expect(health.healthy).toBe(false);
@@ -636,27 +622,25 @@ describe('nullius CLI init/export', () => {
     const parentDir = makeTempDir('nullius-cli-empty-path-');
     const projectRoot = path.join(parentDir, 'project-root');
     expect(await runCli([`--project-root=${projectRoot}`, 'init', '--runtime-only'], makeIo(parentDir).io)).toBe(0);
-    const launcherPath = path.join(projectRoot, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(projectRoot, '.nullius', 'bin', PROJECT_LAUNCHER);
 
     // Break the baked target so health must consult PATH; put a
     // protocol-answering nullius reachable only through the EMPTY leading
     // PATH component (cwd). The launcher's runtime guard accepts only an
     // ABSOLUTE regular file from command -v, so health must not advertise
     // this candidate either — health mirrors the runtime authority.
-    const script = fs.readFileSync(launcherPath, 'utf-8');
-    fs.writeFileSync(launcherPath, script.replaceAll('/dist/cli.js', '/dist/cli.js.gone'), 'utf-8');
+    replaceBakedCli(launcherPath);
     fs.chmodSync(launcherPath, 0o755);
     const cwdDir = path.join(parentDir, 'cwdbin');
     fs.mkdirSync(cwdDir, { recursive: true });
-    fs.writeFileSync(path.join(cwdDir, 'nullius'), [
+    writePathCandidate(cwdDir, [
       '#!/bin/sh',
       'if [ "${2:-}" = "--launcher-protocol" ] || [ "${1:-}" = "--launcher-protocol" ]; then',
       "  printf '%s\\n' 'nullius-launcher-protocol 2'",
       '  exit 0',
       'fi',
       'exit 0',
-    ].join('\n') + '\n', 'utf-8');
-    fs.chmodSync(path.join(cwdDir, 'nullius'), 0o755);
+    ].join('\n') + '\n', "if (process.argv.includes('--launcher-protocol')) console.log('nullius-launcher-protocol 2');");
 
     const prevPath = process.env.PATH;
     const prevCwd = process.cwd();
@@ -670,7 +654,7 @@ describe('nullius CLI init/export', () => {
       // resolver skips the empty (cwd) component too, so dispatch refuses.
       let failed: { status: number | null } | null = null;
       try {
-        execFileSync(launcherPath, ['status', '--json'], {
+        execProjectLauncher(launcherPath, ['status', '--json'], {
           cwd: cwdDir,
           encoding: 'utf-8',
           timeout: 20000,
@@ -691,28 +675,26 @@ describe('nullius CLI init/export', () => {
     const parentDir = makeTempDir('nullius-cli-path-literal-');
     const projectRoot = path.join(parentDir, 'project-root');
     expect(await runCli([`--project-root=${projectRoot}`, 'init', '--runtime-only'], makeIo(parentDir).io)).toBe(0);
-    const launcherPath = path.join(projectRoot, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(projectRoot, '.nullius', 'bin', PROJECT_LAUNCHER);
     // Break the baked target so both sides must consult PATH.
-    const script = fs.readFileSync(launcherPath, 'utf-8');
-    fs.writeFileSync(launcherPath, script.replaceAll('/dist/cli.js', '/dist/cli.js.gone'), 'utf-8');
+    replaceBakedCli(launcherPath);
     fs.chmodSync(launcherPath, 0o755);
 
     // A protocol-answering candidate in .../real/bin.
     const realBin = path.join(parentDir, 'real', 'bin');
     fs.mkdirSync(realBin, { recursive: true });
-    fs.writeFileSync(path.join(realBin, 'nullius'), [
+    writePathCandidate(realBin, [
       '#!/bin/sh',
       'if [ "${2:-}" = "--launcher-protocol" ] || [ "${1:-}" = "--launcher-protocol" ]; then',
       "  printf '%s\\n' 'nullius-launcher-protocol 2'",
       '  exit 0',
       'fi',
       'exit 0',
-    ].join('\n') + '\n', 'utf-8');
-    fs.chmodSync(path.join(realBin, 'nullius'), 0o755);
+    ].join('\n') + '\n', "if (process.argv.includes('--launcher-protocol')) console.log('nullius-launcher-protocol 2');");
 
     const runLauncher = (pathEnv: string): number => {
       try {
-        execFileSync(launcherPath, ['status', '--json'], {
+        execProjectLauncher(launcherPath, ['status', '--json'], {
           cwd: projectRoot,
           encoding: 'utf-8',
           timeout: 20000,
@@ -741,11 +723,12 @@ describe('nullius CLI init/export', () => {
     expect(runLauncher(globPath)).toBe(127);
     expect(healthUnder(globPath)).toBe(false);
 
-    // Dot-dot through a MISSING directory: lexical normalization would reach
-    // real/bin, OS resolution fails. Both sides must refuse.
+    // Native Windows normalizes dot-dot before looking up its components;
+    // POSIX requires the traversed directory to exist. Health and dispatch
+    // must agree with the host's actual path lookup in both cases.
     const dotdotPath = `${parentDir}/missing/../real/bin${path.delimiter}/usr/bin:/bin`;
-    expect(runLauncher(dotdotPath)).toBe(127);
-    expect(healthUnder(dotdotPath)).toBe(false);
+    expect(runLauncher(dotdotPath)).toBe(process.platform === 'win32' ? 0 : 127);
+    expect(healthUnder(dotdotPath)).toBe(process.platform === 'win32');
 
     // Control: dot-dot through an EXISTING directory resolves for both.
     const viaExisting = `${parentDir}/real/../real/bin${path.delimiter}/usr/bin:/bin`;
@@ -758,11 +741,11 @@ describe('nullius CLI init/export', () => {
     const projectRoot = path.join(parentDir, 'project-root');
     expect(await runCli([`--project-root=${projectRoot}`, 'init'], makeIo(parentDir).io)).toBe(0);
     const binDir = path.join(projectRoot, '.nullius', 'bin');
-    const launcherPath = path.join(binDir, 'nullius');
+    const launcherPath = path.join(binDir, PROJECT_LAUNCHER);
     // Put the launcher's own dir first on PATH: the self-resolution guard must skip
     // itself and fall through to the baked CLI instead of recursing forever. The
     // 20s timeout fails the test (rather than hanging) if recursion regresses.
-    const statusJson = execFileSync(launcherPath, ['status', '--json'], {
+    const statusJson = execProjectLauncher(launcherPath, ['status', '--json'], {
       cwd: projectRoot,
       encoding: 'utf-8',
       timeout: 20000,
@@ -775,14 +758,17 @@ describe('nullius CLI init/export', () => {
     const parentDir = makeTempDir('nullius-cli-symlink-path-');
     const projectRoot = path.join(parentDir, 'project-root');
     expect(await runCli([`--project-root=${projectRoot}`, 'init'], makeIo(parentDir).io)).toBe(0);
-    const launcherPath = path.join(projectRoot, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(projectRoot, '.nullius', 'bin', PROJECT_LAUNCHER);
     // A symlink named `nullius` on PATH pointing back to the launcher must be
     // recognized as the launcher itself (real file identity via -ef), not exec'd as
     // an external CLI — otherwise it self-hops and appends a wrong --project-root.
     const symDir = path.join(parentDir, 'symbin');
     fs.mkdirSync(symDir, { recursive: true });
-    fs.symlinkSync(launcherPath, path.join(symDir, 'nullius'));
-    const statusJson = execFileSync(launcherPath, ['status', '--json'], {
+    if (process.platform === 'win32') {
+      fs.rmdirSync(symDir);
+      fs.symlinkSync(path.dirname(launcherPath), symDir, 'junction');
+    } else fs.symlinkSync(launcherPath, path.join(symDir, 'nullius'));
+    const statusJson = execProjectLauncher(launcherPath, ['status', '--json'], {
       cwd: projectRoot,
       encoding: 'utf-8',
       timeout: 20000,
@@ -830,7 +816,7 @@ describe('nullius CLI init/export', () => {
     expect(output).toContain(`[ok] wrote: ${outPath}`);
     expect(output).not.toContain('Export summary generated');
     expect(output).not.toContain('no files copied');
-    const archiveListing = execFileSync('unzip', ['-Z', '-1', outPath], { encoding: 'utf-8' }).trim().split('\n');
+    const archiveListing = execFileSync('unzip', ['-Z', '-1', outPath], { encoding: 'utf-8' }).trim().split(/\r?\n/u);
     expect(archiveListing).toContain('artifacts/runs/M1/result.txt');
     expect(archiveListing).toContain('artifacts/runs/M1/research_team/summary.md');
     expect(archiveListing).toContain('knowledge_base/literature/paper.md');
@@ -863,6 +849,7 @@ describe('nullius CLI init --refresh', () => {
     const raw = Buffer.from('# Owner instructions\r\nKeep custom scope.\r\n');
     fs.writeFileSync(agentsPath, raw);
     fs.chmodSync(agentsPath, 0o640);
+    const originalMode = fs.statSync(agentsPath).mode;
     const planPath = path.join(projectRoot, 'research_plan.md');
     const userPlan = '# research_plan.md\n\nUSER RESEARCH CONTENT\n'.repeat(20);
     fs.writeFileSync(planPath, userPlan);
@@ -870,7 +857,7 @@ describe('nullius CLI init --refresh', () => {
     expect(await runCli([`--project-root=${projectRoot}`, 'init', '--refresh'], io)).toBe(0);
     expect(stdout.join('')).toContain('preserved (user-owned, untouched): AGENTS.md');
     expect(fs.readFileSync(agentsPath)).toEqual(raw);
-    expect(fs.statSync(agentsPath).mode & 0o7777).toBe(0o640);
+    expect(fs.statSync(agentsPath).mode).toBe(originalMode);
     expect(fs.readFileSync(planPath, 'utf-8')).toBe(userPlan);
     expect(fs.existsSync(path.join(projectRoot, '.nullius', 'backups'))).toBe(false);
   });
@@ -934,29 +921,14 @@ describe('nullius CLI init --refresh', () => {
   it('threads --refresh and --dry-run to the scaffold authority and parses the enriched result', () => {
     const parentDir = makeTempDir('nullius-scaffold-refresh-spawn-');
     const projectRoot = path.join(parentDir, 'project-root');
-    const argvLog = path.join(parentDir, 'argv.log');
-    const fakePython = path.join(parentDir, 'fake-python.sh');
-    fs.writeFileSync(
-      fakePython,
-      [
-        '#!/bin/sh',
-        `printf '%s\\n' "$@" > ${JSON.stringify(argvLog)}`,
-        'printf \'{"created":[],"skipped":[],"refreshed":[],"backed_up":[],"unchanged":[],"preserved":["AGENTS.md","research_plan.md"],"missing":[],"backup_dir":null,"dry_run":true}\\n\'',
-      ].join('\n') + '\n',
-      'utf-8',
-    );
-    fs.chmodSync(fakePython, 0o755);
-    const previous = process.env.NULLIUS_PYTHON;
-    process.env.NULLIUS_PYTHON = fakePython;
-    let result: ReturnType<typeof ensureProjectScaffold>;
-    try {
-      result = ensureProjectScaffold(projectRoot, { refresh: true, dryRun: true });
-    } finally {
-      if (previous === undefined) delete process.env.NULLIUS_PYTHON;
-      else process.env.NULLIUS_PYTHON = previous;
-    }
-
-    const argv = fs.readFileSync(argvLog, 'utf-8').trim().split('\n');
+    let argv: readonly string[] = [];
+    vi.mocked(spawnSync).mockImplementationOnce((_command, args) => {
+      argv = args as string[];
+      return {pid:1, status:0, signal:null, output:[null, '', ''], stderr:'', stdout:JSON.stringify({
+        created:[], skipped:[], refreshed:[], backed_up:[], unchanged:[], preserved:['AGENTS.md','research_plan.md'], missing:[], backup_dir:null, dry_run:true,
+      })} as ReturnType<typeof spawnSync>;
+    });
+    const result = ensureProjectScaffold(projectRoot, {refresh:true, dryRun:true});
     expect(argv).toContain('--refresh');
     expect(argv).toContain('--dry-run');
     expect(result.refreshed).toEqual([]);

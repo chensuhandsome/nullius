@@ -11,6 +11,7 @@ import { refreshNotebookCurrentState } from '../src/notebook-current-state.js';
 import { stampRunDirectory } from '../src/run-stamp.js';
 
 let root: string;
+let indexMode: number;
 let restore: (() => void) | undefined;
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'carrier-owner-'));
@@ -28,6 +29,7 @@ beforeEach(() => {
   fs.writeFileSync(path.join(root, 'artifacts/runs/r1/result.txt'), 'original output');
   expect(stampRunDirectory(root, 'artifacts/runs/r1', { actor: 'fixture' }).kind).toBe('stamped');
   fs.chmodSync(path.join(root, 'project_index.md'), 0o600);
+  indexMode = fs.statSync(path.join(root, 'project_index.md')).mode & 0o7777;
 });
 afterEach(() => { restore?.(); restore = undefined; fs.rmSync(root, { recursive: true, force: true }); });
 
@@ -52,7 +54,7 @@ it('retains a human edit and carrier EOL/mode through fresh registry recomputati
   const text = fs.readFileSync(path.join(root, 'project_index.md'), 'utf8');
   expect(text).toContain('Human edited prose.\r\n');
   expect(text.replaceAll('\r\n', '')).not.toContain('\n');
-  expect(fs.statSync(path.join(root, 'project_index.md')).mode & 0o7777).toBe(0o600);
+  expect(fs.statSync(path.join(root, 'project_index.md')).mode & 0o7777).toBe(indexMode);
   expect(parseResultRegistry(root).current.map(row => row.result_id)).toEqual(['value']);
   expect(edits).toBe(2);
 });
@@ -68,6 +70,7 @@ it('revalidates a changed artifact before publishing its registry hash', () => {
 it('preserves mixed-EOL human bytes inside the registry through a concurrent edit and row replacement', () => {
   const file = path.join(root, 'project_index.md');
   fs.chmodSync(file, 0o640);
+  const mode = fs.statSync(file).mode & 0o7777;
   const before = fs.readFileSync(file, 'utf8');
   const start = '<!-- RESULT_REGISTRY_START -->';
   const end = '<!-- RESULT_REGISTRY_END -->';
@@ -85,7 +88,7 @@ it('preserves mixed-EOL human bytes inside the registry through a concurrent edi
   expect(after.includes(Buffer.from(human))).toBe(true);
   expect(after.toString().slice(0, after.toString().indexOf(start))).toBe(before.slice(0, before.indexOf(start)));
   expect(after.toString().slice(after.toString().indexOf(end))).toBe(before.slice(before.indexOf(end)));
-  expect(fs.statSync(file).mode & 0o7777).toBe(0o640);
+  expect(fs.statSync(file).mode & 0o7777).toBe(mode);
   expect(parseResultRegistry(root).current.map(row => row.result_id)).toEqual(['value']);
   expect(fs.existsSync(`${file}.lock`)).toBe(false);
 });
@@ -135,14 +138,15 @@ it('refuses non-round-tripping carrier bytes before registry or derived writes',
   expect(() => setCurrentResult(root, selection)).toThrow('not valid UTF-8');
   expect(refreshRunIndexBlock(root).reason).toContain('not valid UTF-8');
   expect(fs.readFileSync(index)).toEqual(before);
-  expect(fs.statSync(index).mode & 0o7777).toBe(0o600);
+  expect(fs.statSync(index).mode & 0o7777).toBe(indexMode);
   const notebook = path.join(root, 'research_notebook.md');
   const notebookBytes = Buffer.from([0xff, 0x0d, 0x0a]);
   fs.writeFileSync(notebook, notebookBytes);
   fs.chmodSync(notebook, 0o640);
+  const notebookMode = fs.statSync(notebook).mode & 0o7777;
   expect(refreshNotebookCurrentState(root, { insertIfMissing: true }).reason).toContain('not valid UTF-8');
   expect(fs.readFileSync(notebook)).toEqual(notebookBytes);
-  expect(fs.statSync(notebook).mode & 0o7777).toBe(0o640);
+  expect(fs.statSync(notebook).mode & 0o7777).toBe(notebookMode);
 });
 
 it.each(['target', 'superseded', 'unrelated'])('refuses a duplicate %s ID without rewriting any ambiguous row', (kind) => {
@@ -159,7 +163,7 @@ it.each(['target', 'superseded', 'unrelated'])('refuses a duplicate %s ID withou
     : kind === 'superseded' ? { ...selection, supersedes: 'prior' } : selection;
   expect(() => setCurrentResult(root, input)).toThrow(/duplicate.*prior/i);
   expect(fs.readFileSync(file)).toEqual(before);
-  expect(fs.statSync(file).mode & 0o7777).toBe(0o600);
+  expect(fs.statSync(file).mode & 0o7777).toBe(indexMode);
   expect(writes).toBe(0);
   expect(fs.existsSync(`${file}.lock`)).toBe(false);
 });

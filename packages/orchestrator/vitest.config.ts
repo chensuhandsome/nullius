@@ -9,6 +9,9 @@ export default defineConfig({
     // flips tests red under ambient machine load with no assertion ever
     // failing. 20s keeps hangs visible while removing the load-induced flaps.
     testTimeout: 20_000,
+    // Native tests create Node/Python/Bash trees. Bound file concurrency so
+    // process startup and worker RPCs remain responsive on Windows hosts.
+    maxWorkers: process.platform === 'win32' ? 4 : undefined,
     // One temporary root per run, removed when the run passes.
     globalSetup: ['../../scripts/lib/vitest-test-temp-root.mjs'],
   },

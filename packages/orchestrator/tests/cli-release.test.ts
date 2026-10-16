@@ -209,9 +209,11 @@ describe('nullius release', () => {
 
   it('refuses a target spelled inside the project even when a symlink there leads outside', () => {
     setUpProject();
-    fs.symlinkSync(outside, path.join(projectRoot, 'to-outside'), 'dir');
-    git(['add', '-A']);
-    git(['commit', '-q', '-m', 'link']);
+    fs.symlinkSync(outside, path.join(projectRoot, 'to-outside'), process.platform === 'win32' ? 'junction' : 'dir');
+    // Git for Windows does not record a directory junction as a symlink.
+    // Its real target still proves the native containment counterexample.
+    if (process.platform === 'win32') expect(fs.realpathSync(path.join(projectRoot, 'to-outside'))).toBe(fs.realpathSync(outside));
+    else { git(['add', '-A']); git(['commit', '-q', '-m', 'link']); }
     expect(() => runReleaseCommand(projectRoot, {
       targetDir: path.join(projectRoot, 'to-outside', 'pub'), commit: null, tag: null, actor: null, dryRun: false,
     }, ioCollector().io)).toThrow(/OUTSIDE the project root/);
@@ -223,13 +225,13 @@ describe('nullius release', () => {
     const insideEmpty = path.join(projectRoot, 'sneak');
     fs.mkdirSync(insideEmpty);
     const link = path.join(outside, 'link');
-    fs.symlinkSync(insideEmpty, link);
+    fs.symlinkSync(insideEmpty, link, process.platform === 'win32' ? 'junction' : 'dir');
     expect(() => runReleaseCommand(projectRoot, {
       targetDir: link, commit: null, tag: null, actor: null, dryRun: false,
     }, ioCollector().io)).toThrow(/OUTSIDE the project root/);
     // Symlinked ancestry: the target's PARENT resolves into the project.
     const linkedParent = path.join(outside, 'linked-parent');
-    fs.symlinkSync(projectRoot, linkedParent);
+    fs.symlinkSync(projectRoot, linkedParent, process.platform === 'win32' ? 'junction' : 'dir');
     expect(() => runReleaseCommand(projectRoot, {
       targetDir: path.join(linkedParent, 'pub'), commit: null, tag: null, actor: null, dryRun: false,
     }, ioCollector().io)).toThrow(/OUTSIDE the project root/);

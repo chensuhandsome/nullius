@@ -2,7 +2,21 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { _setAtomicWriteAuditHook } from '@nullius/shared';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const directoryConfirmation = vi.hoisted(() => ({ before: undefined as (() => void) | undefined }));
+vi.mock('@nullius/shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@nullius/shared')>();
+  return {
+    ...actual,
+    fsyncParentDirectoryDurable: (filePath: string): void => {
+      // Native Node has no directory-fsync syscall to intercept. Exercise the
+      // same caller's before/after revalidation boundary at its actual call.
+      directoryConfirmation.before?.();
+      actual.fsyncParentDirectoryDurable(filePath);
+    },
+  };
+});
 import {
   decisionsLedgerPath,
   landDecisionIds,
@@ -31,6 +45,7 @@ function provisionalLine(): string {
 }
 
 afterEach(() => {
+  directoryConfirmation.before = undefined;
   for (const root of roots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -88,6 +103,7 @@ describe('decision landing fault boundaries', () => {
   it('reports a post-rename durability failure as commit-uncertain and supports inspection plus retry', () => {
     const { root, ledgerPath } = makeProject();
     fs.writeFileSync(ledgerPath, provisionalLine(), { encoding: 'utf-8', mode: 0o640 });
+    const mode = fs.statSync(ledgerPath).mode & 0o777;
     let injected = false;
     const restore = _setAtomicWriteAuditHook((event) => {
       if (!injected && event.kind === 'rename' && event.to === ledgerPath) {
@@ -109,7 +125,7 @@ describe('decision landing fault boundaries', () => {
     );
     expect(failure?.message).toContain(`--project-root '${root}'`);
     expect(injected).toBe(true);
-    expect(fs.statSync(ledgerPath).mode & 0o777).toBe(0o640);
+    expect(fs.statSync(ledgerPath).mode & 0o777).toBe(mode);
     expect(readDecisionsLedger(root)).toMatchObject({
       invalid_lines: 0,
       unlanded_ids: [],
@@ -127,7 +143,7 @@ describe('decision landing fault boundaries', () => {
     } finally {
       restoreRetry();
     }
-    expect(retryEvents).toEqual(['open', 'fsync', 'close']);
+    expect(retryEvents).toEqual(process.platform === 'win32' ? [] : ['open', 'fsync', 'close']);
     expect(fs.existsSync(`${ledgerPath}.lock`)).toBe(false);
   });
 
@@ -151,10 +167,16 @@ describe('decision landing fault boundaries', () => {
     }) + '\n';
     fs.writeFileSync(ledgerPath, canonical, 'utf-8');
     let injected = false;
-    const restore = _setAtomicWriteAuditHook((event) => {
-      if (!injected && event.kind === 'fsync') {
+    const foreignEdit = (): void => {
+      if (!injected) {
         injected = true;
         fs.writeFileSync(ledgerPath, foreign, 'utf-8');
+      }
+    };
+    if (process.platform === 'win32') directoryConfirmation.before = foreignEdit;
+    const restore = _setAtomicWriteAuditHook((event) => {
+      if (!injected && event.kind === 'fsync') {
+        foreignEdit();
       }
     });
     try {

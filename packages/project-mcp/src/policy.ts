@@ -64,7 +64,7 @@ export function coreArguments(root: string, name: string, raw: Record<string, un
   const result = spec.zodSchema.safeParse(args);
   if (!result.success) throw invalidParams(`Invalid arguments for ${name}`, { issues: result.error.issues });
   // Before every run operation, guard runtime-owned directories against substituted symlinks.
-  for (const value of ['.nullius', 'artifacts', 'artifacts/runs', path.relative(root, canonicalRun)]) {
+  for (const value of ['.nullius', 'artifacts', 'artifacts/runs', path.relative(root, canonicalRun).split(path.sep).join('/')]) {
     if (value) boundPath(root, value);
   }
   return result.data as Record<string, unknown>;

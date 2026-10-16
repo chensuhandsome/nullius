@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeBytesAtomicDurable } from '@nullius/shared';
+import { ensureWindowsProjectLocalNulliusLauncher, readWindowsProjectLocalNulliusLauncherHealth } from './project-local-nullius-windows.js';
 
 type ProjectLocalNulliusLauncher = {
   argv: string[];
@@ -245,6 +246,7 @@ function extractBakedExecArgv(script: string): string[] {
 }
 
 export function readProjectLocalNulliusLauncherHealth(projectRoot: string): ProjectLocalNulliusLauncherHealth {
+  if (process.platform === 'win32') return readWindowsProjectLocalNulliusLauncherHealth(projectRoot);
   const relativePath = projectLocalNulliusRelativePath().split(path.sep).join('/');
   const launcherPath = path.join(projectRoot, relativePath);
   const base = {
@@ -431,8 +433,11 @@ export function ensureProjectLocalNulliusLauncher(projectRoot: string): {
   // enforced via fchmod before fsync, eliminating the chmod-after-write
   // window where a peer could exec a partial file with default mode.
   writeBytesAtomicDurable(launcherPath, script, 0o755);
+  const commandPath = process.platform === 'win32'
+    ? ensureWindowsProjectLocalNulliusLauncher(projectRoot, launcher.argv)
+    : launcherPath;
   return {
-    launcher_path: launcherPath,
+    launcher_path: commandPath,
     launcher_mode: launcher.mode,
   };
 }

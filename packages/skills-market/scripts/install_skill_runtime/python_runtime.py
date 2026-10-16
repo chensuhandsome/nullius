@@ -22,6 +22,10 @@ def resolve_base_python() -> pathlib.Path:
         return current
 
     candidates: list[pathlib.Path] = []
+    if os.name == "nt":
+        # Windows venvs put the redirector in Scripts, while the base
+        # installation keeps its interpreter at the installation root.
+        candidates.append(base_prefix / "python.exe")
     try:
         candidates.append(base_prefix / current.relative_to(prefix))
     except ValueError:

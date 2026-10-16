@@ -1,3 +1,4 @@
+import { createReparseFixture, nonRegularFileMetadataFixture } from './platform-fixtures.js';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -30,7 +31,7 @@ function aliasedProject(): { parent: string; root: string; alias: string } {
   const root = path.join(parent, 'real');
   const alias = path.join(parent, 'alias');
   fs.mkdirSync(root);
-  fs.symlinkSync(root, alias, 'dir');
+  fs.symlinkSync(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
   return { parent, root, alias };
 }
 
@@ -44,7 +45,7 @@ async function call(name: string, args: Record<string, unknown>): Promise<{ isEr
   return { isError: result.isError === true, payload: JSON.parse(result.content[0]!.text) as Record<string, any> };
 }
 
-const WRITE_VALUE = "from pathlib import Path\nPath('outputs').mkdir(exist_ok=True)\nPath('outputs/value.txt').write_text('5\\n')\n";
+const WRITE_VALUE = "from pathlib import Path\nPath('outputs').mkdir(exist_ok=True)\nPath('outputs/value.txt').write_bytes(b'5\\n')\n";
 
 function handoff(files: Array<{ path: string; content: string }>, script: string, outputs: string[]): Record<string, unknown> {
   return {
@@ -88,7 +89,7 @@ describe('computation bridge tools admit project_root like every other front doo
     writeJson(path.join(checkout, 'packages', 'shared', 'package.json'), { name: '@nullius/shared' });
     const project = path.join(checkout, 'proj');
     fs.mkdirSync(project);
-    fs.symlinkSync(checkout, path.join(parent, 'alias'), 'dir');
+    fs.symlinkSync(checkout, path.join(parent, 'alias'), process.platform === 'win32' ? 'junction' : 'dir');
     return { project, projectRoot: path.join(parent, 'alias', 'proj') };
   }
 
@@ -169,7 +170,7 @@ describe('the computation bridge tools work only in a run directory inside the a
     const outside = path.join(parent, 'outside');
     fs.mkdirSync(outside);
     fs.mkdirSync(path.join(root, 'artifacts'));
-    fs.symlinkSync(outside, path.join(root, 'artifacts', 'runs'), 'dir');
+    fs.symlinkSync(outside, path.join(root, 'artifacts', 'runs'), process.platform === 'win32' ? 'junction' : 'dir');
     const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
     expect(result.isError).toBe(true);
     expect(result.payload.error.message).toMatch(/run_dir must not traverse a symbolic link/);
@@ -184,7 +185,7 @@ describe('the computation bridge tools work only in a run directory inside the a
       fs.mkdirSync(outside);
       const runDir = path.join(root, 'artifacts', 'runs', 'r1');
       fs.mkdirSync(runDir, { recursive: true });
-      fs.symlinkSync(outside, path.join(runDir, entry), 'dir');
+      fs.symlinkSync(outside, path.join(runDir, entry), process.platform === 'win32' ? 'junction' : 'dir');
       const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
       expect(result.isError).toBe(true);
       expect(result.payload.error.message).toBe(`run_dir/${entry} must not be a symbolic link`);
@@ -204,7 +205,7 @@ describe('the computation bridge tools work only in a run directory inside the a
     fs.mkdirSync(outsideDir);
     fs.writeFileSync(outsideFile, '{}\n');
     fs.mkdirSync(path.dirname(path.join(runDir, rel)), { recursive: true });
-    fs.symlinkSync(kind === 'dir' ? outsideDir : outsideFile, path.join(runDir, rel), kind === 'dir' ? 'dir' : 'file');
+    createReparseFixture(kind === 'dir' ? outsideDir : outsideFile, path.join(runDir, rel), kind === 'dir' ? 'dir' : 'file');
     for (const tool of TOOLS) {
       const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
       expect(result.payload.error, tool).toMatchObject({ code: 'UNSAFE_FS', message: `run_dir/${rel} must not be a symbolic link` });
@@ -217,7 +218,7 @@ describe('the computation bridge tools work only in a run directory inside the a
     const { parent, root, alias, handoffPath } = projectWithHandoff();
     const outputs = path.join(root, 'artifacts', 'runs', 'r1', 'computation', 'outputs');
     fs.mkdirSync(outputs, { recursive: true });
-    fs.symlinkSync(path.join(parent, 'elsewhere'), path.join(outputs, 'latest'), 'dir');
+    fs.symlinkSync(path.join(parent, 'elsewhere'), path.join(outputs, 'latest'), process.platform === 'win32' ? 'junction' : 'dir');
     const staged = await call('orch_run_stage_content', argsFor('orch_run_stage_content', alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
     expect(staged.isError, JSON.stringify(staged.payload)).toBe(false);
   });
@@ -232,6 +233,7 @@ describe('the computation bridge tools work only in a run directory inside the a
   ])('refuses a run directory where %s, before any write', async (_label, entry, message) => {
     const { root, alias, handoffPath } = projectWithHandoff();
     const runDir = path.join(root, 'artifacts', 'runs', 'r1');
+    let restoreMetadata: (() => void) | undefined;
     if (entry === '') {
       fs.mkdirSync(path.dirname(runDir), { recursive: true });
       fs.writeFileSync(runDir, 'x\n');
@@ -240,15 +242,19 @@ describe('the computation bridge tools work only in a run directory inside the a
     } else if (entry.endsWith(':fifo')) {
       const rel = entry.slice(0, -':fifo'.length);
       fs.mkdirSync(path.dirname(path.join(runDir, rel)), { recursive: true });
-      execFileSync('mkfifo', [path.join(runDir, rel)]);
+      if (process.platform === 'win32') restoreMetadata = nonRegularFileMetadataFixture(path.join(runDir, rel));
+      else execFileSync('mkfifo', [path.join(runDir, rel)]);
     } else {
       fs.mkdirSync(runDir, { recursive: true });
       fs.writeFileSync(path.join(runDir, entry), 'x\n');
     }
-    for (const tool of TOOLS) {
-      const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
-      expect(result.payload.error, tool).toMatchObject({ code: 'UNSAFE_FS', message });
-    }
+    try {
+      for (const tool of TOOLS) {
+        const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
+        expect({ ...result.payload.error, message: result.payload.error?.message?.replaceAll('\\', '/') },
+          `${tool}: ${JSON.stringify(result.payload.error)}`).toMatchObject({ code: 'UNSAFE_FS', message });
+      }
+    } finally { restoreMetadata?.(); }
   });
 
   it('refuses a run id that a historical run owns as a parameter error, for every tool', async () => {
@@ -273,7 +279,7 @@ describe('the computation bridge tools work only in a run directory inside the a
     fs.writeFileSync(outsideFile, '{}\n');
     const runDir = path.join(root, 'artifacts', 'runs', 'r1');
     fs.mkdirSync(path.dirname(path.join(runDir, entry)), { recursive: true });
-    fs.symlinkSync(outsideFile, path.join(runDir, entry));
+    createReparseFixture(outsideFile, path.join(runDir, entry));
     for (const tool of TOOLS) {
       const result = await call(tool, argsFor(tool, alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
       expect(result.isError, tool).toBe(true);
@@ -285,7 +291,7 @@ describe('the computation bridge tools work only in a run directory inside the a
   it('refuses a run directory reached through a symbolic link that points back inside the project', async () => {
     const { root, alias, handoffPath } = projectWithHandoff();
     fs.mkdirSync(path.join(root, 'artifacts', 'runs', 'r1link-target'), { recursive: true });
-    fs.symlinkSync(path.join(root, 'artifacts', 'runs', 'r1link-target'), path.join(root, 'artifacts', 'runs', 'r1link'), 'dir');
+    fs.symlinkSync(path.join(root, 'artifacts', 'runs', 'r1link-target'), path.join(root, 'artifacts', 'runs', 'r1link'), process.platform === 'win32' ? 'junction' : 'dir');
     const result = await call('orch_run_stage_content', {
       ...argsFor('orch_run_stage_content', alias, path.join(alias, 'artifacts', 'runs', 'r1link'), handoffPath), run_id: 'r1link',
     });
@@ -302,21 +308,39 @@ describe('the computation bridge tools work only in a run directory inside the a
 
   it.skipIf(process.getuid?.() === 0)('reports a run path or historical run that cannot be inspected as an environment failure', async () => {
     const { root, alias, handoffPath } = projectWithHandoff();
+    const denyRead = (directory: string): (() => void) => {
+      if (process.platform !== 'win32') {
+        fs.chmodSync(directory, 0o000);
+        return () => fs.chmodSync(directory, 0o755);
+      }
+      const sid = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        '[Security.Principal.WindowsIdentity]::GetCurrent().User.Value'], { encoding: 'utf-8' }).trim();
+      const restore = (): void => { execFileSync('icacls.exe', [directory, '/remove:d', `*${sid}`, '/Q']); };
+      try {
+        execFileSync('icacls.exe', [directory, '/deny', `*${sid}:(OI)(CI)(RD,RA)`, '/Q']);
+      } catch (error) { restore(); throw error; }
+      return restore;
+    };
     fs.mkdirSync(path.join(root, 'artifacts', 'runs'), { recursive: true });
-    fs.chmodSync(path.join(root, 'artifacts'), 0o000);
+    const restoreArtifacts = denyRead(path.join(root, 'artifacts'));
     try {
       const result = await call('orch_run_stage_content', argsFor('orch_run_stage_content', alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
-      expect(result.payload.error).toMatchObject({ code: 'UNSAFE_FS', message: expect.stringMatching(/^cannot inspect /), data: { errno: 'EACCES' } });
+      expect(result.payload.error).toMatchObject({ code: 'UNSAFE_FS', message: expect.stringMatching(/^cannot inspect /),
+        data: { errno: process.platform === 'win32' ? expect.stringMatching(/^(EACCES|EPERM)$/) : 'EACCES' } });
     } finally {
-      fs.chmodSync(path.join(root, 'artifacts'), 0o755);
+      restoreArtifacts();
     }
     fs.mkdirSync(path.join(root, 'team', 'runs'), { recursive: true });
-    fs.chmodSync(path.join(root, 'team', 'runs'), 0o000);
+    // Windows can look up a known absent name without listing its parent.
+    // Use an existing historical entry whose inherited attributes are denied
+    // to exercise the same actual inspection failure on this platform.
+    if (process.platform === 'win32') fs.mkdirSync(path.join(root, 'team', 'runs', 'r1'));
+    const restoreHistory = denyRead(path.join(root, 'team', 'runs'));
     try {
       const result = await call('orch_run_stage_content', argsFor('orch_run_stage_content', alias, path.join(alias, 'artifacts', 'runs', 'r1'), handoffPath));
       expect(result.payload.error).toMatchObject({ code: 'UNSAFE_FS', message: expect.stringMatching(/^HISTORICAL_RUN_UNAVAILABLE/) });
     } finally {
-      fs.chmodSync(path.join(root, 'team', 'runs'), 0o755);
+      restoreHistory();
     }
   });
 
@@ -466,7 +490,7 @@ describe('a method is written only into the run directory', () => {
     const outside = path.join(project.parent, 'outside');
     fs.mkdirSync(outside);
     fs.mkdirSync(path.join(runDir, 'computation'));
-    fs.symlinkSync(outside, path.join(runDir, 'computation', 'scripts'), 'dir');
+    fs.symlinkSync(outside, path.join(runDir, 'computation', 'scripts'), process.platform === 'win32' ? 'junction' : 'dir');
     const planned = await call('orch_run_plan_computation', { project_root: project.alias, run_id: 'r-link', run_dir: runDir, dry_run: true });
     expect(planned.payload.error.message).toBe('run_dir/computation/scripts must not be a symbolic link');
     expect(await planDirectly(project, 'r-link')).toBe('method_spec.files[0].path must not traverse a symbolic link');
@@ -480,7 +504,7 @@ describe('a method is written only into the run directory', () => {
     const outsideFile = path.join(project.parent, 'outside.py');
     fs.writeFileSync(outsideFile, 'original\n');
     fs.mkdirSync(path.join(runDir, 'computation', 'scripts'), { recursive: true });
-    fs.symlinkSync(outsideFile, path.join(runDir, 'computation', 'scripts', 'run.py'));
+    createReparseFixture(outsideFile, path.join(runDir, 'computation', 'scripts', 'run.py'));
     // The method's workspace files are checked when the manifest is materialized.
     const planned = await call('orch_run_plan_computation', { project_root: project.alias, run_id: 'r-leaf', run_dir: runDir, dry_run: true });
     expect(planned.payload.error.message).toBe('method_spec.files[0].path must not traverse a symbolic link');
@@ -493,7 +517,7 @@ describe('a method is written only into the run directory', () => {
     const outsideFile = path.join(project.parent, 'outside.json');
     fs.writeFileSync(outsideFile, '{}\n');
     fs.mkdirSync(path.join(runDir, 'computation'), { recursive: true });
-    fs.symlinkSync(outsideFile, path.join(runDir, 'computation', name));
+    createReparseFixture(outsideFile, path.join(runDir, 'computation', name));
     const planned = await call('orch_run_plan_computation', { project_root: project.alias, run_id: 'r-out', run_dir: runDir, dry_run: true });
     expect(planned.payload.error.message).toBe(`run_dir/computation/${name} must not be a symbolic link`);
     expect(await planDirectly(project, 'r-out')).toBe(`computation/${name} must not traverse a symbolic link`);
@@ -506,7 +530,7 @@ describe('a method is written only into the run directory', () => {
     const runDir = await stagedRun(project, 'r-dir', handoff([], 'scripts/run.py', ['outputs/value.txt']));
     const outside = path.join(project.parent, 'outside');
     fs.mkdirSync(outside);
-    fs.symlinkSync(outside, path.join(runDir, 'computation'), 'dir');
+    fs.symlinkSync(outside, path.join(runDir, 'computation'), process.platform === 'win32' ? 'junction' : 'dir');
     const planned = await call('orch_run_plan_computation', { project_root: project.alias, run_id: 'r-dir', run_dir: runDir, dry_run: true });
     expect(planned.payload.error.message).toBe('run_dir/computation must not be a symbolic link');
     // Planning checks the plan file's path, through computation/, before writing anything.

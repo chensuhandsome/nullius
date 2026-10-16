@@ -2,6 +2,8 @@
 
 English | [中文](./docs/README_zh.md)
 
+Native Windows setup and PowerShell reconnect instructions: [Windows guide](./docs/WINDOWS.md).
+
 > **Nullius in verba** — "take nobody's word for it."
 > The Royal Society's motto is both the source of this repo's name and its operating rule: no result stands on authority — a conclusion enters the durable record only after independent re-derivation, clean-room reproduction, and adversarial review.
 

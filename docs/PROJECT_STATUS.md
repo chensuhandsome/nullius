@@ -11,6 +11,8 @@ Native computation binds an enabled A3 approval to the current manifest, scripts
 
 ## QA snapshot
 
+The snapshot below is the upstream Ubuntu baseline. Native Windows adds a separate CI job and platform-specific acceptance cases; its installation and guarantee boundaries are documented in [Windows](./WINDOWS.md). It does not change scientific acceptance gates or default execution modes.
+
 - Closeout baseline: the 0.6.0 release candidate (`main` at `427f5f4e` plus the release branch)
 - `pnpm -r build` ✅
 - `pnpm -r test` ✅ (13 packages; orchestrator 1525 passed + 10 skipped, hep-mcp 664 + 4 skipped, shared 565, project-mcp 31)

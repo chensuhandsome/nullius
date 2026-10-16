@@ -43,7 +43,7 @@ describe('isForeignRunPath', () => {
     expect(isForeignRunPath('artifacts/runs/stray-file.txt', 'run-mine')).toBe(false);
     // Literal backslashes in a POSIX path are ordinary characters, not
     // separators: this is one root-level file, not a nested foreign path.
-    expect(isForeignRunPath(String.raw`artifacts/runs/weird\name`, 'run-mine')).toBe(false);
+    expect(isForeignRunPath(String.raw`artifacts/runs/weird\name`, 'run-mine')).toBe(process.platform === 'win32');
   });
 });
 

@@ -65,7 +65,9 @@ function rejected(result: Result, code = 'HARNESS_INVOCATION_REQUIRED') {
   expect(body(result).error.code).toBe(code);
 }
 async function settle(adapter: ProjectAdapter, id: string) {
-  const deadline = Date.now() + 10_000;
+  // Native delivery bootstraps a Job owner and a worker independently.
+  // Match the existing durable-delivery suite's allowance under CI load.
+  const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     const result = body(await adapter.call('project_delivery_read', { delivery_id: id }));
     if (result.state === 'committed') return result;
@@ -131,7 +133,7 @@ describe('project MCP enforces the live research-harness anchor', () => {
     expect(snapshot(root)).toEqual(before);
     rejected(await adapter.call('project_cli', { action: 'init', runtime_only: true, delivery_id: 'runtime-again' }));
     expect(snapshot(root)).toEqual(before);
-  }, 15_000);
+  }, 30_000);
 
   it('permits exact committed and unknown replay while stale, but not the first dispatch of not_started work', async () => {
     const { root, adapter } = await project();
@@ -164,7 +166,7 @@ describe('project MCP enforces the live research-harness anchor', () => {
     const ledger = fs.readFileSync(path.join(root, '.nullius/ledger.jsonl'));
     await expect(execute(root, request.name, request.args)).rejects.toMatchObject({ code: 'HARNESS_INVOCATION_REQUIRED' });
     await run(process.execPath, [supervisor, requestPath(root, request.delivery_id)], {
-      cwd: os.tmpdir(), env: { ...process.env, NULLIUS_HARNESS_VERIFY: 'on' }, timeout: 10_000,
+      cwd: os.tmpdir(), env: { ...process.env, NULLIUS_HARNESS_VERIFY: 'on' }, timeout: 20_000,
     });
     const delivered = readDelivery(root, request.delivery_id) as any;
     expect(delivered.state).toBe('committed');
@@ -172,16 +174,23 @@ describe('project MCP enforces the live research-harness anchor', () => {
     expect(fs.existsSync(path.join(root, '.nullius/project_mcp_execution.lock'))).toBe(false);
     expect(fs.readFileSync(path.join(root, '.nullius/state.json'))).toEqual(state);
     expect(fs.readFileSync(path.join(root, '.nullius/ledger.jsonl'))).toEqual(ledger);
-  }, 15_000);
+  }, 30_000);
 
   it.each(['HARNESS_INVOCATION', 'state.json', 'ledger.jsonl'])('rejects a symlinked %s before reading it, including direct execution', async filename => {
     const { root, adapter } = await project();
     writeHarnessInvocationMarker(root);
     const outside = bare();
     const target = path.join(outside, 'private-control');
-    fs.copyFileSync(path.join(root, '.nullius', filename), target);
+    if (process.platform === 'win32') {
+      fs.mkdirSync(target);
+      fs.copyFileSync(path.join(root, '.nullius', filename), path.join(target, filename));
+    } else {
+      fs.copyFileSync(path.join(root, '.nullius', filename), target);
+    }
     fs.unlinkSync(path.join(root, '.nullius', filename));
-    fs.symlinkSync(target, path.join(root, '.nullius', filename));
+    // A junction requires no Developer Mode/admin privilege and exercises
+    // the same reparse-point refusal before the protected file is read.
+    fs.symlinkSync(target, path.join(root, '.nullius', filename), process.platform === 'win32' ? 'junction' : 'file');
     const before = snapshot(root);
     const external = snapshot(outside);
     rejected(await adapter.call('project_file_read', { path: 'research_plan.md' }), 'UNSAFE_FS');

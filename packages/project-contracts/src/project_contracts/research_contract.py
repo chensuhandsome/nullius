@@ -5,6 +5,7 @@ import os
 import re
 import secrets
 import stat
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,18 @@ from .project_policy import (
 )
 from .project_surface import RESEARCH_CONTRACT, RESEARCH_NOTEBOOK
 from .scaffold_template_loader import load_scaffold_template
+
+if os.name == "nt":
+    # Source checkout and built wheels each carry this package at a fixed,
+    # inspectable sibling location; an ambient PYTHONPATH is not its authority.
+    _source_python = Path(__file__).resolve().parents[3] / "shared" / "python"
+    _installed_python = Path(__file__).resolve().parents[1]
+    _windows_python = (_source_python if (_source_python / "nullius_windows" / "filesystem.py").is_file()
+                       else _installed_python)
+    if not (_windows_python / "nullius_windows" / "filesystem.py").is_file():
+        raise ImportError("project-contracts is missing its bundled Windows filesystem implementation")
+    sys.path.insert(0, str(_windows_python))
+    from nullius_windows.filesystem import atomic_replace_text, open_read_no_reparse
 
 
 SYNC_START = "<!-- RESEARCH_NOTEBOOK_SYNC_START -->"
@@ -243,7 +256,7 @@ def sync_research_contract(
         if not create_missing:
             raise FileNotFoundError(f"research contract not found: {contract}")
         contract.parent.mkdir(parents=True, exist_ok=True)
-        contract.write_text(load_scaffold_template(RESEARCH_CONTRACT), encoding="utf-8")
+        contract.write_bytes(load_scaffold_template(RESEARCH_CONTRACT).encode("utf-8"))
 
     # newline="" keeps the file's own line endings, and strict decoding refuses
     # rather than replacing a byte it cannot read: both regions outside the
@@ -255,7 +268,8 @@ def sync_research_contract(
     # template, so overwriting it loses nothing", and a rename between the read
     # and the write applies that judgement to a file it was never about — a
     # curated contract, overwritten because a different file passed the check.
-    validated_fd = os.open(contract, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    validated_fd = (open_read_no_reparse(contract) if os.name == "nt"
+                    else os.open(contract, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)))
     try:
         with os.fdopen(os.dup(validated_fd), encoding="utf-8", errors="strict", newline="") as handle:
             contract_text = handle.read()
@@ -453,6 +467,9 @@ def _write_file_atomically(
     hold write permission on a directory inside the project, and could
     therefore overwrite the file directly without any of this.
     """
+    if os.name == "nt":
+        atomic_replace_text(target, text, newline=newline, validated_fd=validated_fd)
+        return
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     parent_fd = os.open(target.parent, flags)
     try:

@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as runDirectories from '../src/run-directories.js';
 import {
   checkRunIndexBlock,
   computeRunIndexProjection,
@@ -27,6 +28,7 @@ import { mintUlid } from '@nullius/shared';
  *  to every planning document. */
 
 afterEach(() => {
+  vi.restoreAllMocks();
   cleanupRegisteredDirs();
 });
 
@@ -73,6 +75,27 @@ function mkRun(projectRoot: string, runId: string): string {
   const runDir = path.join(projectRoot, 'artifacts', 'runs', runId);
   fs.mkdirSync(runDir, { recursive: true });
   return runDir;
+}
+
+/** Windows forbids several hostile names that POSIX can store. Feed those
+ * inventory strings through the same real renderer/writer on Windows, while
+ * retaining the original on-disk discovery control on POSIX. */
+function mkHostileRuns(projectRoot: string, names: string[]): void {
+  if (process.platform !== 'win32') {
+    for (const name of names) mkRun(projectRoot, name);
+    return;
+  }
+  const aliases = new Map(names.map((name, i) => [`20260809-m1-r${900 + i}-fixture-${i}`, name]));
+  for (const name of aliases.keys()) mkRun(projectRoot, name);
+  const original = runDirectories.readRunDirectoryInventory;
+  vi.spyOn(runDirectories, 'readRunDirectoryInventory').mockImplementation(root => {
+    const inventory = original(root);
+    if (path.resolve(root) !== path.resolve(projectRoot)) return inventory;
+    return { ...inventory, runs: inventory.runs.map(run => {
+      const name = aliases.get(run.run_id);
+      return name ? { ...run, run_id: name, relative_path: `${run.root}/${name}` } : run;
+    }) };
+  });
 }
 
 function stampRun(projectRoot: string, runId: string): void {
@@ -507,10 +530,8 @@ describe('projection and render', () => {
 
   it('hostile directory names cannot break the table, the link, or the block structure', () => {
     const projectRoot = makeProject();
-    mkRun(projectRoot, '20260809-m1-r001-a|b]c');
-    mkRun(projectRoot, '20260809-m1-r002-space (x)');
-    mkRun(projectRoot, '20260809-m1-r003-scan#2?q');
-    mkRun(projectRoot, '20260809-m1-r004-x\n## boom');
+    mkHostileRuns(projectRoot, ['20260809-m1-r001-a|b]c', '20260809-m1-r002-space (x)',
+      '20260809-m1-r003-scan#2?q', '20260809-m1-r004-x\n## boom']);
     const rendered = renderRunIndexBlock(computeRunIndexProjection(projectRoot));
     // Structural characters are escaped in cells and labels…
     expect(rendered).toContain('a\\|b\\]c');
@@ -751,7 +772,7 @@ describe('refresh, hooks, and staleness', () => {
     const runId = '20260809-m1-r001-ok';
     mkRun(projectRoot, runId);
     stampRun(projectRoot, runId);
-    mkRun(projectRoot, '20260809-m1-r002-x<!-- RESULT_REGISTRY_START -->');
+    mkHostileRuns(projectRoot, ['20260809-m1-r002-x<!-- RESULT_REGISTRY_START -->']);
     expect(refreshRunIndexBlock(projectRoot, { insertIfMissing: false }).action).toBe('rewritten');
     // The genuine registry still parses (exactly one marker pair)…
     const registry = parseResultRegistry(projectRoot);

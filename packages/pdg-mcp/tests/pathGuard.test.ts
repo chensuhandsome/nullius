@@ -20,7 +20,7 @@ describe('pathGuard (M0)', () => {
     fs.mkdirSync(outside, { recursive: true });
 
     const escape = path.join(parent, 'escape');
-    fs.symlinkSync(outside, escape, 'dir');
+    fs.symlinkSync(outside, escape, process.platform === 'win32' ? 'junction' : 'dir');
 
     expect(() => resolvePathWithinParent(parent, 'escape/file.txt', 'test')).toThrowError(McpError);
   });

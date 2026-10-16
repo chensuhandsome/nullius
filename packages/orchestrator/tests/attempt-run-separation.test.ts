@@ -1,7 +1,23 @@
+import { createReparseFixture } from './platform-fixtures.js';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const moveFault = vi.hoisted(() => ({ directories: new Set<string>(), calls: 0 }));
+vi.mock('@nullius/shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@nullius/shared')>();
+  return {
+    ...actual,
+    moveEntryDurable: (from: string, to: string): void => {
+      if ([...moveFault.directories].some(directory => from.startsWith(directory + path.sep))) {
+        moveFault.calls += 1;
+        throw Object.assign(new Error('injected native rename access denial'), { code: 'EACCES' });
+      }
+      actual.moveEntryDurable(from, to);
+    },
+  };
+});
 import { mintUlid } from '@nullius/shared';
 import { openRetryAttempt, removeEmptyDirTree, stampRunDirectory } from '../src/run-stamp.js';
 import { appendValidityEvent, buildValidityEvent, readValidityLedger } from '../src/validity-ledger.js';
@@ -26,6 +42,8 @@ import { stampComputationLaunch } from '../src/computation/launch-stamp.js';
  *  binds to the exact code of the attempt that produced it. */
 
 afterEach(() => {
+  moveFault.directories.clear();
+  moveFault.calls = 0;
   cleanupRegisteredDirs();
 });
 
@@ -33,6 +51,19 @@ function initRepo(dir: string): void {
   execFileSync('git', ['-C', dir, 'init', '-q']);
   execFileSync('git', ['-C', dir, 'config', 'user.email', 't@example.com']);
   execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
+}
+
+function denyDirectoryMoves(directory: string): () => void {
+  if (process.platform !== 'win32') {
+    const mode = fs.statSync(directory).mode & 0o7777;
+    fs.chmodSync(directory, 0o555);
+    return () => fs.chmodSync(directory, mode);
+  }
+  // Native chmod cannot isolate a directory's rename rights. Inject the
+  // actual move failure boundary while keeping the prior source/admission
+  // reads and every other quarantine/rollback operation real.
+  moveFault.directories.add(directory);
+  return () => { moveFault.directories.delete(directory); };
 }
 function commitAll(dir: string): void {
   execFileSync('git', ['-C', dir, 'add', '-A']);
@@ -897,7 +928,7 @@ describe('confirmation-round regressions (review r6)', () => {
     // A DANGLING SYMLINK is an entry that exists but resolves nowhere —
     // existsSync would call it absent; the witness must call it unreadable.
     fs.rmSync(artifactPath);
-    fs.symlinkSync('no-such-target.json', artifactPath);
+    createReparseFixture('no-such-target.json', artifactPath);
     const symlinked = openRetryAttempt(projectRoot, runDir, { actor: 'test' });
     expect(symlinked.kind).toBe('rejected');
     if (symlinked.kind === 'rejected') expect(symlinked.message).toContain('unreadable');
@@ -970,18 +1001,19 @@ describe('confirmation-round regressions (review r6)', () => {
     // Read-only workspace: evidence reads fine (r-x) but the per-file
     // rename out of it fails → moved === 0, and the mkdir skeleton must
     // not survive to lock the retry the message advises.
-    fs.chmodSync(work, 0o555);
+    const restoreWork = denyDirectoryMoves(work);
     try {
       const aborted = openRetryAttempt(projectRoot, runDir, { actor: 'test' });
       expect(aborted.kind).toBe('rejected');
       if (aborted.kind === 'rejected') expect(aborted.message).toContain('cannot quarantine');
+      if (process.platform === 'win32') expect(moveFault.calls).toBeGreaterThan(0);
       const attemptsDir = path.join(runDir, 'attempts');
       const leftovers = fs.existsSync(attemptsDir)
         ? fs.readdirSync(attemptsDir).filter(name => name.startsWith('.staging-'))
         : [];
       expect(leftovers).toEqual([]);
     } finally {
-      fs.chmodSync(work, 0o755);
+      restoreWork();
     }
     // The advised remedy works IMMEDIATELY — no in-flight lockout.
     const retried = openRetryAttempt(projectRoot, runDir, { actor: 'test' });
@@ -1003,7 +1035,7 @@ describe('confirmation-round regressions (review r6)', () => {
       // A DANGLING mirror symlink is still a witness (an entry exists) —
       // the refusal must not degrade to existsSync semantics.
       fs.rmSync(path.join(runDir, 'run_origin.json'));
-      fs.symlinkSync('no-such-mirror.json', path.join(runDir, 'run_origin.json'));
+      createReparseFixture('no-such-mirror.json', path.join(runDir, 'run_origin.json'));
       const dangling = stampComputationLaunch(projectRoot, runDir);
       expect(dangling.status).toBe('refused_relaunch');
     } finally {
@@ -1122,16 +1154,17 @@ describe('confirmation-round regressions (review r6)', () => {
     // per-file move fails.
     fs.writeFileSync(path.join(computation, 'scripts', 'stray.json'), '{"partial": true}\n');
     writeFailedStatus(runDir);
-    fs.chmodSync(path.join(computation, 'scripts'), 0o555);
+    const restoreScripts = denyDirectoryMoves(path.join(computation, 'scripts'));
     try {
       const result = openRetryAttempt(projectRoot, runDir, { actor: 'test' });
       expect(result.kind).toBe('rejected');
       if (result.kind === 'rejected') expect(result.message).toContain('cannot quarantine');
+      if (process.platform === 'win32') expect(moveFault.calls).toBeGreaterThan(0);
       // Nothing half-moved: the status file went back to the live surface.
       expect(fs.existsSync(path.join(computation, 'execution_status.json'))).toBe(true);
       expect(fs.existsSync(path.join(computation, 'scripts', 'stray.json'))).toBe(true);
     } finally {
-      fs.chmodSync(path.join(computation, 'scripts'), 0o755);
+      restoreScripts();
     }
   });
 });

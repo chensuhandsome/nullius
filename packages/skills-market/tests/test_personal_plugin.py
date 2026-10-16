@@ -31,6 +31,16 @@ def _write_nullius_workspace(root):
         target.write_text("# unit fixture\n")
 
 
+def _directory_alias(link: Path, target: Path) -> None:
+    if os.name == "nt":
+        environment = dict(os.environ, NULLIUS_TEST_LINK=str(link), NULLIUS_TEST_TARGET=str(target))
+        subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                        "New-Item -ItemType Junction -Path $env:NULLIUS_TEST_LINK "
+                        "-Target $env:NULLIUS_TEST_TARGET | Out-Null"], env=environment, check=True)
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
 @pytest.fixture
 def packed(tmp_path):
     """Copy real catalog/payload; packaging must not require a built runtime."""
@@ -38,6 +48,9 @@ def packed(tmp_path):
     source.mkdir()
     (source / "pnpm-workspace.yaml").write_text("packages: []\n")
     shutil.copytree(ROOT / "packages/skills-market/packages", source / "packages/skills-market/packages")
+    shutil.copytree(ROOT / "packages/shared/python/nullius_windows",
+                    source / "packages/shared/python/nullius_windows",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     for package in load_packages(ROOT / "packages/skills-market").values():
         if package["package_type"] != "skill-pack":
             continue
@@ -114,9 +127,13 @@ def test_repeatable_build_and_explicit_replacement(packed, tmp_path):
     assert (unsafe / "keep").read_text() == "user data"
     link = tmp_path / "symlinks/nullius"
     link.parent.mkdir()
-    link.symlink_to(output, target_is_directory=True)
+    _directory_alias(link, output)
+    manifest_before = (output / "SOURCE_MANIFEST.json").read_bytes()
+    identity_before = output.stat().st_ino
     with pytest.raises(ValueError, match="non-symlink"):
         build(source_root=source, output=link, force=True)
+    assert output.stat().st_ino == identity_before
+    assert (output / "SOURCE_MANIFEST.json").read_bytes() == manifest_before
 
 
 def test_moved_copied_helpers_use_current_runtime_and_sibling_runners(packed, tmp_path):
@@ -129,8 +146,21 @@ def test_moved_copied_helpers_use_current_runtime_and_sibling_runners(packed, tm
     cli_bin = tmp_path / "bin"
     cli_bin.mkdir()
     cli = cli_bin / "nullius"
-    cli.write_text(f"#!{sys.executable}\nimport sys\nassert sys.argv[1:] == ['runtime', 'path']\nprint({str(destination_runtime)!r})\n")
-    cli.chmod(0o755)
+    if os.name == "nt":
+        node = shutil.which("node")
+        assert node is not None
+        entry = cli_bin / "runtime-fixture.cjs"
+        entry.write_text("const assert = require('node:assert/strict');\n"
+                         "assert.deepEqual(process.argv.slice(2), ['runtime', 'path']);\n"
+                         "process.stdout.write(" + json.dumps(str(destination_runtime) + "\n") + ");\n",
+                         encoding="utf-8")
+        managed = json.dumps([node, str(entry)], ensure_ascii=False, separators=(",", ":"))
+        cli.with_suffix(".cmd").write_bytes(("@echo off\r\n@rem nullius-managed-node-argv " + managed
+            + '\r\nsetlocal DisableDelayedExpansion\r\n"' + node.replace("%", "%%")
+            + '" "' + str(entry).replace("%", "%%") + '" %*\r\n').encode("utf-8"))
+    else:
+        cli.write_text(f"#!{sys.executable}\nimport sys\nassert sys.argv[1:] == ['runtime', 'path']\nprint({str(destination_runtime)!r})\n")
+        cli.chmod(0o755)
     environment = {**os.environ, "PATH": str(cli_bin) + os.pathsep + os.environ["PATH"],
                    "CODEX_HOME": str(tmp_path / "old-host"), "CLAUDE_CONFIG_DIR": str(tmp_path / "old-host")}
     environment.pop("NULLIUS_WORKSPACE_ROOT", None)
@@ -176,7 +206,7 @@ def test_plugin_rejects_ignored_sensitive_selected_payload(packed, relative, pay
     source, output, _ = packed
     target = source / "skills/research-team" / relative
     target.write_text(payload)
-    (source / ".gitignore").write_text(str(target.relative_to(source)) + "\n")
+    (source / ".gitignore").write_text(target.relative_to(source).as_posix() + "\n")
     assert subprocess.run(["git", "-C", str(source), "check-ignore", "--quiet", str(target)], check=False).returncode == 0
     previous = (output / "SOURCE_MANIFEST.json").read_bytes()
     with pytest.raises(RuntimeError, match=category) as error:
@@ -188,8 +218,13 @@ def test_plugin_rejects_ignored_sensitive_selected_payload(packed, relative, pay
 def test_plugin_rejects_external_payload_symlink(packed, tmp_path):
     source, output, _ = packed
     outside = tmp_path / "private-outside"
-    outside.write_text("must not be read")
     link = source / "skills/research-team/scripts/local-link"
-    link.symlink_to(outside)
+    if os.name == "nt":
+        outside.mkdir()
+        (outside / "content.txt").write_text("must not be read")
+        _directory_alias(link, outside)
+    else:
+        outside.write_text("must not be read")
+        link.symlink_to(outside)
     with pytest.raises(RuntimeError, match="outside source root"):
         build(source_root=source, output=output, force=True)

@@ -21,7 +21,7 @@ export function makeTmpDir(prefix = 'orch-fleet-', parent = os.tmpdir()): string
 export function makeAliasedTmpDir(prefix = 'orch-fleet-'): string {
   const real = makeTmpDir(prefix);
   const alias = `${real}-alias`;
-  fs.symlinkSync(real, alias, 'dir');
+  fs.symlinkSync(real, alias, process.platform === 'win32' ? 'junction' : 'dir');
   tmpDirs.push(alias);
   return alias;
 }

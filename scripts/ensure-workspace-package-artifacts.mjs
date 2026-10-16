@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import {
   collectArtifactPaths,
@@ -13,7 +14,7 @@ import {
   resolvePackageFreshnessRoots,
 } from './lib/workspace-package-freshness.mjs';
 
-const repoRoot = path.resolve(new URL('..', import.meta.url).pathname);
+const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 
 function findWorkspacePackageDir(packageName) {
   const packagesDir = path.join(repoRoot, 'packages');
@@ -65,7 +66,13 @@ function ensureBuilt(packageName) {
   }
 
   console.log(`[ensure-artifacts] building ${packageName}`);
-  const result = spawnSync('pnpm', ['--filter', packageName, 'build'], {
+  // Lifecycle scripts provide the actual package-manager entry, avoiding
+  // Windows .cmd execution and shell interpolation entirely.
+  const command = process.env.npm_execpath ? process.execPath : 'pnpm';
+  const args = process.env.npm_execpath
+    ? [process.env.npm_execpath, '--filter', packageName, 'build']
+    : ['--filter', packageName, 'build'];
+  const result = spawnSync(command, args, {
     cwd: repoRoot,
     stdio: 'inherit',
   });

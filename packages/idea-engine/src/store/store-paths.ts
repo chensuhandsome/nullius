@@ -4,7 +4,8 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from 'path';
 export function defaultProjectRoot(rootDir: string): string {
   let current = rootDir;
   while (true) {
-    if (existsSync(resolve(current, '.nullius'))) return current;
+    const marker = process.platform === 'win32' ? '.nullius/HARNESS' : '.nullius';
+    if (existsSync(resolve(current, marker))) return current;
     const parent = dirname(current);
     if (parent === current) break;
     current = parent;

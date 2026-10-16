@@ -14,6 +14,7 @@ import { handleOrchPolicyQuery, handleOrchRunExport } from '../src/orch-tools/co
 import { handleOrchRunCreate } from '../src/orch-tools/create-status-list.js';
 import { buildRunStatusView, readApprovalsView, readRunListView } from '../src/orch-tools/run-read-model.js';
 import { OrchRunApprovalsListSchema } from '../src/orch-tools/schemas.js';
+import { PROJECT_LAUNCHER, writeHealthFixture, writePathCandidate } from './helpers/platform-launcher.js';
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'orch-test-'));
@@ -424,7 +425,7 @@ describe('StateManager', () => {
     const hint = drift.issues.find(issue => issue.code === 'RECENT_RUNS_WITHOUT_VERIFICATION_EVIDENCE');
     expect(hint).toBeDefined();
     expect(hint?.evidence).toMatchObject({
-      unverified_run_dirs: [path.join('artifacts', 'runs', '20260706T090000Z-m1-compute-r1')],
+      unverified_run_dirs: ['artifacts/runs/20260706T090000Z-m1-compute-r1'],
     });
     expect(String(hint?.message)).toContain('derivation-verify');
     expect(String(hint?.message)).toContain('numerical-reliability-gate');
@@ -486,10 +487,10 @@ describe('StateManager', () => {
     });
     const sm = new StateManager(tmpDir);
     sm.saveState(state);
-    const launcherPath = path.join(tmpDir, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(tmpDir, '.nullius', 'bin', PROJECT_LAUNCHER);
     fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
     // New portable format, but the baked fallback target no longer exists on this machine.
-    fs.writeFileSync(
+    writeHealthFixture(
       launcherPath,
       [
         '#!/bin/sh',
@@ -575,9 +576,9 @@ describe('StateManager', () => {
     });
     const sm = new StateManager(tmpDir);
     sm.saveState(state);
-    const launcherPath = path.join(tmpDir, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(tmpDir, '.nullius', 'bin', PROJECT_LAUNCHER);
     fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
-    fs.writeFileSync(
+    writeHealthFixture(
       launcherPath,
       [
         '#!/bin/sh',
@@ -608,9 +609,9 @@ describe('StateManager', () => {
     // even though the baked fallback target is gone.
     const fakeBin = path.join(tmpDir, 'fakebin');
     fs.mkdirSync(fakeBin, { recursive: true });
-    const fakeNullius = path.join(fakeBin, 'nullius');
-    fs.writeFileSync(fakeNullius, '#!/bin/sh\nif [ "${2:-}" = "--launcher-protocol" ] || [ "${1:-}" = "--launcher-protocol" ]; then printf "%s\\n" "nullius-launcher-protocol 2"; fi\nexit 0\n', 'utf-8');
-    fs.chmodSync(fakeNullius, 0o755);
+    writePathCandidate(fakeBin,
+      '#!/bin/sh\nif [ "${2:-}" = "--launcher-protocol" ] || [ "${1:-}" = "--launcher-protocol" ]; then printf "%s\\n" "nullius-launcher-protocol 2"; fi\nexit 0\n',
+      "if (process.argv.includes('--launcher-protocol')) console.log('nullius-launcher-protocol 2');");
 
     const prevPath = process.env.PATH;
     process.env.PATH = `${fakeBin}${path.delimiter}/usr/bin:/bin`;
@@ -637,9 +638,9 @@ describe('StateManager', () => {
     });
     const sm = new StateManager(tmpDir);
     sm.saveState(state);
-    const launcherPath = path.join(tmpDir, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(tmpDir, '.nullius', 'bin', PROJECT_LAUNCHER);
     fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
-    fs.writeFileSync(
+    writeHealthFixture(
       launcherPath,
       [
         '#!/bin/sh',
@@ -696,9 +697,9 @@ describe('StateManager', () => {
     const sm = new StateManager(tmpDir);
     sm.saveState(state);
     const binDir = path.join(tmpDir, '.nullius', 'bin');
-    const launcherPath = path.join(binDir, 'nullius');
+    const launcherPath = path.join(binDir, PROJECT_LAUNCHER);
     fs.mkdirSync(binDir, { recursive: true });
-    fs.writeFileSync(
+    writeHealthFixture(
       launcherPath,
       [
         '#!/bin/sh',
@@ -752,9 +753,9 @@ describe('StateManager', () => {
     const sm = new StateManager(tmpDir);
     sm.saveState(state);
     const binDir = path.join(tmpDir, '.nullius', 'bin');
-    const launcherPath = path.join(binDir, 'nullius');
+    const launcherPath = path.join(binDir, PROJECT_LAUNCHER);
     fs.mkdirSync(binDir, { recursive: true });
-    fs.writeFileSync(
+    writeHealthFixture(
       launcherPath,
       [
         '#!/bin/sh',
@@ -785,7 +786,7 @@ describe('StateManager', () => {
     // it as self, so health must too (realpath alone would miss a hard link).
     const hardBin = path.join(tmpDir, 'hardbin');
     fs.mkdirSync(hardBin, { recursive: true });
-    fs.linkSync(launcherPath, path.join(hardBin, 'nullius'));
+    fs.linkSync(launcherPath, path.join(hardBin, process.platform === 'win32' ? 'nullius.ps1' : 'nullius'));
 
     const prevPath = process.env.PATH;
     process.env.PATH = `${hardBin}${path.delimiter}/usr/bin:/bin`;
@@ -811,13 +812,13 @@ describe('StateManager', () => {
     });
     const sm = new StateManager(tmpDir);
     sm.saveState(state);
-    const launcherPath = path.join(tmpDir, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(tmpDir, '.nullius', 'bin', PROJECT_LAUNCHER);
     fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
     // The complete, intact resolver block — but AFTER the PATH guard. Under
     // set -u the guard reads an unset RESOLVED_NULLIUS and dispatch aborts,
     // so health must refuse to advertise this script rather than resolving
     // PATH on its own.
-    fs.writeFileSync(
+    writeHealthFixture(
       launcherPath,
       [
         '#!/bin/sh',
@@ -860,12 +861,12 @@ describe('StateManager', () => {
     });
     const sm = new StateManager(tmpDir);
     sm.saveState(state);
-    const launcherPath = path.join(tmpDir, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(tmpDir, '.nullius', 'bin', PROJECT_LAUNCHER);
     fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
     // Old format: self-derived root + UNGUARDED PATH-prefer (would self-recurse if
     // .nullius/bin is first on PATH). It must be reported unparseable so the
     // owner refreshes it, not advertised as a healthy fallback.
-    fs.writeFileSync(
+    writeHealthFixture(
       launcherPath,
       [
         '#!/bin/sh',
@@ -896,9 +897,9 @@ describe('StateManager', () => {
     });
     const sm = new StateManager(tmpDir);
     sm.saveState(state);
-    const launcherPath = path.join(tmpDir, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(tmpDir, '.nullius', 'bin', PROJECT_LAUNCHER);
     fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
-    fs.writeFileSync(launcherPath, '#!/bin/sh\necho broken launcher\n', 'utf-8');
+    writeHealthFixture(launcherPath, '#!/bin/sh\necho broken launcher\n', 'utf-8');
     fs.chmodSync(launcherPath, 0o755);
 
     const view = buildRunStatusView(tmpDir, sm.readState());
@@ -930,9 +931,9 @@ describe('StateManager', () => {
     });
     const sm = new StateManager(tmpDir);
     sm.saveState(state);
-    const launcherPath = path.join(tmpDir, '.nullius', 'bin', 'nullius');
+    const launcherPath = path.join(tmpDir, '.nullius', 'bin', PROJECT_LAUNCHER);
     fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
-    fs.writeFileSync(launcherPath, '#!/bin/sh\nexec \'/bin/sh\' "$@"\n', 'utf-8');
+    writeHealthFixture(launcherPath, '#!/bin/sh\nexec \'/bin/sh\' "$@"\n', 'utf-8');
     fs.chmodSync(launcherPath, 0o755);
 
     const view = buildRunStatusView(tmpDir, sm.readState());
@@ -945,7 +946,7 @@ describe('StateManager', () => {
     expect(launcher.exists).toBe(true);
     expect(launcher.executable).toBe(true);
     expect(launcher.healthy).toBe(false);
-    expect(launcher.checked_paths).toEqual(['/bin/sh']);
+    expect(launcher.checked_paths).toEqual(process.platform === 'win32' ? [] : ['/bin/sh']);
     expect(launcher.issue_code).toBe('PROJECT_LOCAL_LAUNCHER_UNPARSEABLE');
     expect(launcher.repair_command).toBe('nullius init --runtime-only');
   });
@@ -3357,7 +3358,7 @@ describe('Stage 3c: writePlanMd', () => {
 
   it('writes plan.md atomically and returns relative path', () => {
     const relPath = sm.writePlanMd(basePlan());
-    expect(relPath).toBe(path.join('.nullius', 'plan.md'));
+    expect(relPath).toBe('.nullius/plan.md');
     const content = fs.readFileSync(path.join(tmpDir, '.nullius', 'plan.md'), 'utf-8');
     expect(content).toContain('# Plan (derived view)');
     expect(fs.existsSync(path.join(tmpDir, '.nullius', 'plan.md.tmp'))).toBe(false);
@@ -3386,9 +3387,9 @@ describe('Stage 3c: saveState with plan', () => {
   it('validates plan, sets plan_md_path, and derives plan.md on saveState', () => {
     const state = baseState({ plan: basePlan() });
     sm.saveState(state);
-    expect(state.plan_md_path).toBe(path.join('.nullius', 'plan.md'));
+    expect(state.plan_md_path).toBe('.nullius/plan.md');
     const stateJson = JSON.parse(fs.readFileSync(path.join(tmpDir, '.nullius', 'state.json'), 'utf-8'));
-    expect(stateJson.plan_md_path).toBe(path.join('.nullius', 'plan.md'));
+    expect(stateJson.plan_md_path).toBe('.nullius/plan.md');
     const md = fs.readFileSync(path.join(tmpDir, '.nullius', 'plan.md'), 'utf-8');
     expect(md).toContain('# Plan (derived view)');
   });
@@ -3414,7 +3415,7 @@ describe('Stage 3c: saveState with plan', () => {
       const state = baseState({ plan: basePlan() });
       customSm.saveState(state);
       // plan_md_path should be relative to repoRoot (custom_state_dir/plan.md)
-      expect(state.plan_md_path).toBe(path.relative(tmpDir, path.join(customDir, 'plan.md')));
+      expect(state.plan_md_path).toBe(path.relative(tmpDir, path.join(customDir, 'plan.md')).split(path.sep).join('/'));
       expect(fs.existsSync(path.join(customDir, 'plan.md'))).toBe(true);
     } finally {
       if (origEnv === undefined) delete process.env['NULLIUS_CONTROL_DIR'];
@@ -3448,7 +3449,7 @@ describe('Stage 3c: saveStateWithLedger with plan', () => {
   it('validates plan and derives plan.md during saveStateWithLedger', () => {
     const state = baseState({ plan: basePlan(), run_status: 'running', run_id: 'r1' });
     sm.saveStateWithLedger(state, 'checkpoint', { details: {} });
-    expect(state.plan_md_path).toBe(path.join('.nullius', 'plan.md'));
+    expect(state.plan_md_path).toBe('.nullius/plan.md');
     expect(fs.existsSync(path.join(tmpDir, '.nullius', 'plan.md'))).toBe(true);
   });
 

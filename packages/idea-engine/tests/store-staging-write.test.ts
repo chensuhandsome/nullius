@@ -59,14 +59,15 @@ describe('store JSON writes stage at a fresh exclusive name', () => {
   it('does not write through a link left at the old fixed staging name', () => {
     const victim = path.join(outside, 'victim.json');
     fs.writeFileSync(victim, 'ORIGINAL');
-    fs.symlinkSync(victim, `${manifest}.tmp`);
+    const target = process.platform === 'win32' ? outside : victim;
+    fs.symlinkSync(target, `${manifest}.tmp`, process.platform === 'win32' ? 'junction' : 'file');
 
     store.saveCampaign(campaign());
 
     expect(fs.readFileSync(victim, 'utf-8')).toBe('ORIGINAL');
     expect(fs.lstatSync(manifest).isFile()).toBe(true);
     expect(store.loadCampaign(CAMPAIGN_ID)).toEqual(campaign());
-    expect(fs.readlinkSync(`${manifest}.tmp`)).toBe(victim);
+    expect(fs.realpathSync(`${manifest}.tmp`)).toBe(fs.realpathSync(target));
   });
 
   it('refuses to stage through an entry already present at the fresh staging name', () => {
@@ -76,12 +77,13 @@ describe('store JSON writes stage at a fresh exclusive name', () => {
     fs.writeFileSync(victim, 'ORIGINAL');
     mockRandomBytes.mockImplementationOnce(() => Buffer.from(fixedHex, 'hex'));
     const staging = `${manifest}.${process.pid}.${fixedHex}.tmp`;
-    fs.symlinkSync(victim, staging);
+    const target = process.platform === 'win32' ? outside : victim;
+    fs.symlinkSync(target, staging, process.platform === 'win32' ? 'junction' : 'file');
 
     expect(() => store.saveCampaign(campaign())).toThrow(/EEXIST/);
 
     expect(fs.readFileSync(victim, 'utf-8')).toBe('ORIGINAL');
-    expect(fs.readlinkSync(staging)).toBe(victim);
+    expect(fs.realpathSync(staging)).toBe(fs.realpathSync(target));
     expect(fs.existsSync(manifest)).toBe(false);
   });
 

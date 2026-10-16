@@ -71,7 +71,22 @@ function packageName(directory: string): string | null {
   }
 }
 
-function markerPresent(file: string): boolean {
+function markerPresent(file: string, root: string): boolean {
+  // Windows reports a descendant of a looping junction as ENOENT. Inspect
+  // metadata ancestors before treating a missing marker as absent; the root
+  // itself is already canonical, so checkout aliases remain permitted.
+  if (process.platform === 'win32') {
+    for (let current = path.dirname(file); current !== root; current = path.dirname(current)) {
+      try {
+        const stat = fs.lstatSync(current);
+        if (stat.isSymbolicLink()) throw new Error('reparse directory in development-checkout metadata');
+        if (stat.isDirectory()) fs.readdirSync(current);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') throw new Error('project root has ambiguous development-checkout metadata', {cause:error});
+      }
+    }
+  }
   try { fs.lstatSync(file); return true; }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT' || (error as NodeJS.ErrnoException).code === 'ENOTDIR') return false;
@@ -83,7 +98,7 @@ function markerPresent(file: string): boolean {
 function developmentCheckoutRoot(root: string): string | null {
   for (let current = root; ; current = path.dirname(current)) {
     const markers = ['pnpm-workspace.yaml', 'package.json', 'packages/orchestrator/package.json', 'packages/shared/package.json'];
-    if (markers.every(marker => markerPresent(path.join(current, marker)))) {
+    if (markers.every(marker => markerPresent(path.join(current, marker), current))) {
       const rootName = packageName(current);
       const orchestratorName = packageName(path.join(current, 'packages/orchestrator'));
       const sharedName = packageName(path.join(current, 'packages/shared'));

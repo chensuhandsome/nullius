@@ -17,6 +17,8 @@ const FIXED_ENVIRONMENT_KEYS = new Set([
   'PYTHONDONTWRITEBYTECODE',
   'PYTHONNOUSERSITE',
   'TZ',
+  'SystemRoot',
+  'WINDIR',
 ]);
 
 const COMMON_DECLARED_ENVIRONMENT_KEYS = [
@@ -60,10 +62,16 @@ export function buildProductionEnvironment(
   const variables: Record<string, string> = {
     LANG: 'C',
     LC_ALL: 'C',
-    PATH: [path.dirname(runtime.canonical_path), '/usr/bin', '/bin'].filter((v, i, a) => a.indexOf(v) === i).join(path.delimiter),
+    PATH: [path.dirname(runtime.canonical_path), ...(process.platform === 'win32'
+      ? [path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')]
+      : ['/usr/bin', '/bin'])].filter((v, i, a) => a.indexOf(v) === i).join(path.delimiter),
     PYTHONDONTWRITEBYTECODE: '1',
     PYTHONNOUSERSITE: '1',
     TZ: 'UTC',
+    ...(process.platform === 'win32' ? {
+      SystemRoot: process.env.SystemRoot ?? 'C:\\Windows',
+      WINDIR: process.env.SystemRoot ?? 'C:\\Windows',
+    } : {}),
     ...Object.fromEntries(Object.entries(declared).sort(([a], [b]) => a.localeCompare(b))),
   };
   const canonical = Object.entries(variables).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${v}\n`).join('');

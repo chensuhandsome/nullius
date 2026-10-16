@@ -51,7 +51,7 @@ describe('Path safety + marker cleanup (M1)', () => {
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outside-'));
     try {
       const linkPath = path.join(dataDir, 'downloads');
-      fs.symlinkSync(outsideDir, linkPath, 'dir');
+      fs.symlinkSync(outsideDir, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
       const savedDownloadEnv = [process.env.HEP_DOWNLOAD_DIR, process.env.ARXIV_DOWNLOAD_DIR];
       delete process.env.HEP_DOWNLOAD_DIR;
       delete process.env.ARXIV_DOWNLOAD_DIR;

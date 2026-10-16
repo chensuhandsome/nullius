@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { pythonExecutable } from './python-runtime.js';
 
 function projectContractsRoot(): string {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -32,7 +33,7 @@ export function ensureProjectScaffold(
   repoRoot: string,
   options: { force?: boolean; refresh?: boolean; dryRun?: boolean; profile?: string; projectName?: string } = {},
 ): ProjectScaffoldResult {
-  const python = process.env.NULLIUS_PYTHON || 'python3';
+  const python = pythonExecutable();
   const projectName = (options.projectName ?? path.basename(repoRoot) ?? 'Research Project').trim() || 'Research Project';
   const profile = (options.profile ?? 'mixed').trim() || 'mixed';
   const argv = [

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import importlib.util
 import json
 import os
@@ -11,6 +12,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+import pytest
 
 _MOD = Path(__file__).resolve().parent.parent / "scripts" / "independent_reproduction_check.py"
 _spec = importlib.util.spec_from_file_location("independent_reproduction_check", _MOD)
@@ -32,12 +35,23 @@ print(f"final quality = {value}")
 """
 
 DRIFTED_SCRIPT = REPRO_SCRIPT.replace("1.234", "5.678")
+SHELL_PYTHON = shlex.quote(Path(sys.executable).as_posix())
+
+
+def _directory_alias(link: Path, target: Path) -> None:
+    if sys.platform == "win32":
+        environment = dict(os.environ, NULLIUS_TEST_LINK=str(link), NULLIUS_TEST_TARGET=str(target))
+        subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                        "New-Item -ItemType Junction -Path $env:NULLIUS_TEST_LINK "
+                        "-Target $env:NULLIUS_TEST_TARGET | Out-Null"], env=environment, check=True)
+    else:
+        link.symlink_to(target, target_is_directory=True)
 
 
 def _manifest_doc(**overrides) -> dict:
     doc = {
         "manifest_version": 1,
-        "entry_command": f"{sys.executable} reproduce.py",
+        "entry_command": f"{SHELL_PYTHON} reproduce.py",
         "working_inputs": ["reproduce.py"],
         "timeout_seconds": 60,
         "environment_note": "test interpreter; no network",
@@ -67,6 +81,30 @@ def _git_env() -> dict:
 
 def _run_git(args: list, cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=str(cwd), env=_git_env(), check=True, capture_output=True)
+
+
+def _stage_git_symlink(project: Path, relative: str, target: str) -> None:
+    """Commit an actual mode-120000 object even without host link privilege."""
+    hashed = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=project, env=_git_env(),
+                            input=target.encode("utf-8"), capture_output=True, check=True).stdout.decode().strip()
+    _run_git(["update-index", "--add", "--cacheinfo", f"120000,{hashed},{relative}"], project)
+
+
+def _file_symlink_capable(tmp_path: Path) -> bool:
+    target = tmp_path / "capability-target"
+    target.write_text("native link capability")
+    link = tmp_path / "capability-link"
+    try:
+        link.symlink_to(target)
+    except OSError as error:
+        if sys.platform == "win32" and error.winerror == 1314:
+            return False
+        raise
+    else:
+        link.unlink()
+        return True
+    finally:
+        target.unlink()
 
 
 def _make_git_project(tmp_path: Path, manifest_doc: dict, script: str = REPRO_SCRIPT) -> Path:
@@ -204,6 +242,26 @@ def test_worktree_reproduced(tmp_path):
     assert Path(report["isolation"]["checkout"]).exists()  # kept for inspection
 
 
+def test_unicode_project_and_committed_manifest_reproduce_with_native_locale(tmp_path):
+    project = _make_git_project(tmp_path / "\u7814\u7a76 project", _manifest_doc())
+    manifest = project / "artifacts/runs/demo/\u590d\u73b0\u58f0\u660e final.json"
+    (manifest.parent / "reproduction_manifest.json").rename(manifest)
+    _run_git(["add", "-A"], project)
+    _run_git(["commit", "-q", "-m", "Unicode manifest fixture"], project)
+    environment = dict(os.environ)
+    if sys.platform == "win32":
+        environment["PYTHONUTF8"] = "0"
+        environment.pop("PYTHONIOENCODING", None)
+    result = subprocess.run([sys.executable, str(_MOD), "--manifest", str(manifest),
+                             "--work-dir", str(tmp_path / "Unicode work")], env=environment,
+                            capture_output=True, text=True, encoding="utf-8", check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["verdict"] == "reproduced"
+    assert report["manifest"]["git_state"] == "tracked_clean"
+    assert Path(report["project_root"]) == project
+
+
 def test_worktree_mismatch_on_drifted_declared_value(tmp_path):
     doc = _manifest_doc()
     doc["expected"][0]["value"] = 9.99  # declared expectation the rerun cannot meet
@@ -283,6 +341,7 @@ def _is_zombie(pid: int) -> bool:
 
 
 def _wait_gone(pid: int, timeout: float = 10) -> bool:
+    assert sys.platform != "win32", "Windows must observe retained native handles, not POSIX PIDs"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -314,13 +373,58 @@ def _straggler_entry(tmp_path, then: str = ""):
     script.write_text(DESCENDANT)
     log, pidfile = tmp_path / "descendant.log", tmp_path / "descendant.pid"
     q = shlex.quote
+    if sys.platform == "win32":
+        # Bash $! is an MSYS PID, not a Win32 process identity. A real native
+        # parent records its child's PID so the test can retain that handle.
+        parent = tmp_path / "parent.py"
+        parent.write_text("import subprocess, sys, time\nfrom pathlib import Path\n"
+            f"child=subprocess.Popen([sys.executable,{str(script)!r},{str(log)!r}])\n"
+            f"Path({str(pidfile)!r}).write_text(str(child.pid))\n"
+            f"log=Path({str(log)!r})\n"
+            "while not (log.exists() and 'ready' in log.read_text()): time.sleep(0.01)\n"
+            + ("time.sleep(60)\n" if then else ""), encoding="utf-8")
+        return f"{SHELL_PYTHON} {q(parent.as_posix())}", log, pidfile
     entry = (f"{q(sys.executable)} {q(str(script))} {q(str(log))} & "
              f"echo $! > {q(str(pidfile))}; "
              f"while ! grep -q ready {q(str(log))} 2>/dev/null; do sleep 0.01; done{then}")
     return entry, log, pidfile
 
 
-def _assert_stopped_with_sigterm_first(log, pidfile):
+def _observe_native_descendant(monkeypatch, pidfile):
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
+    kernel.OpenProcess.restype = ctypes.c_void_p
+    kernel.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_ulong)
+    kernel.WaitForSingleObject.restype = ctypes.c_ulong
+    kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+    handles = []
+    original = irc.WindowsJobProcess.stop_tree
+
+    def stop_tree(proc, *args, **kwargs):
+        if not handles and pidfile.exists():
+            handle = kernel.OpenProcess(0x100000, False, int(pidfile.read_text()))
+            assert handle, "native descendant was not alive before Job termination"
+            assert kernel.WaitForSingleObject(handle, 0) == 0x102
+            handles.append(handle)
+        return original(proc, *args, **kwargs)
+
+    monkeypatch.setattr(irc.WindowsJobProcess, "stop_tree", stop_tree)
+
+    def assert_stopped():
+        assert handles, "the test never retained the descendant's native handle"
+        try:
+            assert kernel.WaitForSingleObject(handles[0], 5000) == 0, "native descendant survived Job termination"
+        finally:
+            kernel.CloseHandle(handles.pop())
+
+    return assert_stopped
+
+
+def _assert_stopped_with_sigterm_first(log, pidfile, native_observer=None):
+    if sys.platform == "win32":
+        assert "ready" in log.read_text()
+        native_observer()
+        return
     descendant = int(pidfile.read_text())
     try:
         assert _wait_gone(descendant), "the entry's descendant survived"
@@ -335,15 +439,17 @@ def test_entry_that_exits_leaving_a_descendant_gets_its_group_stopped(tmp_path, 
     # SIGTERM and ignores it, still runs in its group.
     monkeypatch.setattr(irc, "ENTRY_STOP_GRACE_SECONDS", 0.5, raising=False)
     entry, log, pidfile = _straggler_entry(tmp_path)
+    native_observer = _observe_native_descendant(monkeypatch, pidfile) if sys.platform == "win32" else None
     result = irc.run_entry(entry, tmp_path, 60, tmp_path / "entry.out", tmp_path / "entry.err")
     assert result["timed_out"] is False
     assert result["exit_code"] == 0
-    _assert_stopped_with_sigterm_first(log, pidfile)
+    _assert_stopped_with_sigterm_first(log, pidfile, native_observer)
 
 
 def test_timeout_stops_the_entry_group_with_sigterm_first(tmp_path, monkeypatch):
     monkeypatch.setattr(irc, "ENTRY_STOP_GRACE_SECONDS", 0.5, raising=False)
     entry, log, pidfile = _straggler_entry(tmp_path, then="; sleep 60")
+    native_observer = _observe_native_descendant(monkeypatch, pidfile) if sys.platform == "win32" else None
     real_child_exited = getattr(irc, "_child_exited", None)
 
     def child_exited(pid, timeout):
@@ -356,18 +462,45 @@ def test_timeout_stops_the_entry_group_with_sigterm_first(tmp_path, monkeypatch)
         assert not real_child_exited(pid, 0)
         return False
 
-    monkeypatch.setattr(irc, "_child_exited", child_exited, raising=False)
+    if sys.platform == "win32":
+        original_root_exited = irc.WindowsJobProcess.root_exited
+
+        def root_exited(proc, timeout=None):
+            if timeout != 10:
+                return original_root_exited(proc, timeout)
+            deadline = time.monotonic() + 10
+            while not (log.exists() and "ready" in log.read_text()):
+                assert time.monotonic() < deadline, "native descendant did not start"
+                time.sleep(0.01)
+            assert not original_root_exited(proc, 0)
+            return False
+
+        monkeypatch.setattr(irc.WindowsJobProcess, "root_exited", root_exited)
+    else:
+        monkeypatch.setattr(irc, "_child_exited", child_exited, raising=False)
     result = irc.run_entry(entry, tmp_path, 10, tmp_path / "entry.out", tmp_path / "entry.err")
     assert result["timed_out"] is True
     assert result["exit_code"] is None
-    _assert_stopped_with_sigterm_first(log, pidfile)
+    _assert_stopped_with_sigterm_first(log, pidfile, native_observer)
 
 
-def test_run_entry_refuses_to_spawn_while_sigchld_is_ignored(tmp_path):
+def test_run_entry_refuses_to_spawn_without_owned_child_lifetime(tmp_path, monkeypatch):
     # Called as a library, run_entry does not own the process-wide SIGCHLD
     # disposition. Ignored, the kernel would reap the exited shell and its
     # group number could be reissued before the group stop: refuse, spawn nothing.
     marker = tmp_path / "spawned"
+    if sys.platform == "win32":
+        # Windows has no SIGCHLD disposition. Its corresponding admission
+        # invariant is atomic Job assignment before any target can execute.
+        from nullius_windows import process as windows
+        api = windows._api()
+        api.UpdateProcThreadAttribute = lambda *_: False
+        monkeypatch.setattr(windows, "_api", lambda: api)
+        with pytest.raises(OSError):
+            irc.run_entry(f"touch {shlex.quote(marker.as_posix())}", tmp_path, 60,
+                          tmp_path / "entry.out", tmp_path / "entry.err")
+        assert not marker.exists()
+        return
     previous = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
     try:
         try:
@@ -485,9 +618,22 @@ def test_preexisting_committed_artifact_cannot_pass_vacuously(tmp_path):
 def test_artifact_symlink_is_refused(tmp_path):
     entry = ("mkdir -p out && printf '{\"fit\": {\"quality\": 1.234}}' > real.json && "
              "ln -s ../real.json out/result.json && echo 'final quality = 1.234'")
+    script = REPRO_SCRIPT
+    if sys.platform == "win32":
+        entry = f"{SHELL_PYTHON} reproduce.py"
+        script = """import os, pathlib, subprocess
+pathlib.Path('out').mkdir()
+pathlib.Path('real').mkdir()
+environment = dict(os.environ, NULLIUS_TEST_LINK=str(pathlib.Path('out/result.json').resolve()),
+                   NULLIUS_TEST_TARGET=str(pathlib.Path('real').resolve()))
+subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+               'New-Item -ItemType Junction -Path $env:NULLIUS_TEST_LINK -Target $env:NULLIUS_TEST_TARGET | Out-Null'],
+               env=environment, check=True)
+print('final quality = 1.234')
+"""
     doc = _manifest_doc(entry_command=entry)
     doc["expected"] = [doc["expected"][0], doc["expected"][2]]  # one artifact + one stdout item
-    project = _make_git_project(tmp_path, doc)
+    project = _make_git_project(tmp_path, doc, script=script)
     code, report = _run_check(tmp_path, project)
     assert report["verdict"] == "incomplete"
     assert code == 4
@@ -500,7 +646,13 @@ def test_artifact_symlink_is_refused(tmp_path):
 def test_copy_mode_rejects_symlinked_working_inputs(tmp_path):
     doc = _manifest_doc(working_inputs=["reproduce.py", "linked.py"])
     project = _make_plain_project(tmp_path, doc)
-    (project / "linked.py").symlink_to(project / "reproduce.py")
+    if sys.platform == "win32":
+        target = project / "linked-data"
+        target.mkdir()
+        (target / "source.py").write_text("private selected content")
+        _directory_alias(project / "linked.py", target)
+    else:
+        (project / "linked.py").symlink_to(project / "reproduce.py")
     code, report = _run_check(tmp_path, project,
                               extra_args=["--project-root", str(project), "--isolation", "copy"])
     assert report["verdict"] == "environment_failed"
@@ -624,7 +776,7 @@ def test_cli_mismatch_exit_code_via_subprocess(tmp_path):
     proc = subprocess.run(
         [sys.executable, str(_MOD), "--manifest", str(manifest),
          "--work-dir", str(tmp_path / "cliwork")],
-        capture_output=True, text=True, check=False)
+        capture_output=True, text=True, encoding="utf-8", check=False)
     assert proc.returncode == 3, proc.stderr
     assert json.loads(proc.stdout)["verdict"] == "mismatch"
 
@@ -640,7 +792,7 @@ def test_default_tmpdir_inside_project_is_refused(tmp_path):
     manifest = project / "artifacts" / "runs" / "demo" / "reproduction_manifest.json"
     proc = subprocess.run(
         [sys.executable, str(_MOD), "--manifest", str(manifest)],  # no --work-dir: default path
-        capture_output=True, text=True, check=False, env=env)
+        capture_output=True, text=True, encoding="utf-8", check=False, env=env)
     assert proc.returncode == 5, proc.stdout + proc.stderr
     report = json.loads(proc.stdout)
     assert report["verdict"] == "environment_failed"
@@ -669,7 +821,7 @@ def test_sanitize_child_env_drops_only_references_to_forbidden_roots(tmp_path):
 
 
 def test_env_referencing_original_tree_is_dropped_for_the_entry(tmp_path, monkeypatch):
-    entry = f'echo "PP=[$PYTHONPATH]" && {sys.executable} reproduce.py'
+    entry = f'echo "PP=[$PYTHONPATH]" && {SHELL_PYTHON} reproduce.py'
     project = _make_git_project(tmp_path, _manifest_doc(entry_command=entry))
     monkeypatch.setenv("PYTHONPATH", str(project))
     code, report = _run_check(tmp_path, project)
@@ -699,14 +851,18 @@ def test_committed_symlink_escaping_the_checkout_is_refused(tmp_path):
     (project / "reproduce.py").write_text(REPRO_SCRIPT, encoding="utf-8")
     (project / "artifacts" / "runs" / "demo" / "reproduction_manifest.json").write_text(
         json.dumps(_manifest_doc(), indent=2), encoding="utf-8")
-    (project / "data_link.json").symlink_to(outside)  # escapes the project; will be committed
+    if sys.platform != "win32":
+        (project / "data_link.json").symlink_to(outside)  # escapes the project; will be committed
     _run_git(["init", "-q"], project)
     _run_git(["add", "-A"], project)
+    if sys.platform == "win32":
+        _stage_git_symlink(project, "data_link.json", outside.as_posix())
     _run_git(["commit", "-q", "-m", "seed with escaping symlink"], project)
     code, report = _run_check(tmp_path, project)
     assert report["verdict"] == "environment_failed", report
     assert code == 5
-    assert any("symlinks resolve outside the fresh checkout" in e for e in report["errors"])
+    assert any("symlinks resolve outside the fresh checkout" in e
+               or (sys.platform == "win32" and "git worktree add failed" in e) for e in report["errors"])
 
 
 def test_committed_internal_relative_symlink_is_allowed(tmp_path):
@@ -715,13 +871,47 @@ def test_committed_internal_relative_symlink_is_allowed(tmp_path):
     (project / "reproduce.py").write_text(REPRO_SCRIPT, encoding="utf-8")
     (project / "artifacts" / "runs" / "demo" / "reproduction_manifest.json").write_text(
         json.dumps(_manifest_doc(), indent=2), encoding="utf-8")
-    (project / "alias.py").symlink_to("reproduce.py")  # relative, stays inside the checkout
+    if sys.platform != "win32":
+        (project / "alias.py").symlink_to("reproduce.py")  # relative, stays inside the checkout
     _run_git(["init", "-q"], project)
     _run_git(["add", "-A"], project)
+    if sys.platform == "win32":
+        _stage_git_symlink(project, "alias.py", "reproduce.py")
     _run_git(["commit", "-q", "-m", "seed with internal symlink"], project)
     code, report = _run_check(tmp_path, project)
+    if sys.platform == "win32" and not _file_symlink_capable(tmp_path):
+        assert report["verdict"] == "environment_failed", report
+        assert code == 5
+        assert any("git worktree add failed" in error for error in report["errors"])
+        return
     assert report["verdict"] == "reproduced", report
     assert code == 0
+
+
+def test_aliases_are_inspected_without_traversing_them(tmp_path, monkeypatch):
+    checkout, outside = tmp_path / "checkout", tmp_path / "outside"
+    checkout.mkdir()
+    outside.mkdir()
+    (outside / "private.txt").write_text("must not be read")
+    escaped = checkout / "escaped"
+    _directory_alias(escaped, outside)
+    scandir = os.scandir
+
+    def no_outside_scan(path):
+        assert Path(path).resolve() != outside, "link discovery traversed an external junction"
+        return scandir(path)
+
+    monkeypatch.setattr(os, "scandir", no_outside_scan)
+    assert irc._find_symlinks(checkout) == [escaped]
+    assert irc._escaping_symlinks(checkout) == [escaped]
+    if sys.platform == "win32":
+        escaped.rmdir()
+    else:
+        escaped.unlink()
+    internal = checkout / "data"
+    internal.mkdir()
+    _directory_alias(checkout / "internal", internal)
+    assert irc._escaping_symlinks(checkout) == []
 
 
 # --- env scrub must catch symlink aliases and spare relative components ---
@@ -730,7 +920,7 @@ def test_sanitize_child_env_catches_symlink_alias_of_project_root(tmp_path):
     proj = tmp_path / "proj"
     proj.mkdir()
     alias = tmp_path / "alias-link"
-    alias.symlink_to(proj)
+    _directory_alias(alias, proj)
     environ = {
         "PYTHONPATH": f"{alias}{os.pathsep}/usr/lib/pythonX",
         "TOOL_HOME": str(alias / "tools"),
@@ -772,7 +962,13 @@ def test_try_resolve_never_raises_on_symlink_loop(tmp_path):
     links are treated as escaping, and a loop the entry reads breaks the
     entry, never the report)."""
     loop = tmp_path / "loop"
-    loop.symlink_to("loop")
+    if sys.platform == "win32":
+        # New-Item validates the target before creation and rejects this loop;
+        # NTFS itself can represent it, so create the actual junction directly.
+        subprocess.run([os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", "mklink", "/J",
+                        str(loop), str(loop)], capture_output=True, check=True)
+    else:
+        loop.symlink_to("loop")
     result = irc._try_resolve(loop)
     assert result is None or isinstance(result, Path)
 
@@ -783,7 +979,7 @@ def test_copy_mode_rejects_symlinked_ancestor_in_working_inputs(tmp_path):
     (outside / "data.py").write_text("x = 1\n", encoding="utf-8")
     doc = _manifest_doc(working_inputs=["reproduce.py", "linked_dir/data.py"])
     project = _make_plain_project(tmp_path, doc)
-    (project / "linked_dir").symlink_to(outside)  # entry path passes THROUGH this link
+    _directory_alias(project / "linked_dir", outside)  # entry path passes THROUGH this link
     code, report = _run_check(tmp_path, project,
                               extra_args=["--project-root", str(project), "--isolation", "copy"])
     assert report["verdict"] == "environment_failed"
@@ -853,7 +1049,7 @@ def test_cli_reproduced_exit_zero_and_json_stdout(tmp_path):
     proc = subprocess.run(
         [sys.executable, str(_MOD), "--manifest", str(manifest),
          "--work-dir", str(tmp_path / "cliwork")],
-        capture_output=True, text=True, check=False)
+        capture_output=True, text=True, encoding="utf-8", check=False)
     assert proc.returncode == 0, proc.stderr
     report = json.loads(proc.stdout)
     assert report["verdict"] == "reproduced"

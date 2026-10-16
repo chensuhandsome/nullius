@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { installedRuntimeRoot, resolveRuntimeLaunch } from '../src/cli-runtime.js';
 import { runCli } from '../src/cli.js';
+import { pythonExecutable } from '../src/python-runtime.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
@@ -34,9 +35,13 @@ describe('portable installed runtime', () => {
   it('starts the compiled CLI through the documented symlink installation', () => {
     const f = fixture();
     const link = path.join(f.home, 'nullius');
-    fs.symlinkSync(path.join(installedRuntimeRoot(), 'packages/orchestrator/dist/cli.js'), link);
+    const cli = path.join(installedRuntimeRoot(), 'packages/orchestrator/dist/cli.js');
+    // Windows directory junctions exercise native realpath installation lookup
+    // without requiring the privilege needed for a file symlink.
+    if (process.platform === 'win32') fs.symlinkSync(path.dirname(cli), link, 'junction');
+    else fs.symlinkSync(cli, link);
     for (const args of [['--help'], ['runtime', 'path']]) {
-      const child = spawnSync(process.execPath, [link, ...args], { encoding: 'utf8', timeout: 5000 });
+      const child = spawnSync(process.execPath, [process.platform === 'win32' ? path.join(link, 'cli.js') : link, ...args], { encoding: 'utf8', timeout: 5000 });
       expect(child.status).toBe(0);
       expect(child.stderr).toBe('');
       expect(child.stdout).toContain(args[0] === '--help' ? 'nullius runtime' : installedRuntimeRoot());
@@ -107,7 +112,7 @@ describe('portable installed runtime', () => {
   it('rejects directory aliases and absent descendants that resolve back inside the installation', () => {
     const f = fixture();
     const alias = path.join(f.parent, 'alias');
-    fs.symlinkSync(f.workspace, alias);
+    fs.symlinkSync(f.workspace, alias, process.platform === 'win32' ? 'junction' : 'dir');
     const env = { ...f.env, NULLIUS_PROJECT_ROOT: f.project, STORE_DIR: path.join(alias, 'absent', 'store') };
     expect(() => resolveRuntimeLaunch('project-mcp', env, f.workspace)).toThrow('STORE_DIR must be outside');
     expect(() => resolveRuntimeLaunch('provider-mcp', { ...f.env, NULLIUS_PROJECT_ROOT: alias }, f.workspace)).toThrow('NULLIUS_PROJECT_ROOT must be outside');
@@ -119,10 +124,11 @@ describe('portable installed runtime', () => {
     f.registry['provider-mcp'].entrypoint = '../outside.mjs';
     fs.writeFileSync(f.registryPath, JSON.stringify(f.registry));
     expect(() => resolveRuntimeLaunch('provider-mcp', f.env, f.workspace)).toThrow('invalid runtime server registry');
-    f.registry['provider-mcp'].entrypoint = 'link.mjs';
+    f.registry['provider-mcp'].entrypoint = process.platform === 'win32' ? 'link/outside.mjs' : 'link.mjs';
     fs.writeFileSync(f.registryPath, JSON.stringify(f.registry));
     fs.writeFileSync(path.join(f.parent, 'outside.mjs'), '');
-    fs.symlinkSync(path.join(f.parent, 'outside.mjs'), path.join(f.workspace, 'link.mjs'));
+    if (process.platform === 'win32') fs.symlinkSync(f.parent, path.join(f.workspace, 'link'), 'junction');
+    else fs.symlinkSync(path.join(f.parent, 'outside.mjs'), path.join(f.workspace, 'link.mjs'));
     expect(() => resolveRuntimeLaunch('provider-mcp', f.env, f.workspace)).toThrow('missing or outside');
   });
 
@@ -143,7 +149,13 @@ describe('portable installed runtime', () => {
     const launcher = path.join(f.workspace, 'launch.mjs');
     fs.writeFileSync(launcher, 'import {runRuntimeCommand} from "./packages/orchestrator/dist/cli-runtime.js"; process.exitCode = await runRuntimeCommand(["mcp", "provider-mcp"], null, {cwd:process.cwd(),stdout:s=>process.stdout.write(s),stderr:s=>process.stderr.write(s)});');
     fs.writeFileSync(path.join(f.workspace, 'server.mjs'), 'console.log(process.pid); setInterval(()=>{},1000);');
-    const child = spawn(process.execPath, [launcher], { env: f.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const windows = process.platform === 'win32';
+    const parentTime = windows ? spawnSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${process.pid}).StartTime.ToFileTimeUtc()`], { encoding: 'utf8' }).stdout.trim() : '';
+    // Win32 kill signals terminate the launcher rather than invoking JS signal
+    // handlers. Exercise the documented native owner, whose Job closes the tree.
+    const child = windows
+      ? spawn(pythonExecutable(), ['-I', path.join(installedRuntimeRoot(), 'packages/shared/dist/python/nullius_windows/process.py'), '--cli', String(process.pid), parentTime, '--', process.execPath, launcher], { env: { ...process.env, ...f.env }, stdio: ['ignore', 'pipe', 'pipe'] })
+      : spawn(process.execPath, [launcher], { env: f.env, stdio: ['ignore', 'pipe', 'pipe'] });
     let serverPid: number | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -157,8 +169,15 @@ describe('portable installed runtime', () => {
         });
       });
       const code = await completion;
-      expect(code).toBe({ SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal]);
+      expect(code).toBe(windows ? null : { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal]);
       expect(serverPid).toBeGreaterThan(0);
+      if (windows) {
+        const deadline = Date.now() + 3000;
+        while (Date.now() < deadline) {
+          try { process.kill(serverPid!, 0); } catch { break; }
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+      }
       expect(() => process.kill(serverPid!, 0)).toThrow();
     } finally {
       if (timer) clearTimeout(timer);

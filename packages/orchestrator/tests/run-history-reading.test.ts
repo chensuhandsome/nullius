@@ -35,6 +35,25 @@ function snapshot(directory: string): Record<string, string> {
   return result;
 }
 
+function denyDirectoryRead(directory: string): () => void {
+  if (process.platform !== 'win32') {
+    fs.chmodSync(directory, 0);
+    return () => fs.chmodSync(directory, 0o755);
+  }
+  const sid = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    '[Security.Principal.WindowsIdentity]::GetCurrent().User.Value'], { encoding: 'utf-8' }).trim();
+  const restore = (): void => { execFileSync('icacls.exe', [directory, '/remove:d', `*${sid}`, '/Q']); };
+  try {
+    // RD on a directory is FILE_LIST_DIRECTORY. Its visible identity remains
+    // stat-able, but the real enumeration fails, independently of chmod bits.
+    execFileSync('icacls.exe', [directory, '/deny', `*${sid}:(RD)`, '/Q']);
+  } catch (error) {
+    restore();
+    throw error;
+  }
+  return restore;
+}
+
 describe('canonical writes and historical evidence reads', () => {
   it('grades a generated index refresh as same research code while preserving human and source identity', () => {
     const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -54,9 +73,13 @@ describe('canonical writes and historical evidence reads', () => {
     fs.writeFileSync(path.join(root, 'project_index.md'), generated.replace('original prose', 'changed prose'));
     expect(gradeExistingStamp(root, 'managed', first.origin).grade).toBe('different_tree');
     fs.writeFileSync(path.join(root, 'project_index.md'), generated);
-    fs.chmodSync(path.join(root, 'project_index.md'), 0o755);
+    // Windows has no executable mode bit. Git's staged tree still carries
+    // that research-code identity, so change the real index there.
+    if (process.platform === 'win32') git('update-index', '--chmod=+x', '--', 'project_index.md');
+    else fs.chmodSync(path.join(root, 'project_index.md'), 0o755);
     expect(gradeExistingStamp(root, 'managed', first.origin).grade).toBe('different_tree');
-    fs.chmodSync(path.join(root, 'project_index.md'), 0o644);
+    if (process.platform === 'win32') git('update-index', '--chmod=-x', '--', 'project_index.md');
+    else fs.chmodSync(path.join(root, 'project_index.md'), 0o644);
     fs.writeFileSync(path.join(root, 'project_index.md'), generated.replace('<!-- RUN_INDEX_END -->', ''));
     expect(gradeExistingStamp(root, 'managed', first.origin).grade).toBe('different_tree');
     fs.writeFileSync(path.join(root, 'project_index.md'), generated);
@@ -78,7 +101,7 @@ describe('canonical writes and historical evidence reads', () => {
     expect(summary.project_recent_digest.ledger_available).toBe(false);
     expect(summary.artifact_runs[0].files).toContain('team/runs/past/report.md');
     await runExportCommand(root, root, ['--run-id', 'past'], { cwd: root, stdout: () => {}, stderr: () => {} });
-    expect(execFileSync('unzip', ['-Z1', path.join(root, 'exports/past.zip')], { encoding: 'utf8' })).toBe('team/runs/past/report.md\n');
+    expect(execFileSync('unzip', ['-Z1', path.join(root, 'exports/past.zip')], { encoding: 'utf8' }).replaceAll('\r\n', '\n')).toBe('team/runs/past/report.md\n');
     expect(snapshot(old)).toEqual(before);
     expect(fs.existsSync(path.join(root, 'artifacts/runs/past'))).toBe(false);
   });
@@ -130,19 +153,19 @@ describe('canonical writes and historical evidence reads', () => {
     fs.mkdirSync(path.join(root, 'team/runs/shared'), { recursive: true });
     fs.mkdirSync(path.join(root, 'artifacts/runs/shared'), { recursive: true });
     fs.mkdirSync(path.join(root, 'artifacts/runs/other'), { recursive: true });
-    fs.chmodSync(path.join(root, 'team/runs/shared'), 0);
+    const restoreRunRead = denyDirectoryRead(path.join(root, 'team/runs/shared'));
     try {
       expect(() => readRunDirFor(root, 'shared')).toThrow('RUN_ID_AMBIGUOUS');
       expect(readRunDirFor(root, 'other')).toBe(path.join(root, 'artifacts/runs/other'));
       expect(buildTraceabilityView(root).runs.directory_issues?.some(issue => issue.code === 'RUN_DIRECTORY_UNREADABLE')).toBe(true);
-    } finally { fs.chmodSync(path.join(root, 'team/runs/shared'), 0o755); }
+    } finally { restoreRunRead(); }
     await handleOrchRunCreate({ project_root: root, run_id: 'other' });
-    fs.chmodSync(path.join(root, 'team/runs'), 0);
+    const restoreRootRead = denyDirectoryRead(path.join(root, 'team/runs'));
     try {
       expect(buildTraceabilityView(root).runs.total_directories).toBe(2);
       expect(buildTraceabilityView(root).runs.directory_issues?.[0]?.code).toBe('HISTORICAL_RUN_ROOT_UNREADABLE');
       await expect(handleOrchRunStatus({ project_root: root })).resolves.toMatchObject({ run_id: 'other' });
-    } finally { fs.chmodSync(path.join(root, 'team/runs'), 0o755); }
+    } finally { restoreRootRead(); }
   });
 
   it('rejects historical staging, execution and resume while reconnecting runtime in place', async () => {
@@ -154,7 +177,7 @@ describe('canonical writes and historical evidence reads', () => {
       expect(() => stageContentInRunDir({ runId: 'fresh', runDir, contentType: 'section_output', content: 'overwrite' })).toThrow('HISTORICAL_RUN_READ_ONLY');
     }
     fs.mkdirSync(path.join(root, 'artifacts/runs'), { recursive: true });
-    fs.symlinkSync(path.join(root, 'artifacts/runs'), path.join(root, 'run-alias'));
+    fs.symlinkSync(path.join(root, 'artifacts/runs'), path.join(root, 'run-alias'), process.platform === 'win32' ? 'junction' : 'dir');
     expect(() => stageContentInRunDir({ runId: 'fresh', runDir: path.join(root, 'run-alias/past'), contentType: 'section_output', content: 'overwrite' })).toThrow('HISTORICAL_RUN_READ_ONLY');
     expect(() => stageContentInRunDir({ runId: 'past', runDir: old, contentType: 'section_output', content: 'overwrite' })).toThrow('HISTORICAL_RUN_READ_ONLY');
     await expect(executeComputationManifest({ projectRoot: root, runId: 'past', runDir: old, manifestPath: path.join(old, 'manifest.json'), dryRun: true })).rejects.toThrow('HISTORICAL_RUN_READ_ONLY');

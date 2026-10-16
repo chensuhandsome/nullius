@@ -12,10 +12,11 @@ authors = [{ name = "fkg" }]
 dependencies = []
 
 [tool.setuptools]
-package-dir = { "" = "src" }
+package-dir = { "" = "src", "nullius_windows" = "../shared/python/nullius_windows" }
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "../shared/python"]
+include = ["project_contracts*", "nullius_windows*"]
 
 [tool.setuptools.package-data]
 project_contracts = ["specs/*.json", "scaffold_templates/*"]

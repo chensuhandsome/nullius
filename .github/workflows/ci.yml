@@ -7,6 +7,53 @@ on:
     branches: [main]
 
 jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Native tool prerequisites
+        shell: pwsh
+        run: |
+          choco install sqlite zip unzip --no-progress -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install -r meta/scripts/codegen-requirements.txt pytest pyyaml pydantic uv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "NULLIUS_PYTHON=$((Get-Command python).Source)" >> $env:GITHUB_ENV
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - name: Install and check native entrypoints
+        shell: pwsh
+        run: |
+          .\scripts\install-windows-runtime.ps1 -PythonPath $env:NULLIUS_PYTHON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "$env:USERPROFILE\.local\bin" >> $env:GITHUB_PATH
+          "C:\Program Files\Git\bin" >> $env:GITHUB_PATH
+          Split-Path -Parent $env:NULLIUS_PYTHON >> $env:GITHUB_PATH
+          nullius runtime path
+      - run: pnpm codegen:check
+      - name: Native workspace regression
+        run: |
+          pnpm -r --workspace-concurrency=2 test
+      - name: Native Python regression
+        run: |
+          python -m pytest packages/shared/python/tests packages/project-contracts/tests packages/skills-market/tests skills/review-swarm/tests/test_runtime_capture_observation.py skills/review-swarm/tests/test_windows_process_runtime.py skills/research-harness/tests/test_independent_reproduction_check.py meta/tests/test_generated_verification_bindings.py -q
+      - name: Front-door and governance locks
+        run: |
+          $testFiles = (Get-ChildItem scripts/tests/*.test.mjs).FullName
+          node --test @testFiles
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/check-shell-boundary-anti-drift.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm check:governance-sync
+
   build-and-test:
     runs-on: ubuntu-latest
     strategy:

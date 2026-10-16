@@ -84,7 +84,7 @@ export async function handleOrchRunExport(
       relative_path: run.relative_path,
       historical_read_only: run.historical,
       ambiguous: run.ambiguous,
-      files: fs.readdirSync(path.join(projectRoot, run.relative_path)).map(file => path.join(run.relative_path, file)).slice(0, 50),
+      files: fs.readdirSync(path.join(projectRoot, run.relative_path)).map(file => path.posix.join(run.relative_path, file)).slice(0, 50),
       uri: `orch://runs/${run.run_id}`,
     }));
     result.artifact_run_errors = inventory.issues;

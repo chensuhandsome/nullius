@@ -58,11 +58,24 @@ function antiDriftWiringErrors(scripts: string[], workflow: string): string[] {
 describe('CI anti-drift wiring', () => {
   const repoRoot = repoRootFromThisFile();
   const scripts = discoverAntiDriftScripts(repoRoot);
-  const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf-8');
+  const fullWorkflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf-8');
+  // Every lock remains wired once in the full Ubuntu gate. Platform jobs may
+  // independently repeat a lock without duplicating it in that baseline gate.
+  const workflow = fullWorkflow.split(/^  build-and-test:\r?$/m)[1]?.split(/^  [a-z][a-z0-9-]*:\r?$/m)[0] ?? '';
 
-  it('wires every repository anti-drift lock into CI exactly once', () => {
+  it('wires every repository anti-drift lock into the Ubuntu CI gate exactly once', () => {
     expect(scripts.length).toBeGreaterThan(0);
     expect(antiDriftWiringErrors(scripts, workflow)).toEqual([]);
+  });
+
+  it('retains a separate native Windows front-door and process-ownership gate', () => {
+    const native = fullWorkflow.split(/^  build-and-test:\r?$/m)[0]!;
+    expect(native).toContain('runs-on: windows-latest');
+    for (const entry of ['install-windows-runtime.ps1', 'pnpm -r --workspace-concurrency=2 test',
+      'packages/shared/python/tests', 'project-contracts/tests', 'packages/skills-market/tests',
+      'test_windows_process_runtime.py', 'test_independent_reproduction_check.py', 'pnpm codegen:check']) {
+      expect(native).toContain(entry);
+    }
   });
 
   it('rejects removal of every discovered anti-drift lock from CI', () => {

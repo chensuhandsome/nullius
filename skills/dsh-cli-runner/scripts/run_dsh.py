@@ -8,11 +8,27 @@ import json
 import math
 import os
 from pathlib import Path
+import subprocess
+import sys
+
+# Resolve only the shipped skill payload or this exact source checkout.
+if sys.platform == "win32":
+    _script_dir = Path(__file__).resolve().parent
+    _scripts = _script_dir.parent if _script_dir.name == "bin" else _script_dir
+    _windows_runtime = _scripts / "_runtime"
+    if not (_windows_runtime / "nullius_windows/process.py").is_file():
+        _windows_runtime = _scripts.parents[2] / "packages/shared/python"
+    if not (_windows_runtime / "nullius_windows/process.py").is_file():
+        raise RuntimeError("Windows process support is missing; refresh this skill installation")
+    sys.path.insert(0, str(_windows_runtime))
+    from nullius_windows.process import WindowsJobProcess, child_exited as _windows_child_exited, signal_process_tree as _windows_signal_tree, stop_process as _windows_stop
+
+def _OwnedPopen(*args, **kwargs):
+    return WindowsJobProcess(*args, **kwargs) if sys.platform == "win32" else subprocess.Popen(*args, **kwargs)
+
 import re
 import shutil
 import signal
-import subprocess
-import sys
 import tempfile
 import time
 
@@ -175,6 +191,9 @@ def check_events(events: list[dict], provider: str, model: str, cap: int | None,
 
 
 def terminate(proc: subprocess.Popen) -> None:
+    if sys.platform == "win32":
+        _windows_stop(proc)
+        return
     # Repeated user cancellation must not abort cleanup and orphan the group.
     handlers = {s: signal.signal(s, signal.SIG_IGN) for s in (signal.SIGTERM, signal.SIGINT)}
     try:
@@ -269,7 +288,7 @@ def main(argv: list[str] | None = None) -> int:
             remaining = args.timeout_secs - (time.monotonic() - started)
             if remaining <= 0:
                 raise RunError("deadline exhausted before launch")
-            proc = subprocess.Popen(cmd, cwd=run / "workspace", env=env, stdout=sout, stderr=serr, start_new_session=True)
+            proc = _OwnedPopen(cmd, cwd=run / "workspace", env=env, stdout=sout, stderr=serr, start_new_session=True)
             old_term = signal.getsignal(signal.SIGTERM)
             def cancel(_signum, _frame):
                 raise KeyboardInterrupt
@@ -285,6 +304,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise RunError("deadline or cancellation interrupted the local process group")
             finally:
                 signal.signal(signal.SIGTERM, old_term)
+                if sys.platform == "win32":
+                    _windows_stop(proc)
         receipt["exit_code"] = proc.returncode
         raw = stdout.read_bytes()
         if raw.strip():

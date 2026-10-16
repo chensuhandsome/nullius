@@ -1,3 +1,4 @@
+import { createReparseFixture } from './platform-fixtures.js';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -241,7 +242,7 @@ describe('result registry — stage-2 r1 review locks', () => {
     const outside = path.join(os.tmpdir(), `outside-${Date.now()}.json`);
     fs.writeFileSync(outside, '{}');
     try {
-      fs.symlinkSync(outside, path.join(projectRoot, 'artifacts', 'runs', 'run-1', 'link.json'));
+      createReparseFixture(outside, path.join(projectRoot, 'artifacts', 'runs', 'run-1', 'link.json'));
       expect(() => setCurrentResult(projectRoot, {
         resultId: 'r', runId: 'run-1', artifactRelPath: 'artifacts/runs/run-1/link.json',
       })).toThrow(/symlink/);

@@ -13,6 +13,7 @@ import { createRunArtifactRef } from './computation/artifact-refs.js';
 import { assertNoSymlinkComponents, resolveWithinRoot } from './computation/path-safety.js';
 import { loadVerifiedRunJson, resolveVerifiedRunArtifact } from './orch-tools/validation-chain-binding.js';
 import { installedRuntimeRoot } from './cli-runtime.js';
+import { pythonExecutable } from './python-runtime.js';
 import { stampRunDirectory } from './run-stamp.js';
 import { notebookBudgets, notebookShellWord, NotebookRequestCapacityError, assessNotebookRequestCapacity, executeNotebookBatches, assessNotebookBatches, loadNotebookBatchHistory, type NotebookBudgets, type BatchExecution, type BatchPlan } from './notebook-review-batches.js';
 import { textOutsideNotebookCurrentState } from './notebook-current-state.js';
@@ -474,7 +475,7 @@ function assessNotebookExecution(projectRoot: string, runDir: string, runId: str
       let freshnessScript: string;
       try { freshnessScript = path.join(installedRuntimeRoot(), 'skills/review-swarm/scripts/bin/verify_review_freshness.py'); }
       catch { return { ...result, status: 'unavailable', reason: 'Installed review-swarm runtime is unavailable; history remains readable.' }; }
-      const live = spawnSync('python3', [freshnessScript, '--review-dir', reviewDir], { encoding: 'utf8', timeout: 10000, maxBuffer: 4 * 1024 * 1024 });
+      const live = spawnSync(pythonExecutable(), [freshnessScript, '--review-dir', reviewDir], { encoding: 'utf8', timeout: 10000, maxBuffer: 4 * 1024 * 1024 });
       if (live.error || live.status !== 0) return { ...result, status: live.status === 3 ? 'stale' : 'unavailable', reason: 'Current review-swarm input freshness cannot be confirmed.' };
       const freshness = JSON.parse(live.stdout);
       if (freshness.status !== 'FRESH' || freshness.manifest_sha256 !== execution.manifest_ref.sha256) return { ...result, status: 'stale', reason: 'Current reviewer inputs are stale.' };
@@ -722,7 +723,7 @@ export async function runNotebookReview(projectRoot: string, options: { model: s
         stdout_ref: createRunArtifactRef(runId, runDir, stdoutPath, 'review_stdout'), stderr_ref: createRunArtifactRef(runId, runDir, stderrPath, 'review_stderr'),
         captured_refs: [], request_budgets: budgets, batch_execution_ref: createRunArtifactRef(runId, runDir, batchPath, 'notebook_batch_aggregate') };
     } else {
-    const command = ['python3', script, '--model', options.model, '--role', 'notebook', '--artifact', path.join(projectRoot, 'research_notebook.md'),
+    const command = [pythonExecutable(), script, '--model', options.model, '--role', 'notebook', '--artifact', path.join(projectRoot, 'research_notebook.md'),
       '--context', scopePath, '--out-dir', path.join(runDir, 'review'), '--timeout-secs', String(options.timeoutSecs), '--max-attempts', '1', '--max-prompt-bytes', String(budgets.contextBytes), '--context-tokens', String(budgets.contextTokens)];
     if (options.model.startsWith('claude/')) command.push('--claude-live-capture');
     for (const dep of scope.dependencies) command.push('--context', path.join(projectRoot, dep.path));

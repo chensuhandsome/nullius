@@ -111,7 +111,9 @@ export function buildSanitizedCheckerEnvironment(
   options: { pythonModulePath?: string } = {},
 ): SanitizedCheckerEnvironmentV1 {
   const runtimeDir = path.dirname(runtime.canonical_path);
-  const pathEntries = [runtimeDir, '/usr/bin', '/bin'].filter(
+  const pathEntries = [runtimeDir, ...(process.platform === 'win32'
+    ? [path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')]
+    : ['/usr/bin', '/bin'])].filter(
     (value, index, values) => values.indexOf(value) === index,
   );
   const variables: Record<string, string> = {
@@ -122,6 +124,10 @@ export function buildSanitizedCheckerEnvironment(
     PYTHONNOUSERSITE: '1',
     PYTHONSAFEPATH: '1',
     TZ: 'UTC',
+    ...(process.platform === 'win32' ? {
+      SystemRoot: process.env.SystemRoot ?? 'C:\\Windows',
+      WINDIR: process.env.SystemRoot ?? 'C:\\Windows',
+    } : {}),
   };
   if (options.pythonModulePath !== undefined) {
     variables.PYTHONPATH = path.resolve(options.pythonModulePath);

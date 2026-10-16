@@ -64,7 +64,7 @@ describe('the home directory is never a lifecycle project root', () => {
 
   it('both recognize the home directory through a symbolic-link alias', () => {
     const alias = `${home}-alias`;
-    fs.symlinkSync(home, alias);
+    fs.symlinkSync(home, alias, process.platform === 'win32' ? 'junction' : 'dir');
     try {
       expect(findLifecycleProjectRoot(alias)).toBeNull();
       expect(findLifecycleProjectRoot(path.join(alias, 'project'))).toBe(path.join(alias, 'project'));

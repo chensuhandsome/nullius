@@ -1,6 +1,7 @@
 """Actual Popen protocol observations; offline stubs do not certify model semantics."""
 import hashlib
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -22,7 +23,7 @@ def authority(tmp_path, monkeypatch):
 def observed(tmp_path, capture=True, exit_code=0, context_tokens=None):
     project = tmp_path / "project"; project.mkdir()
     system = project / "system.md"; system.write_bytes(b"neutral original system\r\n")
-    prompt = project / "prompt.md"; prompt.write_text("Complete original request λ\n")
+    prompt = project / "prompt.md"; prompt.write_text("Complete original request λ\n", encoding="utf-8")
     output = project / "report.txt"
     hashes = [hashlib.sha256(p.read_bytes()).hexdigest() for p in (system,prompt)]
     root = Path(str(output) + ".attempts") / "run.new"
@@ -32,13 +33,13 @@ def observed(tmp_path, capture=True, exit_code=0, context_tokens=None):
     result = {"type":"result","subtype":"success","is_error":False,"result":"Original full report λ\n", "usage":{"input_tokens":17,"output_tokens":4}}
     script = project / "runner.py"
     code = 'from pathlib import Path\nimport sys\n'
-    code += f'Path({str(output)!r}).write_text({result["result"]!r})\n'
+    code += f'Path({str(output)!r}).write_bytes({result["result"].encode("utf-8")!r})\n'
     if capture:
         code += f'root=Path({str(root)!r});root.mkdir(parents=True)\n'
         code += f'(root/"budget.json").write_text({json.dumps(budget)!r})\n'
         code += f'(root/"attempt_1.events.result.json").write_text({json.dumps(result)!r})\n'
         code += f'(root/"attempt_1.events.jsonl").write_text({(json.dumps(result)+chr(10))!r})\n'
-    code += f'sys.exit({exit_code})\n'; script.write_text(code)
+    code += f'sys.exit({exit_code})\n'; script.write_text(code, encoding="utf-8")
     cmd = [sys.executable,str(script),'--system-prompt-file',str(system),'--prompt-file',str(prompt),'--out',str(output)]
     process=run_multi_task._run_with_timeout(cmd,timeout_secs=10,context_tokens=context_tokens)
     return output, receipt if capture else None, hashes, process, cmd
@@ -49,8 +50,16 @@ def test_actual_process_issues_full_request_capture_and_report_observation(tmp_p
     assert process['exit_code']==0
     result=runtime.verify_capture_observation(budget,output,hashes,str(Path.cwd()))
     assert result['valid'] is True
-    assert (runtime._authority_dir()/'authority.key').stat().st_mode & 0o077 == 0
-    assert runtime._authority_dir().stat().st_mode & 0o077 == 0
+    if os.name == 'nt':
+        from nullius_windows.filesystem import read_or_create_private_key, security_sddl
+        # This validates native owner/DACL protection, reparse rejection and
+        # link count; Unix mode bits do not describe Windows permissions.
+        assert len(read_or_create_private_key(runtime._authority_dir(), create=False)) == 32
+        assert 'D:P' in security_sddl(runtime._authority_dir())
+        assert 'D:P' in security_sddl(runtime._authority_dir()/'authority.key')
+    else:
+        assert (runtime._authority_dir()/'authority.key').stat().st_mode & 0o077 == 0
+        assert runtime._authority_dir().stat().st_mode & 0o077 == 0
 
 
 @pytest.mark.parametrize('change',['budget','report','events','result','extra','hmac','request','cwd','skip_capture'])

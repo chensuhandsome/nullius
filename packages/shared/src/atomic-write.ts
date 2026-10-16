@@ -10,6 +10,11 @@
  * lived in `orchestrator/computation/io.ts` and
  * `hep-mcp/core/atomicWrite.ts`.
  *
+ * On Windows these primitives flush file contents and perform same-volume
+ * atomic renames. Node does not expose parent-directory fsync there, so the
+ * POSIX directory-entry power-loss guarantee below does not apply. Windows
+ * chmod also controls the read-only attribute rather than owner/group ACLs.
+ *
  * ## The sequence (matches `run-manifest.ts:82-97`)
  *
  *   1. mkdirSync(dirname, recursive)
@@ -152,14 +157,14 @@ export function unlinkIfSameFile(filePath: string, identity: FileIdentity | unde
  * Opens with `'r'` because directory-fsync only needs read access on
  * Linux/macOS; `'w'` would fail with EISDIR on most systems.
  *
- * **Windows note**: opening a directory + `FlushFileBuffers` is
- * undefined on NTFS and returns ERROR_ACCESS_DENIED. This codebase
- * targets macOS + Linux (the nullius project's CI matrix), and
- * Node.js itself documents `fsync` on a directory fd as
- * platform-dependent. If a Windows port is ever added, gate this on
- * `process.platform`.
+ * **Windows durability boundary**: Node cannot open/fsync a parent directory
+ * on Windows. The write and append primitives still flush the file contents,
+ * and same-volume rename supplies atomic visibility; this function performs
+ * no directory flush there and makes no POSIX directory-entry crash-durability
+ * claim. Filesystem/device guarantees after power loss remain platform-specific.
  */
 export function fsyncParentDirectoryDurable(filePath: string): void {
+  if (process.platform === 'win32') return;
   const dir = path.dirname(filePath);
   const dirFd = fs.openSync(dir, 'r');
   audit({ kind: 'open', path: dir, flags: 'r', fd: dirFd });

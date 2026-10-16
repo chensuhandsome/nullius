@@ -11,7 +11,6 @@ import hashlib
 import hmac
 import json
 import os
-import pwd
 import secrets
 import stat
 import subprocess
@@ -19,6 +18,22 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+if os.name == "nt":
+    _script = Path(__file__).resolve()
+    _local_runtime = _script.parents[1] / "_runtime"
+    _source_runtime = _script.parents[4] / "packages" / "shared" / "python"
+    _windows_runtime = (_local_runtime if (_local_runtime / "nullius_windows" / "filesystem.py").is_file()
+                        else _source_runtime)
+    if not (_windows_runtime / "nullius_windows" / "filesystem.py").is_file():
+        raise ImportError("review-swarm is missing its bundled Windows runtime implementation")
+    sys.path.insert(0, str(_windows_runtime))
+    from nullius_windows.filesystem import native_authority_directory, read_or_create_private_key
+    from nullius_windows.process import WindowsJobProcess
+    _PROCESS_TYPES = (subprocess.Popen, WindowsJobProcess)
+else:
+    import pwd
+    _PROCESS_TYPES = (subprocess.Popen,)
 
 _LIVE: dict[int, tuple[object, subprocess.Popen]] = {}
 from complete_assistant_text import validate_stream_report
@@ -80,7 +95,7 @@ def _member_prepare_process(token: object, kind: str, cmd: list[str], inputs: li
 def _member_bind_process(token: object, pending: object, proc: subprocess.Popen) -> None:
     state = _member_state(token)
     record = state["pending"].get(id(pending))
-    if record is None or record["token"] is not pending or not isinstance(proc, subprocess.Popen) or proc.pid <= 0:
+    if record is None or record["token"] is not pending or not isinstance(proc, _PROCESS_TYPES) or proc.pid <= 0:
         raise ValueError("unavailable: no actual member subprocess")
     record["proc"] = proc
 
@@ -196,6 +211,8 @@ def verify_member_episode(evidence: dict, project_root: Path) -> dict:
 
 
 def _authority_dir() -> Path:
+    if os.name == "nt":
+        return native_authority_directory()
     home = Path(pwd.getpwuid(os.getuid()).pw_dir)
     base = home / "Library/Application Support" if sys.platform == "darwin" else home / ".local/state"
     return base / "nullius/capture-observation"
@@ -203,6 +220,8 @@ def _authority_dir() -> Path:
 
 def _key(*, create: bool) -> bytes:
     directory = _authority_dir()
+    if os.name == "nt":
+        return read_or_create_private_key(directory, create=create)
     if create:
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     ds = directory.lstat()
@@ -270,7 +289,7 @@ def _prepare(cmd: list[str], *, context_tokens: int | None = None) -> dict | Non
 
 
 def _bind(state: dict | None, proc: subprocess.Popen) -> None:
-    if state is not None and isinstance(proc, subprocess.Popen) and proc.pid > 0:
+    if state is not None and isinstance(proc, _PROCESS_TYPES) and proc.pid > 0:
         _LIVE[id(state)] = (state["nonce"], proc)
 
 

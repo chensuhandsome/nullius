@@ -1,7 +1,7 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { mkdirSync } from 'fs';
 import { tmpdir } from 'os';
-import { join, resolve } from 'path';
+import { join, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { handleJsonRpcRequest, parseJsonRpcLine } from '../src/rpc/jsonrpc.js';
@@ -52,7 +52,7 @@ function collectSnapshot(rootDir: string): Record<string, unknown> {
       if (!entry.name.endsWith('.json') && !entry.name.endsWith('.jsonl')) {
         continue;
       }
-      const relativePath = fullPath.slice(rootDir.length + 1);
+      const relativePath = fullPath.slice(rootDir.length + 1).split(sep).join('/');
       if (relativePath.endsWith('.jsonl')) {
         snapshot[relativePath] = readFileSync(fullPath, 'utf8')
           .split('\n')

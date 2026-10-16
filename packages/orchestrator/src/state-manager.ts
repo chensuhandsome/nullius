@@ -1320,7 +1320,7 @@ export class StateManager {
     const rel = path.relative(this.repoRoot, p);
     // If relative path escapes repo root, return absolute
     if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) return p;
-    return rel;
+    return rel.split(path.sep).join('/');
   }
 
   /** Validate plan structure and branching cross-field invariants.

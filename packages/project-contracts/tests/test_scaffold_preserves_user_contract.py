@@ -24,6 +24,7 @@ import sys
 import hashlib
 import os
 import stat
+import subprocess
 import tempfile
 from unittest import mock
 import unittest
@@ -51,6 +52,15 @@ from project_contracts.research_contract import (
     _collect_notebook_sections,
     sync_research_contract,
 )
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as error:
+        if os.name == "nt" and error.winerror == 1314:
+            raise unittest.SkipTest("file symlinks require Windows Developer Mode; native junction and hardlink checks run separately")
+        raise
 
 
 CURATED_CONTRACT = """# Research contract
@@ -342,8 +352,8 @@ class MatureContractIsNeverRewrittenTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "proj"
             root.mkdir(parents=True)
-            (root / "research_contract.md").write_text(
-                load_scaffold_template(RESEARCH_CONTRACT), encoding="utf-8"
+            (root / "research_contract.md").write_bytes(
+                load_scaffold_template(RESEARCH_CONTRACT).encode("utf-8")
             )
             (root / "research_notebook.md").write_text(
                 "# N\n\n## Scope\n\nT.\n\n## References\n\n- A, [DOI](https://ex.org/a)\n",
@@ -421,7 +431,7 @@ class MatureContractIsNeverRewrittenTest(unittest.TestCase):
                 with self.subTest(destination=label):
                     if symlink is not None:
                         symlink.unlink(missing_ok=True)
-                        symlink.symlink_to(Path("..") / "research_contract.md")
+                        _symlink_or_skip(symlink, Path("..") / "research_contract.md")
                     before = _project_digest(root)
                     with self.assertRaises(ProposalWouldOverwriteProjectFile):
                         propose_research_contract_block(
@@ -558,7 +568,7 @@ class MatureContractIsNeverRewrittenTest(unittest.TestCase):
 
             def plant_after_check(dest, **kwargs):
                 real_guard(dest, **kwargs)
-                dest.symlink_to(contract)
+                _symlink_or_skip(dest, contract)
 
             before = _project_digest(root)
             with mock.patch.object(
@@ -638,7 +648,11 @@ class MatureContractIsNeverRewrittenTest(unittest.TestCase):
             def swap_parent(dest, **kwargs):
                 real_guard(dest, **kwargs)
                 os.rename(root / "safe", root / "safe_gone")
-                os.symlink(root / "owned", root / "safe")
+                if os.name == "nt":
+                    subprocess.run([os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", "mklink", "/J",
+                                    str(root / "safe"), str(root / "owned")], capture_output=True, check=True)
+                else:
+                    os.symlink(root / "owned", root / "safe")
 
             with mock.patch.object(
                 research_contract, "_assert_safe_proposal_destination", swap_parent
@@ -658,7 +672,7 @@ class MatureContractIsNeverRewrittenTest(unittest.TestCase):
             root = Path(td) / "proj"
             root.mkdir(parents=True)
             contract = root / "research_contract.md"
-            contract.write_text(load_scaffold_template(RESEARCH_CONTRACT), encoding="utf-8")
+            contract.write_bytes(load_scaffold_template(RESEARCH_CONTRACT).encode("utf-8"))
             (root / "research_notebook.md").write_text("# N\n\n## Scope\n\nT.\n", encoding="utf-8")
             victim = root / "victim.md"
             victim.write_text("VICTIM\n", encoding="utf-8")
@@ -668,7 +682,7 @@ class MatureContractIsNeverRewrittenTest(unittest.TestCase):
                 verdict = real_check(text)
                 if verdict and not contract.is_symlink():
                     contract.unlink()
-                    contract.symlink_to(victim)
+                    _symlink_or_skip(contract, victim)
                 return verdict
 
             # The descriptor is held from the content check through to the
@@ -686,15 +700,16 @@ class MatureContractIsNeverRewrittenTest(unittest.TestCase):
             root = Path(td) / "proj"
             root.mkdir(parents=True)
             contract = root / "research_contract.md"
-            contract.write_text(load_scaffold_template(RESEARCH_CONTRACT), encoding="utf-8")
+            contract.write_bytes(load_scaffold_template(RESEARCH_CONTRACT).encode("utf-8"))
             (root / "research_notebook.md").write_text("# N\n\n## Scope\n\nT.\n", encoding="utf-8")
             contract.chmod(0o600)
+            expected_mode = _project_modes(root)["research_contract.md"] if os.name == "nt" else 0o600
 
             _sync(root)
 
-            self.assertEqual(0o600, _project_modes(root)["research_contract.md"])
+            self.assertEqual(expected_mode, _project_modes(root)["research_contract.md"])
 
-    @unittest.skipIf(os.geteuid() == 0, "root holds CAP_DAC_OVERRIDE: os.access ignores the mode")
+    @unittest.skipIf(getattr(os, "geteuid", lambda: -1)() == 0, "root holds CAP_DAC_OVERRIDE: os.access ignores the mode")
     def test_a_read_only_destination_is_refused_rather_than_replaced(self):
         # rename() needs write permission on the directory, not on the file it
         # replaces, so the atomic writer silently overwrote where the previous
@@ -703,7 +718,7 @@ class MatureContractIsNeverRewrittenTest(unittest.TestCase):
             root = Path(td) / "proj"
             root.mkdir(parents=True)
             contract = root / "research_contract.md"
-            contract.write_text(load_scaffold_template(RESEARCH_CONTRACT), encoding="utf-8")
+            contract.write_bytes(load_scaffold_template(RESEARCH_CONTRACT).encode("utf-8"))
             (root / "research_notebook.md").write_text("# N\n\n## Scope\n\nT.\n", encoding="utf-8")
             contract.chmod(0o444)
             before = contract.read_bytes()
@@ -722,10 +737,11 @@ class MatureContractIsNeverRewrittenTest(unittest.TestCase):
             )
             proposal = Path(first["proposal_path"])
             proposal.chmod(0o600)
+            expected_mode = stat.S_IMODE(proposal.stat().st_mode) if os.name == "nt" else 0o600
             propose_research_contract_block(
                 repo_root=root, project_policy=PROJECT_POLICY_REAL_PROJECT
             )
-            self.assertEqual(0o600, stat.S_IMODE(proposal.stat().st_mode))
+            self.assertEqual(expected_mode, stat.S_IMODE(proposal.stat().st_mode))
 
     @unittest.skipUnless(hasattr(os, "listxattr"), "platform exposes no extended attributes")
     def test_extended_attributes_survive_the_replacement(self):
@@ -747,6 +763,7 @@ class MatureContractIsNeverRewrittenTest(unittest.TestCase):
             )
             self.assertEqual(b"kept", os.getxattr(proposal, "user.nullius_test"))
 
+    @unittest.skipIf(os.name == "nt", "POSIX chmod/xattr sequence; native Windows checks ACLs before writing staged bytes")
     def test_attributes_are_carried_before_the_mode_is_restored(self):
         """The ordering, locked by observing the call sequence.
 
@@ -842,6 +859,7 @@ class MatureContractIsNeverRewrittenTest(unittest.TestCase):
                 Path(result["proposal_path"]).read_text(encoding="utf-8"),
             )
 
+    @unittest.skipIf(os.name == "nt", "POSIX dir_fd fault injection; native descriptor and before-commit swap tests cover Windows")
     def test_a_destination_swapped_during_validation_is_refused(self):
         # The mode, the attributes and the refusal are all bound to one
         # descriptor. Putting a different inode at the name between the open and
@@ -885,7 +903,7 @@ class MatureContractIsNeverRewrittenTest(unittest.TestCase):
             root = Path(td) / "proj"
             root.mkdir(parents=True)
             contract = root / "research_contract.md"
-            contract.write_text(load_scaffold_template(RESEARCH_CONTRACT), encoding="utf-8")
+            contract.write_bytes(load_scaffold_template(RESEARCH_CONTRACT).encode("utf-8"))
             (root / "research_notebook.md").write_text("# N\n\n## Scope\n\nT.\n", encoding="utf-8")
             curated = root / "curated.md"
             curated.write_text("# CURATED — eighteen months of work\n", encoding="utf-8")
@@ -895,6 +913,11 @@ class MatureContractIsNeverRewrittenTest(unittest.TestCase):
             def check_then_swap(text):
                 verdict = real_check(text)
                 if verdict and not swapped["done"]:
+                    if os.name == "nt":
+                        # MoveFileEx cannot replace an open destination on
+                        # Windows; moving the validated inode away first still
+                        # exercises the same changed-name attack.
+                        contract.rename(root / "validated-contract.md")
                     os.replace(curated, contract)
                     swapped["done"] = True
                 return verdict
@@ -1000,6 +1023,13 @@ class MatureContractIsNeverRewrittenTest(unittest.TestCase):
         # takes the suite red); NOT closing was not — a "this flag looks
         # redundant" cleanup leaked one descriptor per call.
         def open_fds() -> int:
+            if os.name == "nt":
+                import ctypes
+                kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+                count = ctypes.c_ulong()
+                if not kernel.GetProcessHandleCount(ctypes.c_void_p(-1), ctypes.byref(count)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                return count.value
             for probe in ("/dev/fd", "/proc/self/fd"):
                 if os.path.isdir(probe):
                     return len(os.listdir(probe))

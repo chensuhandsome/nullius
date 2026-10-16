@@ -35,7 +35,7 @@ describe('hep-mcp project_root admission', () => {
     outside = path.join(tmpRoot, 'outside');
     fs.mkdirSync(path.join(project, '.nullius'), { recursive: true });
     fs.mkdirSync(outside);
-    fs.symlinkSync(project, alias, 'dir');
+    fs.symlinkSync(project, alias, process.platform === 'win32' ? 'junction' : 'dir');
     process.env.HEP_DATA_DIR = path.join(tmpRoot, 'env-hep-data');
   });
 
@@ -63,7 +63,7 @@ describe('hep-mcp project_root admission', () => {
       ['canonically', false],
       ['through the alias', true],
     ])('refuses a symlinked artifacts directory below the root (root spelled %s)', async (_label, viaAlias) => {
-      fs.symlinkSync(outside, path.join(project, 'artifacts'), 'dir');
+      fs.symlinkSync(outside, path.join(project, 'artifacts'), process.platform === 'win32' ? 'junction' : 'dir');
       const projectRoot = viaAlias ? alias : project;
 
       const result = await handleToolCall('hep_health', { project_root: projectRoot, check_inspire: false });
@@ -75,7 +75,7 @@ describe('hep-mcp project_root admission', () => {
 
     it('refuses a symlinked hep-mcp data directory below the root', async () => {
       fs.mkdirSync(path.join(project, 'artifacts'));
-      fs.symlinkSync(outside, path.join(project, 'artifacts', 'hep-mcp'), 'dir');
+      fs.symlinkSync(outside, path.join(project, 'artifacts', 'hep-mcp'), process.platform === 'win32' ? 'junction' : 'dir');
 
       const result = await handleToolCall('hep_health', { project_root: alias, check_inspire: false });
 
@@ -86,7 +86,7 @@ describe('hep-mcp project_root admission', () => {
 
     it('refuses a dangling artifacts symlink instead of creating its target', async () => {
       const missing = path.join(tmpRoot, 'missing');
-      fs.symlinkSync(missing, path.join(project, 'artifacts'), 'dir');
+      fs.symlinkSync(missing, path.join(project, 'artifacts'), process.platform === 'win32' ? 'junction' : 'dir');
 
       const result = await handleToolCall('hep_health', { project_root: project, check_inspire: false });
 
@@ -97,7 +97,7 @@ describe('hep-mcp project_root admission', () => {
 
     it('refuses a symlinked PDG directory derived from the root', async () => {
       fs.mkdirSync(path.join(project, 'artifacts', 'hep-mcp'), { recursive: true });
-      fs.symlinkSync(outside, path.join(project, 'artifacts', 'hep-mcp', 'pdg'), 'dir');
+      fs.symlinkSync(outside, path.join(project, 'artifacts', 'hep-mcp', 'pdg'), process.platform === 'win32' ? 'junction' : 'dir');
 
       const result = await handleToolCall('hep_health', { project_root: alias, check_inspire: false });
 
@@ -145,7 +145,7 @@ describe('hep-mcp project_root admission', () => {
     it('still refuses alias paths that land outside the data directory', () => {
       const dataDir = path.join(project, 'artifacts', 'hep-mcp');
       fs.mkdirSync(dataDir, { recursive: true });
-      fs.symlinkSync(outside, path.join(dataDir, 'linkout'), 'dir');
+      fs.symlinkSync(outside, path.join(dataDir, 'linkout'), process.platform === 'win32' ? 'junction' : 'dir');
 
       // Inside the project but outside its data directory.
       expect(() => resolvePathWithinParent(dataDir, path.join(alias, 'notes'), 'output_dir')).toThrow(/must be within/);
@@ -160,8 +160,8 @@ describe('hep-mcp project_root admission', () => {
       const dataDir = path.join(project, 'artifacts', 'hep-mcp');
       const evidenceDir = path.join(dataDir, 'evidence');
       fs.mkdirSync(evidenceDir, { recursive: true });
-      fs.symlinkSync(path.join(outside, 'new.jsonl'), path.join(evidenceDir, 'catalog.jsonl'));
-      fs.symlinkSync(path.join(outside, 'missing-dir'), path.join(dataDir, 'linkdir'), 'dir');
+      fs.symlinkSync(path.join(outside, 'new.jsonl'), path.join(evidenceDir, 'catalog.jsonl'), process.platform === 'win32' ? 'junction' : 'file');
+      fs.symlinkSync(path.join(outside, 'missing-dir'), path.join(dataDir, 'linkdir'), process.platform === 'win32' ? 'junction' : 'dir');
 
       for (const root of [project, alias]) {
         const leaf = path.join(root, 'artifacts', 'hep-mcp', 'evidence', 'catalog.jsonl');
@@ -175,7 +175,7 @@ describe('hep-mcp project_root admission', () => {
     it('still accepts a live symlink below the data directory that stays inside it', () => {
       const dataDir = path.join(project, 'artifacts', 'hep-mcp');
       fs.mkdirSync(path.join(dataDir, 'evidence'), { recursive: true });
-      fs.symlinkSync(path.join(dataDir, 'evidence'), path.join(dataDir, 'inner-link'), 'dir');
+      fs.symlinkSync(path.join(dataDir, 'evidence'), path.join(dataDir, 'inner-link'), process.platform === 'win32' ? 'junction' : 'dir');
 
       const viaAlias = path.join(alias, 'artifacts', 'hep-mcp', 'inner-link', 'f.json');
       expect(resolvePathWithinParent(dataDir, viaAlias, 'output_dir')).toBe(path.join(dataDir, 'inner-link', 'f.json'));

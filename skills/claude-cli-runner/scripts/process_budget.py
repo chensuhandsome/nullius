@@ -14,6 +14,22 @@ import signal
 import subprocess
 import sys
 import time
+
+# Resolve only the shipped skill payload or this exact source checkout.
+if sys.platform == "win32":
+    _script_dir = Path(__file__).resolve().parent
+    _scripts = _script_dir.parent if _script_dir.name == "bin" else _script_dir
+    _windows_runtime = _scripts / "_runtime"
+    if not (_windows_runtime / "nullius_windows/process.py").is_file():
+        _windows_runtime = _scripts.parents[2] / "packages/shared/python"
+    if not (_windows_runtime / "nullius_windows/process.py").is_file():
+        raise RuntimeError("Windows process support is missing; refresh this skill installation")
+    sys.path.insert(0, str(_windows_runtime))
+    from nullius_windows.process import WindowsJobProcess, child_exited as _windows_child_exited, signal_process_tree as _windows_signal_tree, stop_process as _windows_stop
+
+def _OwnedPopen(*args, **kwargs):
+    return WindowsJobProcess(*args, **kwargs) if sys.platform == "win32" else subprocess.Popen(*args, **kwargs)
+
 from complete_assistant_text import AssistantText, CompleteTextError
 
 
@@ -42,7 +58,8 @@ def own_child_reaping() -> None:
     the number of the group the child led may be reissued. Called once at
     startup, before any CLI is spawned; nothing here sets it back.
     """
-    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+    if sys.platform != "win32":
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
 
 
 def child_exited(pid: int, timeout: float | None) -> bool:
@@ -52,6 +69,8 @@ def child_exited(pid: int, timeout: float | None) -> bool:
     and with it the number of the process group it leads. Raises
     ChildReapingError when the child may already have been reaped elsewhere.
     """
+    if sys.platform == "win32":
+        return _windows_child_exited(pid, timeout)
     if hasattr(select, 'kqueue'):  # macOS CPython has no os.waitid
         queue = select.kqueue()
         try:
@@ -93,6 +112,8 @@ def signal_group(pgid: int, signum: int) -> bool:
     macOS answers EPERM for a group whose members have all exited while its
     unreaped leader is a zombie (Linux answers 0), and ESRCH once it is gone.
     """
+    if sys.platform == "win32":
+        return _windows_signal_tree(pgid, signum)
     try:
         os.killpg(pgid, signum)
     except (ProcessLookupError, PermissionError):
@@ -131,6 +152,9 @@ def stop_group(proc: subprocess.Popen, reaped_elsewhere: bool = False) -> None:
     The grace ends early once nothing in the group is left to signal. A CLI
     reaped elsewhere (ChildReapingError) gets no signal by that number.
     """
+    if sys.platform == "win32":
+        _windows_stop(proc)
+        return
     if not reaped_elsewhere and proc.returncode is None and signal_group(proc.pid, signal.SIGTERM):
         deadline = time.monotonic()+0.3
         while group_has_live_member(proc.pid) and time.monotonic() < deadline:
@@ -234,8 +258,8 @@ class Capture:
                 self.state["complete_result_seen"] = True
                 self.trace.with_suffix(".result.json").write_text(json.dumps(obj, indent=2)+"\n")
             if self.answer:
-                self.partial.write_text(self.answer)
-                self.trace.with_suffix(".partial").write_text(self.answer)
+                self.partial.write_bytes(self.answer.encode("utf-8"))
+                self.trace.with_suffix(".partial").write_bytes(self.answer.encode("utf-8"))
 
 
 def main() -> int:
@@ -340,7 +364,7 @@ def main() -> int:
         stderr = stack.enter_context(args.stderr.open('wb'))
         try:
             if cancelled: return 128+cancelled
-            proc = subprocess.Popen(command, stdin=stdin, stdout=stdout,
+            proc = _OwnedPopen(command, stdin=stdin, stdout=stdout,
                                     stderr=stderr, start_new_session=True)
             exited = False  # the CLI ended by itself; its status is read after the reap
             if args.capture:
@@ -410,7 +434,7 @@ def main() -> int:
                         termination_reason = 'incomplete_or_error_result'
                     else:
                         try:
-                            args.out.write_text(capture.complete_text.success_text(code))
+                            args.out.write_bytes(capture.complete_text.success_text(code).encode("utf-8"))
                         except CompleteTextError:
                             code = 65
                             termination_reason = 'incomplete_or_error_result'

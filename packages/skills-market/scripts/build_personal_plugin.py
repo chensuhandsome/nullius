@@ -12,7 +12,8 @@ import tempfile
 
 from install_skill_runtime.market_index import load_packages, pick_packages
 from install_skill_runtime.package_contracts import ensure_skill_source
-from install_skill_runtime.source_payload import collect_payload_files, git_head
+from install_skill_runtime.source_payload import collect_payload_files, git_head, is_reparse_path
+from install_skill_runtime.platform_assets import copy_windows_runtime
 
 DEFAULT_SERVERS = ("project-mcp", "hep-mcp", "idea-mcp")
 
@@ -34,8 +35,12 @@ def build(*, source_root: Path, output: Path, force: bool = False) -> dict:
         if not path.is_absolute():
             raise ValueError(f"{label} must be absolute")
     source_root = source_root.resolve(strict=True)
-    if output.name != "nullius" or output.is_symlink():
-        raise ValueError("output must be a non-symlink directory named nullius")
+    try:
+        aliased_output = is_reparse_path(output)
+    except FileNotFoundError:
+        aliased_output = False
+    if output.name != "nullius" or aliased_output:
+        raise ValueError("output must be a non-symlink, non-reparse directory named nullius")
     output = output.resolve()
     if output.is_relative_to(source_root) or source_root.is_relative_to(output):
         raise ValueError("output must be outside the source checkout")
@@ -76,10 +81,17 @@ def build(*, source_root: Path, output: Path, force: bool = False) -> dict:
                     "source": original.relative_to(source_root).as_posix(),
                     "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
                 }
+            platform_assets = copy_windows_runtime(source_dir, stage / "skills" / skill_id)
+            for relative, digest in platform_assets.items():
+                manifest["files"][f"skills/{skill_id}/{relative}"] = {
+                    "source": f"packages/shared/python/nullius_windows/{Path(relative).name}",
+                    "sha256": digest,
+                }
             write_json(stage / "skills" / skill_id / ".market_install.json", {
                 "package_id": skill_id, "install_mode": "personal-plugin",
                 "commit": manifest["source_commit"],
-                "source_dirty": manifest["source_dirty"], "file_count": len(files),
+                "source_dirty": manifest["source_dirty"], "file_count": len(files) + len(platform_assets),
+                **({"platform_assets": platform_assets} if platform_assets else {}),
             })
         common = {"name": "nullius", "version": "0.1.0", "description": "Research workflows using the configured Nullius runtime.",
                   "author": {"name": "Nullius"}, "skills": "./skills/", "mcpServers": "./.mcp.json"}

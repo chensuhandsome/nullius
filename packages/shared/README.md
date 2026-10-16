@@ -1,5 +1,7 @@
 # @nullius/shared
 
+Native Windows platform support has one Python source under `python/nullius_windows`, copied into built runtime assets and independent script-bearing skill payloads. Windows atomic replacement flushes file data but cannot claim POSIX parent-directory fsync durability; see [Windows guarantees](../../docs/WINDOWS.md).
+
 Provider-neutral types, schemas, and utilities consumed across the nullius monorepo. This is the **shared contracts layer** — every package that crosses a contract boundary (control plane, domain packs, provider atoms) imports from here rather than redefining the type.
 
 ## Layer

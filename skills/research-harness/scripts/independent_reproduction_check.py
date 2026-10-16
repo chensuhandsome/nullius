@@ -66,8 +66,8 @@ of scope by design.
 Honest limitations, restated in every report: isolation is checkout-level,
 not container-level — beyond the targeted scrub the entry command inherits
 the invoking environment and is not sandboxed against absolute-path
-writes. POSIX (macOS/Linux) only: the entry runs under ``/bin/sh -c`` in
-its own process group. Value extraction runs after (outside) the entry
+writes. The entry uses ``/bin/sh -c`` in its own process group on POSIX,
+or Git for Windows ``sh.exe -c`` in an owned Windows Job Object. Value extraction runs after (outside) the entry
 timeout and trusts the manifest author's regex and artifact sizes, exactly
 as it trusts the entry command itself.
 
@@ -112,6 +112,27 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Resolve only the shipped skill payload or this exact source checkout.
+if sys.platform == "win32":
+    _script_dir = Path(__file__).resolve().parent
+    _scripts = _script_dir.parent if _script_dir.name == "bin" else _script_dir
+    _windows_runtime = _scripts / "_runtime"
+    if not (_windows_runtime / "nullius_windows/process.py").is_file():
+        _windows_runtime = _scripts.parents[2] / "packages/shared/python"
+    if not (_windows_runtime / "nullius_windows/process.py").is_file():
+        raise RuntimeError("Windows process support is missing; refresh this skill installation")
+    sys.path.insert(0, str(_windows_runtime))
+    from nullius_windows.process import WindowsJobProcess, child_exited as _windows_child_exited, signal_process_tree as _windows_signal_tree, stop_process as _windows_stop
+    from nullius_windows.filesystem import is_reparse_path as _windows_reparse_path
+
+
+def _is_link_path(path: Path) -> bool:
+    return _windows_reparse_path(path) if sys.platform == "win32" else path.is_symlink()
+
+def _OwnedPopen(*args, **kwargs):
+    return WindowsJobProcess(*args, **kwargs) if sys.platform == "win32" else subprocess.Popen(*args, **kwargs)
+
+
 VERDICTS = ("reproduced", "mismatch", "incomplete", "environment_failed")
 EXIT_CODES = {"reproduced": 0, "mismatch": 3, "incomplete": 4, "environment_failed": 5}
 ITEM_STATUSES = ("within_tolerance", "out_of_tolerance", "not_extracted")
@@ -145,7 +166,7 @@ def _is_safe_rel_path(s) -> bool:
     if not isinstance(s, str) or not s.strip():
         return False
     parts = Path(s).parts
-    return bool(parts) and not Path(s).is_absolute() and ".." not in parts and "." not in parts
+    return bool(parts) and not Path(s).anchor and ".." not in parts and "." not in parts
 
 
 def _try_resolve(path: Path) -> "Path | None":
@@ -266,7 +287,8 @@ def validate_manifest(doc) -> list[str]:
 
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False)
+        return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
+                              text=True, encoding="utf-8", check=False)
     except FileNotFoundError:
         return subprocess.CompletedProcess(["git", *args], 127, "", "git executable not found")
 
@@ -306,7 +328,11 @@ def prepare_worktree(project_root: Path, checkout_dir: Path) -> "tuple[dict | No
         return None, ["repository has no resolvable HEAD (no commits yet); "
                       "commit the project before checking reproduction"]
     commit = head.stdout.strip()
-    added = _git(["worktree", "add", "--detach", str(checkout_dir), "HEAD"], toplevel)
+    # Git for Windows otherwise flattens mode-120000 links into plain text,
+    # changing committed source semantics. Missing link privilege is an honest
+    # checkout failure, never an apparently reproduced flattened tree.
+    link_config = ["-c", "core.symlinks=true"] if sys.platform == "win32" else []
+    added = _git([*link_config, "worktree", "add", "--detach", str(checkout_dir), "HEAD"], toplevel)
     if added.returncode != 0:
         return None, [f"git worktree add failed: {added.stderr.strip()}"]
     resolved_project = _try_resolve(project_root)
@@ -344,15 +370,17 @@ def prepare_worktree(project_root: Path, checkout_dir: Path) -> "tuple[dict | No
 def _find_symlinks(root: Path) -> "list[Path]":
     """Every symlink at or below root (root itself included), without
     following links while walking."""
-    if root.is_symlink():
+    if _is_link_path(root):
         return [root]
     found: list[Path] = []
     if root.is_dir():
         for dirpath, dirnames, filenames in os.walk(root):
             for name in dirnames + filenames:
                 p = Path(dirpath) / name
-                if p.is_symlink():
+                if _is_link_path(p):
                     found.append(p)
+                    if name in dirnames:
+                        dirnames.remove(name)
     return found
 
 
@@ -389,7 +417,7 @@ def prepare_copy(project_root: Path, checkout_dir: Path,
         walker = project_root
         for part in Path(rel).parts:
             walker = walker / part
-            if walker.is_symlink():
+            if _is_link_path(walker):
                 return None, [f"working_inputs entry '{rel}' passes through a symlink "
                               f"({walker.relative_to(project_root)}); materialize it or use "
                               "worktree isolation"]
@@ -441,13 +469,16 @@ def enforce_committed_manifest(manifest_path: Path, manifest_bytes: bytes,
     resolved = _try_resolve(manifest_path)
     if resolved is None:  # unreachable after a successful read; fail closed anyway
         return [f"manifest path is not resolvable: {manifest_path}"]
-    tracked = _git(["ls-files", "--full-name", "--error-unmatch", "--", str(resolved)],
+    tracked = _git(["ls-files", "-z", "--full-name", "--error-unmatch", "--", str(resolved)],
                    resolved.parent)
     if tracked.returncode != 0:
         return ["worktree mode requires the manifest to be tracked in git: the reproduction "
                 "claim itself must be part of the committed state (commit the manifest, or use "
                 "--isolation copy for non-git projects)"]
-    rel_path = tracked.stdout.strip()
+    paths = tracked.stdout.split("\0")
+    if len(paths) != 2 or paths[-1] != "" or not paths[0]:
+        return ["the committed manifest path is ambiguous; exactly one tracked filename is required"]
+    rel_path = paths[0]
     committed = checkout_dir / rel_path
     if not committed.is_file():
         return [f"manifest not found in the fresh checkout at '{rel_path}'; commit it (a manifest "
@@ -469,7 +500,7 @@ def remove_preexisting_artifacts(expected: list, run_root: Path) -> "tuple[list[
         if not rel:
             continue
         raw = run_root / rel
-        if raw.is_symlink():
+        if _is_link_path(raw):
             errors.append(f"expected '{item['id']}': artifact_path is a symlink in the fresh "
                           f"checkout ({rel}); declare the real file path")
             continue
@@ -494,18 +525,20 @@ def remove_preexisting_artifacts(expected: list, run_root: Path) -> "tuple[list[
 
 # macOS's default filesystem is case-insensitive: compare case-folded there,
 # so a case-variant spelling of the project root cannot slip past the scrub.
-_CASEFOLD_PATHS = sys.platform == "darwin"
+_CASEFOLD_PATHS = sys.platform in ("darwin", "win32")
 
 
 def _references_path(value: str, marker: str) -> bool:
     """True when `value` contains `marker` as a whole path component prefix
     (so '/x/proj' matches '/x/proj' and '/x/proj/lib', never '/x/proj2')."""
+    if sys.platform == "win32":
+        value, marker = value.replace("\\", "/"), marker.replace("\\", "/")
     if _CASEFOLD_PATHS:
         value, marker = value.casefold(), marker.casefold()
     idx = value.find(marker)
     while idx != -1:
         end = idx + len(marker)
-        if end == len(value) or value[end] in (os.sep, os.pathsep):
+        if end == len(value) or value[end] in (os.sep, os.pathsep, "/"):
             return True
         idx = value.find(marker, idx + 1)
     return False
@@ -658,6 +691,19 @@ def _stop_group(pgid: int) -> None:
 
 def run_entry(entry_command: str, run_root: Path, timeout_seconds: float,
               stdout_path: Path, stderr_path: Path, env: "dict | None" = None) -> dict:
+    if sys.platform == "win32":
+        started = time.time()
+        shell = shutil.which("sh", path=(env or os.environ).get("PATH", ""))
+        if not shell:
+            raise OSError("Git for Windows sh.exe is required for reproduction commands")
+        with stdout_path.open("wb") as out, stderr_path.open("wb") as err:
+            with WindowsJobProcess([shell, "-c", entry_command], cwd=run_root, env=env, stdout=out, stderr=err) as proc:
+                timed_out = not proc.root_exited(timeout_seconds)
+                code = proc.poll()
+                proc.stop_tree()
+        return {"command": entry_command, "exit_code": None if timed_out else code,
+                "timed_out": timed_out, "duration_seconds": round(time.time() - started, 3),
+                "stdout_log": str(stdout_path), "stderr_log": str(stderr_path)}
     # The process-wide SIGCHLD disposition belongs to the caller; a standalone
     # run sets it to its default at startup. Refuse rather than spawn a shell
     # whose group could not be stopped safely.
@@ -732,7 +778,7 @@ def extract_value(item: dict, run_root: Path, stdout_text: str) -> "tuple[float 
         if not math.isfinite(value):
             return None, f"captured value is not finite: {raw!r}"
         return value, None
-    if (run_root / item["artifact_path"]).is_symlink():
+    if _is_link_path(run_root / item["artifact_path"]):
         return None, f"artifact_path is a symlink: {item['artifact_path']}; declare the real file path"
     artifact = _resolved_under(run_root, item["artifact_path"])
     if artifact is None:
@@ -829,7 +875,7 @@ def main(argv: "list[str] | None" = None) -> int:
     parser = argparse.ArgumentParser(
         description="Rerun a project's declared reproduction entry in a fresh, isolated checkout "
                     "and compare declared expected values by explicit tolerance (fail-closed; "
-                    "POSIX/macOS/Linux only).")
+                    "POSIX process groups or native Windows Job Objects with Git sh).")
     parser.add_argument("--manifest", type=Path, required=True,
                         help="reproduction manifest (JSON); see SKILL.md for the schema.")
     parser.add_argument("--project-root", type=Path, default=None,
@@ -1051,5 +1097,10 @@ def main(argv: "list[str] | None" = None) -> int:
 if __name__ == "__main__":
     # Keep the exited entry shell as a zombie until its group is stopped: an
     # ignored SIGCHLD survives exec and would let the kernel reap it at once.
-    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+    if sys.platform == "win32":
+        # The CLI's JSON protocol is UTF-8 independently of the console code page.
+        sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace", newline="\n")
+    else:
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     raise SystemExit(main())

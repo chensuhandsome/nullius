@@ -1,5 +1,7 @@
 # Project MCP transport
 
+Native Windows uses handle-owned process jobs for worker deadlines and independent durable-delivery ownership. Disconnecting stdio still leaves an accepted delivery running. Public relative file paths keep `/`; internal Windows paths retain the same traversal, junction and runtime-state protections. See [Windows](../../docs/WINDOWS.md).
+
 `@nullius/project-mcp` connects an MCP client to one external Nullius project. It consumes the existing orchestrator tool dispatcher and CLI; lifecycle state, approvals, planning, execution and verification remain owned by `@nullius/orchestrator`. It does not aggregate provider servers or introduce a scheduler.
 
 Build the workspace, then start the server with an explicit project:

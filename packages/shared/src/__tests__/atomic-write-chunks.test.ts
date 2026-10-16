@@ -19,6 +19,14 @@ import type { AtomicWriteAudit } from '../atomic-write.js';
 
 const mockRandomBytes = vi.mocked(randomBytes);
 const fixedHex = 'cd'.repeat(8);
+const isWindows = process.platform === 'win32';
+
+function plantFileAlias(target: string, alias: string): void {
+  // Hardlinks exercise writes through an existing file name without requiring
+  // Windows Developer Mode. POSIX retains its symbolic-link-specific coverage.
+  if (isWindows) fs.linkSync(target, alias);
+  else fs.symlinkSync(target, alias);
+}
 
 async function* chunksOf(...parts: Array<string | Uint8Array>): AsyncGenerator<string | Uint8Array> {
   for (const part of parts) yield part;
@@ -59,19 +67,20 @@ describe('writeChunksAtomicDurable', () => {
     const identity = await writeChunksAtomicDurable(file, chunksOf('ab', Buffer.from('cd'), 'ef'), 0o600);
 
     expect(fs.readFileSync(file, 'utf-8')).toBe('abcdef');
-    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(file).mode & (isWindows ? 0o200 : 0o777)).toBe(isWindows ? 0o200 : 0o600);
     const committed = fs.lstatSync(file, { bigint: true });
     expect(identity).toEqual({ dev: committed.dev, ino: committed.ino });
     expect(stagingEntries()).toEqual([]);
     expect(events).toEqual([
-      'mkdir', 'open', 'write', 'write', 'write', 'fchmod', 'fsync', 'close', 'rename', 'open', 'fsync', 'close',
+      'mkdir', 'open', 'write', 'write', 'write', 'fchmod', 'fsync', 'close', 'rename',
+      ...(isWindows ? [] : ['open', 'fsync', 'close']),
     ]);
   });
 
   it('replaces a link at the target instead of writing through it', async () => {
     const victim = path.join(outside, 'victim.bin');
     fs.writeFileSync(victim, 'ORIGINAL');
-    fs.symlinkSync(victim, file);
+    plantFileAlias(victim, file);
 
     await writeChunksAtomicDurable(file, chunksOf('payload'));
 
@@ -85,7 +94,7 @@ describe('writeChunksAtomicDurable', () => {
     fs.writeFileSync(victim, 'ORIGINAL');
     mockRandomBytes.mockImplementationOnce(() => Buffer.from(fixedHex, 'hex'));
     const staging = `${file}.tmp.${process.pid}.${fixedHex}`;
-    fs.symlinkSync(victim, staging);
+    plantFileAlias(victim, staging);
     let pulled = false;
     async function* source(): AsyncGenerator<string> {
       pulled = true;
@@ -96,7 +105,21 @@ describe('writeChunksAtomicDurable', () => {
 
     expect(pulled).toBe(false);
     expect(fs.readFileSync(victim, 'utf-8')).toBe('ORIGINAL');
-    expect(fs.readlinkSync(staging)).toBe(victim);
+    if (isWindows) expect(fs.statSync(staging, { bigint: true }).ino).toBe(fs.statSync(victim, { bigint: true }).ino);
+    else expect(fs.readlinkSync(staging)).toBe(victim);
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it.runIf(isWindows)('refuses a junction at the fresh staging name before consuming content', async () => {
+    mockRandomBytes.mockImplementationOnce(() => Buffer.from(fixedHex, 'hex'));
+    const staging = `${file}.tmp.${process.pid}.${fixedHex}`;
+    fs.symlinkSync(outside, staging, 'junction');
+    let pulled = false;
+    async function* source(): AsyncGenerator<string> { pulled = true; yield 'payload'; }
+    await expect(writeChunksAtomicDurable(file, source())).rejects.toThrow(/EEXIST/);
+    expect(pulled).toBe(false);
+    expect(fs.realpathSync(staging)).toBe(outside);
+    expect(fs.readdirSync(outside)).toEqual([]);
     expect(fs.existsSync(file)).toBe(false);
   });
 
@@ -154,15 +177,18 @@ describe('writeChunksAtomicDurable', () => {
     // The rename succeeds and the directory fsync then fails; the vacated
     // staging name by then holds a link to the very file that was staged.
     let staging: string | undefined;
+    const failure = isWindows ? 'injected post-rename failure' : 'injected directory fsync failure';
     hook(event => {
       if (event.kind === 'rename') staging = event.from;
-      if (staging !== undefined && event.kind === 'fsync' && fs.fstatSync(event.fd).isDirectory()) {
+      const afterCommit = isWindows ? event.kind === 'rename'
+        : event.kind === 'fsync' && fs.fstatSync(event.fd).isDirectory();
+      if (staging !== undefined && afterCommit) {
         fs.linkSync(file, staging);
-        throw new Error('injected directory fsync failure');
+        throw new Error(failure);
       }
     });
 
-    await expect(writeChunksAtomicDurable(file, chunksOf('payload'))).rejects.toThrow('injected directory fsync failure');
+    await expect(writeChunksAtomicDurable(file, chunksOf('payload'))).rejects.toThrow(failure);
 
     expect(stagingEntries()).toEqual([path.basename(staging!)]);
     expect(fs.readFileSync(file, 'utf-8')).toBe('payload');

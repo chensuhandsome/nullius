@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { denyFilesystemAccess } from '../support/filesystemPermissions.js';
 
 // Pin the staging-name randomness so a test can plant an entry at the exact
 // staging path a write will use.
@@ -120,7 +121,7 @@ describe('output staging files are created exclusively', () => {
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-staging-')));
     const projectRoot = makeProjectRoot(tmpDir);
     alias = path.join(tmpDir, 'alias');
-    fs.symlinkSync(projectRoot, alias, 'dir');
+    fs.symlinkSync(projectRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
   });
 
   afterEach(() => {
@@ -133,10 +134,12 @@ describe('output staging files are created exclusively', () => {
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('out');
       const staging = path.join(out.dir, `.data.json.${process.pid}.00000000-0000-4000-8000-000000000000.tmp`);
-      fs.symlinkSync(victim, staging, 'file');
+      if (process.platform === 'win32') fs.linkSync(victim, staging);
+      else fs.symlinkSync(victim, staging, 'file');
       expect(() => new OutputBatch(out).json('data.json', { x: 1 })).toThrow(/EEXIST/);
       expect(fs.existsSync(path.join(out.dir, 'data.json'))).toBe(false);
-      expect(fs.lstatSync(staging).isSymbolicLink()).toBe(true);
+      if (process.platform === 'win32') expect(fs.statSync(staging).ino).toBe(fs.statSync(victim).ino);
+      else expect(fs.lstatSync(staging).isSymbolicLink()).toBe(true);
     });
     expect(fs.readFileSync(victim, 'utf-8')).toBe('original');
   });
@@ -187,7 +190,10 @@ describe('output staging files are created exclusively', () => {
       batch.json('a.json', { x: 1 });
       batch.json('b.json', { x: 2 });
       linkFault.failOnCall = 2;
-      linkFault.before = () => fs.chmodSync(out.dir, 0o555);
+      let restoreAccess: (() => void) | undefined;
+      // Windows permits unlink via either a file's DELETE right or its
+      // parent's DELETE_CHILD. Deny both, including the staged/published files.
+      linkFault.before = () => { restoreAccess = denyFilesystemAccess(out.dir, 0o555, '(OI)(CI)(D,DC)'); };
       try {
         const error = await batch.publish().then(() => null, (e: unknown) => e as { message: string; code?: string; data?: { files_left?: string[] } });
         expect(error?.code).toBe('UNSAFE_FS');
@@ -195,7 +201,7 @@ describe('output staging files are created exclusively', () => {
         expect(error?.data?.files_left).toEqual(['stuck/a.json']);
         expect((error?.data as { staging_left?: string[] } | undefined)?.staging_left).toHaveLength(2);
       } finally {
-        fs.chmodSync(out.dir, 0o755);
+        restoreAccess?.();
       }
     });
   });
@@ -208,7 +214,7 @@ describe('output staging files are created exclusively', () => {
       const batch = new OutputBatch(out);
       batch.json('a.json', { x: 1 });
       batch.openFile('b.jsonl', 'application/x-ndjson');
-      fs.chmodSync(out.dir, 0o555);
+      const restoreAccess = denyFilesystemAccess(out.dir, 0o555, '(OI)(CI)(D,DC)');
       try {
         const reported = batch.discard(new McpError('INVALID_PARAMS', 'the original failure', { detail: 1 })) as InstanceType<typeof McpError>;
         expect(reported).toBeInstanceOf(McpError);
@@ -217,7 +223,7 @@ describe('output staging files are created exclusively', () => {
         expect(reported.data).toMatchObject({ detail: 1 });
         expect((reported.data as { staging_left: string[] }).staging_left).toHaveLength(2);
       } finally {
-        fs.chmodSync(out.dir, 0o755);
+        restoreAccess();
       }
     });
   });
@@ -426,7 +432,7 @@ describe('output staging files are created exclusively', () => {
     });
   });
 
-  it('counts a successful unlink as removed even if a lookup right after it fails, and flushes its directory', async () => {
+  it('counts a successful unlink as removed even if a lookup right after it fails, with platform directory durability', async () => {
     const { _setAtomicWriteAuditHook } = await import('@nullius/shared');
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('unlinked');
@@ -449,7 +455,8 @@ describe('output staging files are created exclusively', () => {
       }
       expect(reported).toBe(cause);
       expect(fs.readdirSync(out.dir)).toEqual([]);
-      expect(fsynced).toContain(out.dir);
+      if (process.platform === 'win32') expect(fsynced).toEqual([]);
+      else expect(fsynced).toContain(out.dir);
     });
   });
 });

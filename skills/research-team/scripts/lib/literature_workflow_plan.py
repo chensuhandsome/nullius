@@ -3,8 +3,31 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Iterable
+
+
+def _run_runtime_command(command: list[str], *, cwd: str | None = None,
+                         input: str | None = None, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    if sys.platform != "win32":
+        return subprocess.run(command, cwd=cwd, input=input, capture_output=True,
+                              text=True, encoding="utf-8", check=False, timeout=timeout)
+    # A copied skill carries its own exact runtime. Source use is anchored to
+    # this checkout; Python's ambient import path is not a runtime authority.
+    scripts = Path(__file__).resolve().parents[1]
+    runtime = scripts / "_runtime"
+    if not (runtime / "nullius_windows/process.py").is_file():
+        runtime = scripts.parents[2] / "packages/shared/python"
+    if not (runtime / "nullius_windows/process.py").is_file():
+        raise RuntimeError("Windows process support is missing; refresh this skill installation")
+    sys.path.insert(0, str(runtime))
+    from nullius_windows.process import WindowsJobProcess
+    with WindowsJobProcess(command, cwd=cwd, stdin=subprocess.PIPE if input is not None else None,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           text=True, encoding="utf-8") as child:
+        stdout, stderr = child.communicate(input=input, timeout=timeout)
+        return subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
 
 
 def _valid_workspace_root(path: Path) -> Path | None:
@@ -35,10 +58,7 @@ def _valid_workspace_root(path: Path) -> Path | None:
 
 def _workspace_root_from_runtime() -> Path:
     try:
-        completed = subprocess.run(
-            ["nullius", "runtime", "path"], capture_output=True, text=True,
-            check=False, timeout=10,
-        )
+        completed = _run_runtime_command(["nullius", "runtime", "path"], timeout=10)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(
             "Unable to locate Nullius runtime. Make nullius available on PATH or set "
@@ -105,7 +125,7 @@ process.stdin.on('end', () => {
         "--eval",
         launcher,
     ]
-    completed = subprocess.run(
+    completed = _run_runtime_command(
         command,
         cwd=str(workspace_root),
         input=json.dumps(
@@ -116,9 +136,6 @@ process.stdin.on('end', () => {
                 "preferred_providers": list(preferred_providers or []),
             }
         ),
-        capture_output=True,
-        text=True,
-        check=False,
     )
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip() or "unknown launcher error"

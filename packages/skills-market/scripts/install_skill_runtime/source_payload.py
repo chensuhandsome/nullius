@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import fnmatch
+from functools import lru_cache
+import os
 import pathlib
 import re
 import shutil
+import stat
 import subprocess
 from typing import Sequence
 from urllib.parse import unquote
@@ -19,6 +22,43 @@ DEFAULT_EXCLUDES = {
     "**/*.pyc",
     "**/.DS_Store",
 }
+
+
+def is_reparse_path(path: pathlib.Path) -> bool:
+    return path.is_symlink() or (os.name == "nt" and bool(
+        path.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    ))
+
+
+def _payload_descendants(directory: pathlib.Path, excluded):
+    for child in directory.iterdir():
+        if is_reparse_path(child) or child.is_file():
+            if not excluded(child):
+                yield child
+        elif child.is_dir():
+            # Excludes apply to each selected relative filename. A directory
+            # named by an exclude need not exclude its descendants, so keep
+            # walking ordinary source directories without changing that policy.
+            yield from _payload_descendants(child, excluded)
+
+
+def _glob_matches(parts: tuple[str, ...], pattern: tuple[str, ...], *, prefix: bool = False) -> bool:
+    """Component globbing without filesystem traversal; ** may match zero parts.
+
+    prefix identifies a reparse entry that an include would otherwise traverse.
+    Such an entry must reach the existing refusal gate, never be silently omitted.
+    """
+    @lru_cache(maxsize=None)
+    def match(index: int, token: int) -> bool:
+        if token == len(pattern):
+            return index == len(parts)
+        if pattern[token] == "**":
+            return match(index, token + 1) or (index < len(parts) and match(index + 1, token))
+        if index == len(parts):
+            return prefix
+        return fnmatch.fnmatch(parts[index], pattern[token]) and match(index + 1, token + 1)
+
+    return match(0, 0)
 
 
 # This gate inspects the selected bytes, including ignored/untracked source files.
@@ -107,21 +147,6 @@ def collect_payload_files(source_dir: pathlib.Path, include: list[str], exclude:
     if not source_dir.is_dir():
         raise RuntimeError(f"source subpath does not exist: {source_dir}")
     source_root = source_dir.resolve()
-    selected: set[pathlib.Path] = set()
-    for pattern in include:
-        for match in source_dir.glob(pattern):
-            if match.is_symlink():
-                selected.add(match)
-            elif match.is_file():
-                selected.add(match)
-            elif match.is_dir():
-                selected.update(
-                    child for child in match.rglob("*") if child.is_symlink() or child.is_file()
-                )
-
-    if not selected:
-        raise RuntimeError(f"include patterns matched no files under {source_dir}")
-
     excluded_patterns = list(DEFAULT_EXCLUDES) + exclude
 
     def is_excluded(rel_path: pathlib.PurePosixPath) -> bool:
@@ -135,6 +160,27 @@ def collect_payload_files(source_dir: pathlib.Path, include: list[str], exclude:
                     return True
         return False
 
+    # pathlib's recursive glob follows Windows junctions even when its own
+    # DirEntry.is_dir(follow_symlinks=False) is used. Discover the tree once,
+    # refusing to recurse through any reparse entry before matching patterns.
+    patterns = [(pathlib.PurePosixPath(pattern).parts, pattern.endswith("/")) for pattern in include]
+    selected: set[pathlib.Path] = set()
+    excluded = lambda candidate: is_excluded(pathlib.PurePosixPath(candidate.relative_to(source_dir).as_posix()))
+    for candidate in _payload_descendants(source_dir, excluded):
+        parts = pathlib.PurePosixPath(candidate.relative_to(source_dir).as_posix()).parts
+        reparse = is_reparse_path(candidate)
+        for pattern, directory_only in patterns:
+            # An included directory selects all descendants, as Path.glob's
+            # previous directory expansion did; ordinary * stays per-component.
+            matched = any(_glob_matches(parts[:depth], pattern)
+                          for depth in range(len(parts) + (not directory_only)))
+            if matched or (reparse and _glob_matches(parts, pattern, prefix=True)):
+                selected.add(candidate)
+                break
+
+    if not selected:
+        raise RuntimeError(f"include patterns matched no files under {source_dir}")
+
     final_files: list[pathlib.Path] = []
     for file_path in sorted(selected):
         rel_path = pathlib.PurePosixPath(file_path.relative_to(source_dir).as_posix())
@@ -144,7 +190,7 @@ def collect_payload_files(source_dir: pathlib.Path, include: list[str], exclude:
             file_path.resolve().relative_to(source_root)
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"selected payload resolves outside source root: {rel_path}") from exc
-        if file_path.is_symlink():
+        if is_reparse_path(file_path):
             raise RuntimeError(f"symlink in selected payload: {rel_path}")
         validate_payload_file(file_path, rel_path)
         final_files.append(file_path)

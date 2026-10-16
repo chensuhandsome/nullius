@@ -1,7 +1,24 @@
 import { describe, expect, it } from 'vitest';
+import { copyFileSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ContractRuntimeError, IdeaEngineContractCatalog } from '../src/contracts/catalog.js';
+import { DEFAULT_CONTRACT_DIR } from '../src/contracts/openrpc.js';
 
 const catalog = new IdeaEngineContractCatalog();
+
+it('resolves sibling schema references from a copied contract directory with Unicode and spaces', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'idea-contracts-中文 space-'));
+  try {
+    for (const file of readdirSync(DEFAULT_CONTRACT_DIR)) {
+      copyFileSync(join(DEFAULT_CONTRACT_DIR, file), join(directory, file));
+    }
+    const copied = new IdeaEngineContractCatalog(directory);
+    // Compiling this schema resolves its sibling IdeaCard property references
+    // before the invalid payload produces a normal contract validation error.
+    expect(() => copied.validateAgainstRef('./generation_pack_v1.schema.json', {}, 'copied-pack')).toThrow(ContractRuntimeError);
+  } finally { rmSync(directory, {recursive:true, force:true}); }
+});
 
 const VALID_PAIRWISE_MATCH = {
   match_id: 'mtch0001',

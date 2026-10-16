@@ -9,7 +9,7 @@ export type NulliusHarnessSentinelPayload = {
   schema_version: 1;
   kind: 'nullius_project_harness';
   status_receipt_required: true;
-  project_local_status_command: '.nullius/bin/nullius status --json';
+  project_local_status_command: '.nullius/bin/nullius status --json' | '.nullius/bin/nullius.ps1 status --json';
   fallback_status_command: 'nullius status --json';
   host_skill: 'research-harness';
   lifecycle_authority: 'nullius';
@@ -34,7 +34,9 @@ export function nulliusHarnessSentinelPayload(): NulliusHarnessSentinelPayload {
     schema_version: 1,
     kind: 'nullius_project_harness',
     status_receipt_required: true,
-    project_local_status_command: '.nullius/bin/nullius status --json',
+    project_local_status_command: process.platform === 'win32'
+      ? '.nullius/bin/nullius.ps1 status --json'
+      : '.nullius/bin/nullius status --json',
     fallback_status_command: 'nullius status --json',
     host_skill: 'research-harness',
     lifecycle_authority: 'nullius',
@@ -48,7 +50,8 @@ function isNulliusHarnessSentinelPayload(value: unknown): value is NulliusHarnes
   return payload.schema_version === 1
     && payload.kind === 'nullius_project_harness'
     && payload.status_receipt_required === true
-    && payload.project_local_status_command === '.nullius/bin/nullius status --json'
+    && (payload.project_local_status_command === '.nullius/bin/nullius status --json'
+      || payload.project_local_status_command === '.nullius/bin/nullius.ps1 status --json')
     && payload.fallback_status_command === 'nullius status --json'
     && payload.host_skill === 'research-harness'
     && payload.lifecycle_authority === 'nullius'

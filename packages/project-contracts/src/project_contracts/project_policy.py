@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import stat
 import json
 
@@ -90,8 +91,24 @@ def _package_name(directory: Path) -> str | None:
     return value.get("name") if isinstance(value, dict) and isinstance(value.get("name"), str) else None
 
 
-def _marker_present(marker: Path) -> bool:
+def _marker_present(marker: Path, root: Path) -> bool:
     try:
+        if os.name == "nt":
+            # A descendant of a looping junction looks absent on Windows.
+            # Root aliases have already been canonicalized; reparse metadata
+            # directories below that root cannot grant project admission.
+            for parent in marker.parents:
+                if parent == root:
+                    break
+                try:
+                    info = parent.lstat()
+                    if info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                        raise ValueError("project root has ambiguous development-checkout metadata")
+                    if stat.S_ISDIR(info.st_mode):
+                        with os.scandir(parent) as entries:
+                            next(entries, None)
+                except (FileNotFoundError, NotADirectoryError):
+                    continue
         marker.lstat()
         return True
     except (FileNotFoundError, NotADirectoryError):
@@ -103,7 +120,7 @@ def _marker_present(marker: Path) -> bool:
 def _development_checkout_root(root: Path) -> Path | None:
     markers = ("pnpm-workspace.yaml", "package.json", "packages/orchestrator/package.json", "packages/shared/package.json")
     for current in (root, *root.parents):
-        if all(_marker_present(current / marker) for marker in markers):
+        if all(_marker_present(current / marker, current) for marker in markers):
             root_name = _package_name(current)
             orchestrator_name = _package_name(current / "packages" / "orchestrator")
             shared_name = _package_name(current / "packages" / "shared")

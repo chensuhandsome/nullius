@@ -137,8 +137,8 @@ describe('orchestrator package freshness gate', () => {
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('[stale-dist] @tmp/stale-package package output is missing or out of date.');
-      expect(result.stderr).toContain('src/index.ts');
-      expect(result.stderr).toContain('dist/index.js');
+      expect(result.stderr).toContain(path.join('src', 'index.ts'));
+      expect(result.stderr).toContain(path.join('dist', 'index.js'));
     } finally {
       rmSync(root, { force: true, recursive: true });
     }
@@ -190,8 +190,8 @@ describe('orchestrator package freshness gate', () => {
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('missing emitted artifact');
-      expect(result.stderr).toContain('src/index.ts');
-      expect(result.stderr).toContain('dist/index.d.ts');
+      expect(result.stderr).toContain(path.join('src', 'index.ts'));
+      expect(result.stderr).toContain(path.join('dist', 'index.d.ts'));
       expect(result.stderr).toContain('pnpm --filter temp-orchestrator build');
     } finally {
       rmSync(root, { force: true, recursive: true });
@@ -218,9 +218,9 @@ describe('orchestrator package freshness gate', () => {
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('stale emitted artifact');
-      expect(result.stderr).toContain('src/orch-tools/index.ts');
-      expect(result.stderr).toContain('dist/orch-tools/index.js');
-      expect(result.stderr).not.toContain('dist/orch-tools/index.d.ts');
+      expect(result.stderr).toContain(path.join('src', 'orch-tools', 'index.ts'));
+      expect(result.stderr).toContain(path.join('dist', 'orch-tools', 'index.js'));
+      expect(result.stderr).not.toContain(path.join('dist', 'orch-tools', 'index.d.ts'));
     } finally {
       rmSync(root, { force: true, recursive: true });
     }

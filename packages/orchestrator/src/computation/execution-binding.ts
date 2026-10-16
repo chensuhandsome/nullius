@@ -6,6 +6,7 @@ import { StateManager } from '../state-manager.js';
 import { assertNoSymlinkComponents, assertCommandAllowed, resolveUnderRoot, resolveWithinRoot } from './path-safety.js';
 import type { PreparedManifest } from './types.js';
 import { sha256File } from './io.js';
+import { nativeExecutableCandidates } from '../python-runtime.js';
 
 export function preparedPreflight(prepared: PreparedManifest) {
   const template = prepared.manifest.preflight;
@@ -13,7 +14,9 @@ export function preparedPreflight(prepared: PreparedManifest) {
   const step = prepared.steps.find(s => s.scriptPath === prepared.entryPointScriptPath) ?? prepared.steps[0]!;
   const argv = template.map(part => part.split('{entry}').join(prepared.entryPointScriptPath));
   assertCommandAllowed(argv);
-  const candidates = path.isAbsolute(argv[0]!) ? [argv[0]!] : step.executionEnvironment.variables.PATH!.split(path.delimiter).map(dir => path.join(dir, argv[0]!));
+  const candidates = argv[0] === step.runtimeIdentity.requested_token ? [step.runtimeIdentity.canonical_path]
+    : path.isAbsolute(argv[0]!) ? [argv[0]!]
+    : nativeExecutableCandidates(argv[0]!, step.executionEnvironment.variables.PATH!.split(path.delimiter));
   const executable = candidates.find(file => {
     try { fs.accessSync(file, fs.constants.X_OK); return fs.statSync(file).isFile(); } catch { return false; }
   });

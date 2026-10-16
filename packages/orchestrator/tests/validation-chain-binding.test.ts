@@ -1,3 +1,4 @@
+import { createReparseFixture } from './platform-fixtures.js';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -297,7 +298,7 @@ describe('Nullius-owned validation-chain binding at the A5 boundary', () => {
     // directory is itself reached through a symlink.
     const aliasParent = fs.mkdtempSync(path.join(os.tmpdir(), 'nullius-validation-chain-alias-'));
     const aliasRoot = path.join(aliasParent, 'project');
-    fs.symlinkSync(fixture.projectRoot, aliasRoot, 'dir');
+    fs.symlinkSync(fixture.projectRoot, aliasRoot, process.platform === 'win32' ? 'junction' : 'dir');
     const viaAlias = (filePath: string) => path.join(aliasRoot, path.relative(fixture.projectRoot, filePath));
     const aliased = { ...fixture, projectRoot: aliasRoot, checkerPath: viaAlias(fixture.checkerPath) };
 
@@ -316,7 +317,7 @@ describe('Nullius-owned validation-chain binding at the A5 boundary', () => {
       .rejects.toThrow(/checker_path must stay within the run directory/);
 
     const linkedChecker = path.join(path.dirname(fixture.checkerPath), 'linked_checker.py');
-    fs.symlinkSync(fixture.checkerPath, linkedChecker);
+    createReparseFixture(fixture.checkerPath, linkedChecker);
     await expect(record({ ...aliased, checkerPath: viaAlias(linkedChecker) }))
       .rejects.toThrow(/checker_path must not traverse a symbolic link/);
   });

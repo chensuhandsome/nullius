@@ -16,6 +16,7 @@ import {
 } from './mcp-jsonrpc.js';
 import { handleMcpServerRequest, type SamplingRuntime } from './mcp-server-request-handler.js';
 import { loadSamplingRoutingConfig } from './routing/sampling-loader.js';
+import { isProjectMcpProcess, spawnWindowsJobProcess } from './windows-process.js';
 import {
   assertToolCallAllowed,
   type ToolPermissionView,
@@ -52,7 +53,7 @@ export interface McpClientStartOptions {
   requiredCredentialNames?: string[];
   /** Explicit working directory. Defaults to the client's isolated temporary home. */
   cwd?: string;
-  /** POSIX process-group containment is required unless best-effort is explicitly selected. */
+  /** Owned process trees: POSIX process groups or Windows kernel Job Objects. */
   containment?: McpProcessContainment;
 }
 
@@ -111,7 +112,7 @@ const DANGEROUS_ENV_KEYS = new Set([
   'ZDOTDIR',
   '_JAVA_OPTIONS',
 ]);
-const CONTROLLED_ENV_KEYS = new Set(['HOME']);
+const CONTROLLED_ENV_KEYS = new Set(['HOME', ...(process.platform === 'win32' ? ['SYSTEMROOT', 'USERPROFILE'] : [])]);
 
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const CREDENTIAL_KEY_PATTERN = /(?:^|_)(?:ACCESS_?KEY|API_?KEY|AUTH|BEARER|CLIENT_?SECRET|CREDENTIALS?|PASS(?:WORD|WD)?|PAT|PRIVATE_?KEY|SECRET|SESSION_?KEY|TOKEN)(?:_|$)/i;
@@ -183,6 +184,13 @@ function buildMcpSubprocessEnvironment(
     }
   }
   env.HOME = controlledHome;
+  if (process.platform === 'win32') {
+    // Node/OpenSSL needs the Windows system directory to initialize entropy.
+    // A Windows provider's home must be just as isolated as its POSIX HOME.
+    if (!process.env.SystemRoot) throw new Error('Windows SystemRoot is unavailable');
+    env.SystemRoot = process.env.SystemRoot;
+    env.USERPROFILE = controlledHome;
+  }
   return { ...env, ...configEnv, ...credentials };
 }
 
@@ -285,13 +293,12 @@ function parseServerExit(line: string): ServerExit {
 }
 
 // Resolves once with how the server ended: the anchor's report, or the exit
-// of the spawned process itself (an anchor that ends unreported, or the
-// server on Windows).
+// of the spawned owner itself if it ends without reporting its target.
 function watchServerExit(proc: ChildProcess, anchored: boolean): Promise<ServerExit> {
   return new Promise(resolve => {
     proc.once('exit', (code, signal) => resolve({ code, signal }));
-    const status = proc.stdio[3];
-    if (anchored && status) {
+    const status = process.platform === 'win32' ? proc.stderr : proc.stdio[3];
+    if ((anchored || process.platform === 'win32') && status) {
       // A broken control channel (EPIPE when the anchor dies before reading
       // the environment) carries nothing beyond the anchor's own exit.
       status.on('error', () => {});
@@ -352,9 +359,6 @@ export class McpClient {
       throw new Error('McpClient already started');
     }
     const containment = options.containment ?? 'required';
-    if (process.platform === 'win32' && containment === 'required') {
-      throw new Error('MCP required process-tree containment is unavailable on Windows; explicitly select best_effort');
-    }
     const controlledHome = fs.mkdtempSync(path.join(os.tmpdir(), 'nullius-mcp-home-'));
     fs.chmodSync(controlledHome, 0o700);
     this.startCommand = command;
@@ -391,7 +395,10 @@ export class McpClient {
           cwd,
           detached: true,
         })
-      : spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'], env, cwd });
+      : spawnWindowsJobProcess(command, args, {
+        cwd, env, shutdownGraceMs: this.shutdownGraceMs,
+        allowDeliveryBreakaway: isProjectMcpProcess(command, args),
+      });
     if (!proc.stdout) {
       throw new Error('No stdout from MCP process');
     }
@@ -600,6 +607,16 @@ export class McpClient {
       // CONTRACT-EXEMPT: CODE-01.5 best-effort shutdown cleanup
     }
     await this.waitForServerExit(proc, this.shutdownGraceMs);
+    if (process.platform === 'win32') {
+      // EOF asks the owner to close target stdin, wait its grace and stop the Job.
+      // The owner stays alive until all Job members stopped. If it fails, closing
+      // its sole noninherited Job handle still stops the descendants in kernel.
+      if (!await waitForProcessExit(proc, this.shutdownGraceMs + 10_000)) {
+        proc.kill();
+        await waitForProcessExit(proc, this.killGraceMs + 1000);
+      }
+      return;
+    }
     // Signal from a fresh macrotask, never from inside libuv's reaping pass
     // (see signalProcessTree).
     await new Promise(resolve => setImmediate(resolve));

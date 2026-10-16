@@ -326,7 +326,7 @@ describe('confirmation-round regressions (review r2)', () => {
     registerCleanup(realRoot);
     initRepo(realRoot);
     const linkRoot = `${realRoot}-link`;
-    fs.symlinkSync(realRoot, linkRoot);
+    fs.symlinkSync(realRoot, linkRoot, process.platform === 'win32' ? 'junction' : 'dir');
     registerCleanup(linkRoot);
     const runDir = path.join(realRoot, 'artifacts', 'runs', 'run-B');
     fs.mkdirSync(runDir, { recursive: true });

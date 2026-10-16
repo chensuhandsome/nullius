@@ -878,7 +878,7 @@ describe('AgentRunner', () => {
     try {
       const root = path.join(parent, 'real');
       fs.mkdirSync(path.join(root, 'sub'), { recursive: true });
-      fs.symlinkSync(root, path.join(parent, 'alias'), 'dir');
+      fs.symlinkSync(root, path.join(parent, 'alias'), process.platform === 'win32' ? 'junction' : 'dir');
       const attempt = async (requestedRoot: string) => {
         const mcpClient = makeMockMcpClient({
           [ORCH_RUN_EXECUTE_MANIFEST]: resultWithJson(approvalEnvelope({

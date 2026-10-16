@@ -1,5 +1,7 @@
 # project-contracts
 
+On native Windows, protected contract replacement uses pinned directory/file handles and preserves the validated file's ACLs. The same helper source is included in this package's wheel. Platform limitations and setup are documented in [Windows](../../docs/WINDOWS.md).
+
 Generic scaffold/contracts package for nullius project scaffolds, contract refresh, and project-root/output policy checks.
 
 This package is intentionally narrow:

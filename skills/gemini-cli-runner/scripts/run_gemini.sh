@@ -106,6 +106,28 @@ run_gemini_cmd() {
     # exited CLI itself and the group number could be reissued.
     python3 -c '
 import os, select, signal, subprocess, sys, time
+from pathlib import Path
+scripts = Path(sys.argv.pop(1)).resolve()
+if sys.platform == "win32":
+    runtime = scripts / "_runtime"
+    if not (runtime / "nullius_windows/process.py").is_file():
+        runtime = scripts.parents[2] / "packages/shared/python"
+    if not (runtime / "nullius_windows/process.py").is_file():
+        raise RuntimeError("Windows process support is missing; refresh this skill installation")
+    sys.path.insert(0, str(runtime))
+    from nullius_windows.process import WindowsJobProcess
+    environment = dict(os.environ)
+    name, value = sys.argv[2].split("=", 1)
+    environment[name] = value
+    received = []
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, lambda signum, frame: received.append(signum))
+    with WindowsJobProcess(sys.argv[3:], env=environment) as process:
+        while not received and not process.root_exited(0.05):
+            pass
+        code = process.poll()
+        process.stop_tree()
+    os._exit(128 + received[0] if received else (code or 0) & 0xFF)
 signal.signal(signal.SIGCHLD, signal.SIG_DFL)
 class ReapedElsewhere(Exception):
     pass
@@ -181,7 +203,7 @@ proc.wait()
 # interpreter shutdown, which restores default handlers.
 signal.pthread_sigmask(signal.SIG_BLOCK, set(SIGNALS))
 os._exit(128 + received[0] if received else 70 if reaped_elsewhere else proc.returncode & 0xFF)
-' env "GEMINI_CLI_HOME=${GEMINI_CLI_HOME_OVERRIDE}" gemini "$@" <&0 &
+' "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)" env "GEMINI_CLI_HOME=${GEMINI_CLI_HOME_OVERRIDE}" gemini "$@" <&0 &
   elif [[ -n "${GEMINI_CLI_HOME_OVERRIDE}" ]]; then
     env "GEMINI_CLI_HOME=${GEMINI_CLI_HOME_OVERRIDE}" gemini "$@" <&0 &
   else

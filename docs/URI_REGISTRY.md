@@ -1,5 +1,7 @@
 # URI Registry
 
+Native Windows support adds no URI scheme. Artifact URI components and serialized project-relative paths retain forward slashes; drive-qualified executable and project paths remain local filesystem configuration. See [Windows](./WINDOWS.md).
+
 This document is the centralized registry for URI-like identifiers that are emitted or resolved by checked-in code today. It does not redefine runtime semantics, introduce new schemes, or act as a future resolver/artifact-ref redesign spec. It is not an MCP resources contract; current MCP servers expose tools only.
 
 It also does not elevate optional project-root support files into URI authority. Surfaces such as `prompts/`, `team/`, `research_team_config.json`, `.mcp.template.json`, and root `specs/plan.schema.json` are created later by explicit project need or host-specific tooling, while reconnect truth stays with project-local durable memory plus `.nullius/` state.

@@ -1,5 +1,7 @@
 # @nullius/orchestrator
 
+For native Windows installation and PowerShell project launchers, see [Windows](../../docs/WINDOWS.md). The same lifecycle, approval and computation contracts apply. Platform process ownership preserves the separate lifetimes of transient MCP clients and durable project deliveries.
+
 Generic lifecycle control plane and bounded workflow CLI for the nullius ecosystem. Exposes both:
 
 - the **`nullius` CLI** — stateful front door for external project roots (init — including the `--mode=<engine|file>` execution-mode declaration —, status, workflow-plan, verify, final-conclusions, report-validate, approve, decision, graph, trace, current, notebook, result, release);

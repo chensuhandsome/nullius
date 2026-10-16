@@ -1,3 +1,4 @@
+import { createReparseFixture } from './platform-fixtures.js';
 import { execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -37,7 +38,7 @@ function aliasedProject(): { parent: string; root: string; alias: string; via: (
   const root = path.join(parent, 'real');
   const alias = path.join(parent, 'alias');
   fs.mkdirSync(root);
-  fs.symlinkSync(root, alias, 'dir');
+  fs.symlinkSync(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
   return { parent, root, alias, via: canonical => path.join(alias, path.relative(root, canonical)) };
 }
 
@@ -74,7 +75,7 @@ describe('nullius export through an alias of the project root', () => {
   it('refuses an archive written into a subdirectory of the evidence directory through a symlink in the project', async () => {
     const { root, runDir } = await projectWithRun();
     fs.mkdirSync(path.join(root, 'exports'));
-    fs.symlinkSync(path.join(runDir, 'sub'), path.join(root, 'exports', 'linked'), 'dir');
+    fs.symlinkSync(path.join(runDir, 'sub'), path.join(root, 'exports', 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
     await expect(runCli([`--project-root=${root}`, 'export', '--run-id', 'r-one', '--out', path.join(root, 'exports', 'linked', 'out.zip')], makeIo(root).io))
       .rejects.toThrow(/EXPORT_DESTINATION_OVERLAP/);
     expect(fs.readdirSync(path.join(runDir, 'sub'))).toEqual([]);
@@ -82,7 +83,7 @@ describe('nullius export through an alias of the project root', () => {
 
   it('refuses, with a reason, an archive path whose landing place a dangling symlink leaves undetermined', async () => {
     const { parent, root, alias } = await projectWithRun();
-    fs.symlinkSync(path.join(parent, 'not-there'), path.join(root, 'dangling'), 'dir');
+    fs.symlinkSync(path.join(parent, 'not-there'), path.join(root, 'dangling'), process.platform === 'win32' ? 'junction' : 'dir');
     await expect(runCli([`--project-root=${alias}`, 'export', '--run-id', 'r-one', '--out', path.join(alias, 'dangling', 'out.zip')], makeIo(alias).io))
       .rejects.toThrow(/cannot determine where .* lands/);
     expect(fs.existsSync(path.join(parent, 'not-there'))).toBe(false);
@@ -97,7 +98,7 @@ describe('nullius export through an alias of the project root', () => {
     const out = path.join(via(root), 'exports', 'ok.zip');
     expect(await runCli([`--project-root=${alias}`, 'export', '--run-id', 'r-one', '--include-kb-profile', '--out', out], makeIo(alias).io)).toBe(0);
     const listing = execFileSync('unzip', ['-Z1', path.join(root, 'exports', 'ok.zip')], { encoding: 'utf-8' });
-    expect(listing.split('\n')).toContain('knowledge_base/..notes.md');
+    expect(listing.split(/\r?\n/)).toContain('knowledge_base/..notes.md');
   });
 });
 
@@ -110,7 +111,7 @@ describe('nullius export of knowledge-base files', () => {
     fs.writeFileSync(path.join(runDir, 'result.json'), '{}\n');
     fs.writeFileSync(path.join(parent, 'secret.txt'), 'outside bytes\n');
     fs.mkdirSync(path.join(root, 'knowledge_base'));
-    fs.symlinkSync(path.join(parent, 'secret.txt'), path.join(root, 'knowledge_base', 'linked-secret.md'));
+    createReparseFixture(path.join(parent, 'secret.txt'), path.join(root, 'knowledge_base', 'linked-secret.md'));
     fs.writeFileSync(path.join(runDir, 'kb_profile', 'kb_profile.json'), JSON.stringify({ selected: [{ path: 'knowledge_base/linked-secret.md' }] }));
     await expect(runCli([`--project-root=${alias}`, 'export', '--run-id', 'r-one', '--include-kb-profile', '--out', path.join(parent, 'out.zip')], makeIo(alias).io))
       .rejects.toThrow(/kb-profile export safety check failed[\s\S]*symlink/);
@@ -124,7 +125,7 @@ describe('trace verbs addressing a run through an alias of the project root', ()
     await initProject(root);
     const runDir = path.join(root, 'artifacts', 'runs', 'r-one');
     fs.mkdirSync(runDir, { recursive: true });
-    fs.symlinkSync(runDir, path.join(root, 'artifacts', 'runs', 'r-link'), 'dir');
+    fs.symlinkSync(runDir, path.join(root, 'artifacts', 'runs', 'r-link'), process.platform === 'win32' ? 'junction' : 'dir');
     fs.mkdirSync(path.join(parent, 'other', 'artifacts', 'runs', 'r-one'), { recursive: true });
 
     const escaped = makeIo(alias);
@@ -145,7 +146,7 @@ describe('trace verbs addressing a run through an alias of the project root', ()
     fs.mkdirSync(path.join(external, 'r-one'), { recursive: true });
     fs.rmSync(path.join(root, 'artifacts', 'runs'), { recursive: true, force: true });
     fs.mkdirSync(path.join(root, 'artifacts'), { recursive: true });
-    fs.symlinkSync(external, path.join(root, 'artifacts', 'runs'), 'dir');
+    fs.symlinkSync(external, path.join(root, 'artifacts', 'runs'), process.platform === 'win32' ? 'junction' : 'dir');
     const code = await runCli([`--project-root=${alias}`, 'trace', 'void', path.join(via(root), 'artifacts', 'runs', 'r-one'), '--reason', 'x'], makeIo(alias).io)
       .catch(() => 1);
     expect(code).not.toBe(0);
@@ -159,7 +160,7 @@ describe('trace verbs addressing a run through an alias of the project root', ()
     fs.mkdirSync(runDir, { recursive: true });
     fs.writeFileSync(path.join(parent, 'outside-attributes'), 'unrelated\n');
     fs.rmSync(path.join(root, 'artifacts', 'runs', '.gitattributes'), { force: true });
-    fs.symlinkSync(path.join(parent, 'outside-attributes'), path.join(root, 'artifacts', 'runs', '.gitattributes'));
+    createReparseFixture(path.join(parent, 'outside-attributes'), path.join(root, 'artifacts', 'runs', '.gitattributes'));
     expect(await runCli([`--project-root=${alias}`, 'trace', 'void', via(runDir), '--reason', 'x'], makeIo(alias).io)).toBe(0);
     expect(readValidityLedger(root).runs.get('r-one')?.validity).toBe('void');
     expect(fs.readFileSync(path.join(parent, 'outside-attributes'), 'utf-8')).toBe('unrelated\n');
@@ -194,7 +195,7 @@ describe('trace verbs addressing a run through an alias of the project root', ()
     const external = path.join(parent, 'external-runs');
     fs.mkdirSync(path.join(external, 'r1'), { recursive: true });
     fs.mkdirSync(path.join(root, 'artifacts'));
-    fs.symlinkSync(external, path.join(root, 'artifacts', 'runs'), 'dir');
+    fs.symlinkSync(external, path.join(root, 'artifacts', 'runs'), process.platform === 'win32' ? 'junction' : 'dir');
     for (const target of [path.join(root, 'artifacts', 'runs', 'r1'), path.join(via(root), 'artifacts', 'runs', 'r1')]) {
       expect(stampRunDirectory(root, target, { actor: 'test' })).toMatchObject({
         kind: 'rejected', message: expect.stringMatching(/passes through the symlink/),
@@ -207,7 +208,7 @@ describe('trace verbs addressing a run through an alias of the project root', ()
     const { parent, root } = aliasedProject();
     const runDir = path.join(root, 'artifacts', 'runs', 'r1');
     fs.mkdirSync(runDir, { recursive: true });
-    fs.symlinkSync(path.join(root, 'artifacts', 'runs'), path.join(parent, 'runs-link'), 'dir');
+    fs.symlinkSync(path.join(root, 'artifacts', 'runs'), path.join(parent, 'runs-link'), process.platform === 'win32' ? 'junction' : 'dir');
     expect(stampRunDirectory(root, path.join(parent, 'runs-link', 'r1'), { actor: 'test' })).toMatchObject({
       kind: 'rejected', message: expect.stringMatching(/outside the run root/),
     });
@@ -259,7 +260,7 @@ describe('MCP computation entry with run_dir and manifest_path spelled different
     await expect(handleOrchRunExecuteManifest({
       project_root: alias, run_id: runId, run_dir: via(runDir), manifest_path: path.join(elsewhere, 'manifest.json'), dry_run: true,
     })).rejects.toThrow(/manifest_path must be within/);
-    fs.symlinkSync(elsewhere, path.join(runDir, 'computation', 'linked'), 'dir');
+    fs.symlinkSync(elsewhere, path.join(runDir, 'computation', 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
     await expect(handleOrchRunExecuteManifest({
       project_root: alias, run_id: runId, run_dir: via(runDir), manifest_path: path.join(runDir, 'computation', 'linked', 'manifest.json'), dry_run: true,
     })).rejects.toThrow(/symbolic link/);
@@ -305,7 +306,7 @@ describe('review follow-up gate artifacts', () => {
     const runDir = path.join(root, 'artifacts', 'runs', 'r1');
     fs.mkdirSync(path.join(runDir, 'artifacts'), { recursive: true });
     fs.writeFileSync(path.join(parent, 'crafted.json'), '{}\n');
-    fs.symlinkSync(path.join(parent, 'crafted.json'), path.join(runDir, 'artifacts', 'subject.json'));
+    createReparseFixture(path.join(parent, 'crafted.json'), path.join(runDir, 'artifacts', 'subject.json'));
     const ref = (name: string) => ({ uri: `rep://runs/r1/artifact/${encodeURIComponent(`artifacts/${name}`)}`, sha256: '0'.repeat(64), kind: 'x' });
     const bridge = {
       bridge_kind: 'review',
@@ -325,7 +326,7 @@ describe('declared computation outputs', () => {
     const workspace = path.join(runDir, 'computation');
     fs.mkdirSync(workspace, { recursive: true });
     fs.writeFileSync(path.join(workspace, 'entry.py'), 'print(1)\n');
-    fs.symlinkSync(path.join(parent, 'not-yet-created'), path.join(workspace, 'out'), 'dir');
+    fs.symlinkSync(path.join(parent, 'not-yet-created'), path.join(workspace, 'out'), process.platform === 'win32' ? 'junction' : 'dir');
     const manifestPath = path.join(workspace, 'manifest.json');
     fs.writeFileSync(manifestPath, JSON.stringify({
       schema_version: 1,
@@ -384,7 +385,7 @@ describe('recorded evidence pointers', () => {
     expect(resolveEvidencePath(root, via(file))).toBe(file);
     fs.mkdirSync(path.join(parent, 'outside'));
     expect(() => resolveEvidencePath(root, path.join(parent, 'outside', 'x.json'))).toThrow(/escapes the project/);
-    fs.symlinkSync(path.dirname(file), path.join(root, 'linked'), 'dir');
+    fs.symlinkSync(path.dirname(file), path.join(root, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
     expect(() => resolveEvidencePath(root, path.join(via(root), 'linked', 'evidence.json'))).toThrow(/symlink/);
   });
 
@@ -414,7 +415,7 @@ describe('proposal decisions', () => {
     fs.writeFileSync(inside, proposal);
     fs.mkdirSync(path.join(parent, 'external'));
     fs.writeFileSync(path.join(parent, 'external', 'proposal.json'), proposal);
-    fs.symlinkSync(path.join(parent, 'external'), path.join(root, 'linked'), 'dir');
+    fs.symlinkSync(path.join(parent, 'external'), path.join(root, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
     const decide = (pointer: string) => recordProposalDecision({
       projectRoot: root, state: stateFor(pointer), proposalKind: 'skill', proposalId: 'p1', decision: 'dismissed',
     });
@@ -449,7 +450,7 @@ describe('notebook reviewer report receipts', () => {
       .toBe(`rep://runs/nb-review/artifact/${encodeURIComponent('review/report.json')}`);
     fs.mkdirSync(path.join(parent, 'outside'));
     fs.writeFileSync(path.join(parent, 'outside', 'report.json'), '{}\n');
-    fs.symlinkSync(path.join(parent, 'outside'), path.join(runDir, 'review', 'linked'), 'dir');
+    fs.symlinkSync(path.join(parent, 'outside'), path.join(runDir, 'review', 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
     expect(() => reviewerReportRef('nb-review', runDir, path.join(via(runDir), 'review', 'linked', 'report.json'))).toThrow(/symbolic link/);
   });
 });

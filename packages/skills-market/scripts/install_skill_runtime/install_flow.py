@@ -9,12 +9,13 @@ from typing import Any
 
 from .python_runtime import create_isolated_venv
 from .skill_note import inject_python_runtime_note
-from .source_payload import safe_remove
+from .source_payload import is_reparse_path, safe_remove
+from .platform_assets import copy_windows_runtime
 
 
 def _copy_payload(stage_root: pathlib.Path, source_dir: pathlib.Path, files: list[pathlib.Path]) -> None:
     for source_file in files:
-        if source_file.is_symlink():
+        if is_reparse_path(source_file):
             raise RuntimeError(f"refuse to copy symlink payload file: {source_file}")
         rel = source_file.relative_to(source_dir)
         out = stage_root / rel
@@ -56,14 +57,17 @@ def install_payload(
         stage_root = stage_dir / package_id
         stage_root.mkdir()
         _copy_payload(stage_root, source_dir, files)
+        platform_assets = copy_windows_runtime(source_dir, stage_root)
 
         install_record = {
             "package_id": package_id,
             "installed_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
             "install_mode": install_mode,
             **metadata,
-            "file_count": len(files),
+            "file_count": len(files) + len(platform_assets),
         }
+        if platform_assets:
+            install_record["platform_assets"] = platform_assets
         if auto_safe_evaluation is not None:
             install_record["auto_safe_evaluation"] = auto_safe_evaluation
 

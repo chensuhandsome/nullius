@@ -49,7 +49,7 @@ function fixture(fail: boolean | 'missing-output' = false) {
       testable_hypotheses: ['The declared sum equals five.', 'The declared output file is produced.'], required_observables: ['sum'],
       minimal_compute_plan: [{ step: 'Evaluate the sum', method: 'Python', estimated_difficulty: 'low' }],
       method_spec: {
-        files: [{ path: 'scripts/evaluate.py', content: fail === 'missing-output' ? 'pass\n' : fail ? 'raise SystemExit(1)\n' : "from pathlib import Path\nPath('outputs').mkdir(exist_ok=True)\nPath('outputs/value.txt').write_text(str(sum([2, 3])) + '\\n')\n" }],
+        files: [{ path: 'scripts/evaluate.py', content: fail === 'missing-output' ? 'pass\n' : fail ? 'raise SystemExit(1)\n' : "from pathlib import Path\nPath('outputs').mkdir(exist_ok=True)\nPath('outputs/value.txt').write_bytes((str(sum([2, 3])) + '\\n').encode('utf-8'))\n" }],
         run_card: {
           schema_version: 2, workflow_id: 'computation', title: 'Evaluate a supplied operation',
           phases: [{ phase_id: 'task_001', backend: { kind: 'shell', argv: ['python3', 'scripts/evaluate.py'], cwd: '.', timeout_seconds: 10 }, outputs: ['outputs/value.txt'] }],

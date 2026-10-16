@@ -221,6 +221,7 @@ describe('store substrate', () => {
 
     rmSync(rootDir, { recursive: true, force: true });
     mkdirSync(managedMarker, { recursive: true });
+    writeFileSync(join(managedMarker, 'HARNESS'), JSON.stringify({schema_version:1, kind:'nullius_project_harness'}));
     const discoveredStore = new IdeaEngineStore(rootDir);
     discoveredStore.writeArtifact('stcmp001', 'generation', 'pack-demo.json', { ok: true });
     const discoveredRef = discoveredStore.portableArtifactRef(
@@ -228,6 +229,14 @@ describe('store substrate', () => {
       artifactHash,
     );
     expect(discoveredRef).toBe(explicitRef);
+  });
+
+  it.runIf(process.platform === 'win32')('does not grant project authority to an ancestor containing only a global cache directory', () => {
+    const ancestor = mkdtempSync(join(tmpdir(), 'idea-engine-cache-ancestor-'));
+    tempDirs.push(ancestor);
+    mkdirSync(join(ancestor, '.nullius', 'openalex'), {recursive:true});
+    const store = new IdeaEngineStore(join(ancestor, 'project', 'data', 'idea-store'));
+    expect(store.projectRoot).toBe(join(ancestor, 'project', 'data'));
   });
 
   it('rejects missing artifact refs inside the store root', () => {

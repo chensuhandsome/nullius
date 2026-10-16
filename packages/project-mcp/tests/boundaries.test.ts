@@ -12,6 +12,7 @@ import { acquireExecution, releaseExecution } from '../src/execution-lock.js';
 import { execute } from '../src/execute.js';
 
 const roots: string[] = [];
+const directoryLinkType = process.platform === 'win32' ? 'junction' : 'dir';
 function fixture() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nullius-project-boundary-')));
   roots.push(root);
@@ -38,7 +39,7 @@ describe('single-project transport boundaries', () => {
     // An explicit alias, so this holds whether or not the platform temp
     // directory is itself reached through a symlink.
     const alias = `${root}-alias`;
-    fs.symlinkSync(root, alias, 'dir');
+    fs.symlinkSync(root, alias, directoryLinkType);
     roots.push(alias);
     fs.mkdirSync(path.join(root, 'inputs'));
     fs.writeFileSync(path.join(root, 'inputs', 'a.txt'), 'abc');
@@ -57,7 +58,7 @@ describe('single-project transport boundaries', () => {
     fs.mkdirSync(outside);
     roots.push(outside);
     expect(() => boundPath(root, path.join(outside, 'a.txt'))).toThrow('Path is outside the bound project.');
-    fs.symlinkSync(path.join(root, 'inputs'), path.join(root, 'linked'), 'dir');
+    fs.symlinkSync(path.join(root, 'inputs'), path.join(root, 'linked'), directoryLinkType);
     expect(() => boundPath(root, path.join(alias, 'linked', 'a.txt'))).toThrow('Symlinks are not accepted');
   });
   it('requires create-only or matching hashes and returns bounded source bytes', async () => {
@@ -89,8 +90,8 @@ describe('single-project transport boundaries', () => {
   it('denies traversal, symlinks, case aliases and forged runtime receipts', async () => {
     const { root, adapter } = fixture();
     const outside = fixture().root;
-    fs.symlinkSync(outside, path.join(root, 'link'));
-    fs.symlinkSync(path.join(outside, 'missing'), path.join(root, 'dangling'));
+    fs.symlinkSync(outside, path.join(root, 'link'), directoryLinkType);
+    fs.symlinkSync(path.join(outside, 'missing'), path.join(root, 'dangling'), directoryLinkType);
     for (const file of ['../escape', `${outside}/escape`, 'link/escape', 'dangling/escape', '.nullius/state.json', 'agents.md', 'PROJECT_INDEX.md', 'RESEARCH_TEAM_CONFIG.JSON', 'ARTIFACTS/delegated-runs/project-mcp/request/manifest.json', 'Artifacts/runs/run/artifacts/computation_result_v1.json', 'artifacts/runs/run/verification/validation_chain_receipt_v1.json']) {
       expect((await adapter.call('project_file_write', { path: file, content: '{}', expected_sha256: null })).isError, file).toBe(true);
     }
@@ -115,7 +116,8 @@ describe('single-project transport boundaries', () => {
     const target = path.join(outside, 'ledger.jsonl');
     fs.writeFileSync(target, 'unchanged');
     fs.mkdirSync(path.join(root, '.nullius'));
-    fs.symlinkSync(target, path.join(root, '.nullius/ledger.jsonl'));
+    fs.symlinkSync(process.platform === 'win32' ? outside : target, path.join(root, '.nullius/ledger.jsonl'),
+      process.platform === 'win32' ? 'junction' : 'file');
     expect((await adapter.call('orch_run_create', { run_id: 'run', delivery_id: 'create' })).isError).toBe(true);
     expect((await adapter.call('project_cli', { action: 'status' })).isError).toBe(true);
     expect(fs.readFileSync(target, 'utf8')).toBe('unchanged');
@@ -125,9 +127,10 @@ describe('single-project transport boundaries', () => {
     expect(await runCli(['--project-root', root, 'init'], { cwd: root, stdout: () => {}, stderr: () => {} })).toBe(0);
     const outside = fixture().root;
     fs.mkdirSync(path.join(root, 'artifacts/runs/old/computation/.venv/bin'), { recursive: true });
-    fs.symlinkSync(process.execPath, path.join(root, 'artifacts/runs/old/computation/.venv/bin/node'));
-    fs.symlinkSync(outside, path.join(root, 'artifacts/provider-cache'));
-    fs.symlinkSync(outside, path.join(root, 'artifacts/runs/old/computation/inputs'));
+    fs.symlinkSync(process.platform === 'win32' ? path.dirname(process.execPath) : process.execPath,
+      path.join(root, 'artifacts/runs/old/computation/.venv/bin/node'), process.platform === 'win32' ? 'junction' : 'file');
+    fs.symlinkSync(outside, path.join(root, 'artifacts/provider-cache'), directoryLinkType);
+    fs.symlinkSync(outside, path.join(root, 'artifacts/runs/old/computation/inputs'), directoryLinkType);
     const response = await adapter.call('project_cli', { action: 'status' });
     expect(response.isError, JSON.stringify(response)).not.toBe(true);
     expect(body(response).exit_code).toBe(0);
@@ -137,7 +140,7 @@ describe('single-project transport boundaries', () => {
     const outside = fixture().root;
     fs.mkdirSync(path.join(root, '.nullius'));
     fs.mkdirSync(path.join(root, 'inputs'));
-    fs.symlinkSync(outside, path.join(root, 'inputs/external'));
+    fs.symlinkSync(outside, path.join(root, 'inputs/external'), directoryLinkType);
     fs.writeFileSync(path.join(root, '.nullius/state.json'), JSON.stringify({ run_id: 'run', artifacts: { calculation: 'inputs/external/result.json' } }));
     const expectSymlinkRejection = async () => {
       const result = await adapter.call('project_cli', { action: 'status' });
@@ -147,7 +150,7 @@ describe('single-project transport boundaries', () => {
     await expectSymlinkRejection();
     fs.writeFileSync(path.join(root, '.nullius/state.json'), JSON.stringify({ run_id: 'run' }));
     fs.mkdirSync(path.join(root, 'artifacts/runs/run/data'), { recursive: true });
-    fs.symlinkSync(outside, path.join(root, 'artifacts/runs/run/data/external'));
+    fs.symlinkSync(outside, path.join(root, 'artifacts/runs/run/data/external'), directoryLinkType);
     fs.writeFileSync(path.join(root, '.nullius/ledger.jsonl'), JSON.stringify({ run_id: 'run', event_type: 'workflow_step_completed', step_id: 'calculate', details: { artifact_uri: 'orch://runs/run/artifact/data/external/result.json' } }) + '\n');
     await expectSymlinkRejection();
     fs.writeFileSync(path.join(root, '.nullius/state.json'), JSON.stringify({ run_id: 'run', plan: { steps: [{ step_id: 'calculate', execution: { consumer_hints: { artifact: ' data/external/result ' } } }] } }));
@@ -157,7 +160,7 @@ describe('single-project transport boundaries', () => {
     fs.unlinkSync(path.join(root, '.nullius/ledger.jsonl'));
     const workspace = path.join(root, 'artifacts/runs/run/computation/nested');
     fs.mkdirSync(workspace, { recursive: true });
-    fs.symlinkSync(outside, path.join(workspace, 'logs'));
+    fs.symlinkSync(outside, path.join(workspace, 'logs'), directoryLinkType);
     const response = await adapter.call('orch_run_execute_manifest', { _confirm: true, run_id: 'run', run_dir: path.join(root, 'artifacts/runs/run'), manifest_path: path.join(workspace, 'manifest.json'), delivery_id: 'execute' });
     expect(response.isError).toBe(true);
     expect(JSON.stringify(response)).toContain('Symlinks');

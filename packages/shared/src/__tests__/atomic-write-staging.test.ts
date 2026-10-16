@@ -41,6 +41,19 @@ function statAs(options: unknown, dev: bigint, ino: bigint): { dev: bigint | num
   return exact ? { dev, ino } : { dev: Number(dev), ino: Number(ino) };
 }
 const fixedHex = 'ab'.repeat(8);
+const isWindows = process.platform === 'win32';
+const postCommitFailures: ReadonlyArray<'rename' | 'directory fsync'> = isWindows
+  ? ['rename'] : ['rename', 'directory fsync'];
+
+function plantFileAlias(target: string, alias: string): void {
+  if (isWindows) fs.linkSync(target, alias);
+  else fs.symlinkSync(target, alias);
+}
+
+function expectFileAlias(alias: string, target: string): void {
+  if (isWindows) expect(fs.statSync(alias, { bigint: true }).ino).toBe(fs.statSync(target, { bigint: true }).ino);
+  else expect(fs.readlinkSync(alias)).toBe(target);
+}
 
 describe('writeBytesAtomicDurable staging file', () => {
   let dir: string;
@@ -59,6 +72,10 @@ describe('writeBytesAtomicDurable staging file', () => {
   function replaceWithForeign(name: string): void {
     const foreign = path.join(dir, 'foreign-file');
     fs.writeFileSync(foreign, 'NOT OURS');
+    // Windows MoveFileEx cannot replace an open destination. The foreign inode
+    // already exists before unlinking, so this retains the distinct-identity
+    // attack while exercising the native delete-sharing path.
+    if (isWindows) fs.unlinkSync(name);
     fs.renameSync(foreign, name);
   }
 
@@ -86,7 +103,7 @@ describe('writeBytesAtomicDurable staging file', () => {
     const victim = path.join(outside, 'victim.json');
     fs.writeFileSync(victim, 'ORIGINAL');
     const predictable = `${file}.tmp.${process.pid}.${now}`;
-    fs.symlinkSync(victim, predictable);
+    plantFileAlias(victim, predictable);
     try {
       writeBytesAtomicDurable(file, 'payload');
     } finally {
@@ -96,7 +113,7 @@ describe('writeBytesAtomicDurable staging file', () => {
     expect(fs.readFileSync(victim, 'utf-8')).toBe('ORIGINAL');
     expect(fs.lstatSync(file).isFile()).toBe(true);
     expect(fs.readFileSync(file, 'utf-8')).toBe('payload');
-    expect(fs.readlinkSync(predictable)).toBe(victim);
+    expectFileAlias(predictable, victim);
   });
 
   it('refuses to stage through an entry already present at the fresh staging name', () => {
@@ -106,12 +123,12 @@ describe('writeBytesAtomicDurable staging file', () => {
     fs.writeFileSync(victim, 'ORIGINAL');
     mockRandomBytes.mockImplementationOnce(() => Buffer.from(fixedHex, 'hex'));
     const staging = `${file}.tmp.${process.pid}.${fixedHex}`;
-    fs.symlinkSync(victim, staging);
+    plantFileAlias(victim, staging);
 
     expect(() => writeBytesAtomicDurable(file, 'payload', 0o600)).toThrow(/EEXIST/);
 
     expect(fs.readFileSync(victim, 'utf-8')).toBe('ORIGINAL');
-    expect(fs.readlinkSync(staging)).toBe(victim);
+    expectFileAlias(staging, victim);
     expect(fs.existsSync(file)).toBe(false);
   });
 
@@ -178,11 +195,11 @@ describe('writeBytesAtomicDurable staging file', () => {
     fs.closeSync(fd);
     expect(typeof identity.ino).toBe('bigint');
 
-    // A link at the name leading to the identified file is not that file.
+    // A symbolic link/junction has its own identity rather than its target's.
     const link = path.join(dir, 'link');
-    fs.symlinkSync(file, link);
+    fs.symlinkSync(isWindows ? outside : file, link, isWindows ? 'junction' : 'file');
     unlinkIfSameFile(link, identity);
-    expect(fs.readlinkSync(link)).toBe(file);
+    expect(fs.realpathSync(link)).toBe(isWindows ? outside : file);
     // Nothing is removed without a recorded identity, or for another file.
     unlinkIfSameFile(file, undefined);
     const other = path.join(dir, 'other');
@@ -242,7 +259,7 @@ describe('writeBytesAtomicDurable staging file', () => {
       (staging: string) => fs.linkSync(file, staging),
       (staging: string) => { fs.linkSync(file, staging); fs.unlinkSync(file); },
     ];
-    for (const failAt of ['rename', 'directory fsync'] as const) {
+    for (const failAt of postCommitFailures) {
       for (const take of takeVacatedName) {
         fs.rmSync(dir, { recursive: true, force: true });
         let staging: string | undefined;
@@ -307,7 +324,7 @@ describe('commitStagedDurable rename-failure callback', () => {
   });
 
   it('never runs the callback once the rename has returned', () => {
-    for (const failAt of ['rename', 'directory fsync'] as const) {
+    for (const failAt of postCommitFailures) {
       fs.writeFileSync(staged, 'staged');
       let renamed = false;
       restoreHook = _setAtomicWriteAuditHook(event => {

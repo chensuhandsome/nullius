@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { assertNoSymlinkComponents, escapesBase, realLocationWithin, resolveUnderRoot } from '../src/computation/path-safety.js';
+import { assertNoSymlinkComponents, escapesBase, realLocationWithin, resolveUnderRoot, resolveProjectContainedPath } from '../src/computation/path-safety.js';
 
 /** The one containment rule the front doors share: the project root is
  *  admitted in canonical form, an absolute path may reach it through an
@@ -21,7 +21,7 @@ function aliasedProject(): { parent: string; root: string; alias: string; via: (
   const root = path.join(parent, 'real');
   const alias = path.join(parent, 'alias');
   fs.mkdirSync(root);
-  fs.symlinkSync(root, alias, 'dir');
+  fs.symlinkSync(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
   return { parent, root, alias, via: canonical => path.join(alias, path.relative(root, canonical)) };
 }
 
@@ -48,11 +48,11 @@ describe('the shared containment checks', () => {
     const { parent, root, alias } = aliasedProject();
     fs.mkdirSync(path.join(root, 'plain'));
     fs.mkdirSync(path.join(parent, 'target'));
-    fs.symlinkSync(path.join(parent, 'target'), path.join(root, 'linked'), 'dir');
+    fs.symlinkSync(path.join(parent, 'target'), path.join(root, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
     expect(() => assertNoSymlinkComponents(root, path.join(alias, 'plain', 'f.txt'), 'probe', { allowMissingLeaf: true })).not.toThrow();
     expect(() => assertNoSymlinkComponents(root, path.join(alias, 'linked', 'f.txt'), 'probe', { allowMissingLeaf: true })).toThrow(/symbolic link/);
     expect(() => assertNoSymlinkComponents(root, path.join(parent, 'target', 'f.txt'), 'probe', { allowMissingLeaf: true })).toThrow(/must stay within/);
-    fs.symlinkSync(path.join(parent, 'missing'), path.join(root, 'dangling'), 'dir');
+    fs.symlinkSync(path.join(parent, 'missing'), path.join(root, 'dangling'), process.platform === 'win32' ? 'junction' : 'dir');
     expect(() => assertNoSymlinkComponents(root, path.join(alias, 'dangling', 'f.txt'), 'probe', { allowMissingLeaf: true })).toThrow(/symbolic link/);
     expect(() => assertNoSymlinkComponents(root, path.join(root, 'dangling'), 'probe', { allowMissingLeaf: true })).toThrow(/symbolic link/);
   });
@@ -61,12 +61,23 @@ describe('the shared containment checks', () => {
     const { parent, root, alias } = aliasedProject();
     const evidence = path.join(root, 'artifacts', 'runs', 'r1');
     fs.mkdirSync(path.join(evidence, 'deep'), { recursive: true });
-    fs.symlinkSync(path.join(evidence, 'deep'), path.join(parent, 'into-deep'), 'dir');
+    fs.symlinkSync(path.join(evidence, 'deep'), path.join(parent, 'into-deep'), process.platform === 'win32' ? 'junction' : 'dir');
     expect(realLocationWithin(evidence, path.join(alias, 'artifacts', 'runs', 'r1', 'out.zip'))).toBe(true);
     expect(realLocationWithin(evidence, path.join(parent, 'into-deep', 'out.zip'))).toBe(true);
     expect(realLocationWithin(evidence, evidence)).toBe(true);
     expect(realLocationWithin(evidence, path.join(alias, 'artifacts', 'runs', 'r1-sibling', 'out.zip'))).toBe(false);
     expect(realLocationWithin(evidence, path.join(root, 'artifacts', 'runs', '..r1', 'out.zip'))).toBe(false);
     expect(realLocationWithin(path.join(root, 'artifacts', 'runs', 'missing'), path.join(alias, 'artifacts', 'runs', 'missing', 'x'))).toBe(true);
+  });
+
+  it('distinguishes an absent descendant from traversal below an existing file', () => {
+    const { root, alias } = aliasedProject();
+    fs.writeFileSync(path.join(root, 'notes.txt'), 'unchanged');
+    expect(resolveProjectContainedPath(root, path.join(alias, 'notes.txt'), 'probe')).toBe(path.join(root, 'notes.txt'));
+    expect(resolveProjectContainedPath(root, path.join(alias, 'missing', 'child'), 'probe')).toBe(path.join(root, 'missing', 'child'));
+    expect(() => resolveProjectContainedPath(root, path.join(alias, 'notes.txt', 'child'), 'probe'))
+      .toThrow('probe passes through something that is not a directory');
+    expect(fs.readFileSync(path.join(root, 'notes.txt'), 'utf8')).toBe('unchanged');
+    expect(fs.existsSync(path.join(root, 'missing'))).toBe(false);
   });
 });

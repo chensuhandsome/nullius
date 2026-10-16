@@ -151,8 +151,9 @@ describe('refresh + check', () => {
       '', '## Results',
     ].join('\n'));
     fs.chmodSync(notebookPath(), 0o600);
+    const mode = fs.statSync(notebookPath()).mode & 0o777;
     expect(refreshNotebookCurrentState(projectRoot, { insertIfMissing: false }).action).toBe('rewritten');
-    expect(fs.statSync(notebookPath()).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(notebookPath()).mode & 0o777).toBe(mode);
   });
 
   it('one complete block plus a stray marker stays advisory: in_sync judged, never duplicated', () => {

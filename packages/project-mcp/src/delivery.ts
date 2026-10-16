@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { RunManifestManager, createToolAttemptIdentity } from '@nullius/orchestrator';
+import { RunManifestManager, createToolAttemptIdentity, launchDetachedWindowsDelivery } from '@nullius/orchestrator';
 import { invalidParams, writeBytesAtomicDurable } from '@nullius/shared';
 import { boundPath, safeId, assertProjectIdentity, type ProjectIdentity } from './paths.js';
 import { acquireExecution, releaseExecution } from './execution-lock.js';
@@ -80,12 +80,17 @@ export function submitDelivery(request: DeliveryRequest, beforeDispatch: () => v
     writeBytesAtomicDurable(filename, JSON.stringify(request) + '\n', 0o600);
     manager.markToolIntentsDispatched(id, [identity]);
     dispatched = true;
-    const supervisor = spawn(process.execPath, [fileURLToPath(new URL('./supervisor.js', import.meta.url)), filename], {
-      cwd: request.root, stdio: 'ignore', detached: true, env: process.env,
-    });
-    // Launch failure deliberately retains outcome_unknown and the execution lock.
-    supervisor.on('error', () => {});
-    supervisor.unref();
+    const supervisorPath = fileURLToPath(new URL('./supervisor.js', import.meta.url));
+    if (process.platform === 'win32') {
+      launchDetachedWindowsDelivery(supervisorPath, filename, request.root);
+    } else {
+      const supervisor = spawn(process.execPath, [supervisorPath, filename], {
+        cwd: request.root, stdio: 'ignore', detached: true, env: process.env,
+      });
+      // Launch failure deliberately retains outcome_unknown and the execution lock.
+      supervisor.on('error', () => {});
+      supervisor.unref();
+    }
     return readDelivery(request.root, id);
   } catch (error) {
     if (!dispatched) releaseExecution(request.root, id);

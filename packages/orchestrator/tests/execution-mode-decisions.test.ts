@@ -24,7 +24,7 @@ function makeTempProjectRoot(): string {
 function makeAliasedProjectRoot(): string {
   const real = makeTempProjectRoot();
   const alias = `${real}-alias`;
-  fs.symlinkSync(real, alias, 'dir');
+  fs.symlinkSync(real, alias, process.platform === 'win32' ? 'junction' : 'dir');
   return alias;
 }
 
@@ -265,8 +265,8 @@ describe('decision ledger', () => {
     );
 
     const child = spawnSync(
-      path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx'),
-      [
+      process.execPath,
+      [path.join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs'),
         path.join(REPO_ROOT, 'packages', 'orchestrator', 'src', 'cli.ts'),
         `--project-root=${projectRoot}`,
         'decision',
@@ -1296,12 +1296,13 @@ describe('decision ledger', () => {
       { id: 'ABC123', ts: '2026-07-10T00:00:00Z', kind: 'pending', text: 'land with its mode intact', by: 'user', resolves: null },
     ]);
     fs.chmodSync(ledgerFilePath(projectRoot), 0o640);
+    const mode = fs.statSync(ledgerFilePath(projectRoot)).mode & 0o777;
 
     expect(await runCli(
       [`--project-root=${projectRoot}`, 'decision', 'land'],
       makeIo(projectRoot).io,
     )).toBe(0);
-    expect(fs.statSync(ledgerFilePath(projectRoot)).mode & 0o777).toBe(0o640);
+    expect(fs.statSync(ledgerFilePath(projectRoot)).mode & 0o777).toBe(mode);
     expect(readDecisionLines(projectRoot)[0]).toMatchObject({
       id: 'D1',
       provisional_id: 'ABC123',
@@ -1353,10 +1354,11 @@ describe('decision ledger', () => {
     const manual = { id: ID_A, ts: '2026-07-10T00:00:00Z', kind: 'pending', text: 'no trailing newline', by: 'user', resolves: null };
     fs.writeFileSync(ledgerPath, JSON.stringify(manual), 'utf-8');
     fs.chmodSync(ledgerPath, 0o600);
+    const mode = fs.statSync(ledgerPath).mode & 0o777;
 
     await recordDecision(projectRoot, 'record', 'appended after repair');
     expect(readDecisionLines(projectRoot)).toHaveLength(2);
-    expect(fs.statSync(ledgerPath).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(ledgerPath).mode & 0o777).toBe(mode);
   });
 
   it('fails with a normal permission error on a read-only ledger instead of replacing it', async () => {
@@ -1369,7 +1371,7 @@ describe('decision ledger', () => {
     try {
       await expect(
         runCli([`--project-root=${projectRoot}`, 'decision', 'record', 'must not be written'], makeIo(projectRoot).io),
-      ).rejects.toThrow(/EACCES|permission denied/);
+      ).rejects.toThrow(/EACCES|EPERM|permission denied/);
       expect(fs.statSync(ledgerPath).mode & 0o777).toBe(0o444);
       expect(fs.readFileSync(ledgerPath, 'utf-8')).toBe(JSON.stringify(manual));
       expect(fs.existsSync(`${ledgerPath}.lock`)).toBe(false);
@@ -1805,7 +1807,7 @@ describe('decision ledger', () => {
     const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), "nullius d'ir-"));
     fs.mkdirSync(path.join(parentDir, 'project root'), { recursive: true });
     const aliasParent = `${parentDir}-alias`;
-    fs.symlinkSync(parentDir, aliasParent, 'dir');
+    fs.symlinkSync(parentDir, aliasParent, process.platform === 'win32' ? 'junction' : 'dir');
     const projectRoot = path.join(aliasParent, 'project root');
     await initRuntimeOnly(projectRoot);
 
@@ -1873,7 +1875,7 @@ describe('decision ledger', () => {
     try {
       await expect(
         runCli([`--project-root=${projectRoot}`, 'init', '--runtime-only', '--mode=file'], makeIo(projectRoot).io),
-      ).rejects.toThrow(/EACCES|permission denied/);
+      ).rejects.toThrow(/EACCES|EPERM|permission denied/);
       // Event-before-state: the failed init left no state file, so the retry
       // is a clean fresh init whose audit trail is complete.
       expect(fs.existsSync(path.join(controlDir, 'state.json'))).toBe(false);
@@ -2198,7 +2200,7 @@ describe('decision ledger', () => {
     try {
       await expect(
         runCli([`--project-root=${projectRoot}`, 'init', '--runtime-only', '--mode=file'], makeIo(projectRoot).io),
-      ).rejects.toThrow(/EACCES|permission denied/);
+      ).rejects.toThrow(/EACCES|EPERM|permission denied/);
       // Event-before-state ordering: the failed declaration left no state change.
       expect(new StateManager(projectRoot).readState().execution_mode ?? null).toBeNull();
     } finally {
@@ -2439,7 +2441,7 @@ describe('undeclared-mode drift hint', () => {
     expect(String(hint?.message)).toContain('nullius init --mode=file');
     expect(hint?.evidence).toMatchObject({
       dated_run_dirs_observed: 1,
-      latest_run_dir: path.join('artifacts', 'runs', '20260701T090000Z-m1-scan-r1'),
+      latest_run_dir: path.posix.join('artifacts', 'runs', '20260701T090000Z-m1-scan-r1'),
       harness_milestone_executor: 'research-team',
       team_run_dirs_observed: 0,
     });

@@ -55,6 +55,17 @@ function kinds(log: AtomicWriteAuditEvent[]): string[] {
   return log.map(e => e.kind);
 }
 
+// The POSIX syscall sequence stays locked. Node's Windows backend cannot
+// flush a directory; file fsync and atomic rename are still required there.
+const directorySyncSequence = process.platform === 'win32' ? [] : ['open', 'fsync', 'close'];
+
+function expectSupportedMode(actual: number, requested: number): void {
+  // Windows chmod exposes the read-only attribute, not owner/group ACLs or
+  // executable permission. ACL guarantees have native Windows tests instead.
+  const mask = process.platform === 'win32' ? 0o200 : 0o777;
+  expect(actual & mask).toBe(requested & mask);
+}
+
 describe('fsyncParentDirectoryDurable — recovery confirmation', () => {
   let tmp: string;
   let rec: { log: AtomicWriteAuditEvent[]; restore: () => void };
@@ -75,7 +86,8 @@ describe('fsyncParentDirectoryDurable — recovery confirmation', () => {
     fsyncParentDirectoryDurable(file);
 
     expect(fs.readFileSync(file, 'utf-8')).toBe('already committed');
-    expect(kinds(rec.log)).toEqual(['open', 'fsync', 'close']);
+    expect(kinds(rec.log)).toEqual(directorySyncSequence);
+    if (process.platform === 'win32') return;
     const open = rec.log[0] as Extract<AtomicWriteAuditEvent, { kind: 'open' }>;
     expect(open.path).toBe(tmp);
     expect(open.flags).toBe('r');
@@ -104,9 +116,7 @@ describe('writeBytesAtomicDurable — sequence lock', () => {
       'fsync',    // file fd
       'close',    // file fd
       'rename',
-      'open',     // dir 'r'
-      'fsync',    // dir fd
-      'close',    // dir fd
+      ...directorySyncSequence,
     ]);
   });
 
@@ -120,9 +130,7 @@ describe('writeBytesAtomicDurable — sequence lock', () => {
       'fsync',
       'close',
       'rename',
-      'open',
-      'fsync',
-      'close',
+      ...directorySyncSequence,
     ]);
     const openTmp = rec.log.find(e => e.kind === 'open') as Extract<AtomicWriteAuditEvent, { kind: 'open' }>;
     expect(openTmp.mode).toBe(0o700);
@@ -133,7 +141,7 @@ describe('writeBytesAtomicDurable — sequence lock', () => {
     writeBytesAtomicDurable(path.join(tmp, 'state.json'), 'payload');
     const opens = rec.log.filter((e): e is Extract<AtomicWriteAuditEvent, { kind: 'open' }> => e.kind === 'open');
     expect(opens[0].flags).toBe('wx'); // tmp file
-    expect(opens[1].flags).toBe('r');  // dir fsync
+    expect(opens.map(event => event.flags)).toEqual(process.platform === 'win32' ? ['wx'] : ['wx', 'r']);
   });
 
   it('runs a commit guard after staging closes and removes the tmp file when it refuses', () => {
@@ -168,7 +176,7 @@ describe('writeJsonAtomicDurable — wraps bytes-write with stringification', ()
     writeJsonAtomicDurable(path.join(tmp, 'x.json'), { ok: true });
     expect(kinds(rec.log)).toEqual([
       'mkdir', 'open', 'write', 'fsync', 'close',
-      'rename', 'open', 'fsync', 'close',
+      'rename', ...directorySyncSequence,
     ]);
   });
 
@@ -206,13 +214,11 @@ describe('appendJsonlDurable — sequence lock', () => {
       'write',
       'fsync',    // file fd
       'close',    // file fd
-      'open',     // 'r' on dir
-      'fsync',    // dir fd
-      'close',    // dir fd
+      ...directorySyncSequence,
     ]);
     const opens = rec.log.filter((e): e is Extract<AtomicWriteAuditEvent, { kind: 'open' }> => e.kind === 'open');
     expect(opens[0].flags).toBe('a');
-    expect(opens[1].flags).toBe('r');
+    expect(opens.map(event => event.flags)).toEqual(process.platform === 'win32' ? ['a'] : ['a', 'r']);
   });
 
   it('writes JSON + trailing newline', () => {
@@ -225,12 +231,13 @@ describe('appendJsonlDurable — sequence lock', () => {
     const file = path.join(tmp, 'ledger.jsonl');
     fs.writeFileSync(file, 'unterminated', 'utf-8');
     fs.chmodSync(file, 0o600);
+    const originalMode = fs.statSync(file).mode;
     rec.log.length = 0;
     appendBytesDurable(file, '\n');
     expect(fs.readFileSync(file, 'utf-8')).toBe('unterminated\n');
-    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(file).mode).toBe(originalMode);
     // Same durable sequence as the JSONL append: no tmp+rename inode swap.
-    expect(kinds(rec.log)).toEqual(['mkdir', 'open', 'write', 'fsync', 'close', 'open', 'fsync', 'close']);
+    expect(kinds(rec.log)).toEqual(['mkdir', 'open', 'write', 'fsync', 'close', ...directorySyncSequence]);
   });
 });
 
@@ -257,9 +264,7 @@ describe('writeExecutableAtomicDurable — sequence + 0o700 at create', () => {
       'fsync',
       'close',
       'rename',
-      'open',
-      'fsync',
-      'close',
+      ...directorySyncSequence,
     ]);
     const openTmp = rec.log.find(e => e.kind === 'open') as Extract<AtomicWriteAuditEvent, { kind: 'open' }>;
     expect(openTmp.mode).toBe(0o700);
@@ -288,9 +293,7 @@ describe('commitStagedDurable — rename-only with parent-dir fsync', () => {
     commitStagedDurable(staged, final);
     expect(kinds(rec.log)).toEqual([
       'rename',
-      'open',     // dir 'r'
-      'fsync',    // dir fd
-      'close',
+      ...directorySyncSequence,
     ]);
   });
 
@@ -324,7 +327,7 @@ describe('end-to-end behavior', () => {
     const file = path.join(tmp, 'mode.bin');
     writeBytesAtomicDurable(file, 'private', 0o600);
     const stat = fs.statSync(file);
-    expect(stat.mode & 0o777).toBe(0o600);
+    expectSupportedMode(stat.mode, 0o600);
   });
 
   it('writeBytesAtomicDurable cleans up tmp on rename failure', () => {
@@ -354,7 +357,7 @@ describe('end-to-end behavior', () => {
     const file = path.join(tmp, 'bin/launcher');
     writeExecutableAtomicDurable(file, '#!/bin/sh\necho hi\n');
     expect(fs.readFileSync(file, 'utf-8')).toBe('#!/bin/sh\necho hi\n');
-    expect(fs.statSync(file).mode & 0o777).toBe(0o700);
+    expectSupportedMode(fs.statSync(file).mode, 0o700);
   });
 
   it('commitStagedDurable promotes staged file to final', () => {

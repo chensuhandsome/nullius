@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'fs';
-import { resolve } from 'path';
+import { basename, resolve } from 'path';
 import { pathToFileURL } from 'url';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { DEFAULT_CONTRACT_DIR, type OpenRpcMethod, type OpenRpcDocument } from './openrpc.js';
@@ -29,6 +29,15 @@ export class ContractRuntimeError extends Error {
 // caller fixing a large pack sees every violation in one round-trip instead of one per resubmit;
 // the cap only guards against a pathological flood making the message unreadable.
 const MAX_REPORTED_VIOLATIONS = 20;
+
+function contractSchemaUri(filename: string): string {
+  // Ajv's URI resolver escapes Windows file-URL drive colons inconsistently
+  // when resolving sibling refs. These schemas are loaded locally in full;
+  // use an in-memory identifier namespace on Windows, never a network fetch.
+  return process.platform === 'win32'
+    ? `https://nullius.invalid/idea-runtime-contracts/${encodeURIComponent(basename(filename))}`
+    : pathToFileURL(filename).href;
+}
 
 function formatOneViolation(error: NonNullable<AjvValidator['errors']>[number]): string {
   const location = error.instancePath ? error.instancePath.slice(1) || '<root>' : '<root>';
@@ -77,7 +86,7 @@ export class IdeaEngineContractCatalog {
   constructor(contractDir = DEFAULT_CONTRACT_DIR) {
     this.contractDir = resolve(contractDir);
     const openrpcPath = resolve(this.contractDir, 'idea_runtime_rpc_v1.openrpc.json');
-    this.openrpcUri = pathToFileURL(openrpcPath).href;
+    this.openrpcUri = contractSchemaUri(openrpcPath);
     const openrpc = JSON.parse(readFileSync(openrpcPath, 'utf8')) as OpenRpcDocument;
     this.contractVersion = String(openrpc.info?.version ?? 'unknown');
     this.ajv = new Ajv2020Ctor({
@@ -170,7 +179,7 @@ export class IdeaEngineContractCatalog {
     for (const entry of readdirSync(this.contractDir).filter(name => name.endsWith('.schema.json')).sort()) {
       const path = resolve(this.contractDir, entry);
       const schema = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
-      this.ajv.addSchema({ ...schema, $id: pathToFileURL(path).href }, pathToFileURL(path).href);
+      this.ajv.addSchema({ ...schema, $id: contractSchemaUri(path) }, contractSchemaUri(path));
     }
   }
 

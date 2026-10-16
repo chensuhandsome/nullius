@@ -36,7 +36,10 @@ async function deliver(client: Client, name: string, args: Record<string, unknow
   expect(response.result.isError, JSON.stringify(response.result)).not.toBe(true);
   return JSON.parse(response.result.content[0].text);
 }
-function runningGroup(pgid: number): number[] {
+function runningGroup(pgid: number, fixturePids: number[] = []): number[] {
+  if (process.platform === 'win32') return fixturePids.filter(pid => {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  });
   const rows = execFileSync('ps', ['-A', '-o', 'pid=,pgid=,stat='], { encoding: 'utf8' });
   return rows.trim().split('\n').flatMap(row => {
     const fields = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(row);
@@ -81,6 +84,7 @@ describe('durable transport handoff', () => {
     const root = fixture();
     const client = await connect(root);
     let fixtureGroup: number | undefined;
+    let fixturePids: number[] = [];
     try {
       await deliver(client, 'project_cli', { action: 'init', mode: 'engine' }, 'init');
       await deliver(client, 'orch_run_create', { run_id: 'slow', workflow_id: 'computation' }, 'create');
@@ -90,7 +94,7 @@ describe('durable transport handoff', () => {
         'from pathlib import Path',
         'import json, os, subprocess, sys, time',
         `child = subprocess.Popen([sys.executable, '-c', ${JSON.stringify(childScript)}])`,
-        "Path('started.tmp').write_text(json.dumps({'pid': os.getpid(), 'pgid': os.getpgrp(), 'child_pid': child.pid}))",
+        "Path('started.tmp').write_text(json.dumps({'pid': os.getpid(), 'pgid': getattr(os, 'getpgrp', os.getpid)(), 'child_pid': child.pid}))",
         "os.replace('started.tmp', 'started.json')",
         'time.sleep(60)',
         "Path('finished.txt').write_text('done')",
@@ -111,17 +115,22 @@ describe('durable transport handoff', () => {
       while (!fs.existsSync(started) && Date.now() < startupDeadline) await new Promise(resolve => setTimeout(resolve, 50));
       expect(fs.existsSync(started), JSON.stringify(await call(client, 'project_delivery_read', { delivery_id: 'slow-call' }))).toBe(true);
       const identity = JSON.parse(fs.readFileSync(started, 'utf8')) as { pid: number; pgid: number; child_pid: number };
-      const ownGroup = Number(execFileSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }));
-      expect(Number.isSafeInteger(identity.pgid) && identity.pgid > 1 && identity.pgid !== ownGroup).toBe(true);
+      if (process.platform !== 'win32') {
+        const ownGroup = Number(execFileSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }));
+        expect(Number.isSafeInteger(identity.pgid) && identity.pgid > 1 && identity.pgid !== ownGroup).toBe(true);
+      } else {
+        expect(identity.pid > 0 && identity.child_pid > 0 && identity.pid !== process.pid).toBe(true);
+      }
       fixtureGroup = identity.pgid;
+      fixturePids = [identity.pid, identity.child_pid];
       while (!fs.existsSync(childStarted) && Date.now() < startupDeadline) await new Promise(resolve => setTimeout(resolve, 50));
       expect(fs.readFileSync(childStarted, 'utf8')).toBe('one');
-      expect(runningGroup(fixtureGroup)).toEqual(expect.arrayContaining([identity.pid, identity.child_pid]));
+      expect(runningGroup(fixtureGroup, fixturePids)).toEqual(expect.arrayContaining([identity.pid, identity.child_pid]));
       const terminationDeadline = Date.now() + 20_000;
-      let remaining = runningGroup(fixtureGroup);
+      let remaining = runningGroup(fixtureGroup, fixturePids);
       while (remaining.length && Date.now() < terminationDeadline) {
         await new Promise(resolve => setTimeout(resolve, 100));
-        remaining = runningGroup(fixtureGroup);
+        remaining = runningGroup(fixtureGroup, fixturePids);
       }
       expect(remaining, 'The worker and both fixture processes must stop before their 60-second sleeps end').toEqual([]);
       const delivered = await call(client, 'project_delivery_read', { delivery_id: 'slow-call' });
@@ -145,9 +154,11 @@ describe('durable transport handoff', () => {
       expect(fs.existsSync(path.join(root, '.nullius/project_mcp_execution.lock'))).toBe(true);
     } finally {
       // Keep failed assertions from leaving the intentionally long fixture alive.
-      if (fixtureGroup !== undefined && runningGroup(fixtureGroup).length) {
-        try { process.kill(-fixtureGroup, 'SIGKILL'); } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      if (fixtureGroup !== undefined && runningGroup(fixtureGroup, fixturePids).length) {
+        for (const target of process.platform === 'win32' ? fixturePids : [-fixtureGroup]) {
+          try { process.kill(target, 'SIGKILL'); } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+          }
         }
       }
       await client.close();

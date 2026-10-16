@@ -29,7 +29,21 @@ export function assertProjectIdentity(root: string, expected: ProjectIdentity): 
 
 /** Parameter/file boundary only. Executed local scripts are trusted code, not sandboxed. */
 export function boundPath(root: string, value: string, base = root): string {
-  if (!value || value.includes('\0') || value.includes('\\') || value.split('/').includes('..')) throw invalidParams('Unsafe project path.');
+  const nativeAbsolute = process.platform === 'win32' && path.isAbsolute(value);
+  if (!value || value.includes('\0') || (value.includes('\\') && !nativeAbsolute)
+      || value.split(process.platform === 'win32' ? /[\\/]/u : /\//u).includes('..')) {
+    throw invalidParams('Unsafe project path.');
+  }
+  if (process.platform === 'win32') {
+    // Native absolute paths are also produced internally by path.join().
+    // Relative transport paths stay slash-separated. Reject NTFS streams
+    // and Win32 aliases that could bypass protected-name checks below.
+    const segments = value.slice(path.parse(value).root.length).split(/[\\/]/u);
+    if (value.startsWith('\\\\?\\') || value.startsWith('\\\\.\\')
+        || segments.some(part => /[<>:"|?*\x00-\x1f]/u.test(part)
+          || (part !== '.' && /[. ]$/u.test(part))
+          || /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu.test(part))) throw invalidParams('Unsafe project path.');
+  }
   // The bound root is canonical; an absolute value may spell it through the
   // alias the caller knows the project by, and is respelled under it.
   const target = resolveUnderRoot(root, path.resolve(base, value));
@@ -144,7 +158,9 @@ function guardWorkflowReferences(root: string): void {
   const runs = [path.join(root, `artifacts/runs/${runId}`)];
   try {
     const components = ['team', 'team/runs', `team/runs/${runId}`].map(relative => fs.lstatSync(path.join(root, relative)));
-    if (components.every(stat => stat.isDirectory() && !stat.isSymbolicLink() && (stat.mode & 0o444) && (stat.mode & 0o111))) {
+    if (components.every(stat => stat.isDirectory() && !stat.isSymbolicLink()
+        && (process.platform === 'win32' || ((stat.mode & 0o444) && (stat.mode & 0o111))))) {
+      if (process.platform === 'win32') fs.readdirSync(path.join(root, `team/runs/${runId}`));
       runs.push(path.join(root, `team/runs/${runId}`));
     }
   } catch (error) {

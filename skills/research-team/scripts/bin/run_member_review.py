@@ -18,6 +18,22 @@ import subprocess
 import uuid
 import sys
 from pathlib import Path
+
+# Resolve only the shipped skill payload or this exact source checkout.
+if sys.platform == "win32":
+    _script_dir = Path(__file__).resolve().parent
+    _scripts = _script_dir.parent if _script_dir.name == "bin" else _script_dir
+    _windows_runtime = _scripts / "_runtime"
+    if not (_windows_runtime / "nullius_windows/process.py").is_file():
+        _windows_runtime = _scripts.parents[2] / "packages/shared/python"
+    if not (_windows_runtime / "nullius_windows/process.py").is_file():
+        raise RuntimeError("Windows process support is missing; refresh this skill installation")
+    sys.path.insert(0, str(_windows_runtime))
+    from nullius_windows.process import WindowsJobProcess, child_exited as _windows_child_exited, signal_process_tree as _windows_signal_tree, stop_process as _windows_stop
+
+def _OwnedPopen(*args, **kwargs):
+    return WindowsJobProcess(*args, **kwargs) if sys.platform == "win32" else subprocess.Popen(*args, **kwargs)
+
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
@@ -274,7 +290,7 @@ def _sanitize_env(env: dict[str, str]) -> dict[str, str]:
 def _run_shell(parts: list[str], cwd: Path, timeout: int, *, episode: object | None = None, operation_index: int = 0) -> tuple[int, bytes]:
     """Run *parts* as a subprocess with shell=False (no shell interpolation)."""
     pending = runtime_capture_observation._member_prepare_process(episode, f"command[{operation_index}]", parts, [], cwd=cwd) if episode is not None else None
-    proc = subprocess.Popen(
+    proc = _OwnedPopen(
         parts,
         cwd=str(cwd),
         stdout=subprocess.PIPE,
@@ -345,10 +361,12 @@ def _run_runner(
     before = {str(p): sha256_file(p) for p in (system, prompt, runner)}
     out.unlink(missing_ok=True)
     pending = runtime_capture_observation._member_prepare_process(episode, stage, cmd, [system, prompt, runner], output=out) if episode is not None else None
-    proc = subprocess.Popen(cmd)
+    proc = _OwnedPopen(cmd)
     if episode is not None:
         runtime_capture_observation._member_bind_process(episode, pending, proc)
     proc.wait()
+    if sys.platform == "win32":
+        _windows_stop(proc)
     if episode is not None:
         runtime_capture_observation._member_finish_process(episode, pending, proc)
     if invocation is not None:

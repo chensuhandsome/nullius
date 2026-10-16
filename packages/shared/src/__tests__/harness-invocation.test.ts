@@ -119,11 +119,12 @@ describe('skip — cwd is the home directory', () => {
 
   it('recognizes the home directory through a symbolic link', () => {
     const alias = `${home}-alias`;
-    fs.symlinkSync(home, alias);
+    fs.symlinkSync(home, alias, process.platform === 'win32' ? 'junction' : 'dir');
     try {
       expect(() => verifyHarnessInvocationMarker(alias, { env: FORCE_ON_ENV, homeDir: home })).not.toThrow();
     } finally {
-      fs.unlinkSync(alias);
+      if (process.platform === 'win32') fs.rmdirSync(alias);
+      else fs.unlinkSync(alias);
     }
   });
 
@@ -525,10 +526,10 @@ describe('path helpers', () => {
   });
 
   it('nulliusStatePath joins under project root', () => {
-    expect(nulliusStatePath('/proj')).toBe(`/proj/${NULLIUS_STATE_FILE}`);
+    expect(nulliusStatePath('/proj')).toBe(path.join('/proj', NULLIUS_STATE_FILE));
   });
 
   it('nulliusLedgerPath joins under project root', () => {
-    expect(nulliusLedgerPath('/proj')).toBe(`/proj/${NULLIUS_LEDGER_FILE}`);
+    expect(nulliusLedgerPath('/proj')).toBe(path.join('/proj', NULLIUS_LEDGER_FILE));
   });
 });

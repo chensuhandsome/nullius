@@ -167,7 +167,7 @@ describe('vNext: Zotero integration', () => {
   function aliasedProjectRoot(): { projectRoot: string; alias: string } {
     const projectRoot = makeProjectRoot(fs.realpathSync(dataDir));
     const alias = path.join(dataDir, 'project-alias');
-    fs.symlinkSync(projectRoot, alias, 'dir');
+    fs.symlinkSync(projectRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
     return { projectRoot, alias };
   }
 

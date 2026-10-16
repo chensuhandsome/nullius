@@ -1,5 +1,7 @@
 # skills-market
 
+Script-bearing copy installations and personal plugins include byte-hashed Windows support assets from the shared canonical source. Installed copies remain snapshots; refresh them explicitly after changes and preserve local customizations. See [Windows installation](../../docs/WINDOWS.md).
+
 Cross-host skill distribution catalog and copy-installer for the Nullius ecosystem.
 
 ## Status: local distribution

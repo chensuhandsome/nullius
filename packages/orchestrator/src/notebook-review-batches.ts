@@ -9,6 +9,7 @@ import { createRunArtifactRef } from './computation/artifact-refs.js';
 import { assertNoSymlinkComponents } from './computation/path-safety.js';
 import { loadVerifiedRunJson, resolveVerifiedRunArtifact } from './orch-tools/validation-chain-binding.js';
 import { installedRuntimeRoot } from './cli-runtime.js';
+import { pythonExecutable } from './python-runtime.js';
 import type { NotebookContentReview, NotebookReviewScope } from './notebook-content-review.js';
 
 const digest = (data: string | Uint8Array) => createHash('sha256').update(data).digest('hex');
@@ -211,7 +212,7 @@ function assessReceipt(root: string, originDir: string, originId: string, receip
   if (!equal(notebookBudgets(originPlan.budgets), originPlan.budgets) || originPlan.model !== plan.model || originPlan.material_sha256 !== plan.material_sha256) throw new Error('original batch budget plan does not match its material and model');
   if (originPlan.budgets.contextTokens !== plan.budgets.contextTokens) throw new NotebookRequestCapacityError('Historical source receipts require their unchanged original token window; execute a fresh review for a different window.');
   const tokenEvidence = assessNotebookRequestCapacity(originDir, originId, receipt.captured_refs, [receipt.inventory_ref, receipt.payload_ref], originPlan.budgets.contextTokens, { report: receipt.report_ref, meta: receipt.meta_ref, manifest: receipt.manifest_ref });
-  const checked = spawnSync('python3', [capacityRuntimeScript('verify_review_freshness.py'), '--review-dir', path.dirname(resolveVerifiedRunArtifact(originDir, originId, receipt.meta_ref, 'batch metadata').filePath)], { encoding: 'utf8', timeout: 10000 });
+  const checked = spawnSync(pythonExecutable(), [capacityRuntimeScript('verify_review_freshness.py'), '--review-dir', path.dirname(resolveVerifiedRunArtifact(originDir, originId, receipt.meta_ref, 'batch metadata').filePath)], { encoding: 'utf8', timeout: 10000 });
   if (checked.error || (checked.status !== 0 && checked.status !== 3)) throw new NotebookRequestCapacityError('Current batch input freshness runtime is unavailable.');
   let freshness: any;
   try { freshness = checked.status === 0 ? JSON.parse(checked.stdout) : null; }
@@ -238,7 +239,7 @@ export function assessNotebookRequestCapacity(runDir: string, runId: string, cap
   }, 0);
   const observationPath = raw.filePath + '.runtime-observation.json';
   if (!capturedRefs.some(ref => resolveVerifiedRunArtifact(runDir, runId, ref, 'frozen runtime observation').filePath === observationPath)) throw new NotebookRequestCapacityError('original reviewer runtime observation is missing from frozen request evidence');
-  const observation = spawnSync('python3', [capacityRuntimeScript('verify_capture_observation.py')], {
+  const observation = spawnSync(pythonExecutable(), [capacityRuntimeScript('verify_capture_observation.py')], {
     encoding: 'utf8', timeout: 10000,
     input: JSON.stringify({ budget_path: typeof receipt === 'string' ? path.resolve(receipt) : null,
       report_path: raw.filePath, input_sha256: originalHashes, expected_working_directory: manifest.working_directory, expected_context_tokens: contextTokens }),
@@ -317,7 +318,7 @@ async function executeBatch(root: string, runDir: string, runId: string, plan: B
   const total = Buffer.byteLength(payload) + fs.statSync(inventoryPath).size + 8192;
   if (total > plan.budgets.contextBytes) throw new Error(`request context budget insufficient: ${total} > ${plan.budgets.contextBytes} bytes including instruction reserve`);
   const script = path.join(installedRuntimeRoot(), 'skills/review-swarm/scripts/bin/review_one.py');
-  const command = ['python3', script, '--model', plan.model, '--role', phase === 'source' ? 'notebook-batch' : 'notebook-crosscheck',
+  const command = [pythonExecutable(), script, '--model', plan.model, '--role', phase === 'source' ? 'notebook-batch' : 'notebook-crosscheck',
     '--artifact', payloadPath, '--context', inventoryPath, '--out-dir', path.join(dir, 'review'), '--timeout-secs', String(seconds), '--max-attempts', '1', '--max-prompt-bytes', String(plan.budgets.contextBytes), '--context-tokens', String(plan.budgets.contextTokens)];
   if (plan.model.startsWith('claude/')) command.push('--claude-live-capture');
   const stdoutPath = path.join(dir, 'stdout.txt'); const stderrPath = path.join(dir, 'stderr.txt');

@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import type { RunOriginV1 } from '@nullius/shared';
 import { mintUlid } from '@nullius/shared';
 import { installedRuntimeRoot } from './cli-runtime.js';
+import { pythonExecutable } from './python-runtime.js';
 
 /** Capture the origin stamp for a run: the exact code state of the project
  *  repository at stamp time, graded on the honest binding-quality ladder.
@@ -304,7 +305,7 @@ export function captureRunOrigin(
   // objects. Existing committed history stays readable and is never rewritten.
   const storageScript = path.join(installedRuntimeRoot(), 'skills/research-harness/scripts/run_storage.py');
   try {
-    execFileSync('python3', [storageScript, 'check', '--snapshot', '--strict', '--json', '--project-root', projectRoot],
+    execFileSync(pythonExecutable(), [storageScript, 'check', '--snapshot', '--strict', '--json', '--project-root', projectRoot],
       { encoding: 'utf8', timeout: 30_000, maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (error) {
     const failure = error as { stdout?: string; stderr?: string };

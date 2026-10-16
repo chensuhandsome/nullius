@@ -1,5 +1,7 @@
 # Architecture Overview
 
+Native Windows uses the same contracts and control plane through bounded platform adapters: managed PowerShell launchers, native executable resolution, handle-based protected writes, and shared Python Job Object support. Durable project deliveries retain ownership independent of a transport connection. See [Windows](./WINDOWS.md) for platform durability limits and installation.
+
 This document explains the current front-door architecture of the monorepo. It is intentionally capability-first and workflow-first: the root is a domain-neutral research substrate and control plane, while concrete provider families live in leaf packages. HEP is the current most mature provider family and the strongest end-to-end example, but not the root identity.
 
 ---

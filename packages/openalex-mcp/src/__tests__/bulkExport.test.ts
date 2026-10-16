@@ -34,6 +34,18 @@ const ORIGINAL_OPENALEX_DATA_DIR = process.env.OPENALEX_DATA_DIR;
 const FILE_ID = 'FIXEDID1';
 const fixedHex = 'ab'.repeat(8);
 
+// Native Windows hard links exercise the same no-write-through/identity
+// contract without requiring the symbolic-link privilege.
+function plantFileLink(target: string, entry: string): void {
+  if (process.platform === 'win32') fs.linkSync(target, entry);
+  else fs.symlinkSync(target, entry);
+}
+
+function expectFileLink(entry: string, target: string): void {
+  if (process.platform === 'win32') expect(fs.statSync(entry).ino).toBe(fs.statSync(target).ino);
+  else expect(fs.readlinkSync(entry)).toBe(target);
+}
+
 function page(ids: string[], nextCursor: string | null): Response {
   return new Response(JSON.stringify({
     meta: { count: 4, page: 1, per_page: ids.length, next_cursor: nextCursor },
@@ -92,7 +104,7 @@ describe('bulk JSONL export staging', () => {
     fs.mkdirSync(resultsDir);
     const victim = path.join(outside, 'victim.jsonl');
     fs.writeFileSync(victim, 'ORIGINAL');
-    fs.symlinkSync(victim, path.join(resultsDir, `${FILE_ID}.jsonl.tmp`));
+    plantFileLink(victim, path.join(resultsDir, `${FILE_ID}.jsonl.tmp`));
     mockShortId.mockImplementationOnce(() => FILE_ID);
     serveTwoPages();
 
@@ -102,7 +114,7 @@ describe('bulk JSONL export staging', () => {
     expect(result.results_file).toBe(path.join(resultsDir, `${FILE_ID}.jsonl`));
     expect(fs.lstatSync(result.results_file!).isFile()).toBe(true);
     expect(fs.readFileSync(result.results_file!, 'utf-8').trim().split('\n')).toHaveLength(4);
-    expect(fs.readlinkSync(path.join(resultsDir, `${FILE_ID}.jsonl.tmp`))).toBe(victim);
+    expectFileLink(path.join(resultsDir, `${FILE_ID}.jsonl.tmp`), victim);
   });
 
   it('refuses to stage through an entry already present at the fresh staging name', async () => {
@@ -114,19 +126,19 @@ describe('bulk JSONL export staging', () => {
     mockShortId.mockImplementationOnce(() => FILE_ID);
     mockRandomBytes.mockImplementationOnce(() => Buffer.from(fixedHex, 'hex'));
     const staging = path.join(resultsDir, `${FILE_ID}.jsonl.${process.pid}.${fixedHex}.tmp`);
-    fs.symlinkSync(victim, staging);
+    plantFileLink(victim, staging);
     serveTwoPages();
 
     await expect(exportAll()).rejects.toThrow(/EEXIST/);
 
     expect(fs.readFileSync(victim, 'utf-8')).toBe('ORIGINAL');
-    expect(fs.readlinkSync(staging)).toBe(victim);
+    expectFileLink(staging, victim);
     expect(fs.existsSync(path.join(resultsDir, `${FILE_ID}.jsonl`))).toBe(false);
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('refuses a results dir that is a link out of the data dir', async () => {
-    fs.symlinkSync(outside, resultsDir, 'dir');
+    fs.symlinkSync(outside, resultsDir, process.platform === 'win32' ? 'junction' : 'dir');
     serveTwoPages();
 
     await expect(exportAll()).rejects.toThrow(/results dir: symlink escape detected/);
@@ -139,11 +151,11 @@ describe('bulk JSONL export staging', () => {
     // An explicit alias, so this holds on hosts whose temp dir is not itself
     // a symlink (Linux) as well as under /var -> /private/var (macOS).
     fs.mkdirSync(path.join(dataDir, 'real-results'));
-    fs.symlinkSync(path.join(dataDir, 'real-results'), resultsDir, 'dir');
+    fs.symlinkSync(path.join(dataDir, 'real-results'), resultsDir, process.platform === 'win32' ? 'junction' : 'dir');
     const aliasHolder = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'openalex-bulk-alias-')));
     try {
       const aliasData = path.join(aliasHolder, 'data');
-      fs.symlinkSync(dataDir, aliasData, 'dir');
+      fs.symlinkSync(dataDir, aliasData, process.platform === 'win32' ? 'junction' : 'dir');
       process.env.OPENALEX_DATA_DIR = aliasData;
       serveTwoPages();
       serveTwoPages();
@@ -233,7 +245,9 @@ describe('bulk JSONL export staging', () => {
       (staging: string) => fs.linkSync(outFile, staging),
       (staging: string) => { fs.linkSync(outFile, staging); fs.unlinkSync(outFile); },
     ];
-    for (const failAt of ['rename', 'directory fsync'] as const) {
+    // Windows has no directory fsync; inject after its actual commit boundary.
+    const failurePoints = process.platform === 'win32' ? ['rename'] as const : ['rename', 'directory fsync'] as const;
+    for (const failAt of failurePoints) {
       for (const take of takeVacatedName) {
         fs.rmSync(resultsDir, { recursive: true, force: true });
         mockShortId.mockImplementationOnce(() => FILE_ID);

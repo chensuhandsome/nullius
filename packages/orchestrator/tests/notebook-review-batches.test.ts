@@ -10,6 +10,7 @@ import { runCli } from '../src/cli.js';
 import { checkNotebookContentReview, freezeNotebookReviewScope } from '../src/notebook-content-review.js';
 import { assessNotebookBatches, notebookBudgets, partitionNotebookSources } from '../src/notebook-review-batches.js';
 import { notebookCloseoutGate } from '../src/notebook-result-links.js';
+import { pythonExecutable } from '../src/python-runtime.js';
 
 // This executable is deliberately a transport oracle. It performs no semantic
 // judgment; real model positive/negative controls are separate recorded runs.
@@ -17,7 +18,7 @@ const transport = String.raw`#!/usr/bin/env python3
 import hashlib,json,os,re,sys
 from pathlib import Path
 packet=sys.stdin.read();root=Path(os.environ['BATCH_TEST_ROOT'])
-p=Path(re.search(r'^=== ADDITIONAL CONTEXT: (.+/inventory.json) ===$',packet,re.M).group(1))
+p=Path(re.search(r'^=== ADDITIONAL CONTEXT: (.+[\\/]inventory.json) ===$',packet,re.M).group(1))
 inv=json.loads(p.read_text());case=os.environ.get('BATCH_TEST_CASE','complete')
 base={'schema_version':1,'review_kind':inv['review_kind'],'inventory_sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'verdict':'PASS','summary':'Deterministic transport result only.','coverage_status':'complete','blocking_issues':[],'missing_dependencies':[]}
 if inv['review_kind']=='notebook_batch':
@@ -89,6 +90,7 @@ beforeEach(async () => {
   write('research_notebook.md', '# Anonymous notebook\n\nDefinitions and complete steps are supplied.\n');
   execFileSync('git', ['init', '-q'], { cwd: root }); execFileSync('git', ['config', 'user.name', 'Test'], { cwd: root }); execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root }); execFileSync('git', ['add', '.'], { cwd: root });
   write('test-bin/claude', transport); fs.chmodSync(path.join(root, 'test-bin/claude'), 0o755);
+  vi.stubEnv('PYTHONUTF8', '1');
   vi.stubEnv('PATH', path.join(root, 'test-bin') + path.delimiter + process.env.PATH); vi.stubEnv('BATCH_TEST_ROOT', root);
 }, 30000);
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); fs.rmSync(root, { recursive: true, force: true }); });
@@ -268,19 +270,28 @@ describe('complete materials with bounded individual requests', () => {
     write('research_notebook.md', large); vi.stubEnv('BATCH_TEST_CASE', 'interrupt-second');
     const module = pathToFileURL(path.resolve(import.meta.dirname, '../src/cli.ts')).href;
     const args = ['--project-root', root, 'notebook', 'review', '--model', 'claude/transport', '--context-bytes', '2000000', '--context-tokens', '3000000', '--json'];
-    const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `import {runCli} from ${JSON.stringify(module)}; process.exit(await runCli(${JSON.stringify(args)}));`], { cwd: path.resolve(import.meta.dirname, '../../..'), detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const cliArgs = ['--import', 'tsx', '--input-type=module', '-e', `import {runCli} from ${JSON.stringify(module)}; process.exit(await runCli(${JSON.stringify(args)}));`];
+    const windows = process.platform === 'win32';
+    const parentTime = windows ? execFileSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${process.pid}).StartTime.ToFileTimeUtc()`], { encoding: 'utf8' }).trim() : '';
+    const child = windows
+      ? spawn(pythonExecutable(), ['-I', path.resolve(import.meta.dirname, '../../shared/dist/python/nullius_windows/process.py'), '--cli', String(process.pid), parentTime, '--', process.execPath, ...cliArgs], { cwd: path.resolve(import.meta.dirname, '../../..'), stdio: ['ignore', 'pipe', 'pipe'] })
+      : spawn(process.execPath, cliArgs, { cwd: path.resolve(import.meta.dirname, '../../..'), detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let diagnostic = ''; child.stdout.on('data', data => { diagnostic += data; }); child.stderr.on('data', data => { diagnostic += data; });
     const marker = path.join(root, 'second-batch-started.json'); const deadline = Date.now() + 60000;
     try {
       while (!fs.existsSync(marker) && child.exitCode === null && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
       expect(fs.existsSync(marker), diagnostic).toBe(true);
-      const processes = execFileSync('ps', ['-axo', 'pid,ppid,pgid'], { encoding: 'utf8' }).trim().split('\n').slice(1).map(line => line.trim().split(/\s+/).map(Number));
-      const descendants = new Set([child.pid!]); let changed = true;
-      while (changed) { changed = false; for (const [pid, parent] of processes) if (descendants.has(parent!) && !descendants.has(pid!)) { descendants.add(pid!); changed = true; } }
-      const groups = new Set(processes.filter(row => descendants.has(row[0]!)).map(row => row[2]!));
       const closed = new Promise(resolve => child.once('close', resolve));
-      for (const group of groups) { try { process.kill(-group, 'SIGKILL'); } catch { /* already stopped */ } }
+      if (windows) child.kill('SIGKILL');
+      else {
+        const processes = execFileSync('ps', ['-axo', 'pid,ppid,pgid'], { encoding: 'utf8' }).trim().split('\n').slice(1).map(line => line.trim().split(/\s+/).map(Number));
+        const descendants = new Set([child.pid!]); let changed = true;
+        while (changed) { changed = false; for (const [pid, parent] of processes) if (descendants.has(parent!) && !descendants.has(pid!)) { descendants.add(pid!); changed = true; } }
+        const groups = new Set(processes.filter(row => descendants.has(row[0]!)).map(row => row[2]!));
+        for (const group of groups) { try { process.kill(-group, 'SIGKILL'); } catch { /* already stopped */ } }
+      }
       await closed;
+      if (windows) expect(() => process.kill(JSON.parse(fs.readFileSync(marker, 'utf8')).pid, 0)).toThrow();
     } finally { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }
     const runs = fs.readdirSync(path.join(root, 'artifacts/runs')).filter(name => name.includes('-notebook-review-'));
     expect(runs).toHaveLength(1); const originalId = runs[0]!; const origin = path.join(root, 'artifacts/runs', originalId);

@@ -10,7 +10,7 @@ import { resolveUnderRoot } from './computation/path-safety.js';
  *  surface about the same project. */
 
 /** Read locations. Only RUNS_ROOT_RELATIVE admits new execution writes. */
-export const RUN_ROOTS = [RUNS_ROOT_RELATIVE, path.join('team', 'runs')] as const;
+export const RUN_ROOTS = [RUNS_ROOT_RELATIVE, 'team/runs'] as const;
 
 export type RunDirEntry = {
   run_id: string;
@@ -36,7 +36,8 @@ function readRunRoot(root: string): fs.Dirent[] | null {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw new RunDirectoryError('RUN_ROOT_UNREADABLE', `run root is unreadable: ${root}: ${String(error)}`);
   }
-  if (metadata.isSymbolicLink() || !metadata.isDirectory() || !(metadata.mode & 0o444) || !(metadata.mode & 0o111)) {
+  if (metadata.isSymbolicLink() || !metadata.isDirectory()
+      || (process.platform !== 'win32' && (!(metadata.mode & 0o444) || !(metadata.mode & 0o111)))) {
     throw new RunDirectoryError('RUN_ROOT_UNREADABLE', `run root must be a readable real directory: ${root}`);
   }
   try {
@@ -72,7 +73,7 @@ export function readRunDirectoryInventory(projectRoot: string): { runs: RunDirEn
           issues.push({ code: 'RUN_DIRECTORY_UNREADABLE', path: `${root}/${entry.name}`, message: String(error) });
           continue;
         }
-        runs.push({ run_id: entry.name, root, relative_path: path.join(root, entry.name), historical, ambiguous: false });
+        runs.push({ run_id: entry.name, root, relative_path: path.posix.join(root, entry.name), historical, ambiguous: false });
       }
     }
   }
@@ -80,7 +81,7 @@ export function readRunDirectoryInventory(projectRoot: string): { runs: RunDirEn
   for (const run of runs) counts.set(run.run_id, (counts.get(run.run_id) ?? 0) + 1);
   // Inaccessible payloads still reserve their visible directory identity.
   for (const issue of issues) {
-    const root = RUN_ROOTS.find(root => path.dirname(issue.path) === root);
+    const root = RUN_ROOTS.find(root => path.posix.dirname(issue.path) === root);
     if (root) {
       const id = path.basename(issue.path);
       counts.set(id, (counts.get(id) ?? 0) + 1);
@@ -107,6 +108,7 @@ export function listRunDirectories(projectRoot: string): RunDirEntry[] {
 
 /** Resolve evidence without changing its location or admitting execution. */
 export function readRunDirFor(projectRoot: string, runId: string, root?: string): string {
+  root = root?.replaceAll('\\', '/');
   if (!runId || path.basename(runId) !== runId || runId === '.' || runId === '..') {
     throw new RunDirectoryError('RUN_ID_INVALID', 'run_id must be one path segment');
   }
@@ -118,7 +120,7 @@ export function readRunDirFor(projectRoot: string, runId: string, root?: string)
   if (root === undefined && matches.some(run => run.ambiguous)) throw new RunDirectoryError('RUN_ID_AMBIGUOUS', `Run id ${runId} has multiple locations, including unavailable evidence; select an explicit read root.`);
   if (matches.length > 1) throw new RunDirectoryError('RUN_ID_AMBIGUOUS', `Run id ${runId} exists at ${matches.map(run => run.relative_path).join(', ')}; select an explicit read root.`);
   if (matches.length === 1) return path.join(projectRoot, matches[0]!.relative_path);
-  const unavailable = inventory.issues.find(issue => (root === undefined ? RUN_ROOTS.some(candidate => issue.path === path.join(candidate, runId)) : issue.path === path.join(root, runId))
+  const unavailable = inventory.issues.find(issue => (root === undefined ? RUN_ROOTS.some(candidate => issue.path === path.posix.join(candidate, runId)) : issue.path === path.posix.join(root, runId))
     || issue.path === (root ?? 'team/runs'));
   if (unavailable) throw new RunDirectoryError(unavailable.code, unavailable.message);
   // A not-yet-created canonical run has no evidence; readers can report their

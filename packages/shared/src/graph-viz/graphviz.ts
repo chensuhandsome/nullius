@@ -6,7 +6,7 @@ const MAX_RENDER_BYTES = 256 * 1024 * 1024;
 
 /** Check if Graphviz `dot` binary is available. */
 export function isDotAvailable(): boolean {
-  const result = spawnSync('which', ['dot'], { encoding: 'utf8' });
+  const result = spawnSync('dot', ['-V'], { encoding: 'utf8', timeout: 5000 });
   return result.status === 0;
 }
 

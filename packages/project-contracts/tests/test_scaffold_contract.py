@@ -663,13 +663,14 @@ class TestScaffoldRefresh(unittest.TestCase):
             raw = b"# Owner instructions\r\n\r\nKeep customized scope.\r\n"
             agents.write_bytes(raw)
             agents.chmod(0o640)
+            original_mode = agents.stat().st_mode & 0o7777
             result = ensure_project_scaffold(repo_root=root, refresh=True, project_policy="real_project")
             self.assertIn("AGENTS.md", result["preserved"])
             self.assertEqual(result["refreshed"], [])
             self.assertEqual(result["backed_up"], [])
             self.assertIsNone(result["backup_dir"])
             self.assertEqual(agents.read_bytes(), raw)
-            self.assertEqual(agents.stat().st_mode & 0o7777, 0o640)
+            self.assertEqual(agents.stat().st_mode & 0o7777, original_mode)
 
     def test_refresh_leaves_unchanged_managed_files_untouched(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -734,13 +735,20 @@ class TestScaffoldRefresh(unittest.TestCase):
             root = Path(td) / "proj"
             self._init(root)
             agents = root / "AGENTS.md"
-            agents.write_text("OWNER\n", encoding="utf-8")
+            agents.write_bytes(b"OWNER\n")
             original_write = pathlib.Path.write_text
+            original_write_bytes = pathlib.Path.write_bytes
             def refuse_owner_write(path, *args, **kwargs):
                 if path == agents:
                     raise AssertionError("routine refresh opened owner instructions for writing")
                 return original_write(path, *args, **kwargs)
-            with mock.patch.object(pathlib.Path, "write_text", refuse_owner_write):
+            def refuse_owner_bytes(path, *args, **kwargs):
+                if path == agents:
+                    raise AssertionError("routine refresh opened owner instructions for writing")
+                return original_write_bytes(path, *args, **kwargs)
+            with mock.patch.object(pathlib.Path, "write_text", refuse_owner_write), mock.patch.object(
+                pathlib.Path, "write_bytes", refuse_owner_bytes
+            ):
                 result = ensure_project_scaffold(repo_root=root, refresh=True, project_policy="real_project")
             self.assertIn("AGENTS.md", result["preserved"])
             self.assertEqual(agents.read_bytes(), b"OWNER\n")

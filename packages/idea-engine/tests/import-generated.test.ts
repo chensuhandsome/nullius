@@ -512,7 +512,8 @@ describe('node.import_generated', () => {
     // The node log used to be rewritten through `${logPath}.tmp`.
     const victim = join(outside, 'victim.jsonl');
     writeFileSync(victim, 'ORIGINAL', 'utf8');
-    symlinkSync(victim, `${logPath}.tmp`);
+    const target = process.platform === 'win32' ? outside : victim;
+    symlinkSync(target, `${logPath}.tmp`, process.platform === 'win32' ? 'junction' : 'file');
 
     const replay = importPack(service, campaignId, pack);
 
@@ -521,7 +522,7 @@ describe('node.import_generated', () => {
     expect(lstatSync(logPath).isFile()).toBe(true);
     expect(readFileSync(logPath, 'utf8')).toContain(portableRef);
     expect(readFileSync(logPath, 'utf8')).not.toContain(legacyRef);
-    expect(readlinkSync(`${logPath}.tmp`)).toBe(victim);
+    expect(realpathSync(`${logPath}.tmp`)).toBe(realpathSync(target));
   });
 
   it('resumes legacy replay migration when the archive was rewritten before idempotency', () => {

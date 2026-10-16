@@ -46,7 +46,9 @@ def _write_text_if_missing(
         skipped.append(rel)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text.rstrip() + "\n", encoding="utf-8")
+    # Template equality is a byte contract; native Windows text translation
+    # would make the freshly created LF sync block fail its own guard.
+    path.write_bytes((text.rstrip() + "\n").encode("utf-8"))
     created.append(rel)
     if existed:
         # `force` is an explicit destructive request and stays destructive, but
@@ -114,7 +116,7 @@ def _refresh_project_scaffold(
         if not os.path.lexists(path):
             if not dry_run:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(new_text, encoding="utf-8")
+                path.write_bytes(new_text.encode("utf-8"))
             created.append(rel)
             continue
         if path.is_symlink() or not path.is_file():

@@ -35,10 +35,26 @@ import tempfile
 import threading
 import time
 import math
+from pathlib import Path
+
+# Resolve only the shipped skill payload or this exact source checkout.
+if sys.platform == "win32":
+    _script_dir = Path(__file__).resolve().parent
+    _scripts = _script_dir.parent if _script_dir.name == "bin" else _script_dir
+    _windows_runtime = _scripts / "_runtime"
+    if not (_windows_runtime / "nullius_windows/process.py").is_file():
+        _windows_runtime = _scripts.parents[2] / "packages/shared/python"
+    if not (_windows_runtime / "nullius_windows/process.py").is_file():
+        raise RuntimeError("Windows process support is missing; refresh this skill installation")
+    sys.path.insert(0, str(_windows_runtime))
+    from nullius_windows.process import WindowsJobProcess, child_exited as _windows_child_exited, signal_process_tree as _windows_signal_tree, stop_process as _windows_stop
+
+def _OwnedPopen(*args, **kwargs):
+    return WindowsJobProcess(*args, **kwargs) if sys.platform == "win32" else subprocess.Popen(*args, **kwargs)
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from hashlib import sha256
-from pathlib import Path
 from typing import Any, Optional
 
 
@@ -909,7 +925,7 @@ class _ChildReapingError(RuntimeError):
 
 
 def _sigchld_ignored() -> bool:
-    return signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN
+    return sys.platform != "win32" and signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN
 
 
 def _child_exited(pid: int, timeout: float | None) -> bool:
@@ -919,6 +935,8 @@ def _child_exited(pid: int, timeout: float | None) -> bool:
     and with it the number of the process group it leads. Raises
     _ChildReapingError when the child may already have been reaped elsewhere.
     """
+    if sys.platform == "win32":
+        return _windows_child_exited(pid, timeout)
     if hasattr(select, "kqueue"):  # macOS CPython has no os.waitid
         queue = select.kqueue()
         try:
@@ -968,6 +986,8 @@ def _signal_group(proc: subprocess.Popen, signum: int) -> bool:
     answers EPERM for a group whose members have all exited while its leader
     is an unreaped zombie (Linux answers 0).
     """
+    if sys.platform == "win32":
+        return _windows_signal_tree(proc.pid, signum)
     with _PROCESS_LOCK:
         if proc not in _ACTIVE_PROCESSES:
             return False
@@ -1011,6 +1031,10 @@ def _group_has_live_member(proc: subprocess.Popen) -> bool:
 def _stop_groups(processes: tuple[subprocess.Popen, ...]) -> None:
     """SIGTERM the runners' groups, wait until nothing in them is left to
     signal or _STOP_GRACE_SECS, then SIGKILL."""
+    if sys.platform == "win32":
+        for proc in processes:
+            _windows_stop(proc)
+        return
     for proc in processes:
         _signal_group(proc, signal.SIGTERM)
     deadline = time.monotonic() + _STOP_GRACE_SECS
@@ -1110,7 +1134,7 @@ def _run_with_timeout(cmd: list[str], *, timeout_secs: float, context_tokens: Op
         # Worker threads need no deferral: the handler waits for this lock.
         _MAIN_SPAWNING = on_main_thread
         try:
-            proc = subprocess.Popen(
+            proc = _OwnedPopen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, start_new_session=True,
             )
@@ -2702,8 +2726,8 @@ def main() -> int:
             # registered any more: a runner left registered by a stop stays
             # unreaped, so its group number stays protected, until this process
             # exits.
-            old_sigchld = signal.signal(signal.SIGCHLD, signal.SIG_DFL)
-            for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            old_sigchld = signal.signal(signal.SIGCHLD, signal.SIG_DFL) if sys.platform != "win32" else None
+            for signum in (signal.SIGINT, signal.SIGTERM, *([signal.SIGHUP] if hasattr(signal, "SIGHUP") else [])):
                 old_handlers[signum] = signal.signal(signum, stop)
         with contextlib.ExitStack() as home_stack:
             return _main(home_stack)
@@ -2711,7 +2735,7 @@ def main() -> int:
         if old_sigchld is not None:
             with _PROCESS_LOCK:
                 if not _ACTIVE_PROCESSES:
-                    signal.signal(signal.SIGCHLD, old_sigchld)
+                    signal.signal(signal.SIGCHLD, old_sigchld) if old_sigchld is not None else None
         for signum, handler in old_handlers.items():
             signal.signal(signum, handler)
 

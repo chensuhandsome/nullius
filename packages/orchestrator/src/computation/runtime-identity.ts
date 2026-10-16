@@ -4,6 +4,7 @@ import * as path from 'node:path';
 
 import { invalidParams, type NativeRuntimeIdentityV1 } from '@nullius/shared';
 import { realLocationWithin } from './path-safety.js';
+import { nativeExecutableCandidates, pythonExecutable } from '../python-runtime.js';
 
 export type NativeExecutableFormat = NativeRuntimeIdentityV1['executable_format'];
 export type NativeRuntimeIdentity = NativeRuntimeIdentityV1;
@@ -42,11 +43,16 @@ function insideRunOrProject(candidate: string, runDir: string, projectRoot: stri
 function candidateRuntimePaths(token: string): string[] {
   const candidates: string[] = [];
   if (token === 'node') candidates.push(process.execPath);
+  if (process.platform === 'win32' && /^python(?:3(?:\.\d+)?)?$/u.test(token)) {
+    // Explicit configuration is authoritative, and is still subject to every
+    // native-format, location and byte-identity check below.
+    if (token === 'python' || token === 'python3') return [pythonExecutable()];
+  }
   const pathDirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
   const stableDirs = process.platform === 'win32'
     ? []
     : ['/usr/bin', '/bin', '/usr/local/bin', '/opt/homebrew/bin'];
-  for (const dir of [...pathDirs, ...stableDirs]) candidates.push(path.join(dir, token));
+  candidates.push(...nativeExecutableCandidates(token, [...pathDirs, ...stableDirs]));
   return [...new Set(candidates.map(candidate => path.resolve(candidate)))];
 }
 

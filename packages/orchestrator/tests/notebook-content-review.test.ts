@@ -1,3 +1,4 @@
+import { createReparseFixture } from './platform-fixtures.js';
 import * as fs from 'node:fs';
 import fsDefault from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
@@ -24,7 +25,7 @@ import hashlib, json, os, re, sys, time
 from pathlib import Path
 packet = sys.stdin.read()
 root = Path(os.environ['NOTEBOOK_CONTRACT_ROOT'])
-embedded = re.search(r'^=== ADDITIONAL CONTEXT: (.+/notebook-scope.json) ===$', packet, re.M)
+embedded = re.search(r'^=== ADDITIONAL CONTEXT: (.+[\\/]notebook-scope.json) ===$', packet, re.M)
 scope_path = Path(embedded.group(1)) if embedded else max(root.glob('artifacts/runs/*/inputs/notebook-scope.json'), key=lambda p: p.stat().st_mtime_ns)
 scope = json.loads(scope_path.read_text())
 case = os.environ.get('NOTEBOOK_CONTRACT_CASE', 'complete')
@@ -106,6 +107,7 @@ beforeEach(async () => {
   git('add', '.');
   write('test-bin/claude', transport); fs.chmodSync(path.join(root, 'test-bin/claude'), 0o755);
   write('test-bin/codex', transport); fs.chmodSync(path.join(root, 'test-bin/codex'), 0o755);
+  vi.stubEnv('PYTHONUTF8', '1');
   vi.stubEnv('PATH', path.join(root, 'test-bin') + path.delimiter + process.env.PATH);
   vi.stubEnv('NOTEBOOK_CONTRACT_ROOT', root);
 }, 30000);
@@ -297,7 +299,7 @@ describe('whole-notebook execution and current-version contract', () => {
     expect((await review()).code).toBe(0);
     const rename = fsDefault.renameSync;
     fsDefault.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
-      if (String(to).endsWith('/review_started.json')) throw Object.assign(new Error('controlled failed start publication'), { code: 'EIO' });
+      if (path.basename(String(to)) === 'review_started.json') throw Object.assign(new Error('controlled failed start publication'), { code: 'EIO' });
       return rename(from, to);
     }) as typeof fsDefault.renameSync;
     syncBuiltinESMExports();
@@ -320,7 +322,7 @@ describe('whole-notebook execution and current-version contract', () => {
     fs.unlinkSync(path.join(root, 'dependencies/premises.md'));
     expect(checkNotebookContentReview(root).status).toBe('stale');
     write('dependencies/redirected.md', dependency);
-    fs.symlinkSync('redirected.md', path.join(root, 'dependencies/premises.md'));
+    createReparseFixture('redirected.md', path.join(root, 'dependencies/premises.md'));
     expect(checkNotebookContentReview(root).status).toBe('stale');
     fs.unlinkSync(path.join(root, 'dependencies/premises.md')); write('dependencies/premises.md', dependency);
     expect((await cli(['notebook', 'sync'])).code).toBe(0);
@@ -514,7 +516,7 @@ describe('whole-notebook execution and current-version contract', () => {
   it('uses the same content identity through a project-root path alias', async () => {
     expect((await review()).code).toBe(0);
     const alias = root + '-alias';
-    fs.symlinkSync(root, alias, 'dir');
+    fs.symlinkSync(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
     try { expect(checkNotebookContentReview(alias).status).toBe('accepted'); }
     finally { fs.unlinkSync(alias); }
   });

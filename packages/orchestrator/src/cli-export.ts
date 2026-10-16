@@ -1,5 +1,6 @@
 import { assertOutsideHistoricalRuns } from './run-paths.js';
 import { spawnSync } from 'node:child_process';
+import { pythonExecutable } from './python-runtime.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { type CliIo } from './cli-lifecycle.js';
@@ -98,7 +99,19 @@ export async function runExportCommand(projectRoot: string, cwd: string, args: s
   }
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.rmSync(outPath, { force: true });
-  const result = spawnSync('zip', ['-q', outPath, '-@'], { cwd: projectRoot, encoding: 'utf-8', input: `${archiveEntries.join('\n')}\n` });
+  // Native Info-ZIP builds can silently omit UTF-8 names read from stdin.
+  // Python's stdlib ZIP writer emits Unicode entries and validates the full
+  // requested inventory before reporting success. POSIX keeps its existing tool.
+  const result = process.platform === 'win32'
+    ? spawnSync(pythonExecutable(), ['-I', '-c', [
+      'import json,sys,zipfile',
+      'entries=json.loads(sys.stdin.buffer.read().decode("utf-8"))',
+      'with zipfile.ZipFile(sys.argv[1], "x", compression=zipfile.ZIP_DEFLATED) as archive:',
+      '    for entry in entries: archive.write(entry, arcname=entry)',
+      'with zipfile.ZipFile(sys.argv[1]) as archive:',
+      '    if archive.namelist()!=entries or archive.testzip() is not None: raise ValueError("export archive verification failed")',
+    ].join('\n'), outPath], { cwd: projectRoot, encoding: 'utf-8', input: JSON.stringify(archiveEntries) })
+    : spawnSync('zip', ['-q', outPath, '-@'], { cwd: projectRoot, encoding: 'utf-8', input: `${archiveEntries.join('\n')}\n` });
   if (result.status !== 0) throw new Error(result.stderr?.trim() || `zip failed with status ${String(result.status)}`);
   io.stdout(`[ok] wrote: ${outPath}\n`);
 }

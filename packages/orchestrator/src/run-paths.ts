@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
  *  control plane creates by default lives here — it is the
  *  stampable run root, so a front-door run is visible to the traceability
  *  read model and receives its automatic launch stamp. */
-export const RUNS_ROOT_RELATIVE = path.join('artifacts', 'runs');
+export const RUNS_ROOT_RELATIVE = 'artifacts/runs';
 
 /** Prefix of the error a bridge tool maps to an environment (unsafe_fs) failure rather than a caller error. */
 export const HISTORICAL_RUN_UNAVAILABLE_PREFIX = 'HISTORICAL_RUN_UNAVAILABLE';

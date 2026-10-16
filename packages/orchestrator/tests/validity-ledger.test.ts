@@ -422,6 +422,21 @@ describe('traceability view and CLI (review-locked)', () => {
     // or a new object landing in one of them would let stash succeed and
     // make this injection nondeterministic.
     const objectsDir = path.join(projectRoot, '.git', 'objects');
+    if (process.platform === 'win32') {
+      // chmod cannot deny directory writes on Windows. Apply an actual DACL
+      // denial to Git's existing fanout and inherited future object files.
+      const sid = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        '[Security.Principal.WindowsIdentity]::GetCurrent().User.Value'], { encoding: 'utf-8' }).trim();
+      try {
+        // Deny adding/writing data, without GENERIC_WRITE's SYNCHRONIZE bit:
+        // denying that bit also blocks directory reads and ACL restoration.
+        execFileSync('icacls.exe', [objectsDir, '/deny', `*${sid}:(OI)(CI)(WD,AD)`, '/Q']);
+        expect(() => captureRunOrigin(projectRoot, 'run-broken')).toThrow();
+      } finally {
+        execFileSync('icacls.exe', [objectsDir, '/remove:d', `*${sid}`, '/Q']);
+      }
+      return;
+    }
     const sealed: string[] = [];
     const walk = (dir: string): void => {
       sealed.push(dir);
@@ -561,7 +576,7 @@ describe('traceability view and CLI (review-locked)', () => {
     const outside = path.join(projectRoot, 'outside-dir');
     fs.mkdirSync(outside);
     fs.mkdirSync(path.join(projectRoot, 'artifacts', 'runs'), { recursive: true });
-    fs.symlinkSync(outside, path.join(projectRoot, 'artifacts', 'runs', 'sneaky-run'));
+    fs.symlinkSync(outside, path.join(projectRoot, 'artifacts', 'runs', 'sneaky-run'), process.platform === 'win32' ? 'junction' : 'dir');
     const stdio = io();
     expect(runTraceCommand(projectRoot, {
       action: 'stamp', target: 'artifacts/runs/sneaky-run', eventId: null,

@@ -62,7 +62,7 @@ describe('idea-mcp server configuration', () => {
   });
 
   it('resolves explicit data dir overrides', () => {
-    expect(resolveIdeaDataDir({ IDEA_MCP_DATA_DIR: join(tmpdir(), 'idea-runs') })).toContain('/idea-runs');
+    expect(resolveIdeaDataDir({ IDEA_MCP_DATA_DIR: join(tmpdir(), 'idea-runs') })).toBe(resolve(tmpdir(), 'idea-runs'));
   });
 
   it('rejects repo-local data dir overrides', () => {
@@ -86,8 +86,8 @@ describe('idea-mcp server configuration', () => {
     // temp directory itself is not reached through a symlink (Linux /tmp).
     const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'idea-mcp-alias-')));
     tempDirs.push(outside);
-    symlinkSync(REPO_ROOT, join(outside, 'repo-alias'), 'dir');
-    symlinkSync(join(REPO_ROOT, 'packages'), join(outside, 'packages-alias'), 'dir');
+    symlinkSync(REPO_ROOT, join(outside, 'repo-alias'), process.platform === 'win32' ? 'junction' : 'dir');
+    symlinkSync(join(REPO_ROOT, 'packages'), join(outside, 'packages-alias'), process.platform === 'win32' ? 'junction' : 'dir');
 
     for (const dataDir of [
       join(outside, 'repo-alias'),
@@ -104,7 +104,7 @@ describe('idea-mcp server configuration', () => {
     const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'idea-mcp-outside-')));
     tempDirs.push(outside);
     mkdirSync(join(outside, 'elsewhere'));
-    symlinkSync(join(outside, 'elsewhere'), join(outside, 'elsewhere-alias'), 'dir');
+    symlinkSync(join(outside, 'elsewhere'), join(outside, 'elsewhere-alias'), process.platform === 'win32' ? 'junction' : 'dir');
 
     expect(resolveIdeaDataDir({ IDEA_MCP_DATA_DIR: join(outside, '..idea-data') })).toBe(join(outside, '..idea-data'));
     expect(resolveIdeaDataDir({ IDEA_MCP_DATA_DIR: join(outside, 'elsewhere-alias', 'idea-data') }))
@@ -116,9 +116,9 @@ describe('idea-mcp server configuration', () => {
     const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'idea-mcp-standin-outside-')));
     tempDirs.push(repo, outside);
     // Spelled inside through a two-dot name that is a symlink leading out of the repo.
-    symlinkSync(outside, join(repo, '..linked'), 'dir');
+    symlinkSync(outside, join(repo, '..linked'), process.platform === 'win32' ? 'junction' : 'dir');
     // Spelled outside through an alias that leads into the repo.
-    symlinkSync(repo, join(outside, 'repo-alias'), 'dir');
+    symlinkSync(repo, join(outside, 'repo-alias'), process.platform === 'win32' ? 'junction' : 'dir');
 
     expect(isWithinRepoRoot(join(repo, '..linked', 'idea-data'), repo)).toBe(true);
     expect(isWithinRepoRoot(join(outside, 'repo-alias', 'idea-data'), repo)).toBe(true);
@@ -129,7 +129,7 @@ describe('idea-mcp server configuration', () => {
   it('refuses a data dir whose real location cannot be determined (dangling symlink)', () => {
     const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'idea-mcp-dangling-')));
     tempDirs.push(outside);
-    symlinkSync(join(outside, 'missing-target'), join(outside, 'dangling'), 'dir');
+    symlinkSync(join(outside, 'missing-target'), join(outside, 'dangling'), process.platform === 'win32' ? 'junction' : 'dir');
 
     expect(() => resolveIdeaDataDir({ IDEA_MCP_DATA_DIR: join(outside, 'dangling', 'idea-data') })).toThrow(
       /cannot determine where .* lands/,

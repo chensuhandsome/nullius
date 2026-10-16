@@ -1431,7 +1431,7 @@ describe('nullius CLI', () => {
         state_json: { path: '.nullius/state.json', exists: true },
         plan_md: { path: '.nullius/plan.md', exists: true },
         ledger_jsonl: { path: '.nullius/ledger.jsonl', exists: true },
-        project_local_launcher: { path: '.nullius/bin/nullius', exists: false },
+        project_local_launcher: { path: process.platform === 'win32' ? '.nullius/bin/nullius.ps1' : '.nullius/bin/nullius', exists: false },
       },
       current_run: {
         run_id: 'M-LEGACY-1',

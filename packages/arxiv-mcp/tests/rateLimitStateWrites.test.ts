@@ -46,8 +46,9 @@ describe('shared rate-limit state files', () => {
     for (const victim of victims) fs.writeFileSync(victim, 'ORIGINAL');
     const timestampFile = path.join(stateDir, 'api-query.last-acquire-ms');
     const backoffFile = path.join(stateDir, 'api-query.backoff-until-ms');
-    fs.symlinkSync(victims[0], timestampFile);
-    fs.symlinkSync(victims[1], backoffFile);
+    const plantLink = process.platform === 'win32' ? fs.linkSync : fs.symlinkSync;
+    plantLink(victims[0], timestampFile);
+    plantLink(victims[1], backoffFile);
     fetchSpy.mockImplementation(async () => new Response('{}', { status: 200 }));
 
     const { arxivFetch, __testing__ } = await import('../src/api/rateLimiter.js');

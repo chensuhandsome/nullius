@@ -28,6 +28,16 @@ const { closeSync: actualCloseSync } = await vi.importActual<typeof import('fs')
 const ORIGINAL_OPENALEX_DATA_DIR = process.env.OPENALEX_DATA_DIR;
 const PDF_BYTES = Buffer.from('%PDF-1.4 test body');
 
+function plantFileLink(target: string, entry: string): void {
+  if (process.platform === 'win32') fs.linkSync(target, entry);
+  else fs.symlinkSync(target, entry);
+}
+
+function expectFileLink(entry: string, target: string): void {
+  if (process.platform === 'win32') expect(fs.statSync(entry).ino).toBe(fs.statSync(target).ino);
+  else expect(fs.readlinkSync(entry)).toBe(target);
+}
+
 // The next closeSync really closes its descriptor and then reports failure.
 function failNextClose(): void {
   mockClose.mockImplementationOnce((fd: number) => {
@@ -78,7 +88,7 @@ describe('handleContent out_dir containment', () => {
     // The spelled path passes the lexical test; the real location of the
     // deepest existing component is `<data>/..real`.
     fs.mkdirSync(path.join(dataDir, '..real'));
-    fs.symlinkSync(path.join(dataDir, '..real'), path.join(dataDir, 'link'), 'dir');
+    fs.symlinkSync(path.join(dataDir, '..real'), path.join(dataDir, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
     const outDir = path.join(dataDir, 'link', 'sub');
 
     const result = await download(outDir);
@@ -88,7 +98,7 @@ describe('handleContent out_dir containment', () => {
   });
 
   it('still rejects an out_dir that leaves the data dir through the parent or a symlink', async () => {
-    fs.symlinkSync(outside, path.join(dataDir, 'out-link'), 'dir');
+    fs.symlinkSync(outside, path.join(dataDir, 'out-link'), process.platform === 'win32' ? 'junction' : 'dir');
 
     await expect(download(path.join(dataDir, '..', path.basename(outside)))).rejects.toThrow(/out_dir must be within/);
     await expect(download(path.join(dataDir, 'out-link', 'sub'))).rejects.toThrow(/symlink escape detected/);
@@ -99,7 +109,7 @@ describe('handleContent out_dir containment', () => {
     // The second download finds W123.pdf already in place; its real location
     // is under <data>/real, the out_dir is spelled through <data>/link.
     fs.mkdirSync(path.join(dataDir, 'real'));
-    fs.symlinkSync(path.join(dataDir, 'real'), path.join(dataDir, 'link'), 'dir');
+    fs.symlinkSync(path.join(dataDir, 'real'), path.join(dataDir, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
     const outDir = path.join(dataDir, 'link', 'sub');
 
     await download(outDir);
@@ -116,7 +126,7 @@ describe('handleContent out_dir containment', () => {
     const aliasHolder = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'openalex-content-alias-')));
     try {
       const aliasData = path.join(aliasHolder, 'data');
-      fs.symlinkSync(dataDir, aliasData, 'dir');
+      fs.symlinkSync(dataDir, aliasData, process.platform === 'win32' ? 'junction' : 'dir');
       process.env.OPENALEX_DATA_DIR = aliasData;
       const outDir = path.join(aliasData, 'sub');
 
@@ -130,7 +140,7 @@ describe('handleContent out_dir containment', () => {
       expect(fs.readFileSync(path.join(dataDir, 'sub', 'W123.pdf'))).toEqual(PDF_BYTES);
       expect(fs.readFileSync(path.join(dataDir, 'content', 'W123.pdf'))).toEqual(PDF_BYTES);
 
-      fs.symlinkSync(outside, path.join(dataDir, 'out-link'), 'dir');
+      fs.symlinkSync(outside, path.join(dataDir, 'out-link'), process.platform === 'win32' ? 'junction' : 'dir');
       await expect(download(path.join(aliasData, 'out-link', 'sub'))).rejects.toThrow(/symlink escape detected/);
       expect(fs.readdirSync(outside)).toEqual([]);
     } finally {
@@ -143,14 +153,14 @@ describe('handleContent out_dir containment', () => {
     fs.mkdirSync(outDir);
     const victim = path.join(outside, 'victim.pdf');
     fs.writeFileSync(victim, 'ORIGINAL');
-    fs.symlinkSync(victim, path.join(outDir, 'W123.pdf.tmp'));
+    plantFileLink(victim, path.join(outDir, 'W123.pdf.tmp'));
 
     const result = await download(outDir);
 
     expect(fs.readFileSync(victim, 'utf-8')).toBe('ORIGINAL');
     expect(fs.lstatSync(result.file_path).isFile()).toBe(true);
     expect(fs.readFileSync(result.file_path)).toEqual(PDF_BYTES);
-    expect(fs.readlinkSync(path.join(outDir, 'W123.pdf.tmp'))).toBe(victim);
+    expectFileLink(path.join(outDir, 'W123.pdf.tmp'), victim);
   });
 
   it('refuses to stage through an entry already present at the fresh staging name', async () => {
@@ -163,16 +173,16 @@ describe('handleContent out_dir containment', () => {
     const fixed = Buffer.alloc(8, 0xab);
     mockRandomBytes.mockImplementationOnce(() => fixed);
     const staging = path.join(outDir, `W123.pdf.${process.pid}.${fixed.toString('hex')}.tmp`);
-    fs.symlinkSync(victim, staging);
+    plantFileLink(victim, staging);
 
     await expect(download(outDir)).rejects.toThrow(/EEXIST/);
 
     expect(fs.readFileSync(victim, 'utf-8')).toBe('ORIGINAL');
-    expect(fs.readlinkSync(staging)).toBe(victim);
+    expectFileLink(staging, victim);
     expect(fs.existsSync(path.join(outDir, 'W123.pdf'))).toBe(false);
   });
   it('refuses a default content dir that is a link out of the data dir', async () => {
-    fs.symlinkSync(outside, path.join(dataDir, 'content'), 'dir');
+    fs.symlinkSync(outside, path.join(dataDir, 'content'), process.platform === 'win32' ? 'junction' : 'dir');
 
     await expect(download()).rejects.toThrow(/content dir: symlink escape detected/);
 
@@ -204,7 +214,8 @@ describe('handleContent out_dir containment', () => {
       (staging: string) => fs.linkSync(destPath, staging),
       (staging: string) => { fs.linkSync(destPath, staging); fs.unlinkSync(destPath); },
     ];
-    for (const failAt of ['rename', 'directory fsync'] as const) {
+    const failurePoints = process.platform === 'win32' ? ['rename'] as const : ['rename', 'directory fsync'] as const;
+    for (const failAt of failurePoints) {
       for (const take of takeVacatedName) {
         fs.rmSync(outDir, { recursive: true, force: true });
         let staging: string | undefined;

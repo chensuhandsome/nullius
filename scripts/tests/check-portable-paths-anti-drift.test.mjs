@@ -32,15 +32,20 @@ test('scans tracked and unignored new tests/scripts/formats without reading igno
   repo.add('tests/tracked.test.ts');
   repo.write('new configuration.toml', homePath(privateUser));
   repo.write('scripts/check-portable-paths-anti-drift.mjs', homePath(privateUser));
-  repo.write('tests/name\nwith-tab\t.yaml', homePath(privateUser));
+  // NTFS refuses control characters in file names; Unicode and spaces still
+  // exercise the native git -z enumeration boundary.
+  const unusualName = process.platform === 'win32' ? 'tests/name with-tab-研究.yaml' : 'tests/name\nwith-tab\t.yaml';
+  repo.write(unusualName, homePath(privateUser));
   repo.write('ignored/private.md', homePath(privateUser));
   const result = scanRepository(repo.root);
   assert.deepEqual(result.violations.map(item => item.file).sort(), [
     'new configuration.toml', 'scripts/check-portable-paths-anti-drift.mjs',
-    'tests/name\nwith-tab\t.yaml', 'tests/tracked.test.ts',
+    unusualName, 'tests/tracked.test.ts',
   ]);
   assert.ok(result.violations.every(item => item.rule === 'machine-home-path' && item.line === 1));
-  assert.ok(formatReport(result).includes('name\\nwith-tab\\t.yaml'));
+  assert.ok(formatReport(result).includes(process.platform === 'win32' ? 'name with-tab-研究.yaml' : 'name\\nwith-tab\\t.yaml'));
+  const controlNameReport = formatReport({ files: 1, violations: [{ file: 'name\nwith-tab\t.yaml', line: 1, rule: 'machine-home-path' }] });
+  assert.ok(controlNameReport.includes('name\\nwith-tab\\t.yaml'));
 });
 
 test('already tracked files stay checked after a new ignore rule; working-tree deletions are safe', t => {
@@ -51,6 +56,34 @@ test('already tracked files stay checked after a new ignore rule; working-tree d
   assert.equal(scanRepository(repo.root).violations.length, 1);
   fs.unlinkSync(path.join(repo.root, 'tracked.json'));
   assert.deepEqual(scanRepository(repo.root).violations, []);
+});
+
+test('embedded repositories and gitlinks retain their own source boundary', t => {
+  const repo = repository(t);
+  const nested = path.join(repo.root, 'nested');
+  fs.mkdirSync(nested);
+  execFileSync('git', ['init', '-q', nested]);
+  fs.writeFileSync(path.join(nested, '.gitignore'), 'private.txt\n');
+  fs.writeFileSync(path.join(nested, 'private.txt'), syntheticToken());
+  fs.writeFileSync(path.join(nested, 'public.md'), 'fixture');
+  const expected = [{ file: 'nested', line: 1, rule: 'unsupported-file-type' }];
+  assert.deepEqual(scanRepository(repo.root).violations, expected);
+  execFileSync('git', ['add', '.'], { cwd: nested });
+  execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '-m', 'fixture'], { cwd: nested });
+  execFileSync('git', ['-c', 'advice.addEmbeddedRepo=false', 'add', 'nested'], { cwd: repo.root });
+  assert.deepEqual(scanRepository(repo.root).violations, expected);
+  fs.renameSync(path.join(nested, '.git'), path.join(repo.base, 'nested-metadata'));
+  assert.deepEqual(scanRepository(repo.root).violations, expected, 'an uninitialized gitlink stays a single entry');
+});
+
+test('a tracked file replaced by a directory is refused without scanning its contents', t => {
+  const repo = repository(t);
+  repo.write('tracked', 'fixture');
+  repo.add('tracked');
+  fs.unlinkSync(path.join(repo.root, 'tracked'));
+  fs.mkdirSync(path.join(repo.root, 'tracked'));
+  fs.writeFileSync(path.join(repo.root, 'tracked', 'private.txt'), syntheticToken());
+  assert.deepEqual(scanRepository(repo.root).violations, [{ file: 'tracked', line: 1, rule: 'unsupported-file-type' }]);
 });
 
 test('file URIs, encoded names, Linux, Unicode and escaped Windows paths are not loopholes', () => {
@@ -108,11 +141,15 @@ test('high-confidence secret material is rejected in tests and templates without
 test('checks symlink targets without following them to external private data', t => {
   const repo = repository(t);
   const outside = path.join(repo.base, 'outside.txt');
-  fs.writeFileSync(outside, syntheticToken());
-  fs.symlinkSync(outside, path.join(repo.root, 'safe-link'));
-  assert.deepEqual(scanRepository(repo.root).violations, []);
-  fs.symlinkSync(homePath(privateUser), path.join(repo.root, 'private-link'));
-  assert.deepEqual(scanRepository(repo.root).violations, [{ file: 'private-link', line: 1, rule: 'machine-home-path' }]);
+  if (process.platform === 'win32') {
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'private.txt'), syntheticToken());
+  } else fs.writeFileSync(outside, syntheticToken());
+  fs.symlinkSync(outside, path.join(repo.root, 'safe-link'), process.platform === 'win32' ? 'junction' : 'file');
+  const safeLinkViolations = scanContent('safe-link', fs.readlinkSync(path.join(repo.root, 'safe-link')));
+  assert.deepEqual(scanRepository(repo.root).violations, safeLinkViolations);
+  fs.symlinkSync(process.platform === 'win32' ? 'C:' + homePath(privateUser) : homePath(privateUser), path.join(repo.root, 'private-link'), process.platform === 'win32' ? 'junction' : 'file');
+  assert.deepEqual(scanRepository(repo.root).violations, [{ file: 'private-link', line: 1, rule: 'machine-home-path' }, ...safeLinkViolations]);
 });
 
 test('does not hide ASCII leaks in binary files or UTF-16LE text', t => {

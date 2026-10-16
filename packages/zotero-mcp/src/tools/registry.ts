@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import * as path from 'node:path';
 import {
   ZOTERO_LOCAL,
   ZOTERO_FIND_ITEMS,
@@ -258,8 +259,8 @@ const ZoteroAddToolSchema = z
     tags: ZoteroTagsSchema,
     note: z.string().optional().describe('Optional note to attach (plain text)'),
     file_path: z.string().optional().refine(
-      v => v === undefined || v === '' || (typeof v === 'string' && v.startsWith('/')),
-      { message: 'file_path must be an absolute path (starting with /)' }
+      v => v === undefined || v === '' || path.isAbsolute(v),
+      { message: 'file_path must be an absolute path' }
     ).describe('Optional absolute file path to attach (e.g. a downloaded PDF). Attached via the zotero-inspire write endpoint (the native Zotero Local API is read-only and cannot attach files). See attach_mode.'),
     attach_mode: z.enum(['import', 'link']).optional().default('import').describe(
       "How to attach file_path. 'import' (default) copies the file into Zotero storage and never mutates the source. 'link' references it in place (and may be renamed/moved by file-management plugins like Attanger/ZotFile)."

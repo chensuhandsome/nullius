@@ -2,6 +2,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { denyFilesystemAccess } from '../support/filesystemPermissions.js';
+
+const directoryConfirmation = vi.hoisted(() => ({ observe: undefined as ((filePath: string) => void) | undefined }));
+vi.mock('@nullius/shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@nullius/shared')>();
+  return {
+    ...actual,
+    fsyncParentDirectoryDurable: (filePath: string): void => {
+      actual.fsyncParentDirectoryDurable(filePath);
+      // Native Node has no directory flush. Observe/fault the caller's real
+      // post-publication confirmation boundary without claiming such a syscall.
+      if (process.platform === 'win32') directoryConfirmation.observe?.(filePath);
+    },
+  };
+});
+afterEach(() => { directoryConfirmation.observe = undefined; });
+
+const permissionErrno = process.platform === 'win32' ? expect.stringMatching(/^(EACCES|EPERM)$/) : 'EACCES';
 
 vi.mock('../../src/api/client.js', () => ({
   search: vi.fn(),
@@ -55,7 +73,7 @@ describe('output_dir lies inside the admitted project root, through real directo
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-')));
     projectRoot = makeProjectRoot(tmpDir);
     alias = path.join(tmpDir, 'alias');
-    fs.symlinkSync(projectRoot, alias, 'dir');
+    fs.symlinkSync(projectRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
   });
 
   afterEach(() => {
@@ -93,7 +111,7 @@ describe('output_dir lies inside the admitted project root, through real directo
 
   it('refuses a symlink below the root even when it points inside the project', async () => {
     fs.mkdirSync(path.join(projectRoot, 'real'));
-    fs.symlinkSync(path.join(projectRoot, 'real'), path.join(projectRoot, 'linked'), 'dir');
+    fs.symlinkSync(path.join(projectRoot, 'real'), path.join(projectRoot, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
     const error = errorOf(await resolveIds({ project_root: alias, output_dir: 'linked/sub' }));
     expect(error.code).toBe('UNSAFE_FS');
     expect(error.message).toMatch(/symbolic link/);
@@ -103,7 +121,7 @@ describe('output_dir lies inside the admitted project root, through real directo
   it('refuses a symlink below the root that leads outside, and writes nothing there', async () => {
     const elsewhere = path.join(tmpDir, 'elsewhere');
     fs.mkdirSync(elsewhere);
-    fs.symlinkSync(elsewhere, path.join(projectRoot, 'escape'), 'dir');
+    fs.symlinkSync(elsewhere, path.join(projectRoot, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
     const error = errorOf(await resolveIds({ project_root: alias, output_dir: path.join(alias, 'escape', 'sub') }));
     expect(error.message).toMatch(/symbolic link/);
     expect(fs.readdirSync(elsewhere)).toEqual([]);
@@ -111,7 +129,7 @@ describe('output_dir lies inside the admitted project root, through real directo
 
   it('refuses a dangling symlink below the root instead of creating its target', async () => {
     const missing = path.join(tmpDir, 'missing');
-    fs.symlinkSync(missing, path.join(projectRoot, 'dangling'), 'dir');
+    fs.symlinkSync(missing, path.join(projectRoot, 'dangling'), process.platform === 'win32' ? 'junction' : 'dir');
     const error = errorOf(await resolveIds({ project_root: alias, output_dir: 'dangling' }));
     expect(error.message).toMatch(/symbolic link/);
     expect(fs.existsSync(missing)).toBe(false);
@@ -178,7 +196,7 @@ describe('output_dir lies inside the admitted project root, through real directo
     const victim = path.join(tmpDir, 'victim.jsonl');
     fs.writeFileSync(victim, 'original\n');
     fs.mkdirSync(path.join(projectRoot, 'out'));
-    fs.symlinkSync(victim, path.join(projectRoot, 'out', 'map.jsonl'), 'file');
+    fs.symlinkSync(process.platform === 'win32' ? path.dirname(victim) : victim, path.join(projectRoot, 'out', 'map.jsonl'), process.platform === 'win32' ? 'junction' : 'file');
     const error = errorOf(await resolveIds({
       project_root: alias,
       output_dir: 'out',
@@ -209,7 +227,7 @@ describe('output files are checked again at write time and streamed outputs fail
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-write-')));
     projectRoot = makeProjectRoot(tmpDir);
     alias = path.join(tmpDir, 'alias');
-    fs.symlinkSync(projectRoot, alias, 'dir');
+    fs.symlinkSync(projectRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
   });
 
   afterEach(() => {
@@ -226,7 +244,7 @@ describe('output files are checked again at write time and streamed outputs fail
     await withHepDataRoot(alias, async () => {
       const batch = new OutputBatch(resolveOutputDir('out/sub'));
       fs.renameSync(path.join(projectRoot, 'out'), path.join(tmpDir, 'moved-away'));
-      fs.symlinkSync(outside, path.join(projectRoot, 'out'), 'dir');
+      fs.symlinkSync(outside, path.join(projectRoot, 'out'), process.platform === 'win32' ? 'junction' : 'dir');
       expect(() => batch.json('late.json', { x: 1 })).toThrow(/symbolic link/);
     });
     expect(fs.readdirSync(outside)).toEqual([]);
@@ -239,7 +257,7 @@ describe('output files are checked again at write time and streamed outputs fail
       const batch = new OutputBatch(resolveOutputDir('pub'));
       batch.json('a.json', { x: 1 });
       fs.renameSync(path.join(projectRoot, 'pub'), path.join(tmpDir, 'pub-moved'));
-      fs.symlinkSync(outside, path.join(projectRoot, 'pub'), 'dir');
+      fs.symlinkSync(outside, path.join(projectRoot, 'pub'), process.platform === 'win32' ? 'junction' : 'dir');
       await expect(batch.publish()).rejects.toThrow(/symbolic link/);
     });
     expect(fs.readdirSync(outside)).toEqual([]);
@@ -254,14 +272,16 @@ describe('output files are checked again at write time and streamed outputs fail
       // The final name itself is too long:
       expect(() => new OutputBatch(out).json(`${'a'.repeat(260)}.json`, {}))
         .toThrow(expect.objectContaining({
-          code: 'UNSAFE_FS', message: expect.stringMatching(/^looking up .* failed/), data: expect.objectContaining({ errno: 'ENAMETOOLONG' }),
+          code: 'UNSAFE_FS',
+          message: expect.stringMatching(process.platform === 'win32' ? /^creating a staging file failed/ : /^looking up .* failed/),
+          data: expect.objectContaining({ errno: process.platform === 'win32' ? expect.stringMatching(/^(ENOENT|ENAMETOOLONG)$/) : 'ENAMETOOLONG' }),
         }));
       // The final name fits (225 characters), its staging name does not:
       expect(() => new OutputBatch(out).json(`${'a'.repeat(220)}.json`, {}))
         .toThrow(expect.objectContaining({
           code: 'UNSAFE_FS',
           message: expect.stringMatching(/^creating a staging file failed/),
-          data: expect.objectContaining({ errno: 'ENAMETOOLONG' }),
+          data: expect.objectContaining({ errno: process.platform === 'win32' ? expect.stringMatching(/^(ENOENT|ENAMETOOLONG)$/) : 'ENAMETOOLONG' }),
         }));
       expect(fs.readdirSync(out.dir)).toEqual([]);
     });
@@ -271,12 +291,12 @@ describe('output files are checked again at write time and streamed outputs fail
     await withHepDataRoot(alias, async () => {
       const locked = path.join(projectRoot, 'locked');
       fs.mkdirSync(locked);
-      fs.chmodSync(locked, 0o555);
+      const restoreAccess = denyFilesystemAccess(locked, 0o555, '(WD,AD)');
       try {
         expect(() => resolveOutputDir('locked/sub'))
-          .toThrow(expect.objectContaining({ code: 'UNSAFE_FS', data: expect.objectContaining({ errno: 'EACCES' }) }));
+          .toThrow(expect.objectContaining({ code: 'UNSAFE_FS', data: expect.objectContaining({ errno: permissionErrno }) }));
       } finally {
-        fs.chmodSync(locked, 0o755);
+        restoreAccess();
       }
       expect(fs.readdirSync(locked)).toEqual([]);
     });
@@ -286,13 +306,13 @@ describe('output files are checked again at write time and streamed outputs fail
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('locked');
       const batch = new OutputBatch(out);
-      fs.chmodSync(out.dir, 0o555);
+      const restoreAccess = denyFilesystemAccess(out.dir, 0o555, '(WD,AD)');
       try {
         // The environment refused the write: UNSAFE_FS, keeping the system's code.
         expect(() => batch.openFile('records.jsonl', 'application/x-ndjson'))
-          .toThrow(expect.objectContaining({ code: 'UNSAFE_FS', data: expect.objectContaining({ errno: 'EACCES' }) }));
+          .toThrow(expect.objectContaining({ code: 'UNSAFE_FS', data: expect.objectContaining({ errno: permissionErrno }) }));
       } finally {
-        fs.chmodSync(out.dir, 0o755);
+        restoreAccess();
       }
       expect(temporaryFiles(out.dir)).toEqual([]);
       expect(fs.existsSync(path.join(out.dir, 'records.jsonl'))).toBe(false);
@@ -321,7 +341,7 @@ describe('output files are checked again at write time and streamed outputs fail
       const data = {
         toJSON: () => {
           fs.renameSync(path.join(projectRoot, 'serial'), path.join(tmpDir, 'serial-moved'));
-          fs.symlinkSync(outside, path.join(projectRoot, 'serial'), 'dir');
+          fs.symlinkSync(outside, path.join(projectRoot, 'serial'), process.platform === 'win32' ? 'junction' : 'dir');
           return { x: 1 };
         },
       };
@@ -342,7 +362,7 @@ describe('output files are checked again at write time and streamed outputs fail
       const temp = temporaryFiles(out.dir)[0]!;
       const moved = path.join(tmpDir, 'swap-moved');
       fs.renameSync(out.dir, moved);
-      fs.symlinkSync(outside, out.dir, 'dir');
+      fs.symlinkSync(outside, out.dir, process.platform === 'win32' ? 'junction' : 'dir');
       fs.writeFileSync(path.join(outside, temp), 'sentinel');
       const error = await batch.publish().then(() => null, (e: unknown) => e as Error & { data?: { staging_left?: string[] } });
       expect(error?.message).toMatch(/symbolic link/);
@@ -407,7 +427,7 @@ describe('output files are checked again at write time and streamed outputs fail
     });
   });
 
-  it('flushes every directory from the project root down to each published file', async () => {
+  it('checks every publication directory under the platform durability contract', async () => {
     const { _setAtomicWriteAuditHook } = await import('@nullius/shared');
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('deep/er/out');
@@ -415,6 +435,8 @@ describe('output files are checked again at write time and streamed outputs fail
       batch.json('a.json', { x: 1 });
       batch.json('external_api/r.json', { x: 2 });
       const fsynced = new Set<string>();
+      const nativeConfirmations = new Set<string>();
+      directoryConfirmation.observe = filePath => { nativeConfirmations.add(path.dirname(filePath)); };
       const opened = new Map<number, string>();
       const restore = _setAtomicWriteAuditHook(event => {
         if (event.kind === 'open') opened.set(event.fd, event.path);
@@ -426,12 +448,16 @@ describe('output files are checked again at write time and streamed outputs fail
         restore();
       }
       for (const rel of ['', 'deep', 'deep/er', 'deep/er/out', 'deep/er/out/external_api']) {
-        expect(fsynced.has(path.join(projectRoot, rel)), rel || '(project root)').toBe(true);
+        const confirmed = process.platform === 'win32' ? nativeConfirmations : fsynced;
+        expect(confirmed.has(path.join(projectRoot, rel)), rel || '(project root)').toBe(true);
       }
+      if (process.platform === 'win32') expect(fsynced.size).toBe(0);
+      expect(JSON.parse(fs.readFileSync(path.join(out.dir, 'a.json'), 'utf-8'))).toEqual({ x: 1 });
+      expect(JSON.parse(fs.readFileSync(path.join(out.dir, 'external_api/r.json'), 'utf-8'))).toEqual({ x: 2 });
     });
   });
 
-  it('flushes the directories it removed files from when a publication is rolled back', async () => {
+  it('rolls back visible publication when directory confirmation reports a failure', async () => {
     const { _setAtomicWriteAuditHook } = await import('@nullius/shared');
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('undo/out');
@@ -440,6 +466,15 @@ describe('output files are checked again at write time and streamed outputs fail
       const opened = new Map<number, string>();
       const fsyncs: string[] = [];
       let failedRoot = false;
+      directoryConfirmation.observe = filePath => {
+        const dir = path.dirname(filePath);
+        fsyncs.push(dir);
+        if (dir === projectRoot && !failedRoot) {
+          expect(fs.existsSync(path.join(out.dir, 'a.json'))).toBe(true);
+          failedRoot = true;
+          throw new Error('simulated directory flush failure');
+        }
+      };
       const restore = _setAtomicWriteAuditHook(event => {
         if (event.kind === 'open') opened.set(event.fd, event.path);
         if (event.kind !== 'fsync' || !opened.has(event.fd)) return;
@@ -466,7 +501,7 @@ describe('output files are checked again at write time and streamed outputs fail
     });
   });
 
-  it('reports a rollback whose removals could not be flushed to disk', async () => {
+  it('reports a rollback whose directory confirmation also fails', async () => {
     const { _setAtomicWriteAuditHook } = await import('@nullius/shared');
     await withHepDataRoot(alias, async () => {
       const out = resolveOutputDir('undo2/out');
@@ -474,6 +509,14 @@ describe('output files are checked again at write time and streamed outputs fail
       batch.json('a.json', { x: 1 });
       const opened = new Map<number, string>();
       let publicationFlushed = false;
+      directoryConfirmation.observe = filePath => {
+        const dir = path.dirname(filePath);
+        if (dir === out.dir && !publicationFlushed) {
+          publicationFlushed = true;
+          return;
+        }
+        if (dir === projectRoot || dir === out.dir) throw new Error('simulated directory flush failure');
+      };
       const restore = _setAtomicWriteAuditHook(event => {
         if (event.kind === 'open') opened.set(event.fd, event.path);
         if (event.kind !== 'fsync' || !opened.has(event.fd)) return;
@@ -546,7 +589,7 @@ describe('a call writes all of its files or none, and never replaces an existing
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-batch-')));
     projectRoot = makeProjectRoot(tmpDir);
     alias = path.join(tmpDir, 'alias');
-    fs.symlinkSync(projectRoot, alias, 'dir');
+    fs.symlinkSync(projectRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
   });
 
   afterEach(() => {
@@ -663,7 +706,7 @@ describe('identifier resolution does not turn a refused write into a per-identif
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-ids-')));
     projectRoot = makeProjectRoot(tmpDir);
     alias = path.join(tmpDir, 'alias');
-    fs.symlinkSync(projectRoot, alias, 'dir');
+    fs.symlinkSync(projectRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
   });
 
   afterEach(() => {
@@ -677,7 +720,7 @@ describe('identifier resolution does not turn a refused write into a per-identif
     const request = describeExternalApiRequest({ namespace: 'inspire', operation: 'getPaper', request: { recid: '123' } }).request_name;
     const victim = path.join(tmpDir, 'victim.json');
     fs.writeFileSync(victim, 'original');
-    fs.symlinkSync(victim, path.join(projectRoot, 'ids', request), 'file');
+    fs.symlinkSync(process.platform === 'win32' ? path.dirname(victim) : victim, path.join(projectRoot, 'ids', request), process.platform === 'win32' ? 'junction' : 'file');
 
     const result = await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids', identifiers: ['123'] });
     expect(errorOf(result).code).toBe('UNSAFE_FS');
@@ -698,7 +741,7 @@ describe('identifier resolution does not turn a refused write into a per-identif
     const second = await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids2', identifiers: ['123'] });
     const error = errorOf(second);
     expect(error.message).toMatch(/Cached external API response is malformed/);
-    expect(JSON.stringify(error)).toContain(entryPath);
+    expect(error.data?.cache_path).toBe(entryPath);
     expect(filesBelow(path.join(projectRoot, 'ids2'))).toEqual([]);
   });
 
@@ -783,23 +826,24 @@ describe('identifier resolution does not turn a refused write into a per-identif
     const cacheRoot = path.join(projectRoot, 'artifacts', 'hep-mcp', 'cache', 'external_api_v1', 'inspire', 'getPaper');
     const shardDir = path.join(cacheRoot, fs.readdirSync(cacheRoot)[0]!);
     const entryPath = path.join(shardDir, fs.readdirSync(shardDir)[0]!);
-    fs.chmodSync(entryPath, 0o000);
+    const restoreEntry = denyFilesystemAccess(entryPath, 0o000, '(RD)');
     try {
       const unread = errorOf(await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids2', identifiers: ['123'] }));
-      expect(unread).toMatchObject({ code: 'UNSAFE_FS', message: 'Failed to read external API cache entry (fail-fast)', data: { errno: 'EACCES' } });
+      expect(unread).toMatchObject({ code: 'UNSAFE_FS', message: 'Failed to read external API cache entry (fail-fast)', data: { errno: permissionErrno } });
     } finally {
-      fs.chmodSync(entryPath, 0o644);
+      restoreEntry();
     }
     vi.mocked(api.getPaper).mockResolvedValue({ recid: '456' } as any);
     // No shard directory may exist, so the new request must create one.
     for (const shard of fs.readdirSync(cacheRoot)) fs.rmSync(path.join(cacheRoot, shard), { recursive: true, force: true });
-    fs.chmodSync(cacheRoot, 0o555);
+    const restoreCache = denyFilesystemAccess(cacheRoot, 0o555, '(WD,AD)');
     try {
       const unmade = errorOf(await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids3', identifiers: ['456'] }));
-      expect(unmade).toMatchObject({ code: 'UNSAFE_FS', message: 'Failed to resolve external API cache path (fail-fast)', data: { errno: 'EACCES' } });
-      expect(String(unmade.data?.cache_dir)).toMatch(new RegExp(`^${cacheRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/[0-9a-f]{2}$`));
+      expect(unmade).toMatchObject({ code: 'UNSAFE_FS', message: 'Failed to resolve external API cache path (fail-fast)', data: { errno: permissionErrno } });
+      expect(path.dirname(String(unmade.data?.cache_dir))).toBe(cacheRoot);
+      expect(path.basename(String(unmade.data?.cache_dir))).toMatch(/^[0-9a-f]{2}$/);
     } finally {
-      fs.chmodSync(cacheRoot, 0o755);
+      restoreCache();
     }
   });
 
@@ -809,14 +853,14 @@ describe('identifier resolution does not turn a refused write into a per-identif
     const cacheRoot = path.join(projectRoot, 'artifacts', 'hep-mcp', 'cache', 'external_api_v1', 'inspire', 'getPaper');
     const shardDir = path.join(cacheRoot, fs.readdirSync(cacheRoot)[0]!);
     for (const entry of fs.readdirSync(shardDir)) fs.rmSync(path.join(shardDir, entry));
-    fs.chmodSync(shardDir, 0o555);
+    const restoreShard = denyFilesystemAccess(shardDir, 0o555, '(WD,AD)');
     try {
       const error = errorOf(await handleToolCall('hep_inspire_resolve_identifiers', { project_root: alias, output_dir: 'ids2', identifiers: ['123'] }));
       expect(error.code).toBe('UNSAFE_FS');
       expect(error.message).toMatch(/External API cache write failed/);
-      expect(error.data).toMatchObject({ errno: 'EACCES' });
+      expect(error.data).toMatchObject({ errno: permissionErrno });
     } finally {
-      fs.chmodSync(shardDir, 0o755);
+      restoreShard();
     }
     expect(filesBelow(path.join(projectRoot, 'ids2'))).toEqual([]);
   });
@@ -844,7 +888,7 @@ describe('a search export aborts on a malformed search page', () => {
     try {
       const projectRoot = makeProjectRoot(tmpDir);
       const alias = path.join(tmpDir, 'alias');
-      fs.symlinkSync(projectRoot, alias, 'dir');
+      fs.symlinkSync(projectRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
       vi.mocked(api.search).mockResolvedValueOnce(null as any);
       const result = await handleToolCall('hep_inspire_search_export', { project_root: alias, output_dir: 'out', query: 't:x' });
       const error = errorOf(result);
@@ -867,7 +911,7 @@ describe('inspire_search export mode refuses parameters that do not apply', () =
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-search-')));
     const projectRoot = makeProjectRoot(tmpDir);
     alias = path.join(tmpDir, 'alias');
-    fs.symlinkSync(projectRoot, alias, 'dir');
+    fs.symlinkSync(projectRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
   });
 
   afterEach(() => {
@@ -929,7 +973,7 @@ describe('round-5 argument, name and response checks', () => {
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hep-outdir-r5-')));
     const projectRoot = makeProjectRoot(tmpDir);
     alias = path.join(tmpDir, 'alias');
-    fs.symlinkSync(projectRoot, alias, 'dir');
+    fs.symlinkSync(projectRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
   });
 
   afterEach(() => {

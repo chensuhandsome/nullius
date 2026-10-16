@@ -178,11 +178,14 @@ test('only roots carrying an exact, regular origin marker are ever swept', t => 
   mark(cases.marked);
   const lookalike = path.join(parent, 'lookalike');
   fs.writeFileSync(lookalike, `nullius test temp root\npid ${dead}\n`);
-  fs.symlinkSync(lookalike, path.join(cases.symlinked, ROOT_MARKER));
+  fs.symlinkSync(process.platform === 'win32' ? parent : lookalike, path.join(cases.symlinked, ROOT_MARKER), process.platform === 'win32' ? 'junction' : 'file');
   fs.mkdirSync(path.join(cases.directory, ROOT_MARKER));
   fs.writeFileSync(path.join(cases.otherPid, ROOT_MARKER), 'nullius test temp root\npid 12345\n');
   fs.writeFileSync(path.join(cases.extraText, ROOT_MARKER), `nullius test temp root\npid ${dead}\nmore\n`);
-  assert.equal(spawnSync('mkfifo', [path.join(cases.fifo, ROOT_MARKER)]).status, 0);
+  // Windows has no filesystem FIFO; a junction at this non-regular marker
+  // boundary must also be rejected without opening or traversing its target.
+  if (process.platform === 'win32') fs.symlinkSync(parent, path.join(cases.fifo, ROOT_MARKER), 'junction');
+  else assert.equal(spawnSync('mkfifo', [path.join(cases.fifo, ROOT_MARKER)]).status, 0);
   for (const dir of Object.values(cases)) {
     for (const name of fs.readdirSync(dir)) {
       const entry = path.join(dir, name);
@@ -306,19 +309,20 @@ test('the per-user parent must be a private directory of this user', t => {
   const planted = path.join(base, 'elsewhere');
   fs.mkdirSync(planted);
   const parent = testRunsParent(base);
-  fs.symlinkSync(planted, parent);  // a planted symlink is refused, never followed
+  fs.symlinkSync(planted, parent, process.platform === 'win32' ? 'junction' : 'dir');  // a planted reparse point is refused, never followed
   assert.throws(() => ensurePrivateParent(parent), /not a directory owned by this user.*chown/);
   fs.unlinkSync(parent);
   fs.mkdirSync(parent, { mode: 0o777 });
   fs.chmodSync(parent, 0o777);
   ensurePrivateParent(parent);  // an existing permissive directory of ours is tightened
-  assert.equal(fs.statSync(parent).mode & 0o777, 0o700);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(parent).mode & 0o777, 0o700);
   const real = fs.lstatSync;
   t.mock.method(fs, 'lstatSync', target => {  // the same directory, owned by someone else
     const stat = real(target);
     return target === parent ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid: stat.uid + 1 }) : stat;
   });
-  assert.throws(() => ensurePrivateParent(parent), /not a directory owned by this user.*chown/);
+  if (typeof process.getuid === 'function') assert.throws(() => ensurePrivateParent(parent), /not a directory owned by this user.*chown/);
+  else assert.equal(ensurePrivateParent(parent), parent); // Windows has no POSIX uid field.
 });
 
 test('removeTree restores write permission on read-only directories', t => {
@@ -330,16 +334,17 @@ test('removeTree restores write permission on read-only directories', t => {
   const outside = path.join(parent, 'outside');
   fs.mkdirSync(outside, { mode: 0o755 });
   fs.chmodSync(outside, 0o755);
-  fs.symlinkSync(outside, path.join(locked, 'link'));  // never followed by the retry walk
+  fs.symlinkSync(outside, path.join(locked, 'link'), process.platform === 'win32' ? 'junction' : 'dir');  // never followed by the retry walk
   fs.chmodSync(locked, 0o500);
   assert.equal(removeTree(tree), true);
   assert.equal(fs.existsSync(tree), false);
-  assert.equal(fs.statSync(outside).mode & 0o777, 0o755, 'a directory outside the tree is not touched');
+  if (process.platform !== 'win32') assert.equal(fs.statSync(outside).mode & 0o777, 0o755, 'a directory outside the tree is not touched');
+  else assert.equal(fs.existsSync(outside), true, 'the junction target outside the tree is retained');
 });
 
 test('setup gives a fresh short root; teardown removes it only after a pass', t => {
   const base = scratch(t);
-  withEnv(t, { TMPDIR: base, TMP: undefined, TEMP: undefined, NULLIUS_KEEP_TEST_TMP: undefined });
+  withEnv(t, { TMPDIR: base, TMP: process.platform === 'win32' ? base : undefined, TEMP: process.platform === 'win32' ? base : undefined, NULLIUS_KEEP_TEST_TMP: undefined });
 
   const runOnce = (project, leaveFile = true) => {
     process.env.TMPDIR = base;
@@ -352,7 +357,7 @@ test('setup gives a fresh short root; teardown removes it only after a pass', t 
     // suffix is exactly /ntest-<uid>/<label<=6>-<pid>-XXXXXX (22 fixed characters at most), nothing longer.
     const uidDigits = String(process.getuid?.() ?? 'user').length;
     assert.ok(root.length - base.length <= 22 + uidDigits + String(process.pid).length, `root suffix too long: ${root}`);
-    assert.equal(fs.statSync(testRunsParent(base)).mode & 0o777, 0o700, 'per-user parent is private');
+    if (process.platform !== 'win32') assert.equal(fs.statSync(testRunsParent(base)).mode & 0o777, 0o700, 'per-user parent is private');
     if (leaveFile) fs.writeFileSync(path.join(root, 'leftover'), 'x');
     teardown();
     assert.equal(process.env.TMPDIR, base, 'teardown restores the previous TMPDIR');
